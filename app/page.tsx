@@ -3,6 +3,7 @@
 import { useState } from "react";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
+import { getSourceLabel } from "./lib/meta-label";
 import type { AnalysisResult } from "./lib/types";
 
 type Status = "idle" | "loading" | "done" | "error";
@@ -82,9 +83,14 @@ export default function Home() {
         {status === "done" && result && (
           <div className="mt-8">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-sm text-zinc-500 dark:text-zinc-400">
-                「{result.brandName}」の分析結果（ダミーデータ）
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm text-zinc-500 dark:text-zinc-400">
+                  「{result.brandName}」の分析結果
+                </h2>
+                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  {getSourceLabel(result.meta)}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={handleReset}

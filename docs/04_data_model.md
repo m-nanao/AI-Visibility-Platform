@@ -8,6 +8,13 @@
 type Trend = "up" | "down" | "flat";
 type Sentiment = "positive" | "neutral" | "negative";
 type Priority = "high" | "medium" | "low";
+type AnalysisSource = "python_mock" | "nextjs_mock" | "real_analysis";
+
+interface AnalysisMeta {
+  source: AnalysisSource;
+  isMock: boolean;
+  generatedAt: string;
+}
 
 interface BrandSummary {
   brandName: string;
@@ -51,10 +58,11 @@ interface AnalysisResult {
   contextAnalysis: ContextAnalysisItem[];
   aiOverviewComparison: AIOverviewComparisonItem[];
   improvements: ImprovementSuggestion[];
+  meta: AnalysisMeta;
 }
 ```
 
-現状はすべて [dummy-data.ts](../app/lib/dummy-data.ts) 内の固定値で生成される。`/api/analyze`（[route.ts](../app/api/analyze/route.ts)）は現時点でこの型とは別の簡易形状（`{ summary: string; keywords: string[] }`）を返しており、Phase 2でどちらかに統一する（詳細は [03_api_design.md](./03_api_design.md)）。
+`meta` はデータの出どころを示す開発用メタ情報（[03_api_design.md](./03_api_design.md) の「`meta`フィールド」参照）。`/api/analyze`（[route.ts](../app/api/analyze/route.ts)）は、環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）の `POST /analyze` を呼び出してその結果を返し（`meta.source: "python_mock"`）、未設定・失敗時は [dummy-data.ts](../app/lib/dummy-data.ts) の固定値にフォールバックする（`meta.source: "nextjs_mock"`）。Python側のレスポンスは [analysis-result-schema.ts](../app/lib/analysis-result-schema.ts) のZodスキーマで検証してから使用する。
 
 ## 2. 将来のPostgreSQLスキーマ案（Phase 5）
 

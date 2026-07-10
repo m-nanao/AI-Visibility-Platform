@@ -22,13 +22,14 @@
 - `app/page.tsx`: ブランド名入力 → 分析開始 → 結果表示のクライアントコンポーネント（`/api/analyze` にPOST）
 - `app/lib/types.ts` / `app/lib/dummy-data.ts`: 表示用の型とダミーデータ
 - `app/components/sections/*`: 5セクション（サマリー / 共起語ランキング / 文脈分析 / AI Overview比較 / 改善提案）
-- `app/api/analyze/route.ts`: 環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）を呼び出し、未設定・失敗時は固定ダミーデータにフォールバックする
-- `backend/`: FastAPI製の分析API土台。`POST /analyze` は `AnalysisResult` 型と互換の固定JSONを返す（Common Crawl / DataForSEO / DB接続はまだ行っていない）。起動方法は [backend/README.md](backend/README.md)
+- `app/api/analyze/route.ts`: 環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）を呼び出し、レスポンスを [app/lib/analysis-result-schema.ts](app/lib/analysis-result-schema.ts) のZodスキーマで検証してから返す。未設定・失敗・検証エラー時は固定ダミーデータにフォールバックする（理由をサーバーログに出力、機密情報は出さない）
+- `AnalysisResult` には開発用メタ情報 `meta`（`source` / `isMock` / `generatedAt`）を含む。画面にも出どころ（「Python API（ダミー）」/「Next.jsフォールバック（ダミー）」）を小さく表示する（[app/lib/meta-label.ts](app/lib/meta-label.ts)）
+- `backend/`: FastAPI製の分析API土台。`main.py`（ルート）/ `models.py`（Pydanticモデル）/ `services/mock_analysis.py`（ダミーデータ生成）に分割済み。`POST /analyze` は `AnalysisResult` 型と互換の固定JSONを返す（Common Crawl / DataForSEO / DB接続はまだ行っていない）。起動方法は [backend/README.md](backend/README.md)
 
 ## 開発環境の注意点
 
 - **Node.js 20.9以降が必須**（このNext.jsバージョンの要件）。ローカルにNode 18しかない場合は `nvm` 等で切り替えること。
-- **`next lint` はこのNext.jsバージョンで廃止済み**。代わりに `npx eslint app` を使う。
+- **`next lint` はこのNext.jsバージョンで廃止済み**。代わりに `npm run lint`（内部で `eslint` を実行）を使う。
 - 依存インストール直後に `@tailwindcss/oxide` のネイティブバイナリが見つからないエラーが出ることがある。その場合は `npm i` を再実行すると解決する（npmのoptional dependenciesバグ）。
-- コード変更を検証する際は `npx eslint app` と `npx next build` を通すこと。
-- Python側（`backend/`）を動かして確認する場合は `backend/README.md` の手順でFastAPIサーバーを起動し、Next.js起動時に環境変数 `PYTHON_ANALYSIS_API_URL=http://localhost:8000` を設定する。設定しない場合は自動的に固定ダミーデータで動作する。
+- コード変更を検証する際は `npm run lint`・`npm run build`・`npm run test`（vitest）を通すこと。
+- Python側（`backend/`）を動かして確認する場合は `backend/README.md` の手順でFastAPIサーバーを起動し、Next.js起動時に環境変数 `PYTHON_ANALYSIS_API_URL=http://localhost:8000` を設定する。設定しない場合は自動的に固定ダミーデータで動作する。Python側のテストは `backend/` で `pip install -r requirements-dev.txt && pytest`。

@@ -82,6 +82,12 @@
 - [x] Next.js Route Handler（`/api/analyze`）から環境変数 `PYTHON_ANALYSIS_API_URL` 経由でPython APIを呼び出すBFF実装
 - [x] Python APIが未設定・未起動・エラー時に、Next.js側の固定ダミーデータへフォールバックする仕組み
 - [ ] Python API ⇔ Next.js 間のレスポンス変換層（snake_case → camelCase等）— 現状はPython側もcamelCaseで返すため保留中。実データ分析ロジック導入時に必要性を再検討する
+- [x] `backend/main.py` を `main.py`（ルート） / `models.py`（Pydanticモデル） / `services/mock_analysis.py`（ダミーデータ生成）に分割
+- [x] `AnalysisResult` に開発用メタ情報 `meta`（`source` / `isMock` / `generatedAt`）を追加し、画面にデータの出どころ（「Python API（ダミー）」/「Next.jsフォールバック（ダミー）」）を小さく表示
+- [x] Next.js側でZodによる `AnalysisResult` スキーマ検証を導入し、Python APIのレスポンスが不正な場合はダミーデータにフォールバック（理由はサーバーログに出力、機密情報は出力しない）
+- [x] FastAPI側の入力検証を整理（`brandName` 必須・trim後空文字拒否・最大200文字・エラー形式を `{"error": "..."}` に統一）
+- [x] backendに最低限のテストを追加（`pytest`: health 200 / analyze 200 / 空文字エラー / レスポンス型が`AnalysisResult`と一致）
+- [x] Next.js側に最低限のテストを追加（`vitest`: Zodスキーマの正常系・異常系、`/api/analyze` のPython成功時パススルー・スキーマ不正時フォールバック・接続失敗時フォールバック）
 
 ### 4.2 分析ロジック
 

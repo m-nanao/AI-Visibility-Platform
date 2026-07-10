@@ -1,17 +1,22 @@
 import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
+import { parseAnalysisResult } from "../../lib/analysis-result-schema";
+import type { AnalysisResult } from "../../lib/types";
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
 const PYTHON_API_TIMEOUT_MS = 3000;
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
- * Returns null on any failure (unset URL, network error, timeout, non-2xx),
- * so the caller can fall back to the local dummy data.
+ * Returns null on any failure (unset URL, network error, timeout, non-2xx,
+ * invalid JSON, or a response that doesn't match AnalysisResult), so the
+ * caller can fall back to the local dummy data. Every failure reason is
+ * logged (path + message only — never raw payloads or headers, so no
+ * secrets end up in server logs).
  */
 async function fetchFromPythonApi(
   brandName: string,
-): Promise<unknown | null> {
+): Promise<AnalysisResult | null> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return null;
 
@@ -29,9 +34,39 @@ async function fetchFromPythonApi(
       signal: controller.signal,
     });
 
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
+    if (!response.ok) {
+      console.warn(
+        `[analyze] Python API returned HTTP ${response.status}; falling back to dummy data`,
+      );
+      return null;
+    }
+
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      console.warn(
+        "[analyze] Python API returned invalid JSON; falling back to dummy data",
+      );
+      return null;
+    }
+
+    const parsed = parseAnalysisResult(json);
+    if (!parsed.success) {
+      console.warn(
+        `[analyze] Python API response failed schema validation; falling back to dummy data (${parsed.reason})`,
+      );
+      return null;
+    }
+
+    return parsed.data;
+  } catch (err) {
+    const reason = err instanceof Error && err.name === "AbortError"
+      ? "request timed out"
+      : "request failed";
+    console.warn(
+      `[analyze] Python API ${reason}; falling back to dummy data`,
+    );
     return null;
   } finally {
     clearTimeout(timeoutId);

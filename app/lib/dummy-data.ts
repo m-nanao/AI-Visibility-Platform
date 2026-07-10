@@ -8,6 +8,11 @@ import type { AnalysisResult } from "./types";
 export function buildDummyAnalysis(brandName: string): AnalysisResult {
   return {
     brandName,
+    meta: {
+      source: "nextjs_mock",
+      isMock: true,
+      generatedAt: new Date().toISOString(),
+    },
     summary: {
       brandName,
       visibilityScore: 62,

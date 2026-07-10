@@ -1,6 +1,13 @@
 export type Trend = "up" | "down" | "flat";
 export type Sentiment = "positive" | "neutral" | "negative";
 export type Priority = "high" | "medium" | "low";
+export type AnalysisSource = "python_mock" | "nextjs_mock" | "real_analysis";
+
+export interface AnalysisMeta {
+  source: AnalysisSource;
+  isMock: boolean;
+  generatedAt: string;
+}
 
 export interface BrandSummary {
   brandName: string;
@@ -48,4 +55,5 @@ export interface AnalysisResult {
   contextAnalysis: ContextAnalysisItem[];
   aiOverviewComparison: AIOverviewComparisonItem[];
   improvements: ImprovementSuggestion[];
+  meta: AnalysisMeta;
 }
