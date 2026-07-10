@@ -76,10 +76,12 @@
 
 ### 4.1 基盤構築
 
-- [ ] FastAPIプロジェクトの雛形作成
-- [ ] `GET /v1/health` ヘルスチェックエンドポイント実装
-- [ ] Next.js Route HandlerからPython APIを呼び出すBFF実装
-- [ ] Python API ⇔ Next.js 間のレスポンス変換層（snake_case → camelCase等）
+- [x] FastAPIプロジェクトの雛形作成（`backend/main.py`, `backend/requirements.txt`, `backend/README.md`）
+- [x] `GET /health` ヘルスチェックエンドポイント実装
+- [x] `POST /analyze` を実装し、`AnalysisResult`型と互換の固定JSONを返す（`build_dummy_analysis`）
+- [x] Next.js Route Handler（`/api/analyze`）から環境変数 `PYTHON_ANALYSIS_API_URL` 経由でPython APIを呼び出すBFF実装
+- [x] Python APIが未設定・未起動・エラー時に、Next.js側の固定ダミーデータへフォールバックする仕組み
+- [ ] Python API ⇔ Next.js 間のレスポンス変換層（snake_case → camelCase等）— 現状はPython側もcamelCaseで返すため保留中。実データ分析ロジック導入時に必要性を再検討する
 
 ### 4.2 分析ロジック
 

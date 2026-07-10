@@ -2,7 +2,7 @@
 
 ブランドが生成AI（ChatGPT / Perplexity / Google AI Overview等）にどう認知されているかを推定・可視化するWebツール（MVP開発中）。
 
-要件・ロードマップ・API設計などの詳細は [docs/](docs/01_requirements.md) を、開発時の規約は [CLAUDE.md](CLAUDE.md) を参照してください。
+要件・ロードマップ・API設計などの詳細は [docs/](docs/01_requirements.md) を、開発時の規約は [CLAUDE.md](CLAUDE.md) を参照してください。Python製の分析API（土台のみ）は [backend/](backend/README.md) にあります。
 
 ---
 

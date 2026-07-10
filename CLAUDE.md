@@ -17,12 +17,13 @@
 - [docs/07_decisions.md](docs/07_decisions.md) — 設計判断ログ（なぜそうしたかの記録）
 - [docs/08_screen_design.md](docs/08_screen_design.md) — 画面設計
 
-## 現状（Phase 0-1 完了）
+## 現状（Phase 0-2, Phase 4の土台まで完了）
 
-- `app/page.tsx`: ブランド名入力 → 分析開始 → ダミー結果表示のクライアントコンポーネント
-- `app/lib/types.ts` / `app/lib/dummy-data.ts`: 表示用の型とダミーデータ（API化しやすいよう分離済み）
+- `app/page.tsx`: ブランド名入力 → 分析開始 → 結果表示のクライアントコンポーネント（`/api/analyze` にPOST）
+- `app/lib/types.ts` / `app/lib/dummy-data.ts`: 表示用の型とダミーデータ
 - `app/components/sections/*`: 5セクション（サマリー / 共起語ランキング / 文脈分析 / AI Overview比較 / 改善提案）
-- `app/api/analyze/route.ts`: POSTのみ実装、現状は固定JSONを返す。フロントとはまだ未接続（Phase 2で結合予定）
+- `app/api/analyze/route.ts`: 環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）を呼び出し、未設定・失敗時は固定ダミーデータにフォールバックする
+- `backend/`: FastAPI製の分析API土台。`POST /analyze` は `AnalysisResult` 型と互換の固定JSONを返す（Common Crawl / DataForSEO / DB接続はまだ行っていない）。起動方法は [backend/README.md](backend/README.md)
 
 ## 開発環境の注意点
 
@@ -30,3 +31,4 @@
 - **`next lint` はこのNext.jsバージョンで廃止済み**。代わりに `npx eslint app` を使う。
 - 依存インストール直後に `@tailwindcss/oxide` のネイティブバイナリが見つからないエラーが出ることがある。その場合は `npm i` を再実行すると解決する（npmのoptional dependenciesバグ）。
 - コード変更を検証する際は `npx eslint app` と `npx next build` を通すこと。
+- Python側（`backend/`）を動かして確認する場合は `backend/README.md` の手順でFastAPIサーバーを起動し、Next.js起動時に環境変数 `PYTHON_ANALYSIS_API_URL=http://localhost:8000` を設定する。設定しない場合は自動的に固定ダミーデータで動作する。

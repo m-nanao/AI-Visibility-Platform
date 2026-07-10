@@ -38,8 +38,8 @@
 | --- | --- | --- |
 | Browser | ブランド名入力・分析結果の閲覧（管理画面風UI） | 実装済み |
 | Next.js（フロントエンド） | React（App Router）によるUI描画、状態管理 | 実装済み（`app/page.tsx` 等） |
-| Next.js（Route Handlers / BFF） | `/api/analyze` 等。将来は認証・入力検証・Python APIやDBへの橋渡しを担う | `/api/analyze` のみ雛形実装（固定JSON） |
-| Python分析API | Common Crawl等から収集したデータをもとに共起語・文脈・センチメント・改善提案を計算 | 未実装（Phase 4） |
+| Next.js（Route Handlers / BFF） | `/api/analyze` 等。将来は認証・入力検証・Python APIやDBへの橋渡しを担う | `/api/analyze` 実装済み。環境変数 `PYTHON_ANALYSIS_API_URL` でPython分析APIを呼び出し、未設定/失敗時は固定JSONにフォールバック |
+| Python分析API | Common Crawl等から収集したデータをもとに共起語・文脈・センチメント・改善提案を計算 | 土台のみ実装済み（`backend/`。`POST /analyze` は固定JSONを返す。Phase 4） |
 | PostgreSQL | ブランド・分析結果・情報源の永続化 | 未実装（Phase 5） |
 | 外部データソース | Common Crawl / DataForSEO / News / PR TIMES / Wikipedia / Qiita 等、分析の元になるWeb情報 | 未連携（Phase 3） |
 

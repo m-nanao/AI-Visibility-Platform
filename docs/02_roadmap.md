@@ -36,15 +36,15 @@
 
 ## Phase 4 — Python分析API
 
-- FastAPI等でPython製の分析サービスを新設
-- 収集済みWebデータから以下を計算
+- [x] FastAPI等でPython製の分析サービスを新設（`backend/`。`POST /analyze` は `AnalysisResult` 互換の固定JSONを返す土台のみ）
+- [x] Next.js の Route Handler からPython APIを呼び出すBFF構成にする（`PYTHON_ANALYSIS_API_URL` で切り替え、未設定/失敗時はダミーデータにフォールバック）
+- [ ] 収集済みWebデータから以下を計算
   - 共起語抽出・ランキング
   - 文脈分類（比較検討 / 導入事例 / サポート・不満 等）とセンチメント分析
   - AI Overview等での掲載順位・言及有無の集計
   - 改善提案のルールベース生成（将来的にはLLM併用も検討）
-- Next.js の Route Handler からPython APIを呼び出すBFF構成にする
 
-目安: 4〜6週間
+目安: 4〜6週間（土台部分は完了、実データ分析ロジックはPhase 3のデータ収集基盤と並行して着手）
 
 ## Phase 5 — 永続化（PostgreSQL）
 
@@ -69,6 +69,6 @@
 | 1 | APIルート雛形（固定JSON） | 完了 |
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
 | 3 | Common Crawl / DataForSEO連携 | 未着手 |
-| 4 | Python分析API | 未着手 |
+| 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
 | 5 | PostgreSQL永続化 | 未着手 |
 | 6 | プロダクション化 | 未着手 |

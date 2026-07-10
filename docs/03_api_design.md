@@ -1,8 +1,8 @@
 # 03. API設計
 
-## 1. 現状実装（Phase 2）
+## 1. 現状実装（Phase 4: Python分析APIの土台）
 
-### `POST /api/analyze`
+### `POST /api/analyze`（Next.js）
 
 実装: [app/api/analyze/route.ts](../app/api/analyze/route.ts)
 
@@ -14,7 +14,7 @@
 }
 ```
 
-**Response（200 OK・`AnalysisResult` 形状、中身はダミーデータ）**
+**Response（200 OK・`AnalysisResult` 形状）**
 
 ```json
 {
@@ -34,10 +34,14 @@
 ```
 
 - `brandName` が文字列でない、または空文字の場合に400を返す。
-- レスポンスは `app/lib/types.ts` の `AnalysisResult` 型に準拠しており、中身は `app/lib/dummy-data.ts` の `buildDummyAnalysis(brandName)` が生成する固定データ。DataForSEO / Common Crawl / DB接続はまだ行っていない。
-- 処理には約900msの遅延を挟んでいる（Phase 4でPython分析APIを呼び出すようになった際の体感速度に近づけるための暫定措置）。
+- 環境変数 `PYTHON_ANALYSIS_API_URL` が設定されている場合、まずPython分析API（下記2章）の `POST /analyze` を呼び出し、そのレスポンスをそのまま返す。
+- 以下のいずれかに該当する場合は、`app/lib/dummy-data.ts` の `buildDummyAnalysis(brandName)` による固定データにフォールバックする。
+  - `PYTHON_ANALYSIS_API_URL` が未設定
+  - Python API への接続エラー・タイムアウト（3秒）
+  - Python APIが200以外のステータスを返した場合
+  - フォールバック時のみ、約900msの遅延を挟む（Python API呼び出し時の体感速度に近づけるための暫定措置）。
 - サポートするHTTPメソッドはPOSTのみ（GET等は405 Method Not Allowed）。
-- フロントエンド（`app/page.tsx`）はこの `/api/analyze` に `fetch("/api/analyze", { method: "POST", body: JSON.stringify({ brandName }) })` でリクエストし、レスポンスをそのまま `AnalysisResult` として画面に描画する（Phase 1時点であった、フロントとAPIのレスポンス形状の不一致は解消済み）。
+- フロントエンド（`app/page.tsx`）はこの `/api/analyze` に `fetch("/api/analyze", { method: "POST", body: JSON.stringify({ brandName }) })` でリクエストし、レスポンスをそのまま `AnalysisResult` として画面に描画する。Python APIを使うかダミーデータを使うかはNext.js側で吸収されるため、フロント側の実装は変わらない。
 
 ## 2. 将来のAPI設計（Phase 2以降）
 
@@ -171,35 +175,45 @@ Response（200 OK）: 更新後の設定オブジェクトを返す。
 - 想定用途: 分析に使う情報源（`source`）のデフォルト選択、通知先の設定など。
 - 認証未実装のMVP段階ではグローバル設定として扱い、Phase 6のマルチテナント対応時にブランド/ユーザー単位の設定へ拡張する。
 
-### 2.2 Python分析API（別サービス、FastAPI想定）
+### 2.2 Python分析API（`backend/`、FastAPI・実装済みの土台）
 
-Next.jsのRoute Handlerからサーバー間通信（内部ネットワーク or 認証付きHTTP）で呼び出す想定。
+実装: [backend/main.py](../backend/main.py)、起動方法は [backend/README.md](../backend/README.md)。
+
+Next.jsのRoute Handler（`/api/analyze`）からサーバー間通信で呼び出される。ブラウザから直接呼ばれることは想定していない。
 
 | Method | Path | 用途 |
 | --- | --- | --- |
-| POST | `/v1/analyze` | ブランド名（＋必要に応じ収集済みソースID等）を受け取り、共起語・文脈分析・センチメント・改善提案を計算して返す |
-| GET | `/v1/health` | ヘルスチェック |
+| POST | `/analyze` | ブランド名を受け取り、`AnalysisResult`と同じ形状のJSONを返す |
+| GET | `/health` | ヘルスチェック |
 
-**Request例**
+**Request**
 
 ```json
-{ "brand_name": "OpenAI", "max_sources": 200 }
+{ "brandName": "OpenAI" }
 ```
 
-**Response例**
+**Response（200 OK）**
 
 ```json
 {
-  "visibility_score": 78,
-  "total_mentions": 512,
-  "sentiment_breakdown": { "positive": 70, "neutral": 24, "negative": 6 },
-  "cooccurrence_keywords": [{ "keyword": "ChatGPT", "count": 120, "trend": "up" }],
-  "context_analysis": [{ "context": "...", "sentiment": "positive", "example_quote": "..." }],
-  "ai_overview_comparison": [{ "platform": "ChatGPT", "mentioned": true, "rank": 1 }]
+  "brandName": "OpenAI",
+  "summary": { "brandName": "OpenAI", "visibilityScore": 62, "totalMentions": 184, "...": "..." },
+  "cooccurrenceRanking": [{ "keyword": "料金プラン", "count": 42, "trend": "up" }],
+  "contextAnalysis": [{ "context": "比較検討フェーズ", "sentiment": "neutral", "...": "..." }],
+  "aiOverviewComparison": [{ "platform": "ChatGPT", "mentioned": true, "rank": 1, "...": "..." }],
+  "improvements": [{ "title": "比較コンテンツの拡充", "priority": "high", "...": "..." }]
 }
 ```
 
-Next.js側でこのレスポンスをキャメルケース・`AnalysisResult`型へマッピングする変換層を設ける（Python側はsnake_case、フロントはcamelCaseを維持）。
+**Response（400 Bad Request）**
+
+```json
+{ "error": "brandName is required" }
+```
+
+- 現時点では `backend/main.py` の `build_dummy_analysis()` が生成する固定データを返すのみ。Common Crawl / DataForSEO / DB接続は行っていない。
+- レスポンスのフィールド名は `app/lib/types.ts` の `AnalysisResult` 型に合わせて **camelCaseのまま** 実装している（`brandName`, `visibilityScore`, `cooccurrenceRanking` 等）。以前の設計案にあった `/v1/analyze` というパス・snake_caseレスポンス・Next.js側での変換層は、この土台の段階では採用していない（[07_decisions.md](./07_decisions.md) 参照）。実際の分析ロジックを実装する段階でも、この外部インターフェース（パス・フィールド名）は維持する方針。
+- 認証は未実装（社内検証用途のため）。
 
 ### 2.3 データ収集系（内部バッチ、直接ユーザー向けAPIではない）
 
