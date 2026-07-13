@@ -10,19 +10,46 @@ import type { AnalysisResult } from "./types";
 const trendSchema = z.enum(["up", "down", "flat"]);
 const sentimentSchema = z.enum(["positive", "neutral", "negative"]);
 const prioritySchema = z.enum(["high", "medium", "low"]);
-const analysisSourceSchema = z.enum([
-  "python_mock",
-  "nextjs_mock",
-  "real_analysis",
+const sectionStatusSchema = z.enum(["mock", "real"]);
+const documentsSourceSchema = z.enum([
+  "development_sample",
+  "user_provided",
+  "web_fetch",
+  "dataforseo",
+  "common_crawl",
 ]);
 
+const analysisSectionStatusesSchema = z.object({
+  summary: sectionStatusSchema,
+  cooccurrenceRanking: sectionStatusSchema,
+  contextAnalysis: sectionStatusSchema,
+  aiOverviewComparison: sectionStatusSchema,
+  improvements: sectionStatusSchema,
+});
+
+// Pydantic serializes an unset `X | None = None` field as JSON `null`,
+// not as an absent key — so "optional" fields coming from the Python
+// API must accept `null` too, not just `undefined`. `.nullish()`
+// accepts both, and the `.transform` normalizes null back to
+// undefined to match the plain `field?: T` TS type.
+function optionalFromPython<T extends z.ZodTypeAny>(schema: T) {
+  return schema.nullish().transform((value) => value ?? undefined);
+}
+
+const urlFetchResultSchema = z.object({
+  url: z.string(),
+  success: z.boolean(),
+  error: optionalFromPython(z.string()),
+});
+
 const analysisMetaSchema = z.object({
-  source: analysisSourceSchema,
-  isMock: z.boolean(),
+  sections: analysisSectionStatusesSchema,
+  documentsSource: documentsSourceSchema,
   // offset: true accepts both the "Z" suffix (Date#toISOString(), used by
   // the Next.js dummy data) and "+00:00"-style offsets (Python's
   // datetime.isoformat()).
   generatedAt: z.iso.datetime({ offset: true }),
+  urlFetchResults: optionalFromPython(z.array(urlFetchResultSchema)),
 });
 
 const brandSummarySchema = z.object({

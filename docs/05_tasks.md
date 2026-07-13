@@ -83,16 +83,19 @@
 - [x] Python APIが未設定・未起動・エラー時に、Next.js側の固定ダミーデータへフォールバックする仕組み
 - [ ] Python API ⇔ Next.js 間のレスポンス変換層（snake_case → camelCase等）— 現状はPython側もcamelCaseで返すため保留中。実データ分析ロジック導入時に必要性を再検討する
 - [x] `backend/main.py` を `main.py`（ルート） / `models.py`（Pydanticモデル） / `services/mock_analysis.py`（ダミーデータ生成）に分割
-- [x] `AnalysisResult` に開発用メタ情報 `meta`（`source` / `isMock` / `generatedAt`）を追加し、画面にデータの出どころ（「Python API（ダミー）」/「Next.jsフォールバック（ダミー）」）を小さく表示
+- [x] `AnalysisResult` に開発用メタ情報 `meta` を追加し、画面にデータの出どころを小さく表示
 - [x] Next.js側でZodによる `AnalysisResult` スキーマ検証を導入し、Python APIのレスポンスが不正な場合はダミーデータにフォールバック（理由はサーバーログに出力、機密情報は出力しない）
 - [x] FastAPI側の入力検証を整理（`brandName` 必須・trim後空文字拒否・最大200文字・エラー形式を `{"error": "..."}` に統一）
 - [x] backendに最低限のテストを追加（`pytest`: health 200 / analyze 200 / 空文字エラー / レスポンス型が`AnalysisResult`と一致）
 - [x] Next.js側に最低限のテストを追加（`vitest`: Zodスキーマの正常系・異常系、`/api/analyze` のPython成功時パススルー・スキーマ不正時フォールバック・接続失敗時フォールバック）
 - [x] `meta.generatedAt` のZod検証を `z.string()` から `z.iso.datetime({ offset: true })` に強化
+- [x] `meta` をレスポンス全体の1フラグ（`source`/`isMock`）からセクション単位（`meta.sections.{summary,cooccurrenceRanking,contextAnalysis,aiOverviewComparison,improvements}: "mock"|"real"`）に置き換え、画面にも「共起語のみ実計算、その他は開発用データ」のような要約を表示
+- [x] 文章の取得元を示す `meta.documentsSource`（`development_sample` / `user_provided` / `web_fetch` / 将来用の `dataforseo` / `common_crawl`）を追加
 
 ### 4.2 分析ロジック
 
 - [x] 共起語抽出ロジック（形態素解析ライブラリにJanomeを採用。ブランド名前後20文字のウィンドウ + 品詞フィルタ + ストップワードによるシンプルな実装。`backend/services/cooccurrence.py`）
+- [x] URLから本文を取得して共起語解析に渡す最小機能（`backend/services/web_fetcher.py`。`POST /analyze` の `urls` パラメータ、優先順位は `documents` > `urls` > 開発用サンプル文章）
 - [ ] 共起語抽出の精度向上（ウィンドウの重複による過剰カウント、ウィンドウサイズ外の関連語の取りこぼしなど、[07_decisions.md](./07_decisions.md) に記載の既知の制約を改善する）
 - [ ] 形態素解析ライブラリをSudachiPy/MeCab等、より高精度なものに乗り換えるか再検討する
 - [ ] 共起語ランキングのトレンド（up/down/flat）算出ロジック（前回分析との比較。現状は常に`"flat"`）
@@ -100,10 +103,10 @@
 - [ ] センチメント分析ロジック（ルールベース or 軽量モデルの選定）
 - [ ] AI Overview等での掲載順位・言及有無の集計ロジック
 - [ ] 改善提案のルールベース生成ロジック（将来的にはLLM併用も検討）
-- [ ] 各結果に紐づく `analysis_sources` を記録する処理（どの情報源から算出したかのトレース）
-- [ ] `documents` を実際にCommon Crawl等の収集データから供給する導線（現状はAPI呼び出し時に明示的に渡すか、開発用サンプル文章を使うのみ）
-- [ ] フロントに `documents` 入力UIを追加するか検討（現状はAPI経由でのみ指定可能）
-- [ ] `meta` の粒度を見直す（現状は `AnalysisResult` 全体に対して1つの `meta` しかないため、`cooccurrenceRanking` は実計算・`summary`等は固定データ、という状態でも `meta.isMock: false` と表示されてしまう。セクションごとのmeta、またはUI文言の見直しを検討する）
+- [ ] 各結果に紐づく `analysis_sources` を記録する処理（どの情報源から算出したかのトレース。`meta.urlFetchResults` はURL単位の取得成否のみで、キーワード単位のトレースはまだない）
+- [ ] `documents`/`urls` を実際にCommon Crawl / DataForSEOの収集データから自動供給する導線（現状はAPI呼び出し時に明示的に渡すか、URLを個別に指定するか、開発用サンプル文章を使うのみ）
+- [ ] フロントに `documents`/`urls` 入力UIを追加するか検討（現状はAPI経由でのみ指定可能）
+- [ ] `web_fetcher.py` にrobots.txt確認・レート制限・DNS再解決によるTOCTOU対策を追加するか検討（現状は未実装、[03_api_design.md](./03_api_design.md) の「運用上の注意」に明記）
 
 ### 4.3 精度・品質
 

@@ -17,6 +17,7 @@ const PYTHON_API_TIMEOUT_MS = 3000;
 async function fetchFromPythonApi(
   brandName: string,
   documents?: string[],
+  urls?: string[],
 ): Promise<AnalysisResult | null> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return null;
@@ -27,13 +28,17 @@ async function fetchFromPythonApi(
     PYTHON_API_TIMEOUT_MS,
   );
 
+  const requestBody: { brandName: string; documents?: string[]; urls?: string[] } = {
+    brandName,
+  };
+  if (documents) requestBody.documents = documents;
+  if (urls) requestBody.urls = urls;
+
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        documents ? { brandName, documents } : { brandName },
-      ),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
 
@@ -89,14 +94,18 @@ export async function POST(request: Request) {
 
   const trimmedBrandName = brandName.trim();
 
-  // Optional: an array of documents to run the (Python-side) co-occurrence
-  // analysis on. Omitted/invalid -> forwarded as undefined, so the Python
-  // API falls back to its own development sample documents.
+  // Optional: an array of documents, or URLs to fetch, to run the
+  // (Python-side) co-occurrence analysis on. Omitted/invalid -> forwarded
+  // as undefined; the Python API then falls back per its own priority
+  // (documents > urls > development sample documents).
   const documents = Array.isArray(body?.documents)
     ? body.documents.filter((doc: unknown): doc is string => typeof doc === "string")
     : undefined;
+  const urls = Array.isArray(body?.urls)
+    ? body.urls.filter((url: unknown): url is string => typeof url === "string")
+    : undefined;
 
-  const pythonResult = await fetchFromPythonApi(trimmedBrandName, documents);
+  const pythonResult = await fetchFromPythonApi(trimmedBrandName, documents, urls);
   if (pythonResult) {
     return NextResponse.json(pythonResult);
   }

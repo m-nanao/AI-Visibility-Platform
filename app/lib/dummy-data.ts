@@ -9,8 +9,19 @@ export function buildDummyAnalysis(brandName: string): AnalysisResult {
   return {
     brandName,
     meta: {
-      source: "nextjs_mock",
-      isMock: true,
+      // This is the Next.js-side fallback: nothing was actually
+      // computed (not even cooccurrenceRanking), so every section is
+      // "mock". documentsSource has no real meaning here (no
+      // documents were processed at all) — "development_sample" is
+      // used as the closest applicable value.
+      sections: {
+        summary: "mock",
+        cooccurrenceRanking: "mock",
+        contextAnalysis: "mock",
+        aiOverviewComparison: "mock",
+        improvements: "mock",
+      },
+      documentsSource: "development_sample",
       generatedAt: new Date().toISOString(),
     },
     summary: {

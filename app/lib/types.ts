@@ -1,12 +1,43 @@
 export type Trend = "up" | "down" | "flat";
 export type Sentiment = "positive" | "neutral" | "negative";
 export type Priority = "high" | "medium" | "low";
-export type AnalysisSource = "python_mock" | "nextjs_mock" | "real_analysis";
+
+// Whether a given AnalysisResult section was actually computed ("real")
+// or is still fixed placeholder data ("mock"). Tracked per section
+// because, as of the co-occurrence engine, some sections are real
+// while others aren't yet — a single top-level isMock flag can't
+// represent that.
+export type SectionStatus = "mock" | "real";
+
+export interface AnalysisSectionStatuses {
+  summary: SectionStatus;
+  cooccurrenceRanking: SectionStatus;
+  contextAnalysis: SectionStatus;
+  aiOverviewComparison: SectionStatus;
+  improvements: SectionStatus;
+}
+
+// Where the text corpus fed into the (co-occurrence) analysis came
+// from. dataforseo/common_crawl are reserved for future data sources.
+export type DocumentsSource =
+  | "development_sample"
+  | "user_provided"
+  | "web_fetch"
+  | "dataforseo"
+  | "common_crawl";
+
+export interface UrlFetchResult {
+  url: string;
+  success: boolean;
+  error?: string;
+}
 
 export interface AnalysisMeta {
-  source: AnalysisSource;
-  isMock: boolean;
+  sections: AnalysisSectionStatuses;
+  documentsSource: DocumentsSource;
   generatedAt: string;
+  // Present only when documentsSource is "web_fetch".
+  urlFetchResults?: UrlFetchResult[];
 }
 
 export interface BrandSummary {

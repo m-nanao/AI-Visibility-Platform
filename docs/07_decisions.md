@@ -262,3 +262,89 @@ Python API は別プロセス・将来的には別リポジトリになり得る
 - これらは意図的な単純化であり、将来の改善候補として [05_tasks.md](./05_tasks.md) に記載する。
 
 **状態**: 確定（MVP時点の実装。Phase 4で継続改善）
+
+---
+
+## 2026-07-14 — `meta` をレスポンス全体の1フラグから、セクション単位の状態に置き換える
+
+**決定**
+
+`AnalysisResult.meta` から `source`（`python_mock`/`nextjs_mock`/`real_analysis`）と `isMock`（boolean）を廃止し、代わりに `meta.sections`（`summary`/`cooccurrenceRanking`/`contextAnalysis`/`aiOverviewComparison`/`improvements` それぞれについて `"mock"` か `"real"`）と、文章の取得元を示す `meta.documentsSource`（`development_sample`/`user_provided`/`web_fetch`/`dataforseo`/`common_crawl`）に分ける。
+
+**理由**
+
+共起語ランキング(`cooccurrenceRanking`)のみが実計算になり、他の4セクションは固定データのままという状態になった時点で、レスポンス全体に対する1つの `isMock: false` という表現は実態と食い違うようになった（[05_tasks.md](./05_tasks.md) に記録していた「meta粒度の見直し」課題）。`false` だけを見た利用者が「もう全部本物のデータだ」と誤解しかねないため、どのセクションが実計算でどのセクションがまだダミーかを明示できる形に変更した。
+
+また「データがどこで生成されたか」（`source`: Python側かNext.js側か）と「文章の取得元」（今回追加した `documentsSource`: サンプル/ユーザー入力/URL取得/将来のDataForSEO・Common Crawl）は本来別の軸の情報であり、1つの `source` フィールドに混在させると将来データソースが増えたときに破綻すると判断し、分離した。
+
+**影響**
+
+- `app/lib/types.ts` / `app/lib/analysis-result-schema.ts` / `backend/models.py` の3箇所を同時に変更（破壊的変更。MVP段階のため互換性維持は行わない）。
+- `app/lib/meta-label.ts` の `getSourceLabel()` を `getSectionStatusSummary()` に置き換え、画面表示も「Python API（ダミー）」→「共起語のみ実計算、その他は開発用データ」のような文言に変更した。
+- Next.js側の完全フォールバック時（Python API不通・スキーマ不一致）は全セクション `"mock"` になる。この場合 `documentsSource` は本来意味を持たないが、値としては便宜上 `"development_sample"` を使うことにした（詳細は `app/lib/dummy-data.ts` のコメント参照）。
+
+**状態**: 確定
+
+---
+
+## 2026-07-14 — URL本文取得は `httpx` + `BeautifulSoup` を使う
+
+**決定**
+
+`backend/services/web_fetcher.py` のHTTP取得には `httpx`、HTML本文抽出には `BeautifulSoup`（`html.parser`バックエンド、`lxml`等の追加Cライブラリなし）を採用する。
+
+**理由**
+
+- `httpx` はテスト用（`requirements-dev.txt`経由でFastAPIのTestClientが利用）としてすでに依存関係にあり、タイムアウト・リダイレクト制御などのAPIが明快なため、本番コードでも流用する（新規に`requests`等を追加しない）。
+- `BeautifulSoup` は `<script>`/`<style>`/`<nav>`/`<footer>`等の不要要素の除去とテキスト抽出が数行で書け、MVPの「まず単純な実装でよい」という方針に合う。`html.parser`はPython標準ライブラリのみに依存するため、`lxml`のようなCライブラリのビルド・インストールを避けられる。
+
+**影響**
+
+- `backend/requirements.txt` に `httpx` と `beautifulsoup4` を追加（`requirements-dev.txt` 側の重複した `httpx` 指定は削除し、`requirements.txt` 経由で解決するようにした）。
+- 除外するタグの一覧（`EXCLUDED_TAGS`）はコード上の定数として管理しており、今後除外対象を増やす場合はここを変更するだけでよい。
+
+**状態**: 確定
+
+---
+
+## 2026-07-14 — SSRF対策は「スキーム制限＋名前解決結果のIPチェック＋リダイレクト無効化」に留める
+
+**決定**
+
+`urls` から本文を取得する前に、以下の3点のみをチェックする。
+
+1. URLのスキームが `http`/`https` であること（`file://` 等を拒否）。
+2. ホスト名を名前解決し、得られたすべてのIPアドレスがループバック・プライベート・リンクローカル（クラウドのメタデータエンドポイント`169.254.169.254`を含む）・予約済み・マルチキャスト・未指定のいずれにも該当しないこと（Pythonの `ipaddress` モジュールで判定）。
+3. 取得時にリダイレクトを追跡しない（`httpx.get(..., follow_redirects=False)`）。
+
+DNSリバインディング（安全性チェック時と実際のリクエスト時で名前解決結果が変わる, TOCTOU）への対策や、アプリケーションレベルのファイアウォール、許可ドメインのホワイトリスト化などは行わない。
+
+**理由**
+
+MVPとして「明らかな内部アドレスへのアクセスを防ぐ」という最低限のSSRF対策を、追加の依存関係やネットワーク構成の変更なしに実現することを優先した。ホスト名の文字列だけを見るチェック（例: `hostname == "localhost"` のみ）ではDNSを使ったバイパス（任意のドメイン名が内部IPを指すようにDNSレコードを設定する等）を防げないため、必ず名前解決した上でIPアドレスを検査する方式にした。一方、TOCTOU完全対策（チェックと同一のコネクションで名前解決結果を固定する等）は実装コストに対して現時点の利用シーン（少数の開発者が動作確認のために使う）に見合わないと判断した。
+
+**影響**
+
+- `backend/services/web_fetcher.py` の `_is_safe_url()` がこのロジックを担う。テスト（`backend/tests/test_web_fetcher.py`）で localhost / 127.0.0.1 / ::1 / プライベートIP / リンクローカル / file・ftpスキームを拒否することを確認済み。
+- 本番運用でより厳格な対策（許可ドメインのホワイトリスト化、専用のプロキシ経由での取得等）が必要になった場合は、[05_tasks.md](./05_tasks.md) に追記して再検討する。
+
+**状態**: 確定（MVP時点の対策。本番運用前に再評価が必要）
+
+---
+
+## 2026-07-14 — robots.txt確認・利用規約順守・アクセス負荷対策は実装せず、運用上の注意として文書化するに留める
+
+**決定**
+
+`services/web_fetcher.py` は robots.txt の確認、対象サイトの利用規約の順守判定、同一ドメインへのアクセス頻度制限（レート制限・間隔調整）のいずれも実装しない。代わりに、これらが実装されていないことと、利用者が負うべき責任を [03_api_design.md](./03_api_design.md) と `backend/README.md` に明記する。
+
+**理由**
+
+これらを正しく実装するには、robots.txtのパース・キャッシュ、サイトごとのクロール間隔管理など、MVPの「少数の公開Webページから本文を取得する最小機能」というスコープを超える作業が必要になる。まずは `MAX_URLS=10` という上限でアクセス量そのものを抑えつつ、機能を成立させることを優先し、本格的な配慮が必要になった段階（実データ収集をバッチ化するPhase 3・4）で改めて設計する。
+
+**影響**
+
+- ドキュメントに明記することで、「対応済み」であるかのような誤解を防ぐ。
+- [05_tasks.md](./05_tasks.md) に、robots.txt確認・レート制限を将来のタスクとして記録した。
+
+**状態**: 確定（MVP時点の割り切り。本番運用前に必須で再検討する）

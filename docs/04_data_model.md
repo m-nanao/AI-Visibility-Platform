@@ -8,12 +8,40 @@
 type Trend = "up" | "down" | "flat";
 type Sentiment = "positive" | "neutral" | "negative";
 type Priority = "high" | "medium" | "low";
-type AnalysisSource = "python_mock" | "nextjs_mock" | "real_analysis";
+
+// "real" if that section was actually computed, "mock" if it's still
+// fixed placeholder data. Tracked per section, not as one flag for
+// the whole response.
+type SectionStatus = "mock" | "real";
+
+interface AnalysisSectionStatuses {
+  summary: SectionStatus;
+  cooccurrenceRanking: SectionStatus;
+  contextAnalysis: SectionStatus;
+  aiOverviewComparison: SectionStatus;
+  improvements: SectionStatus;
+}
+
+// Where the text corpus fed into the co-occurrence analysis came from.
+// dataforseo/common_crawl are reserved for future data sources.
+type DocumentsSource =
+  | "development_sample"
+  | "user_provided"
+  | "web_fetch"
+  | "dataforseo"
+  | "common_crawl";
+
+interface UrlFetchResult {
+  url: string;
+  success: boolean;
+  error?: string;
+}
 
 interface AnalysisMeta {
-  source: AnalysisSource;
-  isMock: boolean;
+  sections: AnalysisSectionStatuses;
+  documentsSource: DocumentsSource;
   generatedAt: string;
+  urlFetchResults?: UrlFetchResult[]; // present only when documentsSource is "web_fetch"
 }
 
 interface BrandSummary {
@@ -62,7 +90,7 @@ interface AnalysisResult {
 }
 ```
 
-`meta` はデータの出どころを示す開発用メタ情報（[03_api_design.md](./03_api_design.md) の「`meta`フィールド」参照）。`/api/analyze`（[route.ts](../app/api/analyze/route.ts)）は、環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）の `POST /analyze` を呼び出してその結果を返し（`meta.source: "python_mock"`）、未設定・失敗時は [dummy-data.ts](../app/lib/dummy-data.ts) の固定値にフォールバックする（`meta.source: "nextjs_mock"`）。Python側のレスポンスは [analysis-result-schema.ts](../app/lib/analysis-result-schema.ts) のZodスキーマで検証してから使用する。
+`meta` はデータの出どころを示す開発用メタ情報（[03_api_design.md](./03_api_design.md) の「`meta`フィールド」参照）。`/api/analyze`（[route.ts](../app/api/analyze/route.ts)）は、環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）の `POST /analyze` を呼び出してその結果を返し（`meta.sections.cooccurrenceRanking: "real"`）、未設定・失敗時は [dummy-data.ts](../app/lib/dummy-data.ts) の固定値にフォールバックする（全セクション `"mock"`）。Python側のレスポンスは [analysis-result-schema.ts](../app/lib/analysis-result-schema.ts) のZodスキーマで検証してから使用する。
 
 ## 2. 将来のPostgreSQLスキーマ案（Phase 5）
 

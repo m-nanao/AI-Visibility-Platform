@@ -12,15 +12,50 @@ from pydantic import BaseModel
 Trend = Literal["up", "down", "flat"]
 Sentiment = Literal["positive", "neutral", "negative"]
 Priority = Literal["high", "medium", "low"]
-AnalysisSource = Literal["python_mock", "nextjs_mock", "real_analysis"]
+
+# Whether a given AnalysisResult section was actually computed ("real")
+# or is still fixed placeholder data ("mock"). Tracked per section —
+# see docs/07_decisions.md for why a single top-level isMock flag was
+# replaced with this.
+SectionStatus = Literal["mock", "real"]
+
+# Where the text corpus fed into the (co-occurrence) analysis came
+# from. dataforseo/common_crawl are reserved for future data sources.
+DocumentsSource = Literal[
+    "development_sample", "user_provided", "web_fetch", "dataforseo", "common_crawl"
+]
 
 MAX_BRAND_NAME_LENGTH = 200
 
+# documents[] input limits (requirement: count / per-item / total).
+MAX_DOCUMENTS_COUNT = 50
+MAX_DOCUMENT_LENGTH = 5000
+MAX_TOTAL_DOCUMENTS_LENGTH = 50_000
+
+# urls[] input limit.
+MAX_URLS = 10
+
+
+class AnalysisSectionStatuses(BaseModel):
+    summary: SectionStatus
+    cooccurrenceRanking: SectionStatus
+    contextAnalysis: SectionStatus
+    aiOverviewComparison: SectionStatus
+    improvements: SectionStatus
+
+
+class UrlFetchResult(BaseModel):
+    url: str
+    success: bool
+    error: str | None = None
+
 
 class AnalysisMeta(BaseModel):
-    source: AnalysisSource
-    isMock: bool
+    sections: AnalysisSectionStatuses
+    documentsSource: DocumentsSource
     generatedAt: str
+    # Present only when documentsSource is "web_fetch".
+    urlFetchResults: list[UrlFetchResult] | None = None
 
 
 class SentimentBreakdown(BaseModel):
@@ -76,10 +111,11 @@ class AnalysisResult(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     brandName: str | None = None
-    # Omitted (None) -> development sample documents are used instead.
-    # An explicit [] means "analyze zero documents" (yields an empty
-    # cooccurrenceRanking, not an error).
+    # Priority when multiple are given: documents > urls > development
+    # sample. An explicit [] for documents means "analyze zero
+    # documents" (yields an empty cooccurrenceRanking, not an error).
     documents: list[str] | None = None
+    urls: list[str] | None = None
 
 
 class ErrorResponse(BaseModel):

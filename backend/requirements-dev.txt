@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest>=8.0,<9.0
-httpx>=0.27,<1.0
+# httpx is also a production dependency now (services/web_fetcher.py),
+# but kept implied via requirements.txt rather than duplicated here.

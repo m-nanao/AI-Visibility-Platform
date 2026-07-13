@@ -11,6 +11,7 @@ from models import (
     AIOverviewComparisonItem,
     AnalysisMeta,
     AnalysisResult,
+    AnalysisSectionStatuses,
     BrandSummary,
     ContextAnalysisItem,
     CooccurrenceKeyword,
@@ -20,11 +21,24 @@ from models import (
 
 
 def build_dummy_analysis(brand_name: str) -> AnalysisResult:
+    """Builds an AnalysisResult with every section marked "mock".
+
+    Callers (main.py) that go on to compute cooccurrenceRanking for
+    real are expected to overwrite `result.cooccurrenceRanking` and
+    update `result.meta` (sections.cooccurrenceRanking, documentsSource,
+    generatedAt) accordingly.
+    """
     return AnalysisResult(
         brandName=brand_name,
         meta=AnalysisMeta(
-            source="python_mock",
-            isMock=True,
+            sections=AnalysisSectionStatuses(
+                summary="mock",
+                cooccurrenceRanking="mock",
+                contextAnalysis="mock",
+                aiOverviewComparison="mock",
+                improvements="mock",
+            ),
+            documentsSource="development_sample",
             generatedAt=datetime.now(timezone.utc).isoformat(),
         ),
         summary=BrandSummary(

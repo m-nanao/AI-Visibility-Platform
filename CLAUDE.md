@@ -23,8 +23,8 @@
 - `app/lib/types.ts` / `app/lib/dummy-data.ts`: 表示用の型とダミーデータ
 - `app/components/sections/*`: 5セクション（サマリー / 共起語ランキング / 文脈分析 / AI Overview比較 / 改善提案）
 - `app/api/analyze/route.ts`: 環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）を呼び出し、レスポンスを [app/lib/analysis-result-schema.ts](app/lib/analysis-result-schema.ts) のZodスキーマで検証してから返す。未設定・失敗・検証エラー時は固定ダミーデータにフォールバックする（理由をサーバーログに出力、機密情報は出さない）
-- `AnalysisResult` には開発用メタ情報 `meta`（`source` / `isMock` / `generatedAt`）を含む。画面にも出どころ（「Python API（ダミー）」/「Next.jsフォールバック（ダミー）」）を小さく表示する（[app/lib/meta-label.ts](app/lib/meta-label.ts)）
-- `backend/`: FastAPI製の分析API。`main.py`（ルート）/ `models.py`（Pydanticモデル）/ `services/mock_analysis.py`（ダミーデータ生成）/ `services/cooccurrence.py`（共起語抽出の実計算、Janome使用）/ `services/sample_documents.py`（開発用サンプル文章）に分割済み。`POST /analyze` は `documents`（任意）を受け取り、`cooccurrenceRanking` はそこから実際に計算する（省略時は開発用サンプル文章を使用）。`summary` 等の他セクションはまだ固定データ、Common Crawl / DataForSEO / DB接続もまだ（`meta.source: "real_analysis"`, `meta.isMock: false`）。起動方法は [backend/README.md](backend/README.md)
+- `AnalysisResult` には開発用メタ情報 `meta` を含む。`meta.sections`（`summary`/`cooccurrenceRanking`/`contextAnalysis`/`aiOverviewComparison`/`improvements` それぞれ `"mock"`/`"real"`）でセクション単位の実データ/ダミー状態を、`meta.documentsSource`（`development_sample`/`user_provided`/`web_fetch`/将来用の`dataforseo`/`common_crawl`）で文章の取得元を表す。画面にも「共起語のみ実計算、その他は開発用データ」のような要約を小さく表示する（[app/lib/meta-label.ts](app/lib/meta-label.ts)）
+- `backend/`: FastAPI製の分析API。`main.py`（ルート）/ `models.py`（Pydanticモデル）/ `services/mock_analysis.py`（ダミーデータ生成）/ `services/cooccurrence.py`（共起語抽出の実計算、Janome使用）/ `services/sample_documents.py`（開発用サンプル文章）/ `services/web_fetcher.py`（URLから本文取得、SSRF対策込み）に分割済み。`POST /analyze` は `documents` > `urls` > 開発用サンプル文章の優先順位で入力を受け取り、`cooccurrenceRanking` はそこから実際に計算する。`summary` 等の他セクションはまだ固定データ、Common Crawl / DataForSEO / DB接続もまだ。起動方法は [backend/README.md](backend/README.md)
 
 ## 開発環境の注意点
 
