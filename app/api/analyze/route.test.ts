@@ -73,6 +73,38 @@ describe("POST /api/analyze", () => {
     expect(data.meta.source).toBe("python_mock");
   });
 
+  it("forwards documents to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(
+      makeRequest({ brandName: "OpenAI", documents: ["文章1", "文章2"] }),
+    );
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.documents).toEqual(["文章1", "文章2"]);
+  });
+
+  it("omits documents from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.documents).toBeUndefined();
+  });
+
   it("falls back to dummy data when the Python API response fails schema validation", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(

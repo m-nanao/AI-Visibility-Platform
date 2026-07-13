@@ -16,6 +16,7 @@ const PYTHON_API_TIMEOUT_MS = 3000;
  */
 async function fetchFromPythonApi(
   brandName: string,
+  documents?: string[],
 ): Promise<AnalysisResult | null> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return null;
@@ -30,7 +31,9 @@ async function fetchFromPythonApi(
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brandName }),
+      body: JSON.stringify(
+        documents ? { brandName, documents } : { brandName },
+      ),
       signal: controller.signal,
     });
 
@@ -86,7 +89,14 @@ export async function POST(request: Request) {
 
   const trimmedBrandName = brandName.trim();
 
-  const pythonResult = await fetchFromPythonApi(trimmedBrandName);
+  // Optional: an array of documents to run the (Python-side) co-occurrence
+  // analysis on. Omitted/invalid -> forwarded as undefined, so the Python
+  // API falls back to its own development sample documents.
+  const documents = Array.isArray(body?.documents)
+    ? body.documents.filter((doc: unknown): doc is string => typeof doc === "string")
+    : undefined;
+
+  const pythonResult = await fetchFromPythonApi(trimmedBrandName, documents);
   if (pythonResult) {
     return NextResponse.json(pythonResult);
   }

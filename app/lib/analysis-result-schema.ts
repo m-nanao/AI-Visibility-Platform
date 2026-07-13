@@ -19,7 +19,10 @@ const analysisSourceSchema = z.enum([
 const analysisMetaSchema = z.object({
   source: analysisSourceSchema,
   isMock: z.boolean(),
-  generatedAt: z.string(),
+  // offset: true accepts both the "Z" suffix (Date#toISOString(), used by
+  // the Next.js dummy data) and "+00:00"-style offsets (Python's
+  // datetime.isoformat()).
+  generatedAt: z.iso.datetime({ offset: true }),
 });
 
 const brandSummarySchema = z.object({

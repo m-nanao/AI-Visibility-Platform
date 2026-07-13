@@ -76,6 +76,10 @@ class AnalysisResult(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     brandName: str | None = None
+    # Omitted (None) -> development sample documents are used instead.
+    # An explicit [] means "analyze zero documents" (yields an empty
+    # cooccurrenceRanking, not an error).
+    documents: list[str] | None = None
 
 
 class ErrorResponse(BaseModel):
