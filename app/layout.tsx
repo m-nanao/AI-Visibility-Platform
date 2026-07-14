@@ -15,6 +15,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "LLMO / AI Visibility Platform",
   description: "ブランドのAIサービス上での認知度を分析するプラットフォーム",
+  // This deployment is currently always the confirm-with-requester staging
+  // environment (see docs/09_deployment.md) — revisit when a real
+  // production domain exists.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({

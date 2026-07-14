@@ -18,6 +18,7 @@
 - Python API側のURL本文取得（`services/web_fetcher.py`、SSRF対策込み、同時実行数3で並列取得）
 - `meta.sections` によるセクション単位の実データ/ダミー/計算不能状態の可視化、`meta.documentsSource` による文章取得元の表示
 - 依頼者確認用のVercel/Render公開（[09_deployment.md](./09_deployment.md)参照）
+- ステージング環境の最低限保護: 簡易パスコードガード（[proxy.ts](../proxy.ts)、`STAGING_ACCESS_CODE`未設定時はローカル開発に影響なし）と`noindex`設定（[app/layout.tsx](../app/layout.tsx)の`metadata.robots`＋`X-Robots-Tag`ヘッダー）
 
 ## 一部実データの機能
 
@@ -52,14 +53,17 @@
 
 ## 確認用環境の制約
 
-- **本番運用ではない**。認証・アクセス制限・レート制限・監視はない（URLを知っていれば誰でも操作できる）。共有先は必要な相手に限定し、機密情報・個人情報・本番データは入力しないよう依頼者にも伝える。
+- **本番運用ではない**。数ヶ月程度の依頼者確認用として運用する想定（[09_deployment.md](./09_deployment.md)参照）。
+- **簡易パスコードガードあり（`STAGING_ACCESS_CODE`）だが、正式な認証ではない**。ブルートフォース対策・アカウント管理はない。誤アクセス防止・検索露出低減が目的（[09_deployment.md](./09_deployment.md)の「簡易パスコードガード」参照）。レート制限・利用量監視は引き続きない。
+- 検索エンジンには`noindex`設定済み（[09_deployment.md](./09_deployment.md)の「noindexの設定」参照）。
+- 共有先は必要な相手に限定し、機密情報・個人情報・本番データは入力しないよう依頼者にも伝える。
 - Render無料プランのため**コールドスタートがある**（スリープからの復帰に約20〜25秒。この間、Python APIが間に合わずダミーデータにフォールバックすることがある。障害ではなく既知の仕様）。詳細は [09_deployment.md](./09_deployment.md) の「コールドスタートに関する注意」参照。
 - 分析結果は永続化されない（PostgreSQL未接続）。
 - URL共有時は[09_deployment.md](./09_deployment.md)の「依頼者への共有文テンプレート」を使う。
 
 ## 既知の課題
 
-- 確認終了後、公開を止めるか認証を追加するかの判断がまだ済んでいない（[05_tasks.md](./05_tasks.md) Phase 4.5）。
+- 簡易パスコードガードは導入したが、あくまで誤アクセス防止用。確認終了後、公開を止めるか正式な認証を追加するかの判断はまだ済んでいない（[05_tasks.md](./05_tasks.md) Phase 4.5）。
 - 共起語抽出は簡易な実装であり、ウィンドウ重複によるカウント過多・ウィンドウ外の関連語の取りこぼしがある（[07_decisions.md](./07_decisions.md)に既知の制約として記録済み）。
 - `documents`（文章を直接渡す入力）にはまだ画面からの入力UIがない（`urls`のみUIがある）。
 - URL取得はrobots.txt確認・レート制限・DNS rebinding対策が未実装（運用者の責任として文書化のみ、[backend/README.md](../backend/README.md)参照）。
@@ -69,7 +73,7 @@
 
 優先度の目安。詳細・粒度は [05_tasks.md](./05_tasks.md) を参照。
 
-1. 確認用公開環境の扱いを決める（止める／認証を足す）
+1. 確認用公開環境の今後を決める（止める／簡易パスコードのままにする／正式な認証を足す）
 2. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
 3. 共起語抽出の精度向上、またはPhase 4.2の他ロジック（文脈分類・センチメント分析等）への着手
 4. Phase 3（Common Crawl / DataForSEO）の調査開始
