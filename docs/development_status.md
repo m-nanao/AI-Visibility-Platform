@@ -39,7 +39,7 @@
 - PostgreSQL（Phase 5、未着手。分析結果は保存されず、画面をリロードすると消える）
 - 認証・ユーザー管理（Phase 6、未着手）
 - 課金・プラン管理（非スコープ）
-- CI/CDによる自動デプロイ（CIの最小構成は追加済み、[10_ai_development_workflow.md](./10_ai_development_workflow.md)参照。デプロイ自動化はまだ）
+- CD・自動レビュー・自動マージ（CIの最小構成（lint/test/build・pytest）は追加済みだが、CD（Vercel/Renderへの自動デプロイ）・AIレビューの自動化・人間承認後の自動マージはいずれも未導入。詳細は[10_ai_development_workflow.md](./10_ai_development_workflow.md)参照）
 
 ## 公開URL（確認用環境）
 
@@ -60,6 +60,7 @@
 - 共起語抽出は簡易な実装であり、ウィンドウ重複によるカウント過多・ウィンドウ外の関連語の取りこぼしがある（[07_decisions.md](./07_decisions.md)に既知の制約として記録済み）。
 - `documents`（文章を直接渡す入力）にはまだ画面からの入力UIがない（`urls`のみUIがある）。
 - URL取得はrobots.txt確認・レート制限・DNS rebinding対策が未実装（運用者の責任として文書化のみ、[backend/README.md](../backend/README.md)参照）。
+- ~~GitHub ActionsでNode.js 20 deprecation warning~~ → 調査済み・対応済み（2026-07-15）。GitHubがActions runner上のNode.js 20ランタイムを段階的に廃止しており（2026-06-16よりNode24がデフォルト、2026-09-16に完全廃止予定）、`actions/checkout`・`actions/setup-node`・`actions/setup-python`がNode.js 20ランタイムで動いていることに起因する警告だった。`.github/workflows/ci.yml`の各actionを、Node24対応が確認できるバージョン（`actions/checkout@v5`、`actions/setup-node@v5`、`actions/setup-python@v6`）へ更新して解消した。**アプリのビルド/テストに使う`node-version: "20"`（Next.js 16系の要件）とは無関係**であり、これは変更していない。
 
 ## 次にやるべき候補
 

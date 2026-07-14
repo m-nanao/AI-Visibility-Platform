@@ -188,6 +188,8 @@
   - [x] [review_template.md](./review_template.md)（ChatGPTレビュー結果の雛形）
   - [x] [development_status.md](./development_status.md)（現状サマリー、別チャット・将来のAIが素早く把握するため）
   - [x] `CLAUDE.md` に半自動開発フロー向けの注意事項を追記
+  - [x] `docs/10_ai_development_workflow.md`の「CI/PR/AIレビューを介した自動化はまだ導入していない」という表現が、実際にはCIのみ導入済みという状態と矛盾していたレビュー指摘を修正（2026-07-15）
+  - [x] GitHub Actions（`.github/workflows/ci.yml`）のNode.js 20 deprecation warningを調査・解消。`actions/checkout@v5`・`actions/setup-node@v5`・`actions/setup-python@v6`へ更新（詳細は[development_status.md](./development_status.md)の「既知の課題」参照。アプリ側の`node-version: "20"`は変更していない）
 - [ ] GitHub Issue起点の完全自動フロー（Issue→実装→PR→CI→AIレビュー→人間承認→マージ）は未着手。現時点では上記の半自動フロー（人間がClaude Codeへタスクを手渡しする形）が実運用
 
 ## 横断的なタスク（随時）

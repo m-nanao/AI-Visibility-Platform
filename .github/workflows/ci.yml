@@ -10,9 +10,15 @@ jobs:
     name: Frontend (lint / test / build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
+          # This is the Node.js version our app builds/runs under (matches
+          # Next.js 16's >=20.9 requirement, see CLAUDE.md) — unrelated to
+          # which Node.js runtime the actions below execute their own JS
+          # in. Do not change this to resolve the "Node.js 20 actions are
+          # deprecated" runner warning; that warning is fixed by bumping
+          # the action versions themselves (see docs/development_status.md).
           node-version: "20"
           cache: "npm"
       - run: npm ci
@@ -27,8 +33,8 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
