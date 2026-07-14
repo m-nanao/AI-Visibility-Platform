@@ -2,6 +2,8 @@
 
 LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）は入力文章から実際に計算するが、`summary` / `contextAnalysis` / `aiOverviewComparison` / `improvements` はまだ固定データ。Common Crawl / DataForSEO / DBにはまだ接続していない。
 
+> **確認用環境として一時公開する場合の注意**: 本番運用を目的とした構成ではありません。認証・レート制限はなく、CORSもNext.js経由の呼び出しのみを前提に未設定です。公開手順は [../docs/09_deployment.md](../docs/09_deployment.md) を参照してください。
+
 詳細な設計・ロードマップは [../docs/03_api_design.md](../docs/03_api_design.md)、[../docs/06_architecture.md](../docs/06_architecture.md) を参照。
 
 ## ファイル構成
@@ -13,6 +15,7 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/sample_documents.py` — `documents`/`urls` 未指定時に使う開発用サンプル文章
 - `services/web_fetcher.py` — URLからHTMLを取得し本文テキストを抽出する処理（SSRF対策込み）
 - `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_web_fetcher.py` — pytestによる最低限のテスト
+- `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
 

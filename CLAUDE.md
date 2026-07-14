@@ -16,6 +16,7 @@
 - [docs/06_architecture.md](docs/06_architecture.md) — システム構成図・コンポーネント一覧
 - [docs/07_decisions.md](docs/07_decisions.md) — 設計判断ログ（なぜそうしたかの記録）
 - [docs/08_screen_design.md](docs/08_screen_design.md) — 画面設計
+- [docs/09_deployment.md](docs/09_deployment.md) — 公開手順（依頼者確認用のVercel/Render公開）
 
 ## 現状（Phase 0-2, Phase 4の土台まで完了）
 
@@ -26,6 +27,7 @@
 - `AnalysisResult` には開発用メタ情報 `meta` を含む。`meta.sections`（`summary`/`cooccurrenceRanking`/`contextAnalysis`/`aiOverviewComparison`/`improvements` それぞれ `"mock"`/`"real"`/`"unavailable"`）でセクション単位の実データ/ダミー/計算不能状態を、`meta.documentsSource`（`development_sample`/`user_provided`/`web_fetch`/将来用の`dataforseo`/`common_crawl`）で文章の取得元を表す。画面にも「共起語のみ実計算、その他は開発用データ」のような要約を小さく表示する（[app/lib/meta-label.ts](app/lib/meta-label.ts)）。`urls`が全件取得失敗した場合は`cooccurrenceRanking`が`"unavailable"`になり、「正常計算して0件」とは区別して専用メッセージを表示する
 - `backend/`: FastAPI製の分析API。`main.py`（ルート）/ `models.py`（Pydanticモデル）/ `services/mock_analysis.py`（ダミーデータ生成）/ `services/cooccurrence.py`（共起語抽出の実計算、Janome使用）/ `services/sample_documents.py`（開発用サンプル文章）/ `services/web_fetcher.py`（URLから本文取得、SSRF対策込み、同時実行数3で並列取得）に分割済み。`POST /analyze` は `documents` > `urls` > 開発用サンプル文章の優先順位で入力を受け取り、`cooccurrenceRanking` はそこから実際に計算する。`urls: []`は400エラー、`documents: []`は実データ0件として許可（非対称、理由は[docs/07_decisions.md](docs/07_decisions.md)）。`summary` 等の他セクションはまだ固定データ、Common Crawl / DataForSEO / DB接続もまだ。起動方法は [backend/README.md](backend/README.md)
 - Next.js→PythonのタイムアウトはURL取得を考慮して25秒（`app/api/analyze/route.ts` の `PYTHON_API_TIMEOUT_MS`）
+- 依頼者確認用に、Next.jsをVercel、FastAPIをRenderへ公開可能な状態にしてある（`.env.example`、`backend/render.yaml`、`backend/Procfile`）。本番運用ではなく確認用環境である旨は画面（`app/page.tsx`のバナー）とREADMEに明記済み。手順は [docs/09_deployment.md](docs/09_deployment.md)
 
 ## 開発環境の注意点
 

@@ -91,8 +91,8 @@ export default function BrandInputForm({
         </p>
         {urlErrors.length > 0 && (
           <ul className="mt-2 flex flex-col gap-1 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-950 dark:text-rose-400">
-            {urlErrors.map((message) => (
-              <li key={message}>{message}</li>
+            {urlErrors.map((message, index) => (
+              <li key={index}>{message}</li>
             ))}
           </ul>
         )}

@@ -75,11 +75,27 @@ Wikipedia ─────┤
 Qiita ─────────┘
 ```
 
-## 5. デプロイ構成（想定・Phase 6で確定）
+## 5. デプロイ構成
 
-- Next.js: Vercel等のホスティングを想定
-- Python分析API: 別サービスとしてコンテナデプロイ（Next.jsからは内部ネットワーク経由、または認証付きHTTPで呼び出し）
+### 5.1 確認用環境（実施済み・Phase 4.5）
+
+依頼者が実際にブラウザから操作して確認できるよう、以下の構成で一時的にWeb公開している。認証・PostgreSQL・Common Crawl・DataForSEOは含まない、本番運用ではない構成。手順は [09_deployment.md](./09_deployment.md) を参照。
+
+```
+Browser ──HTTP──► Vercel（Next.js）──サーバーサイドfetch──► Render（FastAPI）
+```
+
+- Next.js: Vercel（Hobbyプラン、無料）
+- Python分析API: Render（Freeプラン、無料。`backend/render.yaml`によるBlueprintデプロイ。`backend/Procfile`によりRailway等の代替サービスにも対応）
+- ブラウザは常にVercel上のNext.jsのみを呼び出し、FastAPIを直接呼ばない（CORS設定は追加していない）
+- PostgreSQLは未接続のため、分析結果は保存されない
+
+### 5.2 本番デプロイ構成（想定・Phase 6で確定）
+
+- Next.js: Vercel等のホスティングを想定（確認用環境から継続）
+- Python分析API: コンテナデプロイ等、より高い可用性を持つ構成への移行を検討（Next.jsからは内部ネットワーク経由、または認証付きHTTPで呼び出し）
 - PostgreSQL: マネージドサービス（Supabase / RDS等）を想定
 - 収集バッチ: スケジューラ（cron / ジョブキュー）による定期実行 + 分析リクエスト時のオンデマンド実行
+- 認証・アクセス制御・レート制限・監視の追加
 
 具体的なサービス選定は未確定であり、Phase 6のタスクとして扱う（[05_tasks.md](./05_tasks.md) 参照）。

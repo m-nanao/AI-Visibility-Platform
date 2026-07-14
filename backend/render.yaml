@@ -1,0 +1,16 @@
+# Render Blueprint（Infrastructure as Code）。
+# Renderのダッシュボードで「New +」→「Blueprint」からこのリポジトリを選ぶと、
+# このファイルの内容でサービスが自動作成される（手動でのビルド/起動コマンド入力が不要になる）。
+# 詳細な公開手順は docs/09_deployment.md を参照。
+services:
+  - type: web
+    name: llmo-analysis-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9

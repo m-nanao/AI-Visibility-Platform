@@ -155,6 +155,16 @@
 
 目安: 2〜3週間
 
+## Phase 4.5 — 依頼者確認用のWeb公開（本番運用ではない）
+
+- [x] NextjsをVercelへ公開可能な状態にする（`.env.example`追加、環境変数`PYTHON_ANALYSIS_API_URL`をVercel側で設定できることを確認）
+- [x] FastAPIをRender/Railwayへ公開可能な状態にする（`backend/render.yaml`・`backend/Procfile`追加、`GET /health`をヘルスチェックに使用）
+- [x] ブラウザからFastAPIを直接呼ばずNext.js経由を維持することを確認し、不要なCORS設定を追加しない（`backend/main.py`にコメントで明記）
+- [x] 確認用環境であることを画面（`app/page.tsx`）とREADMEに明記
+- [x] 公開手順を[09_deployment.md](./09_deployment.md)に記載（Vercel設定・Python API公開・環境変数・動作確認・ロールバック）
+- [ ] 実際にVercel/Renderへデプロイし、公開URLでの動作確認を行う（手作業。[09_deployment.md](./09_deployment.md)参照）
+- [ ] 確認が終わったら公開を止めるか、認証を追加するかを判断する（このままでは誰でもアクセス可能なため）
+
 ## Phase 6 — プロダクション化（MVP後）
 
 - [ ] 認証方式の選定（メール+パスワード / OAuth等）

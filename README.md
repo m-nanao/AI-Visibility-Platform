@@ -4,6 +4,8 @@
 
 要件・ロードマップ・API設計などの詳細は [docs/](docs/01_requirements.md) を、開発時の規約は [CLAUDE.md](CLAUDE.md) を参照してください。Python製の分析API（土台のみ）は [backend/](backend/README.md) にあります。
 
+> **確認用環境として一時公開する場合の注意**: 本番運用・一般公開を目的とした構成ではありません。共起語ランキングのみ実データ計算で、その他のセクションは開発用データです。Common Crawl・DataForSEOとの連携もまだ行っていません。認証やアクセス制限もないため、公開URLを知っていれば誰でも操作できます。公開手順は [docs/09_deployment.md](docs/09_deployment.md) を参照してください。
+
 ---
 
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).

@@ -50,6 +50,12 @@ from services.web_fetcher import fetch_url_texts
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# No CORSMiddleware is added deliberately: only the Next.js Route
+# Handler (app/api/analyze/route.ts, running server-side) calls this
+# API, never the browser directly. Adding a permissive CORS policy
+# here would let arbitrary websites call this API straight from a
+# user's browser, which is unnecessary exposure for no functional
+# benefit. See docs/09_deployment.md for the deployment topology.
 app = FastAPI(title="LLMO Analysis API")
 
 
