@@ -100,11 +100,11 @@
 - [x] 共起語抽出ロジック（形態素解析ライブラリにJanomeを採用。ブランド名前後20文字のウィンドウ + 品詞フィルタ + ストップワードによるシンプルな実装。`backend/services/cooccurrence.py`）
 - [x] URLから本文を取得して共起語解析に渡す最小機能（`backend/services/web_fetcher.py`。`POST /analyze` の `urls` パラメータ、優先順位は `documents` > `urls` > 開発用サンプル文章）
 - [x] URL取得の並列化（`ThreadPoolExecutor`、同時実行数3。1件の失敗が他を止めない）
-- [ ] 共起語抽出の精度向上（ウィンドウの重複による過剰カウント、ウィンドウサイズ外の関連語の取りこぼしなど、[07_decisions.md](./07_decisions.md) に記載の既知の制約を改善する）
+- [ ] 共起語抽出の精度向上（ウィンドウの重複による過剰カウント、ウィンドウサイズ外の関連語の取りこぼしなど、[07_decisions.md](./07_decisions.md) に記載の既知の制約を改善する）※粒度大。着手時は「①ウィンドウ重複によるカウント補正」「②ウィンドウサイズ外の関連語対応」等、[task_template.md](./task_template.md) 1件ずつに分解してから着手する
 - [ ] 形態素解析ライブラリをSudachiPy/MeCab等、より高精度なものに乗り換えるか再検討する
 - [ ] 共起語ランキングのトレンド（up/down/flat）算出ロジック（前回分析との比較。現状は常に`"flat"`）
-- [ ] 文脈分類ロジック（比較検討 / 導入事例 / サポート・不満 等のカテゴリ分け）
-- [ ] センチメント分析ロジック（ルールベース or 軽量モデルの選定）
+- [ ] 文脈分類ロジック（比較検討 / 導入事例 / サポート・不満 等のカテゴリ分け）※粒度大。カテゴリ定義・分類ルール実装・テストの3タスクに分解してから着手する
+- [ ] センチメント分析ロジック（ルールベース or 軽量モデルの選定）※粒度大。まず「方式選定（調査のみ）」を1タスクとして切り出し、実装は選定後に別タスク化する
 - [ ] AI Overview等での掲載順位・言及有無の集計ロジック
 - [ ] 改善提案のルールベース生成ロジック（将来的にはLLM併用も検討）
 - [ ] 各結果に紐づく `analysis_sources` を記録する処理（どの情報源から算出したかのトレース。`meta.urlFetchResults` はURL単位の取得成否のみで、キーワード単位のトレースはまだない）
@@ -162,7 +162,10 @@
 - [x] ブラウザからFastAPIを直接呼ばずNext.js経由を維持することを確認し、不要なCORS設定を追加しない（`backend/main.py`にコメントで明記）
 - [x] 確認用環境であることを画面（`app/page.tsx`）とREADMEに明記
 - [x] 公開手順を[09_deployment.md](./09_deployment.md)に記載（Vercel設定・Python API公開・環境変数・動作確認・ロールバック）
-- [ ] 実際にVercel/Renderへデプロイし、公開URLでの動作確認を行う（手作業。[09_deployment.md](./09_deployment.md)参照）
+- [x] 実際にVercel/Renderへデプロイし、公開URLでの動作確認を行った。ブランド名のみ・URL指定どちらの分析もPython API経由（`cooccurrenceRanking: "real"`）で動作することを確認済み（2026-07-15）
+  - Vercel: <https://ai-visibility-platform-eight.vercel.app/>
+  - Render: <https://llmo-analysis-api.onrender.com/health>
+  - 確認中、Renderのコールドスタート（無料プラン特有）により一時的に全セクションが`"mock"`にフォールバックする事象を実際に観測した。障害ではなく既知の仕様。詳細・切り分け手順は[09_deployment.md](./09_deployment.md)の「コールドスタートに関する注意」に記録済み
 - [ ] 確認が終わったら公開を止めるか、認証を追加するかを判断する（このままでは誰でもアクセス可能なため）
 
 ## Phase 6 — プロダクション化（MVP後）
@@ -174,8 +177,18 @@
 - [ ] 分析完了・スコア変化の通知（メール/Slack等）
 - [ ] 複数ブランド・競合比較ダッシュボード
 - [ ] E2Eテスト整備（主要導線の自動テスト）
-- [ ] CI/CDパイプライン整備（lint・build・testの自動実行）
+- [ ] ~~CI/CDパイプライン整備（lint・build・testの自動実行）~~ → **次の優先タスク候補**。最小構成（`.github/workflows/ci.yml`、frontend: lint/test/build、backend: pytest）を追加済み（2026-07-15、[10_ai_development_workflow.md](./10_ai_development_workflow.md) 参照）。デプロイの自動化（CD）・Vercel/Renderへの自動反映はまだ未着手
 - [ ] 本番デプロイ構成の検討（Vercel + 外部Python API + マネージドPostgreSQL等）
+
+## AI協調開発運用（進行中）
+
+- [x] ChatGPT（設計・レビュー）とClaude Code（実装）による半自動開発フローのドキュメント整備（2026-07-15）
+  - [x] [10_ai_development_workflow.md](./10_ai_development_workflow.md)（役割分担・半自動/完全自動フロー・承認境界）
+  - [x] [task_template.md](./task_template.md)（Claude Codeへ渡すタスクの雛形）
+  - [x] [review_template.md](./review_template.md)（ChatGPTレビュー結果の雛形）
+  - [x] [development_status.md](./development_status.md)（現状サマリー、別チャット・将来のAIが素早く把握するため）
+  - [x] `CLAUDE.md` に半自動開発フロー向けの注意事項を追記
+- [ ] GitHub Issue起点の完全自動フロー（Issue→実装→PR→CI→AIレビュー→人間承認→マージ）は未着手。現時点では上記の半自動フロー（人間がClaude Codeへタスクを手渡しする形）が実運用
 
 ## 横断的なタスク（随時）
 

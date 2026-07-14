@@ -17,6 +17,9 @@
 - [docs/07_decisions.md](docs/07_decisions.md) — 設計判断ログ（なぜそうしたかの記録）
 - [docs/08_screen_design.md](docs/08_screen_design.md) — 画面設計
 - [docs/09_deployment.md](docs/09_deployment.md) — 公開手順（依頼者確認用のVercel/Render公開）
+- [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) — AI協調開発フロー（役割分担・承認境界・修正ループ等）
+- [docs/development_status.md](docs/development_status.md) — 現状サマリー（1ファイルで今の状態を把握する用）
+- [docs/task_template.md](docs/task_template.md) / [docs/review_template.md](docs/review_template.md) — タスク依頼・レビューの雛形
 
 ## 現状（Phase 0-2, Phase 4の土台まで完了）
 
@@ -36,3 +39,40 @@
 - 依存インストール直後に `@tailwindcss/oxide` のネイティブバイナリが見つからないエラーが出ることがある。その場合は `npm i` を再実行すると解決する（npmのoptional dependenciesバグ）。
 - コード変更を検証する際は `npm run lint`・`npm run build`・`npm run test`（vitest）を通すこと。
 - Python側（`backend/`）を動かして確認する場合は `backend/README.md` の手順でFastAPIサーバーを起動し、Next.js起動時に環境変数 `PYTHON_ANALYSIS_API_URL=http://localhost:8000` を設定する。設定しない場合は自動的に固定ダミーデータで動作する。Python側のテストは `backend/` で `pip install -r requirements-dev.txt && pytest`。
+- **Render無料プランのコールドスタートを障害と誤判定しない**。公開確認用のPython API（`https://llmo-analysis-api.onrender.com`）はスリープ復帰に約20〜25秒かかることがあり、この間は`meta.sections`がすべて`"mock"`になる（Python未使用のダミーフォールバック）。これは既知の仕様であり、実装のバグではない（詳細は [docs/09_deployment.md](docs/09_deployment.md) の「コールドスタートに関する注意」参照）。
+
+## AI協調開発フローでの作業ルール
+
+このプロジェクトはユーザー・ChatGPT・Claude Codeが役割分担する半自動開発フローで運用されている。詳細は [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) を参照し、Claude Codeは以下を守ること。
+
+### 作業開始前に読むもの
+
+1. このファイル（`CLAUDE.md`）
+2. [AGENTS.md](AGENTS.md)（このNext.jsバージョン固有の注意）
+3. [docs/development_status.md](docs/development_status.md)（現状サマリー）
+4. 渡されたタスク（[docs/task_template.md](docs/task_template.md)形式）
+5. タスクに関連する設計docs（`docs/01`〜`09`のうち該当するもの）
+
+### 実装時に守ること
+
+- **タスクに書かれていない実装を勝手に追加しない**。「ついでに直したくなる」箇所を見つけても、タスクの対象外なら手を出さず、報告時に「気づいた点」として書き添えるだけにする。
+- **docsと実装が矛盾する場合は、黙って直さずユーザーに報告する**（自分がこれから変更する箇所以外で見つけた矛盾も含む）。
+- **不明点があるときは大規模な推測実装をしない**。仕様・設計判断がタスクの記述だけで確定できない場合は、いったん立ち止まって確認する（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「タスク失敗時の扱い」参照）。
+- **`main`へ直接コミットしない。1タスク1ブランチを原則とする。**（このプロジェクトの過去の履歴には、この原則が導入される前に`main`へ直接コミットした実績があるが、今後はブランチを切って作業する）
+- **`.env`や秘密情報をコミットしない**。`.env.example`のような値を含まないテンプレートのみをコミット対象とする。
+- **環境変数・認証・課金・DB破壊的変更は人間承認必須**（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「人間承認が必須のこと」参照）。承認前に実行しない。
+
+### 実装後に実行する検証コマンド
+
+```bash
+npm run lint
+npm run test
+npm run build
+cd backend && pip install -r requirements-dev.txt && pytest
+```
+
+バックエンドに変更がない場合でも、`backend pytest`は基本的に実行する。環境都合で実行できない場合はその理由を報告する。
+
+### 作業後の報告形式
+
+[docs/task_template.md](docs/task_template.md)の「作業後の報告形式」（`## Implementation Report`）に従う。変更ファイル一覧・検証結果・動作確認内容・未解決の課題・コミット内容を必ず含める。
