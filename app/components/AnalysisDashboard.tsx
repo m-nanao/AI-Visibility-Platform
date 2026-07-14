@@ -15,7 +15,7 @@ export default function AnalysisDashboard({
       <div className="lg:col-span-2">
         <BrandSummarySection summary={result.summary} />
       </div>
-      <CooccurrenceRankingSection items={result.cooccurrenceRanking} />
+      <CooccurrenceRankingSection items={result.cooccurrenceRanking} meta={result.meta} />
       <ContextAnalysisSection items={result.contextAnalysis} />
       <AIOverviewComparisonSection items={result.aiOverviewComparison} />
       <ImprovementSuggestionsSection items={result.improvements} />

@@ -1,3 +1,6 @@
+import threading
+import time
+
 import httpx
 import pytest
 
@@ -118,3 +121,64 @@ def test_fetch_url_texts_rejects_disallowed_url_without_network_call(monkeypatch
 
     assert results[0].success is False
     assert "disallowed address" in results[0].error
+
+
+def test_fetch_url_texts_runs_with_limited_concurrency(monkeypatch):
+    monkeypatch.setattr(
+        web_fetcher.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+
+    lock = threading.Lock()
+    current = 0
+    max_seen = 0
+
+    def fake_get(url, **kwargs):
+        nonlocal current, max_seen
+        with lock:
+            current += 1
+            max_seen = max(max_seen, current)
+        time.sleep(0.05)
+        with lock:
+            current -= 1
+        return httpx.Response(200, text="<p>ok</p>", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(web_fetcher.httpx, "get", fake_get)
+
+    urls = [f"https://example.com/{i}" for i in range(6)]
+    results = fetch_url_texts(urls)
+
+    assert all(r.success for r in results)
+    # Actually ran concurrently (not fully sequential)...
+    assert max_seen > 1
+    # ...but capped at MAX_CONCURRENT_FETCHES, not fully parallel.
+    assert max_seen <= web_fetcher.MAX_CONCURRENT_FETCHES
+
+
+def test_fetch_url_texts_preserves_input_order(monkeypatch):
+    monkeypatch.setattr(
+        web_fetcher.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+
+    def fake_get(url, **kwargs):
+        # The first URL takes the longest, so if results were ordered
+        # by completion time instead of input order, this would catch it.
+        if url.endswith("/0"):
+            time.sleep(0.1)
+        return httpx.Response(
+            200, text=f"<p>{url}</p>", request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(web_fetcher.httpx, "get", fake_get)
+
+    urls = [f"https://example.com/{i}" for i in range(4)]
+    results = fetch_url_texts(urls)
+
+    assert [r.url for r in results] == urls
+
+
+def test_fetch_url_texts_empty_list_does_not_raise():
+    assert fetch_url_texts([]) == []

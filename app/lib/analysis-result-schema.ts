@@ -10,7 +10,7 @@ import type { AnalysisResult } from "./types";
 const trendSchema = z.enum(["up", "down", "flat"]);
 const sentimentSchema = z.enum(["positive", "neutral", "negative"]);
 const prioritySchema = z.enum(["high", "medium", "low"]);
-const sectionStatusSchema = z.enum(["mock", "real"]);
+const sectionStatusSchema = z.enum(["mock", "real", "unavailable"]);
 const documentsSourceSchema = z.enum([
   "development_sample",
   "user_provided",

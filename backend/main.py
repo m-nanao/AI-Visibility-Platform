@@ -35,6 +35,7 @@ from models import (
     AnalysisSectionStatuses,
     AnalyzeRequest,
     DocumentsSource,
+    SectionStatus,
     UrlFetchResult,
 )
 from services.cooccurrence import compute_cooccurrence_ranking
@@ -99,6 +100,12 @@ def analyze(payload: AnalyzeRequest):
 
     url_fetch_results: list[UrlFetchResult] | None = None
     documents_source: DocumentsSource
+    # "real" unless the urls path finds zero usable documents (every
+    # fetch failed) — see the urls branch below. documents:[] is
+    # deliberately *not* treated as unavailable (see docs/07_decisions.md):
+    # it's a valid "analyze zero documents" request, not a failure to
+    # obtain input.
+    cooccurrence_status: SectionStatus = "real"
 
     # Priority: documents > urls > development sample.
     if payload.documents is not None:
@@ -109,6 +116,13 @@ def analyze(payload: AnalyzeRequest):
         documents_source = "user_provided"
 
     elif payload.urls is not None:
+        if len(payload.urls) == 0:
+            # Unlike documents:[], an empty urls list has no reasonable
+            # interpretation as "fetch zero pages on purpose" — it's
+            # far more likely to be a caller mistake, so this is a 400
+            # rather than a silently-empty analysis.
+            return error_response("urls must not be empty")
+
         if len(payload.urls) > MAX_URLS:
             return error_response(f"urls must contain {MAX_URLS} or fewer entries")
 
@@ -122,12 +136,29 @@ def analyze(payload: AnalyzeRequest):
 
         failed = [r for r in fetch_results if not r.success]
         if failed:
+            # Full reasons (which may include resolved IPs, connection
+            # errors, etc.) go to the server log only — the API
+            # response exposes them per-URL via url_fetch_results, but
+            # callers building a UI on top of this should not surface
+            # the raw `error` text verbatim to end users.
             logger.info(
                 "%d of %d url(s) failed to fetch for brandName=%r: %s",
                 len(failed),
                 len(fetch_results),
                 brand_name,
                 "; ".join(f"{r.url} ({r.error})" for r in failed),
+            )
+
+        if len(documents) == 0:
+            # Every URL failed: there is nothing to compute
+            # cooccurrenceRanking from. This is different from a
+            # successful analysis that happens to find no keywords, so
+            # it gets its own status instead of "real".
+            cooccurrence_status = "unavailable"
+            logger.info(
+                "all %d url(s) failed to fetch for brandName=%r; cooccurrenceRanking is unavailable",
+                len(fetch_results),
+                brand_name,
             )
 
     else:
@@ -144,7 +175,7 @@ def analyze(payload: AnalyzeRequest):
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary="mock",
-            cooccurrenceRanking="real",
+            cooccurrenceRanking=cooccurrence_status,
             contextAnalysis="mock",
             aiOverviewComparison="mock",
             improvements="mock",

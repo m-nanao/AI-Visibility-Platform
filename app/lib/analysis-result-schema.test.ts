@@ -107,6 +107,47 @@ describe("parseAnalysisResult", () => {
     }
   });
 
+  it("accepts \"unavailable\" as a valid section status", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        sections: {
+          ...buildDummyAnalysis("OpenAI").meta.sections,
+          cooccurrenceRanking: "unavailable",
+        },
+        documentsSource: "web_fetch",
+        urlFetchResults: [
+          { url: "http://localhost/x", success: false, error: "resolves to a disallowed address: 127.0.0.1" },
+        ],
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.sections.cooccurrenceRanking).toBe("unavailable");
+    }
+  });
+
+  it("rejects a section status outside mock/real/unavailable", () => {
+    const invalid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        sections: {
+          ...buildDummyAnalysis("OpenAI").meta.sections,
+          cooccurrenceRanking: "not_a_real_status",
+        },
+      },
+    };
+
+    const result = parseAnalysisResult(invalid);
+
+    expect(result.success).toBe(false);
+  });
+
   it("never leaks the offending values in the failure reason", () => {
     const invalid = { ...buildDummyAnalysis("OpenAI"), brandName: 42 };
 

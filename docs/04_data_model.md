@@ -10,9 +10,12 @@ type Sentiment = "positive" | "neutral" | "negative";
 type Priority = "high" | "medium" | "low";
 
 // "real" if that section was actually computed, "mock" if it's still
-// fixed placeholder data. Tracked per section, not as one flag for
-// the whole response.
-type SectionStatus = "mock" | "real";
+// fixed placeholder data, "unavailable" if it couldn't be computed
+// because its input couldn't be obtained (e.g. every url in `urls`
+// failed to fetch) — distinct from a "real" section that legitimately
+// computed zero results. Tracked per section, not as one flag for the
+// whole response.
+type SectionStatus = "mock" | "real" | "unavailable";
 
 interface AnalysisSectionStatuses {
   summary: SectionStatus;

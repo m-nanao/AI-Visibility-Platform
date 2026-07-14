@@ -2,12 +2,15 @@ export type Trend = "up" | "down" | "flat";
 export type Sentiment = "positive" | "neutral" | "negative";
 export type Priority = "high" | "medium" | "low";
 
-// Whether a given AnalysisResult section was actually computed ("real")
-// or is still fixed placeholder data ("mock"). Tracked per section
+// Whether a given AnalysisResult section was actually computed
+// ("real"), is still fixed placeholder data ("mock"), or couldn't be
+// computed because its input couldn't be obtained ("unavailable" —
+// e.g. every url in `urls` failed to fetch). Tracked per section
 // because, as of the co-occurrence engine, some sections are real
 // while others aren't yet — a single top-level isMock flag can't
-// represent that.
-export type SectionStatus = "mock" | "real";
+// represent that. "unavailable" is distinct from a "real" section
+// that legitimately computed zero results.
+export type SectionStatus = "mock" | "real" | "unavailable";
 
 export interface AnalysisSectionStatuses {
   summary: SectionStatus;

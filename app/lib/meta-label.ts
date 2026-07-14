@@ -16,22 +16,65 @@ const SECTION_ORDER: (keyof AnalysisSectionStatuses)[] = [
   "improvements",
 ];
 
-/**
- * A short sentence describing which sections are real vs. still fixed
- * placeholder data, e.g. "共起語のみ実計算、その他は開発用データ".
- */
-export function getSectionStatusSummary(meta: AnalysisMeta): string {
-  const real = SECTION_ORDER.filter((key) => meta.sections[key] === "real").map(
+function sectionLabelsWithStatus(
+  meta: AnalysisMeta,
+  status: AnalysisSectionStatuses[keyof AnalysisSectionStatuses],
+): string[] {
+  return SECTION_ORDER.filter((key) => meta.sections[key] === status).map(
     (key) => SECTION_LABELS[key],
   );
+}
 
-  if (real.length === 0) {
+/**
+ * A short sentence describing which sections are real, unavailable, or
+ * still fixed placeholder data, e.g.
+ * "共起語のみ実計算、その他は開発用データ" or
+ * "共起語は取得失敗のため計算不能、その他は開発用データ".
+ */
+export function getSectionStatusSummary(meta: AnalysisMeta): string {
+  const real = sectionLabelsWithStatus(meta, "real");
+  const unavailable = sectionLabelsWithStatus(meta, "unavailable");
+  const mockCount = SECTION_ORDER.length - real.length - unavailable.length;
+
+  if (real.length === 0 && unavailable.length === 0) {
     return "すべて開発用データ（ダミー）";
   }
 
-  if (real.length === SECTION_ORDER.length) {
+  if (mockCount === 0 && unavailable.length === 0) {
     return "すべて実計算";
   }
 
-  return `${real.join("・")}のみ実計算、その他は開発用データ`;
+  const parts: string[] = [];
+  if (real.length > 0) parts.push(`${real.join("・")}のみ実計算`);
+  if (unavailable.length > 0) {
+    parts.push(`${unavailable.join("・")}は取得失敗のため計算不能`);
+  }
+  if (mockCount > 0) parts.push("その他は開発用データ");
+
+  return parts.join("、");
+}
+
+/**
+ * A message to show in place of the co-occurrence ranking when it
+ * couldn't be computed (e.g. every url in `urls` failed to fetch), so
+ * this state isn't confused with "computed, but zero keywords found".
+ * Returns null when the ranking is available (whether real or mock).
+ */
+export function getCooccurrenceUnavailableMessage(meta: AnalysisMeta): string | null {
+  if (meta.sections.cooccurrenceRanking !== "unavailable") return null;
+  return "URLを取得できなかったため共起解析を実行できませんでした";
+}
+
+/**
+ * A short "N/M件成功" summary of meta.urlFetchResults, for display near
+ * the co-occurrence section when documentsSource is "web_fetch".
+ * Deliberately does not include the per-URL error text — those are for
+ * server logs, not for surfacing verbatim to end users.
+ */
+export function getUrlFetchSummary(meta: AnalysisMeta): string | null {
+  if (!meta.urlFetchResults || meta.urlFetchResults.length === 0) return null;
+
+  const total = meta.urlFetchResults.length;
+  const successCount = meta.urlFetchResults.filter((r) => r.success).length;
+  return `URL取得: ${successCount}/${total}件成功`;
 }

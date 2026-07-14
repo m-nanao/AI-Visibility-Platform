@@ -13,11 +13,14 @@ Trend = Literal["up", "down", "flat"]
 Sentiment = Literal["positive", "neutral", "negative"]
 Priority = Literal["high", "medium", "low"]
 
-# Whether a given AnalysisResult section was actually computed ("real")
-# or is still fixed placeholder data ("mock"). Tracked per section —
-# see docs/07_decisions.md for why a single top-level isMock flag was
-# replaced with this.
-SectionStatus = Literal["mock", "real"]
+# Whether a given AnalysisResult section was actually computed
+# ("real"), is still fixed placeholder data ("mock"), or couldn't be
+# computed because its input couldn't be obtained ("unavailable" —
+# e.g. every url in `urls` failed to fetch). Tracked per section — see
+# docs/07_decisions.md for why a single top-level isMock flag was
+# replaced with this. "unavailable" is distinct from a "real" section
+# that legitimately computed zero results (e.g. `documents: []`).
+SectionStatus = Literal["mock", "real", "unavailable"]
 
 # Where the text corpus fed into the (co-occurrence) analysis came
 # from. dataforseo/common_crawl are reserved for future data sources.

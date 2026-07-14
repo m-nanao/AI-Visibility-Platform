@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+import main
 from main import app
 from models import (
     MAX_DOCUMENT_LENGTH,
@@ -9,6 +10,7 @@ from models import (
     MAX_URLS,
     AnalysisResult,
 )
+from services.web_fetcher import UrlFetchResult as FetcherResult
 
 client = TestClient(app)
 
@@ -114,8 +116,96 @@ def test_analyze_urls_with_disallowed_host_report_failure_but_still_return_200()
     assert result.meta.documentsSource == "web_fetch"
     assert result.meta.urlFetchResults is not None
     assert result.meta.urlFetchResults[0].success is False
-    # No successful fetch -> nothing to analyze, but this is not an error.
+    # No successful fetch -> nothing to analyze. This is not a request
+    # error, but cooccurrenceRanking is "unavailable" (not "real"),
+    # since it couldn't be computed at all rather than legitimately
+    # computing zero results.
     assert result.cooccurrenceRanking == []
+    assert result.meta.sections.cooccurrenceRanking == "unavailable"
+
+
+def test_analyze_rejects_empty_urls_list():
+    response = client.post("/analyze", json={"brandName": "OpenAI", "urls": []})
+    assert response.status_code == 400
+    assert response.json() == {"error": "urls must not be empty"}
+
+
+def test_analyze_urls_all_succeed_reports_real_status(monkeypatch):
+    def fake_fetch(urls):
+        return [
+            FetcherResult(url=u, success=True, text="OpenAIの料金プランについて説明する文章です。")
+            for u in urls
+        ]
+
+    monkeypatch.setattr(main, "fetch_url_texts", fake_fetch)
+
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "urls": ["https://example.com/a", "https://example.com/b"],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.cooccurrenceRanking == "real"
+    assert result.meta.documentsSource == "web_fetch"
+    assert result.meta.urlFetchResults is not None
+    assert all(r.success for r in result.meta.urlFetchResults)
+    assert len(result.cooccurrenceRanking) > 0
+
+
+def test_analyze_urls_partial_failure_reports_real_status_and_both_results(monkeypatch):
+    def fake_fetch(urls):
+        return [
+            FetcherResult(
+                url=urls[0], success=True, text="OpenAIの料金プランについて説明する文章です。"
+            ),
+            FetcherResult(url=urls[1], success=False, error="timeout"),
+        ]
+
+    monkeypatch.setattr(main, "fetch_url_texts", fake_fetch)
+
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "urls": ["https://example.com/a", "https://example.com/b"],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    # At least one URL succeeded, so this is a "real" (if partial) result.
+    assert result.meta.sections.cooccurrenceRanking == "real"
+    assert result.meta.urlFetchResults is not None
+    successes = [r for r in result.meta.urlFetchResults if r.success]
+    failures = [r for r in result.meta.urlFetchResults if not r.success]
+    assert len(successes) == 1
+    assert len(failures) == 1
+
+
+def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
+    def fake_fetch(urls):
+        return [FetcherResult(url=u, success=False, error="boom") for u in urls]
+
+    monkeypatch.setattr(main, "fetch_url_texts", fake_fetch)
+
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "urls": ["https://example.com/a", "https://example.com/b"],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.cooccurrenceRanking == "unavailable"
+    assert result.cooccurrenceRanking == []
+    assert result.meta.urlFetchResults is not None
+    assert all(not r.success for r in result.meta.urlFetchResults)
 
 
 @pytest.mark.parametrize(

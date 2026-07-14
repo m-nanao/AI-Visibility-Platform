@@ -84,6 +84,33 @@ describe("POST /api/analyze", () => {
     expect(data.meta.sections.cooccurrenceRanking).toBe("real");
   });
 
+  it("passes through an unavailable cooccurrenceRanking from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({
+        documentsSource: "web_fetch",
+        sections: { cooccurrenceRanking: "unavailable" },
+        urlFetchResults: [
+          { url: "http://localhost/x", success: false, error: "resolves to a disallowed address: 127.0.0.1" },
+        ],
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", urls: ["http://localhost/x"] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.sections.cooccurrenceRanking).toBe("unavailable");
+    expect(data.meta.urlFetchResults).toHaveLength(1);
+    expect(data.meta.urlFetchResults[0].success).toBe(false);
+  });
+
   it("forwards documents to the Python API when provided", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = buildDummyAnalysis("OpenAI");
@@ -169,7 +196,24 @@ describe("POST /api/analyze", () => {
     expect(data.meta.documentsSource).toBe("development_sample");
   });
 
-  it("falls back to dummy data when the Python API returns a non-2xx status", async () => {
+  it("falls back to dummy data and logs a timeout-specific reason when the Python API times out", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    // Simulates what our own AbortController produces once
+    // PYTHON_API_TIMEOUT_MS elapses, without actually waiting.
+    const abortError = new DOMException("The operation was aborted.", "AbortError");
+    global.fetch = vi.fn().mockRejectedValue(abortError);
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.documentsSource).toBe("development_sample");
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("timed out"),
+    );
+  });
+
+  it("falls back to dummy data when the Python API returns a non-2xx status other than 400", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 500 }));
 
@@ -178,5 +222,38 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.documentsSource).toBe("development_sample");
+  });
+
+  it("forwards a 400 from the Python API as-is instead of falling back to dummy data", async () => {
+    // Regression test: a 400 from Python means *our request* was
+    // invalid (e.g. urls: [], too many documents) — the caller needs
+    // to see that, not a silently-successful dummy response.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "urls must not be empty" }), {
+        status: 400,
+      }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", urls: [] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: "urls must not be empty" });
+  });
+
+  it("forwards a generic message when the Python API's 400 body is unexpected", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response("not json", { status: 400 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: "invalid request" });
   });
 });

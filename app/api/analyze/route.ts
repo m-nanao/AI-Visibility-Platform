@@ -4,23 +4,40 @@ import { parseAnalysisResult } from "../../lib/analysis-result-schema";
 import type { AnalysisResult } from "../../lib/types";
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
-const PYTHON_API_TIMEOUT_MS = 3000;
+
+// When `urls` is set, the Python API fetches up to MAX_URLS(10) pages
+// with limited concurrency (3 at a time, ~5s timeout each — see
+// backend/services/web_fetcher.py), so a slow/degraded batch of
+// fetches can legitimately take up to ~ceil(10/3) * 5s = 20s before
+// Python can respond. 3s (the original brandName-only timeout) was
+// nowhere near enough once URL fetching was added. 25s gives a little
+// headroom over that ~20s worst case while still failing fast enough
+// that a genuinely stuck Python API doesn't hang the request forever.
+const PYTHON_API_TIMEOUT_MS = 25_000;
+
+type PythonApiOutcome =
+  | { kind: "success"; data: AnalysisResult }
+  // The Python API rejected *our request* (e.g. too many documents,
+  // urls: []) — this is the caller's mistake, not a Python API
+  // failure, so it must be reported back rather than silently
+  // papered over with dummy data.
+  | { kind: "validationError"; message: string }
+  // Unset URL, network error, timeout, non-2xx (other than 400),
+  // invalid JSON, or a response that doesn't match AnalysisResult.
+  | { kind: "unavailable" };
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
- * Returns null on any failure (unset URL, network error, timeout, non-2xx,
- * invalid JSON, or a response that doesn't match AnalysisResult), so the
- * caller can fall back to the local dummy data. Every failure reason is
- * logged (path + message only — never raw payloads or headers, so no
- * secrets end up in server logs).
+ * Every failure reason is logged (path + message only — never raw payloads
+ * or headers, so no secrets end up in server logs).
  */
 async function fetchFromPythonApi(
   brandName: string,
   documents?: string[],
   urls?: string[],
-): Promise<AnalysisResult | null> {
+): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
-  if (!baseUrl) return null;
+  if (!baseUrl) return { kind: "unavailable" };
 
   const controller = new AbortController();
   const timeoutId = setTimeout(
@@ -42,11 +59,20 @@ async function fetchFromPythonApi(
       signal: controller.signal,
     });
 
+    if (response.status === 400) {
+      const errorBody = await response.json().catch(() => null);
+      const message =
+        errorBody && typeof errorBody.error === "string"
+          ? errorBody.error
+          : "invalid request";
+      return { kind: "validationError", message };
+    }
+
     if (!response.ok) {
       console.warn(
         `[analyze] Python API returned HTTP ${response.status}; falling back to dummy data`,
       );
-      return null;
+      return { kind: "unavailable" };
     }
 
     let json: unknown;
@@ -56,7 +82,7 @@ async function fetchFromPythonApi(
       console.warn(
         "[analyze] Python API returned invalid JSON; falling back to dummy data",
       );
-      return null;
+      return { kind: "unavailable" };
     }
 
     const parsed = parseAnalysisResult(json);
@@ -64,10 +90,10 @@ async function fetchFromPythonApi(
       console.warn(
         `[analyze] Python API response failed schema validation; falling back to dummy data (${parsed.reason})`,
       );
-      return null;
+      return { kind: "unavailable" };
     }
 
-    return parsed.data;
+    return { kind: "success", data: parsed.data };
   } catch (err) {
     const reason = err instanceof Error && err.name === "AbortError"
       ? "request timed out"
@@ -75,7 +101,7 @@ async function fetchFromPythonApi(
     console.warn(
       `[analyze] Python API ${reason}; falling back to dummy data`,
     );
-    return null;
+    return { kind: "unavailable" };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -105,9 +131,14 @@ export async function POST(request: Request) {
     ? body.urls.filter((url: unknown): url is string => typeof url === "string")
     : undefined;
 
-  const pythonResult = await fetchFromPythonApi(trimmedBrandName, documents, urls);
-  if (pythonResult) {
-    return NextResponse.json(pythonResult);
+  const outcome = await fetchFromPythonApi(trimmedBrandName, documents, urls);
+
+  if (outcome.kind === "success") {
+    return NextResponse.json(outcome.data);
+  }
+
+  if (outcome.kind === "validationError") {
+    return NextResponse.json({ error: outcome.message }, { status: 400 });
   }
 
   await new Promise((resolve) =>

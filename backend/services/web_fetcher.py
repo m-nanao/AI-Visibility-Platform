@@ -5,6 +5,8 @@ This is intentionally minimal:
 - Each URL is fetched with a timeout; a failure on one URL never
   aborts the rest of the batch (each result reports its own
   success/failure).
+- URLs are fetched concurrently, up to MAX_CONCURRENT_FETCHES at a
+  time, rather than one after another — see fetch_url_texts().
 - Non-http(s) schemes, localhost, and private/loopback/link-local/
   reserved IP addresses are rejected before any request is made, to
   reduce SSRF risk. Redirects are not followed, since a redirect is a
@@ -27,6 +29,7 @@ docs/05_tasks.md for the follow-up tasks):
 
 import ipaddress
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -35,6 +38,13 @@ from bs4 import BeautifulSoup
 
 FETCH_TIMEOUT_SECONDS = 5.0
 MAX_BODY_TEXT_LENGTH = 5000
+
+# Fetches run concurrently (not one-by-one) so that up to MAX_URLS
+# (see models.py) pages don't take MAX_URLS * FETCH_TIMEOUT_SECONDS in
+# the worst case. Kept deliberately low (a plain ThreadPoolExecutor,
+# no retry/backoff/queueing) to stay simple and to avoid hammering a
+# single target site too hard.
+MAX_CONCURRENT_FETCHES = 3
 
 # Elements that are never part of the "body text" we want to analyze.
 EXCLUDED_TAGS = [
@@ -133,7 +143,14 @@ def _fetch_one(url: str) -> UrlFetchResult:
 def fetch_url_texts(urls: list[str]) -> list[UrlFetchResult]:
     """Fetches each URL and extracts its body text.
 
-    A failure fetching one URL is recorded in its own result and does
-    not stop the rest of the batch from being processed.
+    Runs up to MAX_CONCURRENT_FETCHES fetches at a time (not fully
+    sequential, not fully parallel). A failure fetching one URL is
+    recorded in its own result and does not stop the rest of the batch
+    from being processed. Results are returned in the same order as
+    `urls`, regardless of which finished first.
     """
-    return [_fetch_one(url) for url in urls]
+    if not urls:
+        return []
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FETCHES) as executor:
+        return list(executor.map(_fetch_one, urls))
