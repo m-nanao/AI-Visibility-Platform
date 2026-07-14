@@ -41,18 +41,21 @@
 - 課金・プラン管理（非スコープ）
 - CD・自動レビュー・自動マージ（CIの最小構成（lint/test/build・pytest）は追加済みだが、CD（Vercel/Renderへの自動デプロイ）・AIレビューの自動化・人間承認後の自動マージはいずれも未導入。詳細は[10_ai_development_workflow.md](./10_ai_development_workflow.md)参照）
 
-## 公開URL（確認用環境）
+## 公開URL（依頼者確認用ステージング環境）
 
 | サービス | URL |
 | --- | --- |
 | Vercel（Next.js） | <https://ai-visibility-platform-eight.vercel.app/> |
 | Render（FastAPI、`/health`） | <https://llmo-analysis-api.onrender.com/health> |
 
+この環境は**依頼者確認用ステージング環境**（*staging-demo environment*）であり、正式な本番環境・一般公開サービスではない。用途は進捗報告・機能確認・MVPレビュー・UI/API連携確認に限る。将来的には独自ドメイン環境へ移行予定（詳細は[09_deployment.md](./09_deployment.md)の「環境の位置づけ」参照）。
+
 ## 確認用環境の制約
 
-- **本番運用ではない**。認証・アクセス制限・レート制限・監視はない（URLを知っていれば誰でも操作できる）。
+- **本番運用ではない**。認証・アクセス制限・レート制限・監視はない（URLを知っていれば誰でも操作できる）。共有先は必要な相手に限定し、機密情報・個人情報・本番データは入力しないよう依頼者にも伝える。
 - Render無料プランのため**コールドスタートがある**（スリープからの復帰に約20〜25秒。この間、Python APIが間に合わずダミーデータにフォールバックすることがある。障害ではなく既知の仕様）。詳細は [09_deployment.md](./09_deployment.md) の「コールドスタートに関する注意」参照。
 - 分析結果は永続化されない（PostgreSQL未接続）。
+- URL共有時は[09_deployment.md](./09_deployment.md)の「依頼者への共有文テンプレート」を使う。
 
 ## 既知の課題
 

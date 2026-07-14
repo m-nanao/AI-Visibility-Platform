@@ -8,7 +8,7 @@
 - 公開・デプロイ手順は [docs/09_deployment.md](docs/09_deployment.md) を参照
 - ChatGPT・Claude Codeによる開発運用フローは [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) を参照
 
-> **確認用環境として一時公開しています**: 本番運用・一般公開を目的とした構成ではありません。共起語ランキングのみ実データ計算で、その他のセクションは開発用データです。Common Crawl・DataForSEOとの連携もまだ行っていません。認証やアクセス制限もないため、公開URLを知っていれば誰でも操作できます。詳細は [docs/09_deployment.md](docs/09_deployment.md) を参照してください。
+> **依頼者確認用ステージング環境として一時公開しています**（正式な本番環境ではありません）: 進捗報告・機能確認・MVPレビュー用途です。共起語ランキングのみ実データ計算で、その他のセクションは開発用データです。Common Crawl・DataForSEOとの連携もまだ行っていません。認証やアクセス制限もないため、公開URLを知っていれば誰でも操作できます。機密情報・本番データは入力しないでください。詳細は [docs/09_deployment.md](docs/09_deployment.md) を参照してください。
 
 ---
 
