@@ -109,7 +109,8 @@
 - [ ] 改善提案のルールベース生成ロジック（将来的にはLLM併用も検討）
 - [ ] 各結果に紐づく `analysis_sources` を記録する処理（どの情報源から算出したかのトレース。`meta.urlFetchResults` はURL単位の取得成否のみで、キーワード単位のトレースはまだない）
 - [ ] `documents`/`urls` を実際にCommon Crawl / DataForSEOの収集データから自動供給する導線（現状はAPI呼び出し時に明示的に渡すか、URLを個別に指定するか、開発用サンプル文章を使うのみ）
-- [ ] フロントに `documents`/`urls` 入力UIを追加するか検討（現状はAPI経由でのみ指定可能。「unavailable」表示・URL取得成否サマリのUIロジックは実装済みだが、実際の画面から`urls`指定に到達する導線はまだない）
+- [x] フロントに `urls` 入力UIを追加（ブランド入力フォーム内の複数行テキストエリア。1行1件・最大10件・空行除外・重複除外・http(s)形式チェックをクライアント側で実施し、localhost/プライベートIP判定は引き続きPython側で行う。[url-validation.ts](../app/lib/url-validation.ts)、[BrandInputForm.tsx](../app/components/BrandInputForm.tsx)）
+- [ ] フロントに `documents` 入力UIを追加するか検討（現状はAPI経由でのみ指定可能。`urls`とは異なりまだUIがない）
 - [ ] `web_fetcher.py` にrobots.txt確認・レート制限・DNS再解決によるTOCTOU対策を追加するか検討（現状は未実装、[03_api_design.md](./03_api_design.md) の「運用上の注意」に明記）
 - [ ] URL取得の同時実行数（現在3）・タイムアウト（現在25秒）が実際の利用状況に対して適切か、運用しながら見直す
 

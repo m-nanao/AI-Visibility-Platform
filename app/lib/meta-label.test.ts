@@ -84,7 +84,7 @@ describe("getUrlFetchSummary", () => {
     expect(getUrlFetchSummary(baseMeta())).toBeNull();
   });
 
-  it("summarizes success/total counts without exposing raw error text", () => {
+  it("notes that only the fetched pages were analyzed on partial success, without exposing raw error text", () => {
     const meta: AnalysisMeta = {
       ...baseMeta(),
       urlFetchResults: [
@@ -94,7 +94,30 @@ describe("getUrlFetchSummary", () => {
     };
 
     const summary = getUrlFetchSummary(meta);
-    expect(summary).toBe("URL取得: 1/2件成功");
+    expect(summary).toBe("URL取得: 1/2件成功（取得できたページのみで分析しています）");
     expect(summary).not.toContain("127.0.0.1");
+  });
+
+  it("reports a plain count when all urls succeed", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [
+        { url: "https://example.com/a", success: true },
+        { url: "https://example.com/b", success: true },
+      ],
+    };
+
+    expect(getUrlFetchSummary(meta)).toBe("URL取得: 2/2件成功");
+  });
+
+  it("reports a plain count when all urls fail", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [
+        { url: "http://localhost/a", success: false, error: "resolves to a disallowed address: 127.0.0.1" },
+      ],
+    };
+
+    expect(getUrlFetchSummary(meta)).toBe("URL取得: 0/1件成功");
   });
 });

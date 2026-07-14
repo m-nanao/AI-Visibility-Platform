@@ -244,7 +244,7 @@ describe("POST /api/analyze", () => {
     expect(data).toEqual({ error: "urls must not be empty" });
   });
 
-  it("forwards a generic message when the Python API's 400 body is unexpected", async () => {
+  it("forwards a generic safe message when the Python API's 400 body is unexpected", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(
       new Response("not json", { status: 400 }),
@@ -254,6 +254,45 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "invalid request" });
+    expect(data).toEqual({ error: "入力内容を確認してください" });
+  });
+
+  it("treats a 422 from the Python API the same as a 400 (own {error} shape forwarded)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "brandName is required" }), {
+        status: 422,
+      }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: "brandName is required" });
+  });
+
+  it("never exposes FastAPI's raw detail array from a 422 response", async () => {
+    // Regression guard: FastAPI's default RequestValidationError shape
+    // is { detail: [{ loc, msg, type }, ...] } — this must never reach
+    // the user as-is.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: [
+            { loc: ["body", "urls", 0], msg: "value is not a valid string", type: "type_error.str" },
+          ],
+        }),
+        { status: 422 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: "入力内容を確認してください" });
+    expect(JSON.stringify(data)).not.toContain("type_error");
   });
 });

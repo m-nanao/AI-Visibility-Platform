@@ -59,12 +59,20 @@ async function fetchFromPythonApi(
       signal: controller.signal,
     });
 
-    if (response.status === 400) {
+    if (response.status === 400 || response.status === 422) {
+      // Both mean "the request we sent was invalid" (400: our own
+      // validation errors like urls: []; 422: FastAPI's default
+      // request-validation error shape, in case anything ever bypasses
+      // our custom exception handler). Only trust the response body if
+      // it's our own known-safe { error: string } shape — anything
+      // else (e.g. FastAPI's raw `{ detail: [...] }` array of
+      // validator internals) is replaced with a generic message rather
+      // than shown to the user as-is.
       const errorBody = await response.json().catch(() => null);
       const message =
         errorBody && typeof errorBody.error === "string"
           ? errorBody.error
-          : "invalid request";
+          : "入力内容を確認してください";
       return { kind: "validationError", message };
     }
 

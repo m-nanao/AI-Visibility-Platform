@@ -12,15 +12,27 @@ export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Whether the in-flight (or most recently finished) request included
+  // urls, so the loading message can say "fetching web pages" instead
+  // of the generic message — url-based analysis can take much longer.
+  const [isUrlAnalysis, setIsUrlAnalysis] = useState(false);
 
-  const handleAnalyze = async (brandName: string) => {
+  const handleAnalyze = async (brandName: string, urls: string[]) => {
     setStatus("loading");
     setError(null);
+    setIsUrlAnalysis(urls.length > 0);
     try {
+      // urls: [] is never sent — omitting the key entirely lets the
+      // API fall back to its own default (development sample
+      // documents), and keeps `urls: []` reserved as an explicit
+      // "reject this request" signal on the API side.
+      const requestBody: { brandName: string; urls?: string[] } = { brandName };
+      if (urls.length > 0) requestBody.urls = urls;
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brandName }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -44,6 +56,7 @@ export default function Home() {
     setStatus("idle");
     setResult(null);
     setError(null);
+    setIsUrlAnalysis(false);
   };
 
   return (
@@ -76,7 +89,9 @@ export default function Home() {
 
         {status === "loading" && (
           <p className="mt-8 text-sm text-zinc-500 dark:text-zinc-400">
-            分析中です。しばらくお待ちください...
+            {isUrlAnalysis
+              ? "Webページを取得・分析しています。20〜25秒ほどかかる場合があります..."
+              : "分析中です。しばらくお待ちください..."}
           </p>
         )}
 

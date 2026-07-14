@@ -67,14 +67,22 @@ export function getCooccurrenceUnavailableMessage(meta: AnalysisMeta): string | 
 
 /**
  * A short "N/M件成功" summary of meta.urlFetchResults, for display near
- * the co-occurrence section when documentsSource is "web_fetch".
- * Deliberately does not include the per-URL error text — those are for
- * server logs, not for surfacing verbatim to end users.
+ * the co-occurrence section when documentsSource is "web_fetch". When
+ * only some URLs succeeded, notes that the analysis only used the
+ * pages that could be fetched, so it's clear the result isn't based
+ * on everything the user asked for. Deliberately does not include the
+ * per-URL error text — those are for server logs, not for surfacing
+ * verbatim to end users.
  */
 export function getUrlFetchSummary(meta: AnalysisMeta): string | null {
   if (!meta.urlFetchResults || meta.urlFetchResults.length === 0) return null;
 
   const total = meta.urlFetchResults.length;
   const successCount = meta.urlFetchResults.filter((r) => r.success).length;
+
+  if (successCount > 0 && successCount < total) {
+    return `URL取得: ${successCount}/${total}件成功（取得できたページのみで分析しています）`;
+  }
+
   return `URL取得: ${successCount}/${total}件成功`;
 }

@@ -53,14 +53,14 @@
 - 以下のいずれかに該当する場合は、`app/lib/dummy-data.ts` の `buildDummyAnalysis(brandName)` による固定データ（全セクション `"mock"`）にフォールバックする。
   - `PYTHON_ANALYSIS_API_URL` が未設定（この場合はログを出さない。意図した既定動作のため）
   - Python API への接続エラー・タイムアウト（25秒）
-  - Python APIが**400以外**の非2xxステータスを返した場合（5xx等。Python APIそのものの不調とみなす）
+  - Python APIが**400・422以外**の非2xxステータスを返した場合（5xx等。Python APIそのものの不調とみなす）
   - Python APIのレスポンスが不正なJSON、または `AnalysisResult` のスキーマ（下記参照）に一致しない場合
   - いずれの場合も、フォールバック理由をサーバーログに出力する（`console.warn`）。ログにはフィールドのパスとエラーメッセージのみを含め、レスポンス本体やヘッダー等の値そのものは出力しない
   - フォールバック時のみ、約900msの遅延を挟む（Python API呼び出し時の体感速度に近づけるための暫定措置）。
-- **Python APIが400を返した場合はフォールバックしない**。400は「Next.jsから送ったリクエスト自体が不正だった」（`urls: []`、`documents`/`urls`の件数・文字数超過等）ことを意味し、Python APIの不調ではないため、Pythonが返した `{"error": "<メッセージ>"}` をそのまま呼び出し元に転送する。以前はこの区別がなく、`urls: []` を渡してもダミーデータが200で返ってしまう不具合があった（[07_decisions.md](./07_decisions.md) 参照）。
+- **Python APIが400または422を返した場合はフォールバックしない**。どちらも「Next.jsから送ったリクエスト自体が不正だった」（`urls: []`、`documents`/`urls`の件数・文字数超過等）ことを意味し、Python APIの不調ではないため、そのまま呼び出し元に転送する。以前はこの区別がなく、`urls: []` を渡してもダミーデータが200で返ってしまう不具合があった（[07_decisions.md](./07_decisions.md) 参照）。転送する際、Pythonのレスポンスボディが `{"error": "<メッセージ>"}` という既知の安全な形であればそのメッセージを使い、それ以外（FastAPIの既定の `{"detail": [...]}` 形式等）の場合は一律「入力内容を確認してください」という汎用メッセージに差し替える。現時点の実装ではPython側のカスタム例外ハンドラがすべての検証エラーを400 `{"error": "..."}` に変換しているため、実際に422や `detail` 配列がそのまま返ってくることはないが、Next.js側は将来Python側の実装が変わった場合にも安全なように、この変換を防御的に行っている。
 - サポートするHTTPメソッドはPOSTのみ（GET等は405 Method Not Allowed）。
-- フロントエンド（`app/page.tsx`）はこの `/api/analyze` に `fetch("/api/analyze", { method: "POST", body: JSON.stringify({ brandName }) })` でリクエストし、レスポンスをそのまま `AnalysisResult` として画面に描画する。Python APIを使うかダミーデータを使うかはNext.js側で吸収されるため、フロント側の実装は変わらない。画面上には `meta.sections` の内訳から「共起語のみ実計算、その他は開発用データ」のような要約文を表示する（[app/lib/meta-label.ts](../app/lib/meta-label.ts)）。`cooccurrenceRanking` が `"unavailable"`（URL取得が全件失敗）の場合は、共起語ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、単に0件だった場合と見た目で区別する（[CooccurrenceRankingSection.tsx](../app/components/sections/CooccurrenceRankingSection.tsx)）。
-- 現時点でフロントに `documents` / `urls` の入力UIはない。これらはAPI経由でのみ指定できる。
+- フロントエンド（`app/page.tsx`、[BrandInputForm.tsx](../app/components/BrandInputForm.tsx)）はこの `/api/analyze` に `fetch("/api/analyze", { method: "POST", body: JSON.stringify({ brandName, urls }) })` でリクエストし（`urls` が空の場合はキー自体を送らない）、レスポンスをそのまま `AnalysisResult` として画面に描画する。Python APIを使うかダミーデータを使うかはNext.js側で吸収されるため、フロント側の実装は変わらない。画面上には `meta.sections` の内訳から「共起語のみ実計算、その他は開発用データ」のような要約文を表示する（[app/lib/meta-label.ts](../app/lib/meta-label.ts)）。`cooccurrenceRanking` が `"unavailable"`（URL取得が全件失敗）の場合は、共起語ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、単に0件だった場合と見た目で区別する（[CooccurrenceRankingSection.tsx](../app/components/sections/CooccurrenceRankingSection.tsx)）。
+- フロントには `urls` の入力UI（ブランド名フォーム内の複数行テキストエリア）がある。1行1件・最大10件・空行除外・重複除外・`http(s)://`形式チェックをクライアント側で行い（[url-validation.ts](../app/lib/url-validation.ts)）、問題があれば送信をブロックしてフォーム内にエラーを表示する。ただしlocalhost・プライベートIPの最終判定はクライアントでは行えない（DNS解決が必要なため）ので、引き続きPython側（`services/web_fetcher.py`）が行う。`documents` の入力UIはまだない（API経由でのみ指定可能）。
 
 ### `meta` フィールド
 
