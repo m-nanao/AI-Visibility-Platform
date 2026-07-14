@@ -190,6 +190,11 @@
   - [x] `CLAUDE.md` に半自動開発フロー向けの注意事項を追記
   - [x] `docs/10_ai_development_workflow.md`の「CI/PR/AIレビューを介した自動化はまだ導入していない」という表現が、実際にはCIのみ導入済みという状態と矛盾していたレビュー指摘を修正（2026-07-15）
   - [x] GitHub Actions（`.github/workflows/ci.yml`）のNode.js 20 deprecation warningを調査・解消。`actions/checkout@v5`・`actions/setup-node@v5`・`actions/setup-python@v6`へ更新（詳細は[development_status.md](./development_status.md)の「既知の課題」参照。アプリ側の`node-version: "20"`は変更していない）
+- [x] Claude Codeの利用制限・トークン制限による中断からの復旧ルールを追加（2026-07-15）
+  - [x] [10_ai_development_workflow.md](./10_ai_development_workflow.md)に「11. 中断・再開の運用」章を新設（状態確認手順・途中報告が必要な状況・こまめなコミット・再開手順・再開時の禁止事項）
+  - [x] [task_template.md](./task_template.md)に「Partial Implementation Report」「Resume Check」「Blocked Report」フォーマットを追加、通常の`Implementation Report`にRecovery Informationを追加
+  - [x] [review_template.md](./review_template.md)に中断系の報告を受け取った場合の扱いを追加
+  - [x] `CLAUDE.md`に、作業開始時のgit状態確認・大きなタスクの分割提案・中断時の途中報告・修正ループ上限を追記
 - [ ] GitHub Issue起点の完全自動フロー（Issue→実装→PR→CI→AIレビュー→人間承認→マージ）は未着手。現時点では上記の半自動フロー（人間がClaude Codeへタスクを手渡しする形）が実運用
 
 ## 横断的なタスク（随時）

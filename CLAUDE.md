@@ -47,11 +47,24 @@
 
 ### 作業開始前に読むもの
 
+作業開始前（新規タスクでも、前回の中断からの再開でも）、実装に入る前に必ず以下を実行して現在の状態を把握する。
+
+```bash
+git status
+git branch --show-current
+git log --oneline -5
+```
+
+**未コミットの変更が既にある場合は、内容を確認せずに上書き・破棄しない。** 別セッション（過去の自分自身を含む）の作業途中である可能性があるため、まず内容を確認してユーザーに報告する。
+
+そのうえで、以下を読む。
+
 1. このファイル（`CLAUDE.md`）
 2. [AGENTS.md](AGENTS.md)（このNext.jsバージョン固有の注意）
 3. [docs/development_status.md](docs/development_status.md)（現状サマリー）
-4. 渡されたタスク（[docs/task_template.md](docs/task_template.md)形式）
-5. タスクに関連する設計docs（`docs/01`〜`09`のうち該当するもの）
+4. [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)（役割分担・中断再開ルール等）
+5. 渡されたタスク（[docs/task_template.md](docs/task_template.md)形式）
+6. タスクに関連する設計docs（`docs/01`〜`09`のうち該当するもの）
 
 ### 実装時に守ること
 
@@ -59,8 +72,15 @@
 - **docsと実装が矛盾する場合は、黙って直さずユーザーに報告する**（自分がこれから変更する箇所以外で見つけた矛盾も含む）。
 - **不明点があるときは大規模な推測実装をしない**。仕様・設計判断がタスクの記述だけで確定できない場合は、いったん立ち止まって確認する（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「タスク失敗時の扱い」参照）。
 - **`main`へ直接コミットしない。1タスク1ブランチを原則とする。**（このプロジェクトの過去の履歴には、この原則が導入される前に`main`へ直接コミットした実績があるが、今後はブランチを切って作業する）
+- **大きすぎるタスクは分割を提案する**。渡されたタスクが複数の設計判断・複数コンポーネントにまたがる場合、無理に一度に進めず、分割案をユーザーに提示する（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「1タスクの粒度」参照）。
 - **`.env`や秘密情報をコミットしない**。`.env.example`のような値を含まないテンプレートのみをコミット対象とする。
 - **環境変数・認証・課金・DB破壊的変更は人間承認必須**（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「人間承認が必須のこと」参照）。承認前に実行しない。
+- **コミットは意味のある単位でこまめに残す**（docsだけの変更・テスト追加・実装追加・バグ修正・設定変更等に分ける。細かすぎる無意味な分割は避ける）。コミット前に`git status`・`git diff --stat`で内容を確認する。
+- **同じ問題（同じエラー・同じ修正指摘）を3回以上繰り返さない**。3回を超えたら、[docs/task_template.md](docs/task_template.md)の「Blocked Report」形式で報告して停止する（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「修正ループの上限」参照）。
+
+### 中断に備えること
+
+トークン制限に近い・利用制限に達しそう・セッションが長くなりすぎている・テスト失敗が続いている・仕様判断が必要・変更範囲が当初タスクを超えそう、といった状況になった場合、無理に続けず[docs/task_template.md](docs/task_template.md)の「Partial Implementation Report」形式で途中報告を残して停止する。次回再開時は、いきなり実装を続けず、上記「作業開始前に読むもの」の状態確認と、[docs/task_template.md](docs/task_template.md)の「Resume Check」形式での整理から始める。詳細は[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「11. 中断・再開の運用」を参照。
 
 ### 実装後に実行する検証コマンド
 
@@ -75,4 +95,4 @@ cd backend && pip install -r requirements-dev.txt && pytest
 
 ### 作業後の報告形式
 
-[docs/task_template.md](docs/task_template.md)の「作業後の報告形式」（`## Implementation Report`）に従う。変更ファイル一覧・検証結果・動作確認内容・未解決の課題・コミット内容を必ず含める。
+[docs/task_template.md](docs/task_template.md)の「作業後の報告形式」（`## Implementation Report`）に従う。変更ファイル一覧・検証結果・動作確認内容・未解決の課題・コミット内容に加え、**Recovery Information（Current Branch / Latest Commit / Uncommitted Changes / Resume Needed / Recommended Next Step）を必ず含める**。タスクが完了せず中断する場合は、代わりに[docs/task_template.md](docs/task_template.md)の「Partial Implementation Report」または「Blocked Report」を使う。

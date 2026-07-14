@@ -64,3 +64,15 @@ Passの場合は「なし」>
 - Render無料プランのコールドスタート（[09_deployment.md](./09_deployment.md)参照）に起因する一時的な遅延・フォールバックを、実装の不具合と誤判定しない。
 - 「良かった点」も必ず書く。指摘事項だけを記録すると、今後同じ良い判断が再現されにくくなる。
 - 修正ループが3回を超えて収束しない場合は、[10_ai_development_workflow.md](./10_ai_development_workflow.md)の「修正ループの上限」に従い、タスクの前提から見直す。
+
+## 中断報告を受け取った場合
+
+Claude Codeの利用制限・トークン制限等により、通常の`Implementation Report`ではなく以下のいずれかを受け取ることがある（形式は[task_template.md](./task_template.md)の「中断・再開時の報告フォーマット」参照）。この場合、上記の`## テンプレート本体`をそのまま使わず、以下のように扱う。
+
+| 受け取った報告 | レビュー結果の扱い | 次のアクション |
+| --- | --- | --- |
+| **Partial Implementation Report** | Pass / Needs Changes ではなく判定を保留する | 「Not Yet Done」「Blocking Issues」「Recommended Resume Step」を確認し、残作業をtask_template.md形式の続きタスクとして作る（新規タスクではなく再開である旨を明記する） |
+| **Resume Check** | 判定不要（作業再開前の状況整理のため） | 内容に矛盾や見落としがないか確認し、問題なければ「残作業を進めてよい」旨を伝える |
+| **Blocked Report** | **Blocked** 扱いとする | 「Current Hypothesis」「Options」を確認し、ユーザーの判断を仰ぐ。ChatGPT・Claude Codeだけで無理に解決を試みない（[10_ai_development_workflow.md](./10_ai_development_workflow.md)の「修正ループの上限」参照） |
+
+いずれの場合も、「レビュー結果」欄には`Partial` / `Resume` / `Blocked`など受け取った報告の種類が分かるように明記し、通常の`Pass`と混同しないようにする。

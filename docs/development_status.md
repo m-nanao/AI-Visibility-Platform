@@ -85,4 +85,5 @@
 - タスク一覧（詳細）: [05_tasks.md](./05_tasks.md)
 - 設計判断ログ: [07_decisions.md](./07_decisions.md)
 - 公開手順: [09_deployment.md](./09_deployment.md)
-- AI協調開発フロー: [10_ai_development_workflow.md](./10_ai_development_workflow.md)
+- AI協調開発フロー（Claude Codeの中断・再開ルールを含む）: [10_ai_development_workflow.md](./10_ai_development_workflow.md)
+- タスク依頼・レビュー・中断/再開時の報告フォーマット: [task_template.md](./task_template.md) / [review_template.md](./review_template.md)

@@ -72,6 +72,14 @@ cd backend && pip install -r requirements-dev.txt && pytest
 
 ### Behavior Check
 
+### Recovery Information
+
+- Current Branch:
+- Latest Commit:
+- Uncommitted Changes:
+- Resume Needed:
+- Recommended Next Step:
+
 ### Remaining Issues
 
 ### Commit
@@ -87,10 +95,90 @@ CLAUDE.mdの内容と重複してよい（Claude Codeが読み落とさないた
 
 ---
 
+## 中断・再開時の報告フォーマット
+
+Claude Codeには時間単位・週次単位の利用制限があり、作業の途中でトークン制限・利用制限・セッション中断・エラーにより停止することがある。通常の`Implementation Report`が使えない（タスクが完了していない）場合は、以下のいずれかを使う。運用ルールの詳細は [10_ai_development_workflow.md](./10_ai_development_workflow.md) の「中断・再開の運用」を参照。
+
+### Partial Implementation Report（中断時）
+
+トークン制限に近い・利用制限に達しそう・セッションが長くなりすぎている・テスト失敗が続いている・仕様判断が必要・変更範囲が当初タスクを超えそう・同じエラーを2回以上繰り返している、といった状況になった場合、無理に続けず以下の形式で途中報告を残して停止する。
+
+```md
+## Partial Implementation Report
+
+### Current Status
+
+### Completed Work
+
+### Changed Files
+
+### Validation So Far
+
+### Not Yet Done
+
+### Blocking Issues
+
+### Recommended Resume Step
+
+### Current Branch
+
+### Latest Commit
+
+### Uncommitted Changes
+```
+
+### Resume Check（再開時）
+
+中断後に作業を再開する場合、いきなり実装を続けず、まず`git status` / `git branch --show-current` / `git log --oneline -5`を実行し、前回の`Partial Implementation Report`または`Implementation Report`を確認した上で、以下を整理してから残作業を進める。
+
+```md
+## Resume Check
+
+### Current Branch
+
+### Latest Commit
+
+### Uncommitted Changes
+
+### Last Report Summary
+
+### Files Already Changed
+
+### Remaining Work
+
+### Risks Before Continuing
+
+### Proposed Next Step
+```
+
+### Blocked Report（修正ループの上限に達した場合）
+
+同一タスクで3回修正しても解決しない場合、無理に続けず以下の形式で報告して停止する（[10_ai_development_workflow.md](./10_ai_development_workflow.md) の「修正ループの上限」参照）。
+
+```md
+## Blocked Report
+
+### Problem
+
+### Attempts Made
+
+### Current Hypothesis
+
+### Files Affected
+
+### Validation Results
+
+### Options
+
+### Recommendation
+```
+
+---
+
 ## 記入時の注意（ChatGPT・タスク作成者向け）
 
 - **「対象外」は「実装範囲」と同じくらい重要**。書かないと、Claude Codeが親切心で関係ない箇所まで直してしまうことがある。
 - **「変更してはいけないファイル・領域」は具体的なパスで書く**。「コアロジック」のような曖昧な表現は避ける。
-- タスクが大きすぎると感じたら、[10_ai_development_workflow.md](./10_ai_development_workflow.md) の「1タスクの粒度」を参照し、複数タスクに分割してから渡す。
+- タスクが大きすぎると感じたら、[10_ai_development_workflow.md](./10_ai_development_workflow.md) の「1タスクの粒度」（良い例・悪い例つき）を参照し、複数タスクに分割してから渡す。1回の作業で完了できる粒度（例:「ステージング環境に簡易パスコードだけ追加する」）を原則とし、「認証、DB、履歴保存、UI改善、CI、デプロイ設定を全部やる」のような複数領域にまたがるタスクは避ける。Claude Codeの利用制限による中断のリスクを減らす意味もある。
 - 検証コマンドは、プロジェクトの標準（`npm run lint` / `npm run test` / `npm run build` / `cd backend && pytest`）から不必要に逸脱させない。バックエンドに変更がない場合でも、`backend pytest` は基本的に実行してもらい、実行できなければ理由を報告してもらう。
 - 「作業後の報告形式」の見出し構成は変更しない（ChatGPTレビュー時に機械的に読み取れるようにするため）。
