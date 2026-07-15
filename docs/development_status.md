@@ -9,7 +9,8 @@
 - ロードマップ（[02_roadmap.md](./02_roadmap.md)）上は **Phase 4（Python分析API）の途中**。
 - 加えて、Phase 4.5として**依頼者確認用のWeb公開**まで完了している（[05_tasks.md](./05_tasks.md)参照）。
 - Phase 3（Common Crawl / DataForSEO連携）、Phase 5（PostgreSQL永続化）、Phase 6（プロダクション化）は未着手。
-- 解析エンジンの内部設計を整理した[11_architecture_v1.md](./11_architecture_v1.md)（v1.0アーキテクチャ設計書）を追加済み（2026-07-15）。Common Crawl / DataForSEOなど取得元が増えても解析側を変えずに済むよう、すべての取得元を`Document[]`へ変換する「Document Pipeline」の考え方を明文化した。次フェーズはこのPipelineへのリファクタリングを推奨としている（詳細は同ドキュメントの「10. 次フェーズ候補」）。
+- 解析エンジンの内部設計を整理した[11_architecture_v1.md](./11_architecture_v1.md)（v1.0アーキテクチャ設計書）を追加済み（2026-07-15）。Common Crawl / DataForSEOなど取得元が増えても解析側を変えずに済むよう、すべての取得元を`Document[]`へ変換する「Document Pipeline」の考え方を明文化した。
+- 上記Pipelineのうち、`Document`型定義とProviderレベルの変換（`user_provided`/`web_fetch`→`Document[]`）、Analyzer側アダプターまで実装済み（2026-07-15）。Cleaner/Normalizer/Chunkerの分離は未着手（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
 
 ## 実装済み機能
 
@@ -18,6 +19,7 @@
 - Next.js Route Handler（`/api/analyze`）からPython分析API（`backend/`）を呼び出すBFF構成。未設定・失敗時は開発用ダミーデータへ自動フォールバック
 - Python API側のURL本文取得（`services/web_fetcher.py`、SSRF対策込み、同時実行数3で並列取得）
 - `meta.sections` によるセクション単位の実データ/ダミー/計算不能状態の可視化、`meta.documentsSource` による文章取得元の表示
+- `Document`型定義（[app/lib/document.ts](../app/lib/document.ts)、`backend/models.py`）と、`user_provided`/`web_fetch`の`Document[]`変換・共起解析への受け渡し。`meta.documentCount`/`meta.sourceTypes`として要約をAPIレスポンスに含める（[03_api_design.md](./03_api_design.md)、[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - 依頼者確認用のVercel/Render公開（[09_deployment.md](./09_deployment.md)参照）
 - ステージング環境の最低限保護: 簡易パスコードガード（[proxy.ts](../proxy.ts)、`STAGING_ACCESS_CODE`未設定時はローカル開発に影響なし）と`noindex`設定（[app/layout.tsx](../app/layout.tsx)の`metadata.robots`＋`X-Robots-Tag`ヘッダー）
 
@@ -75,7 +77,7 @@
 優先度の目安。詳細・粒度は [05_tasks.md](./05_tasks.md) を参照。
 
 1. 確認用公開環境の今後を決める（止める／簡易パスコードのままにする／正式な認証を足す）
-2. **Document Pipelineへのリファクタリング**（[11_architecture_v1.md](./11_architecture_v1.md)で次フェーズ推奨とした項目。Common Crawl/DataForSEO追加前に着手する）
+2. **Document Pipelineへのリファクタリング（残り）**: Cleaner分離・Normalizer・Chunkerの追加、development sample文章の扱い決定（[11_architecture_v1.md](./11_architecture_v1.md)「10. 次フェーズ候補」参照。`Document`型定義とProviderレベルの変換は完了済み）。Common Crawl/DataForSEO追加前に着手する
 3. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
 4. 共起語抽出の精度向上、またはPhase 4.2の他ロジック（文脈分類・センチメント分析等）への着手
 5. Phase 3（Common Crawl / DataForSEO）の調査開始

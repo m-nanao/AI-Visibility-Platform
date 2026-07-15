@@ -1,4 +1,17 @@
-from services.cooccurrence import compute_cooccurrence_ranking
+from models import Document
+from services.cooccurrence import (
+    compute_cooccurrence_ranking,
+    compute_cooccurrence_ranking_from_documents,
+)
+
+
+def _make_document(text: str) -> Document:
+    return Document(
+        id="doc-1",
+        sourceType="user_provided",
+        fetchedAt="2026-07-15T00:00:00+00:00",
+        text=text,
+    )
 
 
 def test_extracts_expected_keywords_near_brand_name():
@@ -67,3 +80,17 @@ def test_ranking_is_sorted_by_count_descending_and_capped():
     assert len(ranking) == 2
     assert ranking[0].count >= ranking[1].count
     assert ranking[0].keyword in {"料金", "プラン"}
+
+
+def test_compute_cooccurrence_ranking_from_documents_matches_text_based_version():
+    text = "OpenAIは料金プランが分かりやすく、導入事例も豊富です。"
+    documents = [_make_document(text)]
+
+    from_documents = compute_cooccurrence_ranking_from_documents("OpenAI", documents)
+    from_text = compute_cooccurrence_ranking("OpenAI", [text])
+
+    assert from_documents == from_text
+
+
+def test_compute_cooccurrence_ranking_from_documents_handles_empty_list():
+    assert compute_cooccurrence_ranking_from_documents("OpenAI", []) == []

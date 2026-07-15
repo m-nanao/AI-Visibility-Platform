@@ -74,8 +74,14 @@
 | `meta.documentsSource` | `"development_sample" \| "user_provided" \| "web_fetch" \| "dataforseo" \| "common_crawl"` | 共起語解析に使った文章の取得元。`dataforseo` / `common_crawl` は将来のデータソース用に予約 |
 | `meta.generatedAt` | `string` | 生成日時（ISO 8601）。Next.js側では `z.iso.datetime({ offset: true })` で検証しており、`"Z"` 終端・`"+00:00"` 等のオフセット付きのどちらの形式も許容する |
 | `meta.urlFetchResults` | `{ url: string; success: boolean; error?: string }[]`（任意） | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
+| `meta.documentCount` | `number`（任意） | 実際に解析対象となった`Document`（後述）の件数。`documentsSource` が `"development_sample"` の場合は存在しない（サンプル文章はまだ`Document[]`化されていないため） |
+| `meta.sourceTypes` | `("user_provided" \| "web_fetch" \| "common_crawl" \| "dataforseo")[]`（任意） | 実際に使われた`Document.sourceType`の一覧（重複なし）。`documentCount`と同じ条件でのみ存在する |
 
 **`"unavailable"` と `"real"`(0件) の違い**: `cooccurrenceRanking` が空配列 `[]` になるケースは2通りある。(1) `documents: []` を明示的に渡した、または実際に解析した結果キーワードが見つからなかった場合は `"real"`（計算は実行され、結果がたまたま0件だった）。(2) `urls` に渡したURLが1件も取得できなかった場合は `"unavailable"`（計算に必要な文章が1件も得られなかった）。この区別により、UIやAPI利用者は「正常に分析して0件だった」のか「取得に失敗して分析自体ができなかった」のかを判別できる（[07_decisions.md](./07_decisions.md) 参照）。
+
+### `Document`（内部処理単位、v1.0アーキテクチャ）
+
+`documents`（ユーザー入力）・`urls`（URL取得結果）は、Python側の内部処理では最終的に共通の`Document`型へ変換されてから共起語解析に渡される。`meta.documentCount`/`meta.sourceTypes`はこの`Document[]`の要約であり、`Document[]`そのものがAPIレスポンスに含まれることはない（本文を大量にフロントへ返さないため）。`Document`の定義・変換フロー（Provider→Cleaner→Normalizer→Chunker→Analyzer）の詳細は[11_architecture_v1.md](./11_architecture_v1.md)の「4. Document Pipeline」を参照。実装は[app/lib/document.ts](../app/lib/document.ts)（TypeScript側の型定義のみ、現時点でランタイムでは未使用）、`backend/models.py`の`Document`モデル、`backend/main.py`の`_documents_from_strings()`、`backend/services/web_fetcher.py`の`to_documents()`。development sample文章（`documentsSource: "development_sample"`）はまだ`Document[]`化されていない。
 
 Next.js側の完全なフォールバック（Python APIが不通、またはレスポンスがスキーマ不一致）の場合、`cooccurrenceRanking` を含む全セクションが `"mock"` になる（何も実計算されていないため）。`documentsSource` はこの場合意味を持たないが、値としては便宜的に `"development_sample"` を使う。
 

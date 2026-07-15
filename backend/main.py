@@ -19,6 +19,7 @@ docs/05_tasks.md (Phase 4) for what's next.
 
 import logging
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,14 +35,18 @@ from models import (
     AnalysisResult,
     AnalysisSectionStatuses,
     AnalyzeRequest,
+    Document,
     DocumentsSource,
     SectionStatus,
     UrlFetchResult,
 )
-from services.cooccurrence import compute_cooccurrence_ranking
+from services.cooccurrence import (
+    compute_cooccurrence_ranking,
+    compute_cooccurrence_ranking_from_documents,
+)
 from services.mock_analysis import build_dummy_analysis
 from services.sample_documents import build_sample_documents
-from services.web_fetcher import fetch_url_texts
+from services.web_fetcher import fetch_url_texts, to_documents as fetch_results_to_documents
 
 # Without this, INFO-level logs (e.g. the sample-document notice below)
 # are silently dropped: uvicorn's default logging config only sets up
@@ -92,6 +97,20 @@ def _validate_documents(documents: list[str]) -> str | None:
     return None
 
 
+def _documents_from_strings(texts: list[str]) -> list[Document]:
+    """Wraps caller-supplied `documents` (POST /analyze) as Document[]
+    (see docs/11_architecture_v1.md "4. Document Pipeline"). Blank
+    strings are kept as-is — compute_cooccurrence_ranking() already
+    skips blank documents, and not filtering here keeps documentCount
+    honest about what was actually submitted.
+    """
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    return [
+        Document(id=str(uuid4()), sourceType="user_provided", fetchedAt=fetched_at, text=text)
+        for text in texts
+    ]
+
+
 @app.post("/analyze", response_model=AnalysisResult)
 def analyze(payload: AnalyzeRequest):
     brand_name = (payload.brandName or "").strip()
@@ -106,6 +125,13 @@ def analyze(payload: AnalyzeRequest):
 
     url_fetch_results: list[UrlFetchResult] | None = None
     documents_source: DocumentsSource
+    # Document[] actually processed (see docs/11_architecture_v1.md "4.
+    # Document Pipeline") — stays None for the development_sample
+    # branch, which isn't wrapped as Document[] yet, so that
+    # meta.documentCount/sourceTypes can distinguish "the pipeline
+    # wasn't used" (None) from "it was used and found zero documents"
+    # ([]).
+    documents_list: list[Document] | None = None
     # "real" unless the urls path finds zero usable documents (every
     # fetch failed) — see the urls branch below. documents:[] is
     # deliberately *not* treated as unavailable (see docs/07_decisions.md):
@@ -120,6 +146,7 @@ def analyze(payload: AnalyzeRequest):
         if validation_error:
             return error_response(validation_error)
         documents_source = "user_provided"
+        documents_list = _documents_from_strings(documents)
 
     elif payload.urls is not None:
         if len(payload.urls) == 0:
@@ -137,7 +164,10 @@ def analyze(payload: AnalyzeRequest):
             UrlFetchResult(url=r.url, success=r.success, error=r.error)
             for r in fetch_results
         ]
-        documents = [r.text for r in fetch_results if r.success]
+        # Failed fetches are never turned into Documents (see
+        # web_fetcher.to_documents) — they're already tracked above via
+        # url_fetch_results.
+        documents_list = fetch_results_to_documents(fetch_results)
         documents_source = "web_fetch"
 
         failed = [r for r in fetch_results if not r.success]
@@ -155,7 +185,7 @@ def analyze(payload: AnalyzeRequest):
                 "; ".join(f"{r.url} ({r.error})" for r in failed),
             )
 
-        if len(documents) == 0:
+        if len(documents_list) == 0:
             # Every URL failed: there is nothing to compute
             # cooccurrenceRanking from. This is different from a
             # successful analysis that happens to find no keywords, so
@@ -177,7 +207,17 @@ def analyze(payload: AnalyzeRequest):
         )
 
     result = build_dummy_analysis(brand_name)
-    result.cooccurrenceRanking = compute_cooccurrence_ranking(brand_name, documents)
+    if documents_list is not None:
+        result.cooccurrenceRanking = compute_cooccurrence_ranking_from_documents(
+            brand_name, documents_list
+        )
+        document_count = len(documents_list)
+        source_types = sorted({document.sourceType for document in documents_list})
+    else:
+        result.cooccurrenceRanking = compute_cooccurrence_ranking(brand_name, documents)
+        document_count = None
+        source_types = None
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary="mock",
@@ -189,5 +229,7 @@ def analyze(payload: AnalyzeRequest):
         documentsSource=documents_source,
         generatedAt=datetime.now(timezone.utc).isoformat(),
         urlFetchResults=url_fetch_results,
+        documentCount=document_count,
+        sourceTypes=source_types,
     )
     return result

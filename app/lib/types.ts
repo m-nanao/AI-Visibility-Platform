@@ -1,3 +1,5 @@
+import type { DocumentSourceType } from "./document";
+
 export type Trend = "up" | "down" | "flat";
 export type Sentiment = "positive" | "neutral" | "negative";
 export type Priority = "high" | "medium" | "low";
@@ -41,6 +43,12 @@ export interface AnalysisMeta {
   generatedAt: string;
   // Present only when documentsSource is "web_fetch".
   urlFetchResults?: UrlFetchResult[];
+  // Summary of the Document[] actually processed server-side (see
+  // app/lib/document.ts) — undefined when documentsSource is
+  // "development_sample", which isn't wrapped as Document[] yet. The
+  // Document[] itself is never sent to the client in bulk.
+  documentCount?: number;
+  sourceTypes?: DocumentSourceType[];
 }
 
 export interface BrandSummary {
