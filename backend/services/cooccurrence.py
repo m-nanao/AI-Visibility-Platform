@@ -1,14 +1,32 @@
-"""Minimal Japanese co-occurrence keyword extraction.
+"""Minimal co-occurrence keyword extraction.
 
-Given a brand name and a list of documents (plain Japanese text), this
-finds words that appear near the brand name and ranks them by
-frequency. This is intentionally simple (character-window + POS
-filtering, no real relevance scoring) — see docs/07_decisions.md for
-why Janome was chosen and what a future iteration might improve.
+Given a brand name and a list of documents (plain text, mostly
+Japanese), this finds words that appear near the brand name and ranks
+them by frequency. This is intentionally simple (character-window +
+lexical filtering, no real relevance scoring) — see docs/07_decisions.md
+for why Janome was originally chosen and what a future iteration might
+improve.
+
+Two tokenizers are available, selected via the `TOKENIZER_MODE`
+environment variable:
+
+- `simple` (default): a regex-based tokenizer with no external
+  dictionary. Chosen as the default because Janome's dictionary load
+  is expensive enough (100MB+) to push a Render free-tier instance
+  (512MB) into an out-of-memory crash or timeout during `/analyze` —
+  MVP prioritizes the confirmation environment staying up over
+  extraction accuracy (see docs/07_decisions.md, and the
+  fix/render-analyze-memory task notes in docs/05_tasks.md).
+- `janome`: the original POS-filtered morphological analyzer. Opt-in
+  only (`TOKENIZER_MODE=janome`) for environments with enough memory
+  headroom.
 """
 
+import os
+import re
 from collections import Counter
 from functools import lru_cache
+from itertools import groupby
 
 from models import CooccurrenceKeyword, Document
 
@@ -30,14 +48,70 @@ TOP_N = 10
 ALLOWED_NOUN_SUBCATEGORIES = {"一般", "固有名詞", "サ変接続", "形容動詞語幹"}
 
 # Extra lexical stopwords, as a second safety net for generic words
-# that could still slip through the POS filter above.
+# that could still slip through the POS filter above (Janome mode) or
+# that the simple tokenizer has no POS info to filter at all (simple
+# mode — copula/auxiliary forms like です/ます would otherwise show up
+# as "keywords" next to every brand name).
 STOPWORDS = {
     "これ", "それ", "あれ", "ここ", "そこ", "あそこ",
     "こと", "もの", "とき", "ところ", "ため", "よう", "そう", "うち", "ほう",
     "さん", "たち", "など", "そちら", "こちら", "あちら",
+    "です", "ます", "ました", "ください", "という", "して", "した",
+    "ある", "あります", "できる", "なる",
 }
 
 MIN_KEYWORD_LENGTH = 2
+
+# Extra stopwords for the "simple" tokenizer only: common English
+# function words and URL/markup fragments that can otherwise slip
+# through as candidate keywords, since the simple tokenizer has no
+# part-of-speech info to filter on.
+SIMPLE_MODE_STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "are", "was",
+    "were", "have", "has", "not", "you", "your", "our", "http", "https",
+    "www", "com", "html", "org", "net",
+}
+
+# Matches runs of ASCII alphanumerics (English/numeric "words") or runs
+# of Japanese characters (hiragana, katakana incl. the prolonged sound
+# mark U+30FC, and CJK kanji). No dictionary lookup, so this is far
+# cheaper than Janome. Japanese runs are further split at
+# hiragana/katakana/kanji boundaries below (_split_japanese_run) as a
+# cheap proxy for word boundaries — e.g. "料金プランが" (kanji + katakana
+# + hiragana) becomes "料金" / "プラン" / "が", without needing a
+# dictionary. This still can't split a run of same-type characters
+# (e.g. a 4-kanji compound stays one token) — see the module docstring.
+_SIMPLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[぀-ヿ一-鿿]+")
+
+_HIRAGANA_RANGE = range(0x3040, 0x30A0)
+_KATAKANA_RANGE = range(0x30A0, 0x3100)
+
+
+def _char_type(ch: str) -> str:
+    code = ord(ch)
+    if code in _HIRAGANA_RANGE:
+        return "hiragana"
+    if code in _KATAKANA_RANGE:
+        return "katakana"
+    return "kanji"
+
+
+def _split_japanese_run(run: str) -> list[str]:
+    return ["".join(chars) for _, chars in groupby(run, key=_char_type)]
+
+
+def _tokenizer_mode() -> str:
+    return os.environ.get("TOKENIZER_MODE", "simple").strip().lower()
+
+
+def get_tokenizer_mode() -> str:
+    """Public accessor for the active tokenizer mode ("simple"/"janome").
+
+    Used by main.py's /analyze diagnostic logging so Render logs show
+    which tokenizer actually ran, without main.py reaching into this
+    module's private `_tokenizer_mode()`.
+    """
+    return _tokenizer_mode()
 
 
 @lru_cache(maxsize=1)
@@ -82,7 +156,7 @@ def _extract_windows(text: str, brand_name: str) -> list[str]:
     return windows
 
 
-def _is_candidate_keyword(surface: str, part_of_speech: str, brand_name: str) -> bool:
+def _is_janome_candidate_keyword(surface: str, part_of_speech: str, brand_name: str) -> bool:
     pos_parts = part_of_speech.split(",")
     top = pos_parts[0]
     sub = pos_parts[1] if len(pos_parts) > 1 else ""
@@ -101,6 +175,40 @@ def _is_candidate_keyword(surface: str, part_of_speech: str, brand_name: str) ->
     return True
 
 
+def _is_simple_candidate_keyword(token: str, brand_name: str) -> bool:
+    if len(token) < MIN_KEYWORD_LENGTH:
+        return False
+    if token.isdigit():
+        return False
+    if token in STOPWORDS:
+        return False
+    if token.lower() in SIMPLE_MODE_STOPWORDS:
+        return False
+    if token.lower() == brand_name.lower():
+        return False
+
+    return True
+
+
+def _simple_tokenize_candidates(window: str, brand_name: str) -> list[str]:
+    """Regex + character-type based candidate keyword extraction.
+
+    Not a real morphological analyzer: a run of same-type characters
+    (e.g. 4 kanji in a row) is kept whole rather than split into
+    words, so multi-word compounds can show up as a single "keyword".
+    Acceptable for MVP — see the module docstring for why this is the
+    default over Janome.
+    """
+    tokens: list[str] = []
+    for run in _SIMPLE_TOKEN_RE.findall(window):
+        if run[0].isascii():
+            tokens.append(run)
+        else:
+            tokens.extend(_split_japanese_run(run))
+
+    return [token for token in tokens if _is_simple_candidate_keyword(token, brand_name)]
+
+
 def compute_cooccurrence_ranking(
     brand_name: str,
     documents: list[str],
@@ -111,17 +219,25 @@ def compute_cooccurrence_ranking(
     Blank/whitespace-only documents are skipped; an empty or
     all-blank `documents` list simply yields an empty ranking rather
     than raising.
+
+    Uses the "simple" (regex-based) tokenizer by default, or Janome if
+    `TOKENIZER_MODE=janome` is set — see the module docstring.
     """
     counts: Counter[str] = Counter()
+    use_janome = _tokenizer_mode() == "janome"
 
     for document in documents:
         if not document or not document.strip():
             continue
 
         for window in _extract_windows(document, brand_name):
-            for token in _get_tokenizer().tokenize(window):
-                if _is_candidate_keyword(token.surface, token.part_of_speech, brand_name):
-                    counts[token.surface] += 1
+            if use_janome:
+                for token in _get_tokenizer().tokenize(window):
+                    if _is_janome_candidate_keyword(token.surface, token.part_of_speech, brand_name):
+                        counts[token.surface] += 1
+            else:
+                for token in _simple_tokenize_candidates(window, brand_name):
+                    counts[token] += 1
 
     return [
         # Real "up/down/flat" trend requires comparing against a

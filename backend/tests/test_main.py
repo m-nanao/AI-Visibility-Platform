@@ -49,6 +49,32 @@ def test_health_does_not_construct_janome_tokenizer():
     )
 
 
+def test_analyze_does_not_construct_janome_tokenizer_by_default():
+    """/analyze must also stay off Janome by default, not just /health.
+
+    The startup fix (lazy Tokenizer construction) alone wasn't enough
+    to prevent Render free-tier 502/timeout: /analyze's first real
+    call was still what triggered the Janome dictionary load, just
+    delayed from startup to request time. TOKENIZER_MODE defaults to
+    "simple" (regex-based, no dictionary) precisely so this never
+    happens unless an operator opts in via TOKENIZER_MODE=janome.
+    """
+    script = (
+        "import sys; "
+        "from fastapi.testclient import TestClient; "
+        "from main import app; "
+        "response = TestClient(app).post('/analyze', json={'brandName': 'OpenAI'}); "
+        "assert response.status_code == 200; "
+        "assert 'janome.tokenizer' not in sys.modules, "
+        "'/analyze must not trigger Janome Tokenizer initialization by default'"
+    )
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+    )
+
+
 def test_analyze_returns_200_for_valid_brand_name():
     response = client.post("/analyze", json={"brandName": "OpenAI"})
     assert response.status_code == 200

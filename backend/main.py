@@ -43,6 +43,7 @@ from models import (
 from services.cooccurrence import (
     compute_cooccurrence_ranking,
     compute_cooccurrence_ranking_from_documents,
+    get_tokenizer_mode,
 )
 from services.mock_analysis import build_dummy_analysis
 from services.sample_documents import build_sample_documents
@@ -123,6 +124,12 @@ def analyze(payload: AnalyzeRequest):
             f"brandName must be {MAX_BRAND_NAME_LENGTH} characters or fewer"
         )
 
+    # Minimal diagnostic logging around each stage of /analyze — added
+    # to narrow down where a Render free-tier request was dying (past
+    # url fetch, but before any "POST /analyze ... 200/500" completion
+    # log ever appeared). Counts/timings only; never document text.
+    logger.info("analyze start brandName=%r", brand_name)
+
     url_fetch_results: list[UrlFetchResult] | None = None
     documents_source: DocumentsSource
     # Document[] actually processed (see docs/11_architecture_v1.md "4.
@@ -170,6 +177,12 @@ def analyze(payload: AnalyzeRequest):
         documents_list = fetch_results_to_documents(fetch_results)
         documents_source = "web_fetch"
 
+        logger.info(
+            "url fetch complete: %d succeeded, %d failed",
+            sum(1 for r in fetch_results if r.success),
+            sum(1 for r in fetch_results if not r.success),
+        )
+
         failed = [r for r in fetch_results if not r.success]
         if failed:
             # Full reasons (which may include resolved IPs, connection
@@ -206,7 +219,14 @@ def analyze(payload: AnalyzeRequest):
             len(documents),
         )
 
+    logger.info(
+        "document count=%d source=%s",
+        len(documents_list) if documents_list is not None else len(documents),
+        documents_source,
+    )
+
     result = build_dummy_analysis(brand_name)
+    logger.info("cooccurrence start: mode=%s", get_tokenizer_mode())
     if documents_list is not None:
         result.cooccurrenceRanking = compute_cooccurrence_ranking_from_documents(
             brand_name, documents_list
@@ -217,6 +237,7 @@ def analyze(payload: AnalyzeRequest):
         result.cooccurrenceRanking = compute_cooccurrence_ranking(brand_name, documents)
         document_count = None
         source_types = None
+    logger.info("cooccurrence complete: %d keyword(s)", len(result.cooccurrenceRanking))
 
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
