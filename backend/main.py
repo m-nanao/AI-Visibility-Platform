@@ -45,6 +45,7 @@ from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
 )
+from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
 from services.sample_documents import build_sample_documents
 from services.web_fetcher import fetch_url_texts, to_documents as fetch_results_to_documents
@@ -100,14 +101,23 @@ def _validate_documents(documents: list[str]) -> str | None:
 
 def _documents_from_strings(texts: list[str]) -> list[Document]:
     """Wraps caller-supplied `documents` (POST /analyze) as Document[]
-    (see docs/11_architecture_v1.md "4. Document Pipeline"). Blank
-    strings are kept as-is — compute_cooccurrence_ranking() already
-    skips blank documents, and not filtering here keeps documentCount
-    honest about what was actually submitted.
+    (see docs/11_architecture_v1.md "4. Document Pipeline"). Each
+    text is run through the Normalizer stage (normalize_text()) so
+    user_provided text goes through the same Unicode/whitespace
+    cleanup as web_fetch text, before either reaches the Analyzer.
+    Blank strings are kept as-is (normalize_text("") == "") —
+    compute_cooccurrence_ranking() already skips blank documents, and
+    not filtering here keeps documentCount honest about what was
+    actually submitted.
     """
     fetched_at = datetime.now(timezone.utc).isoformat()
     return [
-        Document(id=str(uuid4()), sourceType="user_provided", fetchedAt=fetched_at, text=text)
+        Document(
+            id=str(uuid4()),
+            sourceType="user_provided",
+            fetchedAt=fetched_at,
+            text=normalize_text(text),
+        )
         for text in texts
     ]
 

@@ -15,7 +15,8 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/sample_documents.py` — `documents`/`urls` 未指定時に使う開発用サンプル文章
 - `services/web_fetcher.py` — URL検証・SSRF対策・HTTP取得を担う（Document Pipelineの「Provider」役）。HTML本文抽出自体は行わず、`services/document_cleaner.py`を呼び出す
 - `services/document_cleaner.py` — HTML解析・不要要素（script/style/nav/footer等）の除去・Cookieバナー/広告らしき要素の除去・タイトル抽出・本文テキスト抽出・空白整理を担う（Document Pipelineの「Cleaner」役）。詳細は下記「URL取得とHTMLクリーニング」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py` — pytestによる最低限のテスト
+- `services/document_normalizer.py` — Cleaner出力・`user_provided`文章それぞれに対するUnicode・空白・不可視文字の正規化を担う（Document Pipelineの「Normalizer」役）。`normalize_text()`。詳細は下記「Document Normalizer」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -128,9 +129,9 @@ TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 
 `documents` と `urls` を両方渡した場合、`urls` は無視される。
 
-## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py`）
+## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py` / `services/document_normalizer.py`）
 
-`urls` が指定された場合の処理は、役割ごとに2つのモジュールへ分離している（Document Pipelineの「Provider」「Cleaner」段階、詳細は[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）。
+`urls` が指定された場合の処理は、役割ごとに3つのモジュールへ分離している（Document Pipelineの「Provider」「Cleaner」「Normalizer」段階、詳細は[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）。
 
 ```
 URL
@@ -138,6 +139,8 @@ URL
 web_fetcher.py: URL検証・SSRF対策・HTTP取得
   ↓
 document_cleaner.py: HTMLクリーニング・本文抽出
+  ↓
+document_normalizer.py: Unicode・空白・不可視文字の正規化
   ↓
 Document(sourceType="web_fetch") 化
   ↓
@@ -151,7 +154,8 @@ cooccurrence.py で共起解析
 1. **安全性チェック（SSRF対策）**: `http`/`https` 以外のスキーム（`file://` 等）、および名前解決した結果がループバック・プライベート・リンクローカル（クラウドのメタデータエンドポイントを含む）・予約済み・マルチキャスト・未指定のいずれかに該当するアドレスを拒否する。リダイレクトは追跡しない。判定ロジック・トレードオフの詳細は [../docs/07_decisions.md](../docs/07_decisions.md) を参照。
 2. **取得**: タイムアウト5秒、専用のUser-Agent付きでHTTPリクエストを送る（`httpx`）。**同時実行数3**（`MAX_CONCURRENT_FETCHES`、`ThreadPoolExecutor`）で並列に取得する。10件を逐次実行するより速く、かつ対象サイトに過度な負荷をかけない範囲に抑えている。結果は入力順に整列して返す（完了順ではない）。
 3. **Cleaner呼び出し**: 取得したHTMLをそのまま`document_cleaner.py`の`clean_html_to_text()`/`extract_title()`に渡す。HTML解析ロジック自体は`web_fetcher.py`は持たない。
-4. **Fetch結果の組み立て**: `UrlFetchResult`（`url`/`success`/`text`/`title`/`error`）を組み立て、成功分のみ`Document(sourceType="web_fetch")`へ変換する（`to_documents()`）。
+4. **Normalizer呼び出し**: Cleanerが返した本文を`document_normalizer.py`の`normalize_text()`に通す。
+5. **Fetch結果の組み立て**: `UrlFetchResult`（`url`/`success`/`text`/`title`/`error`）を組み立て、成功分のみ`Document(sourceType="web_fetch")`へ変換する（`to_documents()`）。
 
 ### `document_cleaner.py`（Cleaner: HTML解析・不要要素削除・本文抽出）
 
@@ -159,6 +163,19 @@ cooccurrence.py で共起解析
 2. **Cookieバナー・広告らしき要素の除去**: タグ名では判別できないため、class/id名のヒューリスティック（`cookie-consent`、`advert`等の部分一致）でベストエフォート除去する。
 3. **本文抽出・空白整理**: 残った要素からテキストを抽出し、空白を圧縮したうえで5000文字（`MAX_BODY_TEXT_LENGTH`）に切り詰める。
 4. **タイトル抽出**: `<title>`要素からベストエフォートで抽出する（`extract_title()`）。
+
+### `document_normalizer.py`（Normalizer: Unicode・空白・不可視文字の正規化）
+
+Cleanerが「HTMLから本文を取り出す」役割なのに対し、Normalizerは「取り出した本文を解析しやすい形に整える」役割。`normalize_text(text: str) -> str`のみを公開する。
+
+1. **Unicode NFKC正規化**: `unicodedata.normalize("NFKC", text)`。全角英数字（`ＡＩ１２３` → `AI123`）・半角カタカナ・全角スペース等を標準形へ揃える。
+2. **不可視文字・制御文字の除去**: zero width space/joiner/non-joiner、BOM、制御文字を除去する。通常の改行・タブは除去せず、次の空白整理で扱う。
+3. **空白整理**: タブを半角スペースへ変換し、連続する半角スペースを1つへ collapse する。3行以上の連続改行は1行の空行（2つの改行）へ整理し、各行の前後空白・全体をtrimする。
+4. **過剰な連続句読点の軽い整理**: `！！！！！！`のような4回以上の同一記号の連続を3回までに圧縮する（`...`のような通常の3文字までの句読点連続はそのまま維持）。
+
+日本語の表記ゆれ統一・辞書ベースの正規化・URLやメールアドレスの書き換えは対象外（意味を変えるような強い変換は避ける方針）。`料金 プラン`のような単語間の意味のある半角スペース1つはそのまま維持される。空文字・空白のみの入力でも例外は出ず`""`を返す。
+
+`web_fetcher.py`は`document_cleaner.clean_html_to_text()`の戻り値に対して、`main.py`は`user_provided`の`documents`各要素に対して、それぞれ`normalize_text()`を適用してから`Document.text`に格納する（development sample文章はまだ`Document[]`化されていないため対象外）。Tokenizer・stopwords・共起計算のロジックは`cooccurrence.py`側の責務のままで、Normalizerには含めていない。
 
 結果は `meta.urlFetchResults`（`{ url, success, error? }` の配列）としてレスポンスに含まれる。**全URLが失敗した場合**、`cooccurrenceRanking` を計算するための文章が1件もないため、`meta.sections.cooccurrenceRanking` は `"real"` ではなく **`"unavailable"`** になる（「正常に計算して0件だった」場合と区別するため）。
 
@@ -185,6 +202,7 @@ pytest
 - `documents` を明示的に渡すと、その内容から `cooccurrenceRanking` が計算されること（同じ語が複数文章に出た場合に加算されることも確認）、`meta.documentsSource` が `"user_provided"` になること
 - `documents` を省略すると開発用サンプル文章が使われ、`cooccurrenceRanking` が空でないこと、`meta.documentsSource` が `"development_sample"` になること
 - `documents: []` を渡すとエラーにならず `cooccurrenceRanking: []`・`meta.sections.cooccurrenceRanking: "real"` になること
+- ブランド名を全角文字（`ＯｐｅｎＡＩ`）でしか含まない`documents`でも、Normalizerが半角化するためブランド名前後ウィンドウが正しくマッチし、共起語が計算されること
 - `documents` と `urls` を両方渡すと `documents` が優先され、`meta.urlFetchResults` が付かないこと
 - `urls` に許可されないホスト（localhost等）を渡すと、200のまま `meta.sections.cooccurrenceRanking: "unavailable"` になること
 - `urls: []`（空配列）が400になること
@@ -223,6 +241,7 @@ pytest
 - タイトルが取得できる場合/できない場合（`<title>`なし）
 - 取得成功分のみ`Document`化され、失敗分は除外されること
 - **`web_fetcher.py`が本文抽出を`document_cleaner.clean_html_to_text()`へ委譲していること**（自前でHTML解析していないことの回帰防止テスト）
+- **`web_fetcher.py`がCleaner出力を`document_normalizer.normalize_text()`に通していること**（全角文字・連続空白を含むCleaner出力が正規化された状態で返ること）
 
 `tests/test_document_cleaner.py` では `clean_html_to_text()` / `extract_title()` を直接テストしている。
 
@@ -235,6 +254,18 @@ pytest
 - 5000文字（`MAX_BODY_TEXT_LENGTH`）に切り詰められること
 - `source_url`引数を渡しても結果が変わらないこと（将来のドメイン別ルール用に予約）
 - タイトルが取得できる場合/できない場合/空HTMLの場合
+
+`tests/test_document_normalizer.py` では `normalize_text()` を直接テストしている。
+
+- 全角英数字が半角化されること（Unicode NFKC正規化）
+- 半角カタカナが標準形（全角カタカナ）へ正規化されること
+- zero width space等の不可視文字が除去されること
+- タブ・連続する半角スペースが整理されること
+- 3行以上の連続改行が整理されること
+- 日本語本文がそのまま維持されること（意味を変えるような変換をしない）
+- 「料金 プラン」のような単語間の意味のある半角スペース1つは維持されること
+- 空文字・空白のみの文字列でも例外が出ないこと（`""`を返す）
+- 過剰な連続句読点（4回以上）が軽く圧縮される一方、`...`のような通常の句読点連続は維持されること
 
 ## Next.js側との連携
 
@@ -267,6 +298,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 
 ## 今後（未実装）
 
+- Document Chunker（長文を分析しやすい単位へ分割する処理）。Document Pipeline（Provider→Cleaner→Normalizer→Chunker→Analyzer）のうちChunkerのみ未実装（[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）

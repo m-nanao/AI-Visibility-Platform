@@ -119,6 +119,26 @@ def test_analyze_computes_cooccurrence_ranking_from_provided_documents():
     assert counts["プラン"] == 2
 
 
+def test_analyze_normalizes_fullwidth_user_provided_documents_before_cooccurrence():
+    # The document below only mentions the brand in full-width form
+    # ("ＯｐｅｎＡＩ"). Without the Normalizer stage folding it to
+    # half-width ("OpenAI") before the brand-name window search, this
+    # document would never match brandName at all and the ranking
+    # would come back empty.
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "documents": ["ＯｐｅｎＡＩの料金プランについて教えてください。"],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    keywords = {kw.keyword for kw in result.cooccurrenceRanking}
+    assert "料金" in keywords
+
+
 def test_analyze_uses_sample_documents_when_documents_and_urls_omitted():
     response = client.post("/analyze", json={"brandName": "OpenAI"})
     assert response.status_code == 200
