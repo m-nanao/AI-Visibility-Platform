@@ -11,10 +11,10 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `main.py` — FastAPIアプリ本体とルート定義（`/health`, `/analyze`）
 - `models.py` — Pydanticモデル（`AnalysisResult`とその内訳、リクエスト/エラーの型、入力制限の定数）
 - `services/mock_analysis.py` — 固定のダミー分析データを生成する処理（`summary`等）
-- `services/cooccurrence.py` — 共起語抽出の実計算ロジック（Janomeで形態素解析）
+- `services/cooccurrence.py` — 共起語抽出の実計算ロジック。デフォルトは辞書不要の軽量`simple`トークナイザー、`TOKENIZER_MODE=janome`を明示した場合のみJanome形態素解析を使う（optional扱い。詳細は下記「Tokenizerの選択」および[../docs/07_decisions.md](../docs/07_decisions.md)参照）
 - `services/sample_documents.py` — `documents`/`urls` 未指定時に使う開発用サンプル文章
 - `services/web_fetcher.py` — URLからHTMLを取得し本文テキストを抽出する処理（SSRF対策込み）
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_web_fetcher.py` — pytestによる最低限のテスト
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -72,6 +72,30 @@ curl -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
   -d '{}'
 # => 400 {"error":"brandName is required"}
+```
+
+## Tokenizerの選択（`TOKENIZER_MODE`）
+
+共起語抽出（`services/cooccurrence.py`）のトークナイザーは環境変数 `TOKENIZER_MODE` で切り替えられる。
+
+| `TOKENIZER_MODE` | 挙動 |
+| --- | --- |
+| 未設定（デフォルト） | 辞書不要の軽量`simple`トークナイザー。正規表現ベースで、英数字の連続、およびひらがな/カタカナ/漢字の文字種境界を単語境界の代用にする |
+| `janome` | Janomeによる形態素解析（品詞フィルタつき、より高精度）。`optional`扱い |
+
+**デフォルトが`simple`である理由**: Render無料枠（512MB）ではJanomeの辞書読み込みが`/analyze`実行時のメモリ超過・502/timeoutの原因になっていたため、確認用環境では解析精度よりも安定動作を優先し`simple`をデフォルトにした（`GET /health`・`POST /analyze`のいずれも、デフォルト設定ではJanomeを読み込まない）。設計判断の詳細は [../docs/07_decisions.md](../docs/07_decisions.md) を参照。
+
+**`simple`モードの既知の制約**:
+
+- 品詞情報を持たないため、Janomeより単語分割の精度が低い（例: 連続する漢字の複合語を1語として扱う）。
+- 2文字以下のASCII語は一律除外される（`AI`のような短い語も対象）。
+- stopwordsは網羅的ではなく、未知の英語ノイズ語が残ることがある。
+- MVP・確認用環境では、精度の完璧化よりも安定動作を優先する方針としている。
+
+高精度な解析が必要な場合は `TOKENIZER_MODE=janome` を設定する（メモリに余裕のある環境向け。Render無料枠での使用は非推奨）。
+
+```bash
+TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 ```
 
 ## 入力検証
@@ -145,14 +169,22 @@ pytest
 - 不正な型（`brandName: 123`など）が400になること
 - `documents`/`urls` の件数・文字数制限を超えると400になること
 
-`tests/test_cooccurrence.py` では `compute_cooccurrence_ranking()` を直接テストしている。
+`tests/test_cooccurrence.py` では `TOKENIZER_MODE=janome`（optionalモード）を明示した上で `compute_cooccurrence_ranking()` を直接テストしている。
 
 - ブランド名が含まれる文章から期待する共起語（例: 「料金」「プラン」）が取得できること
 - ブランド名自身がランキングから除外されること
 - 空の文章リスト・空白のみの文章でもエラーにならないこと
-- 助詞・記号・助動詞が除外されること
+- 助詞・記号・助動詞が除外されること（Janomeの品詞フィルタ）
 - 同じ語が複数文章に出た場合に正しく加算されること
 - 上位N件でランキングが打ち切られ、件数の降順になっていること
+- `janome.tokenizer` のimport自体がモジュールimport時に走らないこと（起動時メモリ超過対策の回帰防止）
+
+`tests/test_cooccurrence_simple.py` では、デフォルトの`simple`トークナイザーを直接テストしている。
+
+- 日本語・英数字それぞれのトークンが抽出されること
+- URL断片（`http`/`www`等）・2文字以下のASCII語・stopwordsが除外されること
+- ブランド名前後のウィンドウ境界でASCII単語が途中で切れず、単語全体が残ること
+- `cooccurrenceRanking` が空にならないこと
 
 `tests/test_web_fetcher.py` では `_extract_body_text()` / `_is_safe_url()` / `fetch_url_texts()` を直接テストしている（実際のネットワークアクセスは行わず、DNS解決やHTTPリクエストは `monkeypatch` で差し替えている）。
 
