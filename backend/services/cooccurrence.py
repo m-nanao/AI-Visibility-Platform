@@ -8,8 +8,7 @@ why Janome was chosen and what a future iteration might improve.
 """
 
 from collections import Counter
-
-from janome.tokenizer import Tokenizer
+from functools import lru_cache
 
 from models import CooccurrenceKeyword, Document
 
@@ -40,7 +39,20 @@ STOPWORDS = {
 
 MIN_KEYWORD_LENGTH = 2
 
-_tokenizer = Tokenizer()
+
+@lru_cache(maxsize=1)
+def _get_tokenizer():
+    """Constructs Janome's Tokenizer (and loads its dictionary) lazily.
+
+    Janome's dictionary load is expensive enough to push a Render free
+    tier instance (512MB) over its memory limit if it happens at
+    import time — so this must only run on first actual use (the
+    first /analyze call), never as a side effect of importing this
+    module during FastAPI startup.
+    """
+    from janome.tokenizer import Tokenizer
+
+    return Tokenizer()
 
 
 def _extract_windows(text: str, brand_name: str) -> list[str]:
@@ -107,7 +119,7 @@ def compute_cooccurrence_ranking(
             continue
 
         for window in _extract_windows(document, brand_name):
-            for token in _tokenizer.tokenize(window):
+            for token in _get_tokenizer().tokenize(window):
                 if _is_candidate_keyword(token.surface, token.part_of_speech, brand_name):
                     counts[token.surface] += 1
 

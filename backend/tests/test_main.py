@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,6 +23,30 @@ def test_health_returns_200():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_health_does_not_construct_janome_tokenizer():
+    """/health must stay independent of analysis processing.
+
+    Runs in a fresh subprocess (importing main + calling /health only)
+    so this reflects the actual FastAPI startup path on Render, where
+    a heavy import/init here previously caused an out-of-memory crash
+    before uvicorn could even bind the port.
+    """
+    script = (
+        "import sys; "
+        "from fastapi.testclient import TestClient; "
+        "from main import app; "
+        "response = TestClient(app).get('/health'); "
+        "assert response.status_code == 200; "
+        "assert 'janome.tokenizer' not in sys.modules, "
+        "'/health must not trigger Janome Tokenizer initialization'"
+    )
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+    )
 
 
 def test_analyze_returns_200_for_valid_brand_name():
