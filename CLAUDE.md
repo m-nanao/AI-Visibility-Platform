@@ -17,7 +17,8 @@
 - [docs/07_decisions.md](docs/07_decisions.md) — 設計判断ログ（なぜそうしたかの記録）
 - [docs/08_screen_design.md](docs/08_screen_design.md) — 画面設計
 - [docs/09_deployment.md](docs/09_deployment.md) — 公開手順（依頼者確認用のVercel/Render公開）
-- [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) — AI協調開発フロー（役割分担・承認境界・修正ループ等）
+- [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) — AI協調開発フロー（役割分担・承認境界・Gitブランチ運用・修正ループ等）
+- [docs/11_architecture_v1.md](docs/11_architecture_v1.md) — 解析エンジンのv1.0アーキテクチャ（Document Pipeline等）
 - [docs/development_status.md](docs/development_status.md) — 現状サマリー（1ファイルで今の状態を把握する用）
 - [docs/task_template.md](docs/task_template.md) / [docs/review_template.md](docs/review_template.md) — タスク依頼・レビューの雛形
 

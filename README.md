@@ -7,6 +7,7 @@
 - 現状のまとめ（実装済み/ダミーの機能・公開URL・既知の課題）は [docs/development_status.md](docs/development_status.md) を参照
 - 公開・デプロイ手順は [docs/09_deployment.md](docs/09_deployment.md) を参照
 - ChatGPT・Claude Codeによる開発運用フローは [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) を参照
+- 解析エンジンのv1.0アーキテクチャ（Document Pipeline等、実装方針の統一）は [docs/11_architecture_v1.md](docs/11_architecture_v1.md) を参照
 
 > **依頼者確認用ステージング環境として一時公開しています**（正式な本番環境ではありません）: 進捗報告・機能確認・MVPレビュー用途です。共起語ランキングのみ実データ計算で、その他のセクションは開発用データです。Common Crawl・DataForSEOとの連携もまだ行っていません。誤アクセス防止用の簡易パスコードガードはありますが正式な認証ではないため、機密情報・個人情報・本番データは入力しないでください。詳細は [docs/09_deployment.md](docs/09_deployment.md) を参照してください。
 
