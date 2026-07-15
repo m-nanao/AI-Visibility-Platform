@@ -229,6 +229,34 @@ def test_to_documents_returns_empty_list_when_all_fetches_failed():
     assert to_documents(results) == []
 
 
+def test_fetch_url_texts_normalizes_cleaned_body_text(monkeypatch):
+    monkeypatch.setattr(
+        web_fetcher.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+    monkeypatch.setattr(
+        web_fetcher.httpx,
+        "get",
+        lambda url, **kwargs: httpx.Response(
+            200,
+            text="<html><body><p>ignored, clean_html_to_text is stubbed below</p></body></html>",
+            request=httpx.Request("GET", url),
+        ),
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "clean_html_to_text",
+        lambda html, source_url=None: "ＡＩ　Ｖｉｓｉｂｉｌｉｔｙ    Platform",
+    )
+
+    results = fetch_url_texts(["https://example.com/article"])
+
+    # web_fetcher ran document_cleaner's output through the Normalizer
+    # (normalize_text) rather than storing it as-is.
+    assert results[0].text == "AI Visibility Platform"
+
+
 def test_fetch_url_texts_delegates_cleaning_to_document_cleaner(monkeypatch):
     monkeypatch.setattr(
         web_fetcher.socket,

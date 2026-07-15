@@ -109,7 +109,7 @@
   - [x] 共起解析に`Document[]`ベースの薄いアダプターを追加する（`backend/services/cooccurrence.py`の`compute_cooccurrence_ranking_from_documents()`。`compute_cooccurrence_ranking()`自体は変更なし）
   - [x] `AnalysisResult.meta`に`documentCount`/`sourceTypes`という要約フィールドを追加する（`Document[]`そのものはフロントへ返さない。TS/Python両方、Zodスキーマも対応）
   - [x] `web_fetcher.py`からCleaner（HTML除去処理）をProviderから分離する（2026-07-15、`backend/services/document_cleaner.py`新設。`clean_html_to_text()`/`extract_title()`。Cookieバナー・広告らしき要素のヒューリスティック除去も含む。既存のURL入力分析の挙動は維持）
-  - [ ] Normalizer（全角半角・空白等の正規化）を独立した処理として追加する（Cleanerは最小限の空白圧縮のみ）
+  - [x] Normalizer（全角半角・空白等の正規化）を独立した処理として追加する（2026-07-16、`backend/services/document_normalizer.py`新設。`normalize_text()`。Unicode NFKC正規化・zero-width等不可視文字/制御文字の除去・タブ/連続空白/連続改行の整理・過剰な連続句読点の軽い圧縮を実施。`web_fetch`は`document_cleaner.clean_html_to_text()`の出力に、`user_provided`は`documents`各要素に適用。日本語の表記ゆれ統一・辞書ベース正規化・Chunkerの責務（長文分割）・Tokenizer/stopwordsの責務（形態素解析・共起計算）は対象外のまま維持し、責務を混在させていない）
   - [ ] Chunker（長文分割）を独立した処理として追加する
   - [ ] development sample文章を`Document[]`化するか、`DocumentSourceType`に対応する値を追加するか判断する（現状は対象外のまま`documentCount`/`sourceTypes`が`None`になる）
 - [ ] `Document.sourceType`（[11_architecture_v1.md](./11_architecture_v1.md)で定義）と既存の`meta.documentsSource`（[04_data_model.md](./04_data_model.md)）を統合するか、粒度の異なる別概念として並存させるか検討する（未確定のまま2つのフィールドが並存している状態）

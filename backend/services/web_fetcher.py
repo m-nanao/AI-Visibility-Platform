@@ -5,8 +5,10 @@ docs/11_architecture_v1.md "4. Document Pipeline") for the `web_fetch`
 source: URL validation, SSRF checks, the actual HTTP request, and
 assembling UrlFetchResult / Document. It deliberately does NOT own HTML
 cleaning/text-extraction — that's services/document_cleaner.py's job
-(the Pipeline's "Cleaner" stage), reused as-is once Common Crawl or
-another HTML-based source is added.
+(the Pipeline's "Cleaner" stage) — nor Unicode/whitespace normalization
+— that's services/document_normalizer.py's job (the Pipeline's
+"Normalizer" stage). Both are called from here and reused as-is once
+Common Crawl or another HTML-based source is added.
 
 This is intentionally minimal:
 
@@ -49,6 +51,7 @@ import httpx
 
 from models import Document
 from services.document_cleaner import clean_html_to_text, extract_title
+from services.document_normalizer import normalize_text
 
 FETCH_TIMEOUT_SECONDS = 5.0
 
@@ -126,9 +129,11 @@ def _fetch_one(url: str) -> UrlFetchResult:
     except httpx.HTTPError as exc:
         return UrlFetchResult(url=url, success=False, error=str(exc))
 
-    # HTML cleaning/extraction is the Cleaner stage's job (Document
-    # Pipeline, docs/11_architecture_v1.md), not this Provider's.
-    text = clean_html_to_text(response.text, source_url=url)
+    # HTML cleaning/extraction is the Cleaner stage's job, and
+    # Unicode/whitespace normalization is the Normalizer stage's job
+    # (Document Pipeline, docs/11_architecture_v1.md) — neither is this
+    # Provider's responsibility.
+    text = normalize_text(clean_html_to_text(response.text, source_url=url))
     title = extract_title(response.text)
     return UrlFetchResult(url=url, success=True, text=text, title=title)
 
