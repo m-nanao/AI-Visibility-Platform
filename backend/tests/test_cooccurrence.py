@@ -1,8 +1,29 @@
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 from models import Document
 from services.cooccurrence import (
+    _get_tokenizer,
     compute_cooccurrence_ranking,
     compute_cooccurrence_ranking_from_documents,
 )
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _use_janome_tokenizer(monkeypatch):
+    """This file specifically tests Janome's POS-filtered extraction
+    (the original tokenizer, still available but no longer the
+    default — see docs/07_decisions.md and the module docstring in
+    services/cooccurrence.py). The lightweight regex tokenizer that IS
+    the production default has its own tests in
+    tests/test_cooccurrence_simple.py.
+    """
+    monkeypatch.setenv("TOKENIZER_MODE", "janome")
 
 
 def _make_document(text: str) -> Document:
@@ -94,3 +115,28 @@ def test_compute_cooccurrence_ranking_from_documents_matches_text_based_version(
 
 def test_compute_cooccurrence_ranking_from_documents_handles_empty_list():
     assert compute_cooccurrence_ranking_from_documents("OpenAI", []) == []
+
+
+def test_importing_cooccurrence_module_does_not_construct_tokenizer():
+    """Guards against a regression back to a module-level Tokenizer().
+
+    Run in a fresh subprocess (not this test process, which may have
+    already called compute_cooccurrence_ranking via other tests) so
+    the check reflects what actually happens at FastAPI startup, when
+    `import services.cooccurrence` is the only thing that has run.
+    """
+    script = (
+        "import sys; "
+        "import services.cooccurrence; "
+        "assert 'janome.tokenizer' not in sys.modules, "
+        "'importing services.cooccurrence must not import janome.tokenizer'"
+    )
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=BACKEND_DIR,
+        check=True,
+    )
+
+
+def test_get_tokenizer_is_cached_across_calls():
+    assert _get_tokenizer() is _get_tokenizer()
