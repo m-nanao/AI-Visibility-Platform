@@ -44,10 +44,18 @@ export interface AnalysisMeta {
   // Present only when documentsSource is "web_fetch".
   urlFetchResults?: UrlFetchResult[];
   // Summary of the Document[] actually processed server-side (see
-  // app/lib/document.ts) — undefined when documentsSource is
-  // "development_sample", which isn't wrapped as Document[] yet. The
-  // Document[] itself is never sent to the client in bulk.
+  // app/lib/document.ts) — populated for every documentsSource,
+  // including "development_sample" (development sample text is
+  // wrapped as Document[] too, same as user_provided/web_fetch). Kept
+  // optional for schema flexibility, not because any current source
+  // omits it. The Document[] itself is never sent to the client in bulk.
   documentCount?: number;
+  // The Document.sourceType values actually present in that Document[]
+  // — may include "development_sample". Distinct from documentsSource
+  // above: documentsSource summarizes the whole response (one value),
+  // while sourceTypes lists what each individual Document was tagged
+  // with (can vary per Document once multiple sources feed one
+  // analysis, e.g. a future Common Crawl + web_fetch combination).
   sourceTypes?: DocumentSourceType[];
 }
 
