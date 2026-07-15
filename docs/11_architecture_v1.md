@@ -143,6 +143,8 @@ HTMLの不要要素を削除する。`script`・`style`・`nav`・`footer`・広
 
 共起解析のトークナイザーは`TOKENIZER_MODE`環境変数で切り替え可能（2026-07-16）。デフォルト（未設定時）は辞書を持たない軽量な正規表現ベースの`simple`モードで、英数字の連続とひらがな/カタカナ/漢字の文字種境界を単語境界の代用にする簡易分割を行う（厳密な形態素解析ではない）。`TOKENIZER_MODE=janome`を明示した場合のみ、従来のJanome形態素解析（品詞フィルタつき）を使う。Render無料枠（512MB）ではJanomeの辞書読み込みが`/analyze`実行時のメモリ超過・502/timeoutの原因になっていたため、確認用環境では解析精度よりも安定動作を優先し`simple`をデフォルトにした（詳細はdocs/07_decisions.mdの経緯、および[05_tasks.md](./05_tasks.md) Phase 4.2参照）。Janomeは今後の精度改善用にoptionalとして残している。
 
+`simple`モードは実運用（`https://vercel.com/docs`の分析）で`on`/`to`/`nd`のような明らかなノイズを出していたため、ノイズ削減を実施済み（2026-07-16）。ブランド名前後20文字ウィンドウがASCII単語の途中で切れる場合に単語境界まで拡張する処理（Janomeモードのウィンドウ切り出しには影響しない）、英語の一般的な機能語のstopwords追加、ASCII側トークンのみ最小長3文字への強化（日本語側は2文字のまま）を行った。「精度の完璧化」ではなく「明らかなノイズ削減」が目的であり、文脈分析・Normalizer・Chunkerの本格実装とは別軸の対応（詳細は[05_tasks.md](./05_tasks.md) Phase 4.2参照）。
+
 ### 現状とのギャップ
 
 `Document`型の定義、Provider（`web_fetcher.py`）とCleaner（`document_cleaner.py`）の分離、Analyzer側のアダプター（`compute_cooccurrence_ranking_from_documents()`）は実装済み。残るギャップは、Normalizer・Chunkerという独立した処理段階がまだないこと（Cleanerが最小限の空白圧縮のみ行っている）。development sample文章（`documentsSource: "development_sample"`）も`Document[]`化されていない（`DocumentSourceType`に対応する値がないため）。5章「未実装」およびPhase 4.2（[05_tasks.md](./05_tasks.md)）に記載の通り、共起語抽出の精度向上に着手する前に、Normalizer・Chunkerを追加してこの5段階のパイプラインを完成させることを推奨する（10章参照）。

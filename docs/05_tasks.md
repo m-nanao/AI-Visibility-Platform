@@ -99,6 +99,7 @@
 
 - [x] 共起語抽出ロジック（形態素解析ライブラリにJanomeを採用。ブランド名前後20文字のウィンドウ + 品詞フィルタ + ストップワードによるシンプルな実装。`backend/services/cooccurrence.py`）
 - [x] Render無料枠（512MB）で`/analyze`実行時にJanomeの辞書読み込みが原因の502/timeoutが発生する問題を修正（2026-07-16）。`TOKENIZER_MODE`環境変数を追加し、デフォルトを辞書不要の軽量トークナイザー（`simple`。英数字連続+ひらがな/カタカナ/漢字の文字種境界で分割、品詞フィルタなし）に変更。Janomeは`TOKENIZER_MODE=janome`を明示した場合のみのoptional扱いとして`backend/services/cooccurrence.py`に残した。Vercel/Render側の設定変更は不要（デフォルト値の変更のみ）。詳細は[11_architecture_v1.md](./11_architecture_v1.md)「4. Document Pipeline」Analyzer節参照
+- [x] `simple`トークナイザーの明らかなノイズ削減（2026-07-16）。実際に`https://vercel.com/docs`を分析した際に`on`/`to`/`nd`のようなノイズが共起語ランキングに出ていた問題を修正。①ブランド名前後20文字ウィンドウがASCII単語の途中で切れる場合に単語境界まで拡張する処理を追加（Janomeモードのウィンドウ切り出しは変更なし）、②英語の一般的な機能語（on/to/in/of/the等）を`SIMPLE_MODE_STOPWORDS`に追加、③ASCII側トークンのみ最小長を3文字に強化（日本語側は2文字のまま維持、`AI`のような2文字語は今回は除外を許容）。「精度の完璧化」ではなく「明らかなノイズ削減」が目的で、本格的な文脈分析・Normalizer・Chunkerは対象外
 - [x] URLから本文を取得して共起語解析に渡す最小機能（`backend/services/web_fetcher.py`。`POST /analyze` の `urls` パラメータ、優先順位は `documents` > `urls` > 開発用サンプル文章）
 - [x] URL取得の並列化（`ThreadPoolExecutor`、同時実行数3。1件の失敗が他を止めない）
 - [ ] **【次フェーズ推奨・一部着手済み】Document Pipelineへのリファクタリング**（Provider→Cleaner→Normalizer→Chunker→Analyzerの5段階に整理する。詳細は[11_architecture_v1.md](./11_architecture_v1.md)の「4. Document Pipeline」「10. 次フェーズ候補」参照）※粒度大。残作業は1件ずつに分解してから着手する
