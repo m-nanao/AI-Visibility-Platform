@@ -12,39 +12,38 @@
 
 ---
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## セットアップ・ローカル開発
 
-## Getting Started
-
-First, run the development server:
+**Node.js 20.9以降が必須**（このNext.jsバージョンの要件）。
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+[http://localhost:3000](http://localhost:3000) を開くとブランド名入力画面が表示される。デフォルトでは開発用の固定ダミーデータで動作する。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Python分析API（`backend/`）を併用する場合は、[backend/README.md](backend/README.md)の手順でFastAPIサーバーを起動した上で、`.env.local`に以下を設定する（[.env.example](.env.example)参照）。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+PYTHON_ANALYSIS_API_URL=http://localhost:8000
+```
 
-## Learn More
+## テスト・ビルド
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run lint    # ESLint（next lintはこのNext.jsバージョンで廃止済み）
+npm run test    # vitest
+npm run build   # 本番ビルド
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+バックエンド（Python）のテストは `backend/` で以下を実行する。
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
-## Deploy on Vercel
+## デプロイ・公開環境
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+現在、依頼者確認用ステージング環境としてVercel（Next.js）・Render（FastAPI）へ公開している。手順・注意事項は [docs/09_deployment.md](docs/09_deployment.md) を参照。
