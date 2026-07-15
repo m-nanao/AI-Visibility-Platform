@@ -11,6 +11,10 @@ services/cooccurrence.py) from one of, in priority order:
 3. development sample documents (services/sample_documents.py), if
    neither of the above is given
 
+All three sources are wrapped as Document[] (see
+docs/11_architecture_v1.md "4. Document Pipeline") before reaching the
+Analyzer, so `analyze()` never branches on source type past that point.
+
 `summary`, `contextAnalysis`, `aiOverviewComparison`, and
 `improvements` are still fixed placeholder data — `meta.sections`
 reports this per-section so callers don't have to guess. See
@@ -41,13 +45,12 @@ from models import (
     UrlFetchResult,
 )
 from services.cooccurrence import (
-    compute_cooccurrence_ranking,
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
 )
 from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
-from services.sample_documents import build_sample_documents
+from services.sample_documents import build_sample_documents_as_documents
 from services.web_fetcher import fetch_url_texts, to_documents as fetch_results_to_documents
 
 # Without this, INFO-level logs (e.g. the sample-document notice below)
@@ -143,12 +146,10 @@ def analyze(payload: AnalyzeRequest):
     url_fetch_results: list[UrlFetchResult] | None = None
     documents_source: DocumentsSource
     # Document[] actually processed (see docs/11_architecture_v1.md "4.
-    # Document Pipeline") — stays None for the development_sample
-    # branch, which isn't wrapped as Document[] yet, so that
-    # meta.documentCount/sourceTypes can distinguish "the pipeline
-    # wasn't used" (None) from "it was used and found zero documents"
-    # ([]).
-    documents_list: list[Document] | None = None
+    # Document Pipeline") — every branch below assigns this, since
+    # documents/urls/development_sample are all wrapped as Document[]
+    # before reaching the Analyzer.
+    documents_list: list[Document]
     # "real" unless the urls path finds zero usable documents (every
     # fetch failed) — see the urls branch below. documents:[] is
     # deliberately *not* treated as unavailable (see docs/07_decisions.md):
@@ -221,32 +222,27 @@ def analyze(payload: AnalyzeRequest):
             )
 
     else:
-        documents = build_sample_documents(brand_name)
+        documents_list = build_sample_documents_as_documents(brand_name)
         documents_source = "development_sample"
         logger.info(
             "documents/urls not provided for brandName=%r; using %d development sample document(s)",
             brand_name,
-            len(documents),
+            len(documents_list),
         )
 
     logger.info(
         "document count=%d source=%s",
-        len(documents_list) if documents_list is not None else len(documents),
+        len(documents_list),
         documents_source,
     )
 
     result = build_dummy_analysis(brand_name)
     logger.info("cooccurrence start: mode=%s", get_tokenizer_mode())
-    if documents_list is not None:
-        result.cooccurrenceRanking = compute_cooccurrence_ranking_from_documents(
-            brand_name, documents_list
-        )
-        document_count = len(documents_list)
-        source_types = sorted({document.sourceType for document in documents_list})
-    else:
-        result.cooccurrenceRanking = compute_cooccurrence_ranking(brand_name, documents)
-        document_count = None
-        source_types = None
+    result.cooccurrenceRanking = compute_cooccurrence_ranking_from_documents(
+        brand_name, documents_list
+    )
+    document_count = len(documents_list)
+    source_types = sorted({document.sourceType for document in documents_list})
     logger.info("cooccurrence complete: %d keyword(s)", len(result.cooccurrenceRanking))
 
     result.meta = AnalysisMeta(

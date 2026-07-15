@@ -10,7 +10,7 @@
 - 加えて、Phase 4.5として**依頼者確認用のWeb公開**まで完了している（[05_tasks.md](./05_tasks.md)参照）。
 - Phase 3（Common Crawl / DataForSEO連携）、Phase 5（PostgreSQL永続化）、Phase 6（プロダクション化）は未着手。
 - 解析エンジンの内部設計を整理した[11_architecture_v1.md](./11_architecture_v1.md)（v1.0アーキテクチャ設計書）を追加済み（2026-07-15）。Common Crawl / DataForSEOなど取得元が増えても解析側を変えずに済むよう、すべての取得元を`Document[]`へ変換する「Document Pipeline」の考え方を明文化した。
-- 上記Pipelineのうち、`Document`型定義・Providerレベルの変換（`user_provided`/`web_fetch`→`Document[]`）・Cleanerの分離（`backend/services/document_cleaner.py`）・Normalizerの追加（`backend/services/document_normalizer.py`、2026-07-16）・Analyzer側アダプターまで実装済み。Chunkerの追加は未着手（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
+- 上記Pipelineのうち、`Document`型定義・Providerレベルの変換（`user_provided`/`web_fetch`/`development_sample`→`Document[]`、development_sampleは2026-07-16に対応）・Cleanerの分離（`backend/services/document_cleaner.py`）・Normalizerの追加（`backend/services/document_normalizer.py`、2026-07-16）・Analyzer側アダプターまで実装済み。3つの取得元すべてがDocument[]経由で共起解析されるようになった。Chunkerの追加のみ未着手（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
 
 ## 実装済み機能
 
@@ -19,9 +19,9 @@
 - Next.js Route Handler（`/api/analyze`）からPython分析API（`backend/`）を呼び出すBFF構成。未設定・失敗時は開発用ダミーデータへ自動フォールバック
 - Python API側のURL本文取得（`services/web_fetcher.py`、SSRF対策込み、同時実行数3で並列取得）
 - `meta.sections` によるセクション単位の実データ/ダミー/計算不能状態の可視化、`meta.documentsSource` による文章取得元の表示
-- `Document`型定義（[app/lib/document.ts](../app/lib/document.ts)、`backend/models.py`）と、`user_provided`/`web_fetch`の`Document[]`変換・共起解析への受け渡し。`meta.documentCount`/`meta.sourceTypes`として要約をAPIレスポンスに含める（[03_api_design.md](./03_api_design.md)、[11_architecture_v1.md](./11_architecture_v1.md)参照）
+- `Document`型定義（[app/lib/document.ts](../app/lib/document.ts)、`backend/models.py`）と、`user_provided`/`web_fetch`/`development_sample`すべての`Document[]`変換・共起解析への受け渡し。`meta.documentCount`/`meta.sourceTypes`として要約をAPIレスポンスに含める（development_sampleの場合も常に値が入るようになった、2026-07-16。[03_api_design.md](./03_api_design.md)、[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - Document Cleaner（`backend/services/document_cleaner.py`）としてHTML本文抽出・不要要素除去を`web_fetcher.py`から分離。Cookieバナー・広告らしき要素のヒューリスティック除去も含む（[11_architecture_v1.md](./11_architecture_v1.md)参照）
-- Document Normalizer（`backend/services/document_normalizer.py`、2026-07-16）として`normalize_text()`を実装。Unicode NFKC正規化（全角英数字の半角化等）・zero-width等不可視文字/制御文字の除去・タブ/連続空白/連続改行の整理・過剰な連続句読点の軽い圧縮を行う。`web_fetch`（Cleaner出力）・`user_provided`（`documents`各要素）の両方に適用（[11_architecture_v1.md](./11_architecture_v1.md)参照）
+- Document Normalizer（`backend/services/document_normalizer.py`、2026-07-16）として`normalize_text()`を実装。Unicode NFKC正規化（全角英数字の半角化等）・zero-width等不可視文字/制御文字の除去・タブ/連続空白/連続改行の整理・過剰な連続句読点の軽い圧縮を行う。`web_fetch`（Cleaner出力）・`user_provided`（`documents`各要素）・`development_sample`（サンプルテンプレート）すべてに適用（[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - 依頼者確認用のVercel/Render公開（[09_deployment.md](./09_deployment.md)参照）
 - ステージング環境の最低限保護: 簡易パスコードガード（[proxy.ts](../proxy.ts)、`STAGING_ACCESS_CODE`未設定時はローカル開発に影響なし）と`noindex`設定（[app/layout.tsx](../app/layout.tsx)の`metadata.robots`＋`X-Robots-Tag`ヘッダー）
 
@@ -80,7 +80,7 @@
 優先度の目安。詳細・粒度は [05_tasks.md](./05_tasks.md) を参照。
 
 1. 確認用公開環境の今後を決める（止める／簡易パスコードのままにする／正式な認証を足す）
-2. **Document Pipelineへのリファクタリング（残り）**: Chunkerの追加、development sample文章の扱い決定（[11_architecture_v1.md](./11_architecture_v1.md)「10. 次フェーズ候補」参照。`Document`型定義・Providerレベルの変換・Cleaner分離・Normalizer追加は完了済み）。Common Crawl/DataForSEO追加前に着手する
+2. **Document Pipelineへのリファクタリング（残り）**: Chunkerの追加（[11_architecture_v1.md](./11_architecture_v1.md)「10. 次フェーズ候補」参照。`Document`型定義・Providerレベルの変換・Cleaner分離・Normalizer追加・development sample文章のDocument[]化は完了済み）。Common Crawl/DataForSEO追加前に着手する
 3. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
 4. 共起語抽出の精度向上、またはPhase 4.2の他ロジック（文脈分類・センチメント分析等）への着手
 5. Phase 3（Common Crawl / DataForSEO）の調査開始

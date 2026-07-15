@@ -12,11 +12,11 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `models.py` — Pydanticモデル（`AnalysisResult`とその内訳、リクエスト/エラーの型、入力制限の定数）
 - `services/mock_analysis.py` — 固定のダミー分析データを生成する処理（`summary`等）
 - `services/cooccurrence.py` — 共起語抽出の実計算ロジック。デフォルトは辞書不要の軽量`simple`トークナイザー、`TOKENIZER_MODE=janome`を明示した場合のみJanome形態素解析を使う（optional扱い。詳細は下記「Tokenizerの選択」および[../docs/07_decisions.md](../docs/07_decisions.md)参照）
-- `services/sample_documents.py` — `documents`/`urls` 未指定時に使う開発用サンプル文章
+- `services/sample_documents.py` — `documents`/`urls` 未指定時に使う開発用サンプル文章（Document Pipelineの「Provider」役、`sourceType: "development_sample"`）。`build_sample_documents_as_documents()`
 - `services/web_fetcher.py` — URL検証・SSRF対策・HTTP取得を担う（Document Pipelineの「Provider」役）。HTML本文抽出自体は行わず、`services/document_cleaner.py`を呼び出す
 - `services/document_cleaner.py` — HTML解析・不要要素（script/style/nav/footer等）の除去・Cookieバナー/広告らしき要素の除去・タイトル抽出・本文テキスト抽出・空白整理を担う（Document Pipelineの「Cleaner」役）。詳細は下記「URL取得とHTMLクリーニング」参照
-- `services/document_normalizer.py` — Cleaner出力・`user_provided`文章それぞれに対するUnicode・空白・不可視文字の正規化を担う（Document Pipelineの「Normalizer」役）。`normalize_text()`。詳細は下記「Document Normalizer」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py` — pytestによる最低限のテスト
+- `services/document_normalizer.py` — Cleaner出力・`user_provided`文章・development sample文章それぞれに対するUnicode・空白・不可視文字の正規化を担う（Document Pipelineの「Normalizer」役）。`normalize_text()`。詳細は下記「Document Normalizer」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -129,6 +129,8 @@ TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 
 `documents` と `urls` を両方渡した場合、`urls` は無視される。
 
+3つの取得元すべてが最終的に`Document[]`（`sourceType`はそれぞれ`"user_provided"`/`"web_fetch"`/`"development_sample"`）へ変換され、`services/document_normalizer.py`の`normalize_text()`を通ってから`services/cooccurrence.py`で共起解析される（`main.py`の`analyze()`はこの1本の流れに統一されており、取得元による分岐は`meta.documentsSource`の値決定にのみ残る）。
+
 ## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py` / `services/document_normalizer.py`）
 
 `urls` が指定された場合の処理は、役割ごとに3つのモジュールへ分離している（Document Pipelineの「Provider」「Cleaner」「Normalizer」段階、詳細は[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）。
@@ -175,7 +177,7 @@ Cleanerが「HTMLから本文を取り出す」役割なのに対し、Normalize
 
 日本語の表記ゆれ統一・辞書ベースの正規化・URLやメールアドレスの書き換えは対象外（意味を変えるような強い変換は避ける方針）。`料金 プラン`のような単語間の意味のある半角スペース1つはそのまま維持される。空文字・空白のみの入力でも例外は出ず`""`を返す。
 
-`web_fetcher.py`は`document_cleaner.clean_html_to_text()`の戻り値に対して、`main.py`は`user_provided`の`documents`各要素に対して、それぞれ`normalize_text()`を適用してから`Document.text`に格納する（development sample文章はまだ`Document[]`化されていないため対象外）。Tokenizer・stopwords・共起計算のロジックは`cooccurrence.py`側の責務のままで、Normalizerには含めていない。
+`web_fetcher.py`は`document_cleaner.clean_html_to_text()`の戻り値に対して、`main.py`は`user_provided`の`documents`各要素に対して、`sample_documents.py`は開発用サンプルの各テンプレート文章に対して、それぞれ`normalize_text()`を適用してから`Document.text`に格納する。3つの取得元すべてが同じNormalizerを通る。Tokenizer・stopwords・共起計算のロジックは`cooccurrence.py`側の責務のままで、Normalizerには含めていない。
 
 結果は `meta.urlFetchResults`（`{ url, success, error? }` の配列）としてレスポンスに含まれる。**全URLが失敗した場合**、`cooccurrenceRanking` を計算するための文章が1件もないため、`meta.sections.cooccurrenceRanking` は `"real"` ではなく **`"unavailable"`** になる（「正常に計算して0件だった」場合と区別するため）。
 
@@ -200,7 +202,7 @@ pytest
 - `POST /analyze` が正常な `brandName` で200を返す
 - レスポンスを `models.AnalysisResult` で再パースしても壊れない（型が一致する）こと、`meta.sections.cooccurrenceRanking` が `"real"`・他の4セクションが `"mock"` であること
 - `documents` を明示的に渡すと、その内容から `cooccurrenceRanking` が計算されること（同じ語が複数文章に出た場合に加算されることも確認）、`meta.documentsSource` が `"user_provided"` になること
-- `documents` を省略すると開発用サンプル文章が使われ、`cooccurrenceRanking` が空でないこと、`meta.documentsSource` が `"development_sample"` になること
+- `documents` を省略すると開発用サンプル文章が使われ、`cooccurrenceRanking` が空でないこと、`meta.documentsSource` が `"development_sample"` になること、`meta.documentCount`/`meta.sourceTypes`（`["development_sample"]`）も他の取得元と同様に返ること
 - `documents: []` を渡すとエラーにならず `cooccurrenceRanking: []`・`meta.sections.cooccurrenceRanking: "real"` になること
 - ブランド名を全角文字（`ＯｐｅｎＡＩ`）でしか含まない`documents`でも、Normalizerが半角化するためブランド名前後ウィンドウが正しくマッチし、共起語が計算されること
 - `documents` と `urls` を両方渡すと `documents` が優先され、`meta.urlFetchResults` が付かないこと
@@ -266,6 +268,14 @@ pytest
 - 「料金 プラン」のような単語間の意味のある半角スペース1つは維持されること
 - 空文字・空白のみの文字列でも例外が出ないこと（`""`を返す）
 - 過剰な連続句読点（4回以上）が軽く圧縮される一方、`...`のような通常の句読点連続は維持されること
+
+`tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
+
+- サンプルテンプレートと同じ件数の`Document`が返ること
+- 全件`sourceType: "development_sample"`・`sourceUrl`/`domain`が`None`・`title: "開発用サンプル"`になること
+- `id`が一意で`"development-sample-"`から始まること
+- `metadata`に`{"purpose": "development_sample"}`が含まれること
+- 各テキストが`normalize_text()`を通ること（`monkeypatch`で呼び出し回数を確認）
 
 ## Next.js側との連携
 

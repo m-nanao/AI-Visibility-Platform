@@ -2,11 +2,10 @@
 // summarizes the whole AnalysisResult response, while a Document's
 // sourceType tags one unit of analyzable text at a time. The two may be
 // unified later — see docs/11_architecture_v1.md "4. Document Pipeline".
-// Development sample documents aren't wrapped as Document[] yet, so
-// there is no "development_sample" sourceType.
 export const DOCUMENT_SOURCE_TYPES = [
   "user_provided",
   "web_fetch",
+  "development_sample",
   "common_crawl",
   "dataforseo",
 ] as const;
