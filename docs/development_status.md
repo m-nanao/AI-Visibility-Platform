@@ -9,6 +9,7 @@
 - ロードマップ（[02_roadmap.md](./02_roadmap.md)）上は **Phase 4（Python分析API）の途中**。
 - 加えて、Phase 4.5として**依頼者確認用のWeb公開**まで完了している（[05_tasks.md](./05_tasks.md)参照）。
 - Phase 3（Common Crawl / DataForSEO連携）、Phase 5（PostgreSQL永続化）、Phase 6（プロダクション化）は未着手。
+- 解析エンジンの内部設計を整理した[11_architecture_v1.md](./11_architecture_v1.md)（v1.0アーキテクチャ設計書）を追加済み（2026-07-15）。Common Crawl / DataForSEOなど取得元が増えても解析側を変えずに済むよう、すべての取得元を`Document[]`へ変換する「Document Pipeline」の考え方を明文化した。次フェーズはこのPipelineへのリファクタリングを推奨としている（詳細は同ドキュメントの「10. 次フェーズ候補」）。
 
 ## 実装済み機能
 
@@ -74,9 +75,10 @@
 優先度の目安。詳細・粒度は [05_tasks.md](./05_tasks.md) を参照。
 
 1. 確認用公開環境の今後を決める（止める／簡易パスコードのままにする／正式な認証を足す）
-2. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
-3. 共起語抽出の精度向上、またはPhase 4.2の他ロジック（文脈分類・センチメント分析等）への着手
-4. Phase 3（Common Crawl / DataForSEO）の調査開始
+2. **Document Pipelineへのリファクタリング**（[11_architecture_v1.md](./11_architecture_v1.md)で次フェーズ推奨とした項目。Common Crawl/DataForSEO追加前に着手する）
+3. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
+4. 共起語抽出の精度向上、またはPhase 4.2の他ロジック（文脈分類・センチメント分析等）への着手
+5. Phase 3（Common Crawl / DataForSEO）の調査開始
 
 ## 関連ドキュメント
 
@@ -84,6 +86,7 @@
 - ロードマップ: [02_roadmap.md](./02_roadmap.md)
 - タスク一覧（詳細）: [05_tasks.md](./05_tasks.md)
 - 設計判断ログ: [07_decisions.md](./07_decisions.md)
+- 解析エンジンのv1.0アーキテクチャ（Document Pipeline等）: [11_architecture_v1.md](./11_architecture_v1.md)
 - 公開手順: [09_deployment.md](./09_deployment.md)
 - AI協調開発フロー（Claude Codeの中断・再開ルールを含む）: [10_ai_development_workflow.md](./10_ai_development_workflow.md)
 - タスク依頼・レビュー・中断/再開時の報告フォーマット: [task_template.md](./task_template.md) / [review_template.md](./review_template.md)
