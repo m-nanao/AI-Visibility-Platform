@@ -31,10 +31,10 @@ DocumentsSource = Literal[
 # Distinct from DocumentsSource above: DocumentsSource summarizes the
 # whole /analyze response, while DocumentSourceType tags one Document
 # at a time (see Document below). The two may be unified later — see
-# docs/11_architecture_v1.md "4. Document Pipeline". Development
-# sample documents are not wrapped as Document[] yet, so there is no
-# matching DocumentSourceType value for "development_sample".
-DocumentSourceType = Literal["user_provided", "web_fetch", "common_crawl", "dataforseo"]
+# docs/11_architecture_v1.md "4. Document Pipeline".
+DocumentSourceType = Literal[
+    "user_provided", "web_fetch", "development_sample", "common_crawl", "dataforseo"
+]
 
 MAX_BRAND_NAME_LENGTH = 200
 
@@ -85,8 +85,9 @@ class AnalysisMeta(BaseModel):
     # Present only when documentsSource is "web_fetch".
     urlFetchResults: list[UrlFetchResult] | None = None
     # Summary of the Document[] actually processed (see Document
-    # above). None when the request used development sample documents,
-    # which aren't wrapped as Document[] yet.
+    # above). Kept optional for schema flexibility, but in practice
+    # always populated now that every documentsSource (including
+    # development_sample) is wrapped as Document[].
     documentCount: int | None = None
     sourceTypes: list[DocumentSourceType] | None = None
 

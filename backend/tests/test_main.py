@@ -14,6 +14,7 @@ from models import (
     MAX_URLS,
     AnalysisResult,
 )
+from services.sample_documents import SAMPLE_DOCUMENT_TEMPLATES
 from services.web_fetcher import UrlFetchResult as FetcherResult
 
 client = TestClient(app)
@@ -148,10 +149,11 @@ def test_analyze_uses_sample_documents_when_documents_and_urls_omitted():
     # The built-in sample documents mention 料金/プラン/導入/事例 etc.
     # around the brand name, so the ranking should not be empty.
     assert len(result.cooccurrenceRanking) > 0
-    # development_sample documents aren't wrapped as Document[] yet
-    # (see docs/11_architecture_v1.md), so there's no summary to report.
-    assert result.meta.documentCount is None
-    assert result.meta.sourceTypes is None
+    # development_sample documents are wrapped as Document[] too (see
+    # docs/11_architecture_v1.md), so documentCount/sourceTypes are
+    # populated just like the other two sources.
+    assert result.meta.documentCount == len(SAMPLE_DOCUMENT_TEMPLATES)
+    assert result.meta.sourceTypes == ["development_sample"]
 
 
 def test_analyze_reports_document_count_and_source_types_for_user_provided_documents():
@@ -181,9 +183,8 @@ def test_analyze_accepts_empty_documents_list():
     result = AnalysisResult.model_validate(response.json())
     assert result.cooccurrenceRanking == []
     assert result.meta.documentsSource == "user_provided"
-    # The Document pipeline still ran (documentCount is 0, not None) —
-    # distinguishes "ran with zero documents" from "didn't run at all"
-    # (development_sample, see the test above).
+    # The Document pipeline still ran and reports 0 documents — this is
+    # a valid "analyze zero documents" request, not a skipped pipeline.
     assert result.meta.documentCount == 0
     assert result.meta.sourceTypes == []
 
@@ -315,7 +316,7 @@ def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
     assert result.meta.urlFetchResults is not None
     assert all(not r.success for r in result.meta.urlFetchResults)
     # No successful fetch -> the Document pipeline ran but found
-    # nothing to wrap (0, not None — it did run, unlike development_sample).
+    # nothing to wrap (0 documents, not omitted).
     assert result.meta.documentCount == 0
     assert result.meta.sourceTypes == []
 
