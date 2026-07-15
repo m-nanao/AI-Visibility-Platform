@@ -62,14 +62,25 @@ STOPWORDS = {
 
 MIN_KEYWORD_LENGTH = 2
 
+# Stricter minimum length for ASCII tokens only, in the simple
+# tokenizer. English function words this short are almost always noise
+# ("on", "to", "nd") rather than meaningful keywords — a 2-letter
+# acronym like "AI" is deliberately swept up in this too (see
+# docs/07_decisions.md); a real brand/product term is essentially
+# never this short. Japanese keeps MIN_KEYWORD_LENGTH (2) — this only
+# raises the bar for the `[A-Za-z0-9]+` half of _SIMPLE_TOKEN_RE.
+MIN_ASCII_KEYWORD_LENGTH = 3
+
 # Extra stopwords for the "simple" tokenizer only: common English
 # function words and URL/markup fragments that can otherwise slip
 # through as candidate keywords, since the simple tokenizer has no
-# part-of-speech info to filter on.
+# part-of-speech info to filter on. Includes 3+ letter function words
+# that MIN_ASCII_KEYWORD_LENGTH alone wouldn't catch (e.g. "the", "and").
 SIMPLE_MODE_STOPWORDS = {
-    "the", "and", "for", "with", "from", "this", "that", "are", "was",
-    "were", "have", "has", "not", "you", "your", "our", "http", "https",
-    "www", "com", "html", "org", "net",
+    "a", "an", "and", "are", "as", "at", "be", "by", "com", "for",
+    "from", "has", "have", "html", "http", "https", "in", "is", "it",
+    "net", "not", "on", "or", "org", "our", "that", "the", "this",
+    "to", "was", "were", "with", "www", "you", "your",
 }
 
 # Matches runs of ASCII alphanumerics (English/numeric "words") or runs
@@ -129,11 +140,63 @@ def _get_tokenizer():
     return Tokenizer()
 
 
-def _extract_windows(text: str, brand_name: str) -> list[str]:
+# Extra character budget for extending a simple-mode window past
+# WINDOW_CHARS so an ASCII word is never cut mid-word (e.g. "second"
+# -> "nd"). Capped to avoid runaway growth on pathological input (a
+# long run of alnum characters with no separators).
+MAX_BOUNDARY_EXTENSION = 30
+
+
+def _is_ascii_alnum(ch: str) -> bool:
+    return ch.isascii() and ch.isalnum()
+
+
+def _extend_window_start(text: str, start: int) -> int:
+    """Moves `start` left while it sits in the middle of an ASCII
+    alnum run, so the word at the window's left edge isn't cut in
+    half. Bounded by MAX_BOUNDARY_EXTENSION.
+    """
+    extended = 0
+    while (
+        start > 0
+        and extended < MAX_BOUNDARY_EXTENSION
+        and _is_ascii_alnum(text[start - 1])
+        and _is_ascii_alnum(text[start])
+    ):
+        start -= 1
+        extended += 1
+    return start
+
+
+def _extend_window_end(text: str, end: int) -> int:
+    """Mirror of _extend_window_start for a window's right edge."""
+    extended = 0
+    while (
+        end < len(text)
+        and extended < MAX_BOUNDARY_EXTENSION
+        and _is_ascii_alnum(text[end - 1])
+        and _is_ascii_alnum(text[end])
+    ):
+        end += 1
+        extended += 1
+    return end
+
+
+def _extract_windows(
+    text: str, brand_name: str, extend_ascii_boundary: bool = False
+) -> list[str]:
     """Returns the text slices before/after each occurrence of brand_name.
 
     The brand name itself is never included in a returned slice, so it
     cannot be re-tokenized back into a candidate keyword.
+
+    extend_ascii_boundary=True (used by the simple tokenizer) extends
+    a window's outer edge past WINDOW_CHARS whenever the hard cut would
+    otherwise land mid-word in an ASCII run — see _extend_window_start/
+    _extend_window_end. Janome mode leaves this False so its existing,
+    already-tested window slicing is completely unchanged (a real
+    morphological analyzer handles a partial token reasonably on its
+    own, so this isn't needed there).
     """
     windows: list[str] = []
     search_start = 0
@@ -142,9 +205,16 @@ def _extract_windows(text: str, brand_name: str) -> list[str]:
         if idx == -1:
             break
 
-        before = text[max(0, idx - WINDOW_CHARS):idx]
+        before_start = max(0, idx - WINDOW_CHARS)
         after_start = idx + len(brand_name)
-        after = text[after_start:after_start + WINDOW_CHARS]
+        after_end = after_start + WINDOW_CHARS
+
+        if extend_ascii_boundary:
+            before_start = _extend_window_start(text, before_start)
+            after_end = _extend_window_end(text, after_end)
+
+        before = text[before_start:idx]
+        after = text[after_start:after_end]
 
         if before:
             windows.append(before)
@@ -176,7 +246,10 @@ def _is_janome_candidate_keyword(surface: str, part_of_speech: str, brand_name: 
 
 
 def _is_simple_candidate_keyword(token: str, brand_name: str) -> bool:
-    if len(token) < MIN_KEYWORD_LENGTH:
+    if token.isascii():
+        if len(token) < MIN_ASCII_KEYWORD_LENGTH:
+            return False
+    elif len(token) < MIN_KEYWORD_LENGTH:
         return False
     if token.isdigit():
         return False
@@ -230,7 +303,9 @@ def compute_cooccurrence_ranking(
         if not document or not document.strip():
             continue
 
-        for window in _extract_windows(document, brand_name):
+        for window in _extract_windows(
+            document, brand_name, extend_ascii_boundary=not use_janome
+        ):
             if use_janome:
                 for token in _get_tokenizer().tokenize(window):
                     if _is_janome_candidate_keyword(token.surface, token.part_of_speech, brand_name):
