@@ -71,7 +71,11 @@ git log --oneline -5
 - **タスクに書かれていない実装を勝手に追加しない**。「ついでに直したくなる」箇所を見つけても、タスクの対象外なら手を出さず、報告時に「気づいた点」として書き添えるだけにする。
 - **docsと実装が矛盾する場合は、黙って直さずユーザーに報告する**（自分がこれから変更する箇所以外で見つけた矛盾も含む）。
 - **不明点があるときは大規模な推測実装をしない**。仕様・設計判断がタスクの記述だけで確定できない場合は、いったん立ち止まって確認する（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「タスク失敗時の扱い」参照）。
-- **`main`へ直接コミットしない。1タスク1ブランチを原則とする。**（このプロジェクトの過去の履歴には、この原則が導入される前に`main`へ直接コミットした実績があるが、今後はブランチを切って作業する）
+- **`main`へ直接コミット・pushしない。1タスク1ブランチを原則とする。**（このプロジェクトの過去の履歴には、この原則が導入される前に`main`へ直接コミットした実績があるが、今後はブランチを切って作業する）
+- **実装・検証・コミットが済んだfeatureブランチへのpushは自動で行ってよい**（ユーザーの逐一の承認は不要）。ただし**`main`への直接pushは禁止**。`main`への反映は常にユーザーによるマージを経る。
+- **force push、および公開済み履歴を書き換えるrebaseは禁止**。
+- **APIキー・認証・課金・DB破壊的変更・デプロイ設定を含む変更は、featureブランチへのpushであっても一度停止してユーザーの承認を求める**（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「12.2 push前に停止して承認を求める場合」参照）。
+- **レビューでNeeds Changesの場合は、新しいブランチを切らず同じfeatureブランチへ修正コミットを追加してpushする。Passが出るまでmainへマージしない。**
 - **大きすぎるタスクは分割を提案する**。渡されたタスクが複数の設計判断・複数コンポーネントにまたがる場合、無理に一度に進めず、分割案をユーザーに提示する（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「1タスクの粒度」参照）。
 - **`.env`や秘密情報をコミットしない**。`.env.example`のような値を含まないテンプレートのみをコミット対象とする。
 - **環境変数・認証・課金・DB破壊的変更は人間承認必須**（[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「人間承認が必須のこと」参照）。承認前に実行しない。
@@ -96,3 +100,5 @@ cd backend && pip install -r requirements-dev.txt && pytest
 ### 作業後の報告形式
 
 [docs/task_template.md](docs/task_template.md)の「作業後の報告形式」（`## Implementation Report`）に従う。変更ファイル一覧・検証結果・動作確認内容・未解決の課題・コミット内容に加え、**Recovery Information（Current Branch / Latest Commit / Uncommitted Changes / Resume Needed / Recommended Next Step）を必ず含める**。タスクが完了せず中断する場合は、代わりに[docs/task_template.md](docs/task_template.md)の「Partial Implementation Report」または「Blocked Report」を使う。
+
+featureブランチへpushした場合は、加えて[docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md)の「12.3 push後の報告」（`## Push Report`: Branch / Commit ID / Commit Message / Changed Files / Test Results / Pull Request URL）を報告する。
