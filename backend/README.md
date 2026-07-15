@@ -13,8 +13,9 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/mock_analysis.py` — 固定のダミー分析データを生成する処理（`summary`等）
 - `services/cooccurrence.py` — 共起語抽出の実計算ロジック。デフォルトは辞書不要の軽量`simple`トークナイザー、`TOKENIZER_MODE=janome`を明示した場合のみJanome形態素解析を使う（optional扱い。詳細は下記「Tokenizerの選択」および[../docs/07_decisions.md](../docs/07_decisions.md)参照）
 - `services/sample_documents.py` — `documents`/`urls` 未指定時に使う開発用サンプル文章
-- `services/web_fetcher.py` — URLからHTMLを取得し本文テキストを抽出する処理（SSRF対策込み）
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py` — pytestによる最低限のテスト
+- `services/web_fetcher.py` — URL検証・SSRF対策・HTTP取得を担う（Document Pipelineの「Provider」役）。HTML本文抽出自体は行わず、`services/document_cleaner.py`を呼び出す
+- `services/document_cleaner.py` — HTML解析・不要要素（script/style/nav/footer等）の除去・Cookieバナー/広告らしき要素の除去・タイトル抽出・本文テキスト抽出・空白整理を担う（Document Pipelineの「Cleaner」役）。詳細は下記「URL取得とHTMLクリーニング」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -127,13 +128,37 @@ TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 
 `documents` と `urls` を両方渡した場合、`urls` は無視される。
 
-## URLからの本文取得（`services/web_fetcher.py`）
+## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py`）
 
-`urls` が指定された場合、各URLについて以下を行う。1件の失敗が他のURLの処理を止めることはない。
+`urls` が指定された場合の処理は、役割ごとに2つのモジュールへ分離している（Document Pipelineの「Provider」「Cleaner」段階、詳細は[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）。
+
+```
+URL
+  ↓
+web_fetcher.py: URL検証・SSRF対策・HTTP取得
+  ↓
+document_cleaner.py: HTMLクリーニング・本文抽出
+  ↓
+Document(sourceType="web_fetch") 化
+  ↓
+cooccurrence.py で共起解析
+```
+
+1件の失敗が他のURLの処理を止めることはない。
+
+### `web_fetcher.py`（Provider: URL検証・SSRF対策・HTTP取得）
 
 1. **安全性チェック（SSRF対策）**: `http`/`https` 以外のスキーム（`file://` 等）、および名前解決した結果がループバック・プライベート・リンクローカル（クラウドのメタデータエンドポイントを含む）・予約済み・マルチキャスト・未指定のいずれかに該当するアドレスを拒否する。リダイレクトは追跡しない。判定ロジック・トレードオフの詳細は [../docs/07_decisions.md](../docs/07_decisions.md) を参照。
 2. **取得**: タイムアウト5秒、専用のUser-Agent付きでHTTPリクエストを送る（`httpx`）。**同時実行数3**（`MAX_CONCURRENT_FETCHES`、`ThreadPoolExecutor`）で並列に取得する。10件を逐次実行するより速く、かつ対象サイトに過度な負荷をかけない範囲に抑えている。結果は入力順に整列して返す（完了順ではない）。
-3. **本文抽出**: `<script>`/`<style>`/`<nav>`/`<footer>`/`<header>`/`<aside>`/`<noscript>`/`<template>`/`<form>`/`<iframe>` を除去してテキストを抽出し（`BeautifulSoup`）、5000文字に切り詰める。
+3. **Cleaner呼び出し**: 取得したHTMLをそのまま`document_cleaner.py`の`clean_html_to_text()`/`extract_title()`に渡す。HTML解析ロジック自体は`web_fetcher.py`は持たない。
+4. **Fetch結果の組み立て**: `UrlFetchResult`（`url`/`success`/`text`/`title`/`error`）を組み立て、成功分のみ`Document(sourceType="web_fetch")`へ変換する（`to_documents()`）。
+
+### `document_cleaner.py`（Cleaner: HTML解析・不要要素削除・本文抽出）
+
+1. **不要要素の除去**: `<script>`/`<style>`/`<nav>`/`<footer>`/`<header>`/`<aside>`/`<noscript>`/`<template>`/`<form>`/`<iframe>`/`<svg>` をタグ名で除去（`BeautifulSoup`使用）。
+2. **Cookieバナー・広告らしき要素の除去**: タグ名では判別できないため、class/id名のヒューリスティック（`cookie-consent`、`advert`等の部分一致）でベストエフォート除去する。
+3. **本文抽出・空白整理**: 残った要素からテキストを抽出し、空白を圧縮したうえで5000文字（`MAX_BODY_TEXT_LENGTH`）に切り詰める。
+4. **タイトル抽出**: `<title>`要素からベストエフォートで抽出する（`extract_title()`）。
 
 結果は `meta.urlFetchResults`（`{ url, success, error? }` の配列）としてレスポンスに含まれる。**全URLが失敗した場合**、`cooccurrenceRanking` を計算するための文章が1件もないため、`meta.sections.cooccurrenceRanking` は `"real"` ではなく **`"unavailable"`** になる（「正常に計算して0件だった」場合と区別するため）。
 
@@ -186,10 +211,8 @@ pytest
 - ブランド名前後のウィンドウ境界でASCII単語が途中で切れず、単語全体が残ること
 - `cooccurrenceRanking` が空にならないこと
 
-`tests/test_web_fetcher.py` では `_extract_body_text()` / `_is_safe_url()` / `fetch_url_texts()` を直接テストしている（実際のネットワークアクセスは行わず、DNS解決やHTTPリクエストは `monkeypatch` で差し替えている）。
+`tests/test_web_fetcher.py` では `_is_safe_url()` / `fetch_url_texts()` / `to_documents()` を直接テストしている（実際のネットワークアクセスは行わず、DNS解決やHTTPリクエストは `monkeypatch` で差し替えている）。HTML本文抽出そのもののテストは`tests/test_document_cleaner.py`に分離済みで、このファイルは`web_fetcher.py`が自前でHTML解析をせず`document_cleaner.py`へ正しく委譲していることを確認する。
 
-- HTMLから本文が抽出できること
-- `script`/`style`/`nav`/`footer` が除外されること
 - localhost・プライベートIP・リンクローカル（クラウドメタデータ含む）・`file://`/`ftp://` が拒否されること
 - 公開URLは許可されること
 - 1件のURL取得が失敗しても、他のURLは処理が続くこと
@@ -197,6 +220,21 @@ pytest
 - 実際に複数スレッドが同時実行され（`max_seen > 1`）、かつ同時実行数の上限（`MAX_CONCURRENT_FETCHES`）を超えないこと
 - 完了順ではなく入力順で結果が返ること
 - 空のURLリストでもエラーにならないこと
+- タイトルが取得できる場合/できない場合（`<title>`なし）
+- 取得成功分のみ`Document`化され、失敗分は除外されること
+- **`web_fetcher.py`が本文抽出を`document_cleaner.clean_html_to_text()`へ委譲していること**（自前でHTML解析していないことの回帰防止テスト）
+
+`tests/test_document_cleaner.py` では `clean_html_to_text()` / `extract_title()` を直接テストしている。
+
+- HTMLから可視の本文が抽出できること
+- `script`/`style`/`noscript`/`nav`/`footer`/`header`/`aside`/`form`/`iframe`/`svg` が除外されること
+- Cookieバナーらしき要素（class/idのヒューリスティック）が除去されること
+- 広告らしき要素（class/idのヒューリスティック）が除去されること
+- 「お知らせ」「advice」のような紛らわしい正当な語句を誤って削除しないこと
+- 空HTML・本文のないHTMLでもエラーにならないこと
+- 5000文字（`MAX_BODY_TEXT_LENGTH`）に切り詰められること
+- `source_url`引数を渡しても結果が変わらないこと（将来のドメイン別ルール用に予約）
+- タイトルが取得できる場合/できない場合/空HTMLの場合
 
 ## Next.js側との連携
 
