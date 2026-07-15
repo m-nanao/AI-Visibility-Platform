@@ -74,6 +74,28 @@ def test_analyze_uses_sample_documents_when_documents_and_urls_omitted():
     # The built-in sample documents mention 料金/プラン/導入/事例 etc.
     # around the brand name, so the ranking should not be empty.
     assert len(result.cooccurrenceRanking) > 0
+    # development_sample documents aren't wrapped as Document[] yet
+    # (see docs/11_architecture_v1.md), so there's no summary to report.
+    assert result.meta.documentCount is None
+    assert result.meta.sourceTypes is None
+
+
+def test_analyze_reports_document_count_and_source_types_for_user_provided_documents():
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "documents": [
+                "OpenAIの料金プランについて教えてください。",
+                "OpenAIの料金プランはとても安いです。",
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.documentCount == 2
+    assert result.meta.sourceTypes == ["user_provided"]
 
 
 def test_analyze_accepts_empty_documents_list():
@@ -85,6 +107,11 @@ def test_analyze_accepts_empty_documents_list():
     result = AnalysisResult.model_validate(response.json())
     assert result.cooccurrenceRanking == []
     assert result.meta.documentsSource == "user_provided"
+    # The Document pipeline still ran (documentCount is 0, not None) —
+    # distinguishes "ran with zero documents" from "didn't run at all"
+    # (development_sample, see the test above).
+    assert result.meta.documentCount == 0
+    assert result.meta.sourceTypes == []
 
 
 def test_analyze_documents_take_priority_over_urls():
@@ -154,6 +181,9 @@ def test_analyze_urls_all_succeed_reports_real_status(monkeypatch):
     assert result.meta.urlFetchResults is not None
     assert all(r.success for r in result.meta.urlFetchResults)
     assert len(result.cooccurrenceRanking) > 0
+    # Both URLs succeeded -> both became Documents.
+    assert result.meta.documentCount == 2
+    assert result.meta.sourceTypes == ["web_fetch"]
 
 
 def test_analyze_urls_partial_failure_reports_real_status_and_both_results(monkeypatch):
@@ -184,6 +214,10 @@ def test_analyze_urls_partial_failure_reports_real_status_and_both_results(monke
     failures = [r for r in result.meta.urlFetchResults if not r.success]
     assert len(successes) == 1
     assert len(failures) == 1
+    # Only the successful fetch became a Document — the failed one is
+    # not "Document-ified" (it's already tracked via urlFetchResults).
+    assert result.meta.documentCount == 1
+    assert result.meta.sourceTypes == ["web_fetch"]
 
 
 def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
@@ -206,6 +240,10 @@ def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
     assert result.cooccurrenceRanking == []
     assert result.meta.urlFetchResults is not None
     assert all(not r.success for r in result.meta.urlFetchResults)
+    # No successful fetch -> the Document pipeline ran but found
+    # nothing to wrap (0, not None — it did run, unlike development_sample).
+    assert result.meta.documentCount == 0
+    assert result.meta.sourceTypes == []
 
 
 @pytest.mark.parametrize(

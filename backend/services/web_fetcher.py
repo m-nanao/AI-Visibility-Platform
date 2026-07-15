@@ -31,10 +31,14 @@ import ipaddress
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 from bs4 import BeautifulSoup
+
+from models import Document
 
 FETCH_TIMEOUT_SECONDS = 5.0
 MAX_BODY_TEXT_LENGTH = 5000
@@ -68,6 +72,7 @@ class UrlFetchResult:
     url: str
     success: bool
     text: str = ""
+    title: str | None = None
     error: str | None = None
 
 
@@ -120,6 +125,19 @@ def _extract_body_text(html: str) -> str:
     return text[:MAX_BODY_TEXT_LENGTH]
 
 
+def _extract_title(html: str) -> str | None:
+    """Best-effort <title> extraction for Document.title (see
+    to_documents() below). Re-parses the HTML separately from
+    _extract_body_text() rather than sharing one BeautifulSoup call,
+    so that function's tested str-in/str-out contract doesn't change.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.title and soup.title.string:
+        title = soup.title.string.strip()
+        return title or None
+    return None
+
+
 def _fetch_one(url: str) -> UrlFetchResult:
     is_safe, reason = _is_safe_url(url)
     if not is_safe:
@@ -137,7 +155,8 @@ def _fetch_one(url: str) -> UrlFetchResult:
         return UrlFetchResult(url=url, success=False, error=str(exc))
 
     text = _extract_body_text(response.text)
-    return UrlFetchResult(url=url, success=True, text=text)
+    title = _extract_title(response.text)
+    return UrlFetchResult(url=url, success=True, text=text, title=title)
 
 
 def fetch_url_texts(urls: list[str]) -> list[UrlFetchResult]:
@@ -154,3 +173,28 @@ def fetch_url_texts(urls: list[str]) -> list[UrlFetchResult]:
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FETCHES) as executor:
         return list(executor.map(_fetch_one, urls))
+
+
+def to_documents(results: list[UrlFetchResult]) -> list[Document]:
+    """Converts successful fetches into Document[] (see docs/11_architecture_v1.md
+    "4. Document Pipeline"). Failed fetches are deliberately skipped —
+    they're already tracked in meta.urlFetchResults and shouldn't also
+    show up as empty/placeholder Documents.
+    """
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    documents = []
+    for result in results:
+        if not result.success:
+            continue
+        documents.append(
+            Document(
+                id=str(uuid4()),
+                sourceType="web_fetch",
+                sourceUrl=result.url,
+                title=result.title,
+                domain=urlparse(result.url).hostname,
+                fetchedAt=fetched_at,
+                text=result.text,
+            )
+        )
+    return documents

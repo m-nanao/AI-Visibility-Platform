@@ -148,6 +148,59 @@ describe("parseAnalysisResult", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts meta.documentCount and meta.sourceTypes when present", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        documentCount: 3,
+        sourceTypes: ["user_provided"],
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.documentCount).toBe(3);
+      expect(result.data.meta.sourceTypes).toEqual(["user_provided"]);
+    }
+  });
+
+  it("accepts meta.documentCount/sourceTypes: null the same way as other optional fields", () => {
+    // Same Pydantic-null-vs-absent-key situation as urlFetchResults above.
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        documentCount: null,
+        sourceTypes: null,
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.documentCount).toBeUndefined();
+      expect(result.data.meta.sourceTypes).toBeUndefined();
+    }
+  });
+
+  it("rejects a sourceTypes value outside the known DocumentSourceType set", () => {
+    const invalid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        sourceTypes: ["not_a_real_source_type"],
+      },
+    };
+
+    const result = parseAnalysisResult(invalid);
+
+    expect(result.success).toBe(false);
+  });
+
   it("never leaks the offending values in the failure reason", () => {
     const invalid = { ...buildDummyAnalysis("OpenAI"), brandName: 42 };
 

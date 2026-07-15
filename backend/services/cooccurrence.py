@@ -11,7 +11,7 @@ from collections import Counter
 
 from janome.tokenizer import Tokenizer
 
-from models import CooccurrenceKeyword
+from models import CooccurrenceKeyword, Document
 
 # How many characters before/after each brand name occurrence to scan
 # for candidate keywords. Character-based (not token-based) because a
@@ -118,3 +118,19 @@ def compute_cooccurrence_ranking(
         CooccurrenceKeyword(keyword=keyword, count=count, trend="flat")
         for keyword, count in counts.most_common(top_n)
     ]
+
+
+def compute_cooccurrence_ranking_from_documents(
+    brand_name: str,
+    documents: list[Document],
+    top_n: int = TOP_N,
+) -> list[CooccurrenceKeyword]:
+    """Thin Document[]-based adapter over compute_cooccurrence_ranking().
+
+    Extracts .text from each Document and delegates — the extraction/
+    POS-filter logic itself is untouched. See docs/11_architecture_v1.md
+    "4. Document Pipeline" ("Analyzer" reads from Document[]).
+    """
+    return compute_cooccurrence_ranking(
+        brand_name, [document.text for document in documents], top_n
+    )

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DOCUMENT_SOURCE_TYPES } from "./document";
 import type { AnalysisResult } from "./types";
 
 /**
@@ -18,6 +19,7 @@ const documentsSourceSchema = z.enum([
   "dataforseo",
   "common_crawl",
 ]);
+const documentSourceTypeSchema = z.enum(DOCUMENT_SOURCE_TYPES);
 
 const analysisSectionStatusesSchema = z.object({
   summary: sectionStatusSchema,
@@ -50,6 +52,8 @@ const analysisMetaSchema = z.object({
   // datetime.isoformat()).
   generatedAt: z.iso.datetime({ offset: true }),
   urlFetchResults: optionalFromPython(z.array(urlFetchResultSchema)),
+  documentCount: optionalFromPython(z.number()),
+  sourceTypes: optionalFromPython(z.array(documentSourceTypeSchema)),
 });
 
 const brandSummarySchema = z.object({

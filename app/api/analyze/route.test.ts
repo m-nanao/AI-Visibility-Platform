@@ -84,6 +84,31 @@ describe("POST /api/analyze", () => {
     expect(data.meta.sections.cooccurrenceRanking).toBe("real");
   });
 
+  it("passes through meta.documentCount and meta.sourceTypes from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({
+        documentsSource: "user_provided",
+        sections: { cooccurrenceRanking: "real" },
+        documentCount: 2,
+        sourceTypes: ["user_provided"],
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", documents: ["文章1", "文章2"] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.documentCount).toBe(2);
+    expect(data.meta.sourceTypes).toEqual(["user_provided"]);
+  });
+
   it("passes through an unavailable cooccurrenceRanking from the Python API", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = {

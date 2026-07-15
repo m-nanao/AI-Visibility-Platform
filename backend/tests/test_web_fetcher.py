@@ -5,7 +5,13 @@ import httpx
 import pytest
 
 from services import web_fetcher
-from services.web_fetcher import _extract_body_text, _is_safe_url, fetch_url_texts
+from services.web_fetcher import (
+    UrlFetchResult,
+    _extract_body_text,
+    _is_safe_url,
+    fetch_url_texts,
+    to_documents,
+)
 
 
 def test_extract_body_text_returns_visible_text():
@@ -182,3 +188,76 @@ def test_fetch_url_texts_preserves_input_order(monkeypatch):
 
 def test_fetch_url_texts_empty_list_does_not_raise():
     assert fetch_url_texts([]) == []
+
+
+def test_fetch_url_texts_extracts_title_when_present(monkeypatch):
+    monkeypatch.setattr(
+        web_fetcher.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(
+            200,
+            text="<html><head><title>OpenAIの料金プラン</title></head>"
+            "<body><p>本文です。</p></body></html>",
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(web_fetcher.httpx, "get", fake_get)
+
+    results = fetch_url_texts(["https://example.com/article"])
+
+    assert results[0].title == "OpenAIの料金プラン"
+
+
+def test_fetch_url_texts_title_is_none_when_missing(monkeypatch):
+    monkeypatch.setattr(
+        web_fetcher.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+    monkeypatch.setattr(
+        web_fetcher.httpx,
+        "get",
+        lambda url, **kwargs: httpx.Response(
+            200, text="<html><body><p>本文です。</p></body></html>", request=httpx.Request("GET", url)
+        ),
+    )
+
+    results = fetch_url_texts(["https://example.com/article"])
+
+    assert results[0].title is None
+
+
+def test_to_documents_only_includes_successful_fetches():
+    results = [
+        UrlFetchResult(
+            url="https://example.com/a",
+            success=True,
+            text="取得できた本文です。",
+            title="記事タイトル",
+        ),
+        UrlFetchResult(url="https://example.com/b", success=False, error="timeout"),
+    ]
+
+    documents = to_documents(results)
+
+    assert len(documents) == 1
+    document = documents[0]
+    assert document.sourceType == "web_fetch"
+    assert document.sourceUrl == "https://example.com/a"
+    assert document.domain == "example.com"
+    assert document.title == "記事タイトル"
+    assert document.text == "取得できた本文です。"
+    assert document.id  # non-empty, uniquely identifies the Document
+    assert document.fetchedAt  # non-empty ISO timestamp
+
+
+def test_to_documents_returns_empty_list_when_all_fetches_failed():
+    results = [
+        UrlFetchResult(url="https://example.com/a", success=False, error="boom"),
+    ]
+
+    assert to_documents(results) == []

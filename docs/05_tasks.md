@@ -100,8 +100,17 @@
 - [x] 共起語抽出ロジック（形態素解析ライブラリにJanomeを採用。ブランド名前後20文字のウィンドウ + 品詞フィルタ + ストップワードによるシンプルな実装。`backend/services/cooccurrence.py`）
 - [x] URLから本文を取得して共起語解析に渡す最小機能（`backend/services/web_fetcher.py`。`POST /analyze` の `urls` パラメータ、優先順位は `documents` > `urls` > 開発用サンプル文章）
 - [x] URL取得の並列化（`ThreadPoolExecutor`、同時実行数3。1件の失敗が他を止めない）
-- [ ] **【次フェーズ推奨】Document Pipelineへのリファクタリング**（Provider→Cleaner→Normalizer→Chunker→Analyzerの5段階に整理する。現状は`web_fetcher.py`内でProviderとCleanerが未分離。Common Crawl/DataForSEO追加前に着手する。詳細は[11_architecture_v1.md](./11_architecture_v1.md)の「4. Document Pipeline」「10. 次フェーズ候補」参照）※粒度大。着手時は「①`web_fetcher.py`からCleanerを分離する」「②`Document`型を`app/lib/types.ts`・`backend/models.py`に定義する」等、[task_template.md](./task_template.md)形式で1件ずつに分解してから着手する
-- [ ] `Document.sourceType`（[11_architecture_v1.md](./11_architecture_v1.md)で定義）と既存の`meta.documentsSource`（[04_data_model.md](./04_data_model.md)）を統合するか、粒度の異なる別概念として並存させるか検討する
+- [ ] **【次フェーズ推奨・一部着手済み】Document Pipelineへのリファクタリング**（Provider→Cleaner→Normalizer→Chunker→Analyzerの5段階に整理する。詳細は[11_architecture_v1.md](./11_architecture_v1.md)の「4. Document Pipeline」「10. 次フェーズ候補」参照）※粒度大。残作業は1件ずつに分解してから着手する
+  - [x] `Document`型を[app/lib/document.ts](../app/lib/document.ts)・`backend/models.py`に定義する（2026-07-15）
+  - [x] `user_provided`（`documents`入力）を`Document[]`へ変換する（`backend/main.py`の`_documents_from_strings()`）
+  - [x] `web_fetch`（URL取得成功結果）を`Document[]`へ変換する（`backend/services/web_fetcher.py`の`to_documents()`。失敗分は`Document`化せず`meta.urlFetchResults`のみに残す）
+  - [x] 共起解析に`Document[]`ベースの薄いアダプターを追加する（`backend/services/cooccurrence.py`の`compute_cooccurrence_ranking_from_documents()`。`compute_cooccurrence_ranking()`自体は変更なし）
+  - [x] `AnalysisResult.meta`に`documentCount`/`sourceTypes`という要約フィールドを追加する（`Document[]`そのものはフロントへ返さない。TS/Python両方、Zodスキーマも対応）
+  - [ ] `web_fetcher.py`からCleaner（HTML除去処理）をProviderから分離する
+  - [ ] Normalizer（全角半角・空白等の正規化）を独立した処理として追加する
+  - [ ] Chunker（長文分割）を独立した処理として追加する
+  - [ ] development sample文章を`Document[]`化するか、`DocumentSourceType`に対応する値を追加するか判断する（現状は対象外のまま`documentCount`/`sourceTypes`が`None`になる）
+- [ ] `Document.sourceType`（[11_architecture_v1.md](./11_architecture_v1.md)で定義）と既存の`meta.documentsSource`（[04_data_model.md](./04_data_model.md)）を統合するか、粒度の異なる別概念として並存させるか検討する（未確定のまま2つのフィールドが並存している状態）
 - [ ] 共起語抽出の精度向上（ウィンドウの重複による過剰カウント、ウィンドウサイズ外の関連語の取りこぼしなど、[07_decisions.md](./07_decisions.md) に記載の既知の制約を改善する）※粒度大。着手時は「①ウィンドウ重複によるカウント補正」「②ウィンドウサイズ外の関連語対応」等、[task_template.md](./task_template.md) 1件ずつに分解してから着手する
 - [ ] 形態素解析ライブラリをSudachiPy/MeCab等、より高精度なものに乗り換えるか再検討する
 - [ ] 共起語ランキングのトレンド（up/down/flat）算出ロジック（前回分析との比較。現状は常に`"flat"`）

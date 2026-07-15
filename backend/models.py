@@ -28,6 +28,14 @@ DocumentsSource = Literal[
     "development_sample", "user_provided", "web_fetch", "dataforseo", "common_crawl"
 ]
 
+# Distinct from DocumentsSource above: DocumentsSource summarizes the
+# whole /analyze response, while DocumentSourceType tags one Document
+# at a time (see Document below). The two may be unified later — see
+# docs/11_architecture_v1.md "4. Document Pipeline". Development
+# sample documents are not wrapped as Document[] yet, so there is no
+# matching DocumentSourceType value for "development_sample".
+DocumentSourceType = Literal["user_provided", "web_fetch", "common_crawl", "dataforseo"]
+
 MAX_BRAND_NAME_LENGTH = 200
 
 # documents[] input limits (requirement: count / per-item / total).
@@ -53,12 +61,34 @@ class UrlFetchResult(BaseModel):
     error: str | None = None
 
 
+class Document(BaseModel):
+    """A single unit of analyzable text, normalized across data
+    sources (Common Crawl / DataForSEO providers will produce these
+    too once implemented, without the Analyzer needing to know the
+    difference). See docs/11_architecture_v1.md "4. Document Pipeline".
+    """
+
+    id: str
+    sourceType: DocumentSourceType
+    sourceUrl: str | None = None
+    title: str | None = None
+    domain: str | None = None
+    fetchedAt: str
+    text: str
+    metadata: dict[str, object] | None = None
+
+
 class AnalysisMeta(BaseModel):
     sections: AnalysisSectionStatuses
     documentsSource: DocumentsSource
     generatedAt: str
     # Present only when documentsSource is "web_fetch".
     urlFetchResults: list[UrlFetchResult] | None = None
+    # Summary of the Document[] actually processed (see Document
+    # above). None when the request used development sample documents,
+    # which aren't wrapped as Document[] yet.
+    documentCount: int | None = None
+    sourceTypes: list[DocumentSourceType] | None = None
 
 
 class SentimentBreakdown(BaseModel):
