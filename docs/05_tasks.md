@@ -23,8 +23,8 @@
 
 - [x] `app/page.tsx` の呼び出し先を `fetchDummyAnalysis` から `fetch("/api/analyze")` に置き換え
 - [x] `/api/analyze` のレスポンス型を `AnalysisResult` に拡張（`buildDummyAnalysis` を `app/lib/dummy-data.ts` からエクスポートしてルートハンドラで利用）
-- [ ] レスポンスが `AnalysisResult` の形と一致しているかを検証するユニットテストを追加
-- [ ] フロント側の型ガード/バリデーション（不正なレスポンス時のフォールバック表示）を追加
+- [x] レスポンスが `AnalysisResult` の形と一致しているかを検証するユニットテストを追加（[analysis-result-schema.test.ts](../app/lib/analysis-result-schema.test.ts)のZodスキーマ検証テスト、および[route.test.ts](../app/api/analyze/route.test.ts)のスキーマ不正時フォールバックテストでカバー。Phase 4の「Next.js側でZodによる検証を導入」と合わせて完了）
+- [x] フロント側の型ガード/バリデーション（不正なレスポンス時のフォールバック表示）を追加。ただし当初想定していた`app/page.tsx`側（クライアント）ではなく、`app/api/analyze/route.ts`（Route Handler／サーバー側）でZod検証とダミーデータへのフォールバックを行う設計にした（[analysis-result-schema.ts](../app/lib/analysis-result-schema.ts)、[07_decisions.md](./07_decisions.md)参照）。クライアントに渡る前に検証を通すため、`app/page.tsx`自体には型ガードを追加していない
 
 ### 2.2 エラー・ローディング状態の見直し
 
@@ -36,9 +36,9 @@
 
 ### 2.3 テスト・検証
 
-- [ ] `/api/analyze` の正常系テスト（200・レスポンス形状）
-- [ ] `/api/analyze` の異常系テスト（`brandName` 欠落 → 400）
-- [ ] E2Eでの「入力 → 分析開始 → 結果表示」動線の手動確認
+- [x] `/api/analyze` の正常系テスト（200・レスポンス形状）。[route.test.ts](../app/api/analyze/route.test.ts)で200・`meta`の内容を確認、レスポンス全体の形状は[analysis-result-schema.test.ts](../app/lib/analysis-result-schema.test.ts)のZod検証テストでカバー
+- [x] `/api/analyze` の異常系テスト（`brandName` 欠落 → 400）。[route.test.ts](../app/api/analyze/route.test.ts)の`"returns 400 when brandName is missing"`
+- [x] E2Eでの「入力 → 分析開始 → 結果表示」動線の手動確認。自動E2Eテスト（Playwright等）は未導入だが、ローカルdevサーバー・Vercel公開環境の両方でcurl・ブラウザレンダリング確認により複数回手動検証済み（[09_deployment.md](./09_deployment.md)の「動作確認手順」参照）
 
 目安: 1〜2週間
 
@@ -166,7 +166,10 @@
   - Vercel: <https://ai-visibility-platform-eight.vercel.app/>
   - Render: <https://llmo-analysis-api.onrender.com/health>
   - 確認中、Renderのコールドスタート（無料プラン特有）により一時的に全セクションが`"mock"`にフォールバックする事象を実際に観測した。障害ではなく既知の仕様。詳細・切り分け手順は[09_deployment.md](./09_deployment.md)の「コールドスタートに関する注意」に記録済み
-- [ ] 確認が終わったら公開を止めるか、認証を追加するかを判断する（このままでは誰でもアクセス可能なため）
+- [x] 数ヶ月運用するステージング環境向けの最低限保護を追加（2026-07-15）
+  - [x] 簡易パスコードガード（`STAGING_ACCESS_CODE`、[proxy.ts](../proxy.ts)。未設定時はローカル開発に影響なし。本格認証ではなく誤アクセス防止用、[09_deployment.md](./09_deployment.md)の「簡易パスコードガード」参照）
+  - [x] `noindex`設定（[app/layout.tsx](../app/layout.tsx)の`metadata.robots`＋`X-Robots-Tag`ヘッダー、[09_deployment.md](./09_deployment.md)の「noindexの設定」参照）
+- [ ] 確認が終わったら公開を止めるか、簡易パスコードのままにするか、正式な認証を追加するかを判断する（現状は簡易パスコードのみで、本格的な認証ではないため）
 
 ## Phase 6 — プロダクション化（MVP後）
 
@@ -177,7 +180,9 @@
 - [ ] 分析完了・スコア変化の通知（メール/Slack等）
 - [ ] 複数ブランド・競合比較ダッシュボード
 - [ ] E2Eテスト整備（主要導線の自動テスト）
-- [ ] ~~CI/CDパイプライン整備（lint・build・testの自動実行）~~ → **次の優先タスク候補**。最小構成（`.github/workflows/ci.yml`、frontend: lint/test/build、backend: pytest）を追加済み（2026-07-15、[10_ai_development_workflow.md](./10_ai_development_workflow.md) 参照）。デプロイの自動化（CD）・Vercel/Renderへの自動反映はまだ未着手
+- [x] **CI**: lint・test・buildの自動実行。`.github/workflows/ci.yml`として最小構成を追加済み（2026-07-15、frontend: lint/test/build、backend: pytest。[10_ai_development_workflow.md](./10_ai_development_workflow.md) 参照）
+- [ ] **CD**: Vercel/Renderへのデプロイ自動化は未着手（現状は各サービスのGit連携によるデプロイのみ。CIパイプラインからの明示的なデプロイトリガーはない）
+- [ ] AIレビューの自動化・人間承認後の自動マージも未着手（[10_ai_development_workflow.md](./10_ai_development_workflow.md)の「3. 将来の完全自動フロー」参照）
 - [ ] 本番デプロイ構成の検討（Vercel + 外部Python API + マネージドPostgreSQL等）
 
 ## AI協調開発運用（進行中）
@@ -201,5 +206,5 @@
 
 - [ ] `docs/` 配下のドキュメントを実装の進捗に合わせて更新
 - [ ] `docs/07_decisions.md` に主要な設計判断を都度記録する
-- [ ] Node.jsバージョン要件（20.9以降）をCI/開発環境ドキュメントに明記
-- [ ] `next lint` 廃止に伴うESLint実行手順の周知（`npx eslint app` を使用）
+- [x] Node.jsバージョン要件（20.9以降）をCI/開発環境ドキュメントに明記（`CLAUDE.md`「開発環境の注意点」、`README.md`「セットアップ・ローカル開発」、`.github/workflows/ci.yml`のコメントに記載済み）
+- [x] `next lint` 廃止に伴うESLint実行手順の周知。`npm run lint`（`package.json`で`eslint`にマッピング済み）として`CLAUDE.md`・`README.md`に明記済み
