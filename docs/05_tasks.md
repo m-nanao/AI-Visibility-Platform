@@ -107,8 +107,8 @@
   - [x] `web_fetch`（URL取得成功結果）を`Document[]`へ変換する（`backend/services/web_fetcher.py`の`to_documents()`。失敗分は`Document`化せず`meta.urlFetchResults`のみに残す）
   - [x] 共起解析に`Document[]`ベースの薄いアダプターを追加する（`backend/services/cooccurrence.py`の`compute_cooccurrence_ranking_from_documents()`。`compute_cooccurrence_ranking()`自体は変更なし）
   - [x] `AnalysisResult.meta`に`documentCount`/`sourceTypes`という要約フィールドを追加する（`Document[]`そのものはフロントへ返さない。TS/Python両方、Zodスキーマも対応）
-  - [ ] `web_fetcher.py`からCleaner（HTML除去処理）をProviderから分離する
-  - [ ] Normalizer（全角半角・空白等の正規化）を独立した処理として追加する
+  - [x] `web_fetcher.py`からCleaner（HTML除去処理）をProviderから分離する（2026-07-15、`backend/services/document_cleaner.py`新設。`clean_html_to_text()`/`extract_title()`。Cookieバナー・広告らしき要素のヒューリスティック除去も含む。既存のURL入力分析の挙動は維持）
+  - [ ] Normalizer（全角半角・空白等の正規化）を独立した処理として追加する（Cleanerは最小限の空白圧縮のみ）
   - [ ] Chunker（長文分割）を独立した処理として追加する
   - [ ] development sample文章を`Document[]`化するか、`DocumentSourceType`に対応する値を追加するか判断する（現状は対象外のまま`documentCount`/`sourceTypes`が`None`になる）
 - [ ] `Document.sourceType`（[11_architecture_v1.md](./11_architecture_v1.md)で定義）と既存の`meta.documentsSource`（[04_data_model.md](./04_data_model.md)）を統合するか、粒度の異なる別概念として並存させるか検討する（未確定のまま2つのフィールドが並存している状態）
@@ -124,6 +124,7 @@
 - [x] フロントに `urls` 入力UIを追加（ブランド入力フォーム内の複数行テキストエリア。1行1件・最大10件・空行除外・重複除外・http(s)形式チェックをクライアント側で実施し、localhost/プライベートIP判定は引き続きPython側で行う。[url-validation.ts](../app/lib/url-validation.ts)、[BrandInputForm.tsx](../app/components/BrandInputForm.tsx)）
 - [ ] フロントに `documents` 入力UIを追加するか検討（現状はAPI経由でのみ指定可能。`urls`とは異なりまだUIがない）
 - [ ] `web_fetcher.py` にrobots.txt確認・レート制限・DNS再解決によるTOCTOU対策を追加するか検討（現状は未実装、[03_api_design.md](./03_api_design.md) の「運用上の注意」に明記）
+- [ ] `web_fetcher.py` にレスポンスのcontent-typeチェック・生レスポンスボディのサイズ上限を追加するか検討（現状は取得後・クリーニング後のテキストを5000文字に切り詰めるのみで、ダウンロード自体のサイズ制限はない）
 - [ ] URL取得の同時実行数（現在3）・タイムアウト（現在25秒）が実際の利用状況に対して適切か、運用しながら見直す
 
 ### 4.3 精度・品質

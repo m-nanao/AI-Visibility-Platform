@@ -5,46 +5,12 @@ import httpx
 import pytest
 
 from services import web_fetcher
-from services.web_fetcher import (
-    UrlFetchResult,
-    _extract_body_text,
-    _is_safe_url,
-    fetch_url_texts,
-    to_documents,
-)
+from services.web_fetcher import UrlFetchResult, _is_safe_url, fetch_url_texts, to_documents
 
-
-def test_extract_body_text_returns_visible_text():
-    html = """
-    <html>
-      <body>
-        <main>
-          <h1>OpenAIの料金プランについて</h1>
-          <p>OpenAIは料金プランが分かりやすいと評判です。</p>
-        </main>
-      </body>
-    </html>
-    """
-    text = _extract_body_text(html)
-
-    assert "料金プラン" in text
-    assert "評判" in text
-
-
-@pytest.mark.parametrize("tag", ["script", "style", "nav", "footer"])
-def test_extract_body_text_excludes_noise_tags(tag):
-    html = f"""
-    <html>
-      <body>
-        <{tag}>この文字列はノイズです</{tag}>
-        <main><p>本文はこちらです。</p></main>
-      </body>
-    </html>
-    """
-    text = _extract_body_text(html)
-
-    assert "ノイズ" not in text
-    assert "本文" in text
+# HTML cleaning/text-extraction itself is tested in test_document_cleaner.py
+# now that it lives in services/document_cleaner.py — this file only
+# tests that web_fetcher.py correctly delegates to it (see
+# test_fetch_url_texts_delegates_cleaning_to_document_cleaner below).
 
 
 @pytest.mark.parametrize(
@@ -261,3 +227,36 @@ def test_to_documents_returns_empty_list_when_all_fetches_failed():
     ]
 
     assert to_documents(results) == []
+
+
+def test_fetch_url_texts_delegates_cleaning_to_document_cleaner(monkeypatch):
+    monkeypatch.setattr(
+        web_fetcher.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+    monkeypatch.setattr(
+        web_fetcher.httpx,
+        "get",
+        lambda url, **kwargs: httpx.Response(
+            200,
+            text="<html><body><p>本文です。</p></body></html>",
+            request=httpx.Request("GET", url),
+        ),
+    )
+
+    calls = []
+
+    def fake_clean(html, source_url=None):
+        calls.append((html, source_url))
+        return "クリーニング済みテキスト"
+
+    monkeypatch.setattr(web_fetcher, "clean_html_to_text", fake_clean)
+
+    results = fetch_url_texts(["https://example.com/article"])
+
+    # web_fetcher used document_cleaner's function rather than doing its
+    # own HTML parsing, and passed the URL through as source_url.
+    assert results[0].text == "クリーニング済みテキスト"
+    assert len(calls) == 1
+    assert calls[0][1] == "https://example.com/article"
