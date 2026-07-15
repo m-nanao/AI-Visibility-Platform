@@ -2,7 +2,7 @@
 
 別チャット・将来のAI（ChatGPT・Claude Code問わず）が、このプロジェクトの「今」を素早く把握するための1ファイル。詳細な経緯は各docsを参照。このファイルは**要点のみ**を保ち、詳細を書きたくなったら該当するdocsへ書いて、ここからはリンクする。
 
-**最終更新日: 2026-07-15**
+**最終更新日: 2026-07-16**
 
 ## 現在のフェーズ
 
@@ -25,7 +25,7 @@
 
 ## 一部実データの機能
 
-- **共起語ランキング（`cooccurrenceRanking`）のみ実計算**。Janomeによる形態素解析＋ブランド名前後20文字ウィンドウ＋品詞フィルタという単純な方式（[services/cooccurrence.py](../backend/services/cooccurrence.py)、[03_api_design.md](./03_api_design.md)参照）。精度向上は未着手（[05_tasks.md](./05_tasks.md) Phase 4.2）。
+- **共起語ランキング（`cooccurrenceRanking`）のみ実計算**。ブランド名前後20文字ウィンドウ＋トークナイザーという単純な方式（[services/cooccurrence.py](../backend/services/cooccurrence.py)、[03_api_design.md](./03_api_design.md)参照）。トークナイザーは`TOKENIZER_MODE`環境変数で切り替え可能で、**デフォルトは辞書不要の軽量`simple`モード**（正規表現による英数字/日本語文字種境界での簡易分割、品詞フィルタなし）。Janomeによる形態素解析（品詞フィルタつき、より高精度）は`TOKENIZER_MODE=janome`を明示した場合のみのoptional扱い（2026-07-16変更。理由: Render無料枠512MBで`/analyze`実行時にJanomeの辞書読み込みが原因の502/timeoutが発生していたため、確認用環境では精度よりも安定動作を優先。詳細は[11_architecture_v1.md](./11_architecture_v1.md)のAnalyzer節）。精度向上は未着手（[05_tasks.md](./05_tasks.md) Phase 4.2）。
 
 ## まだダミー（固定データ）の機能
 
@@ -67,7 +67,7 @@
 ## 既知の課題
 
 - 簡易パスコードガードは導入したが、あくまで誤アクセス防止用。確認終了後、公開を止めるか正式な認証を追加するかの判断はまだ済んでいない（[05_tasks.md](./05_tasks.md) Phase 4.5）。
-- 共起語抽出は簡易な実装であり、ウィンドウ重複によるカウント過多・ウィンドウ外の関連語の取りこぼしがある（[07_decisions.md](./07_decisions.md)に既知の制約として記録済み）。
+- 共起語抽出は簡易な実装であり、ウィンドウ重複によるカウント過多・ウィンドウ外の関連語の取りこぼしがある（[07_decisions.md](./07_decisions.md)に既知の制約として記録済み）。加えて、デフォルトの軽量`simple`トークナイザーは品詞情報を持たないため、Janomeより単語境界の精度が低い（例: 連続する漢字の複合語を分割できない）（2026-07-16、上記「一部実データの機能」参照）。
 - `documents`（文章を直接渡す入力）にはまだ画面からの入力UIがない（`urls`のみUIがある）。
 - URL取得はrobots.txt確認・レート制限・DNS rebinding対策が未実装（運用者の責任として文書化のみ、[backend/README.md](../backend/README.md)参照）。
 - ~~GitHub ActionsでNode.js 20 deprecation warning~~ → 調査済み・対応済み（2026-07-15）。GitHubがActions runner上のNode.js 20ランタイムを段階的に廃止しており（2026-06-16よりNode24がデフォルト、2026-09-16に完全廃止予定）、`actions/checkout`・`actions/setup-node`・`actions/setup-python`がNode.js 20ランタイムで動いていることに起因する警告だった。`.github/workflows/ci.yml`の各actionを、Node24対応が確認できるバージョン（`actions/checkout@v5`、`actions/setup-node@v5`、`actions/setup-python@v6`）へ更新して解消した。**アプリのビルド/テストに使う`node-version: "20"`（Next.js 16系の要件）とは無関係**であり、これは変更していない。

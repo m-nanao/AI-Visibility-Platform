@@ -2,6 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from models import Document
 from services.cooccurrence import (
     _get_tokenizer,
@@ -10,6 +12,18 @@ from services.cooccurrence import (
 )
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _use_janome_tokenizer(monkeypatch):
+    """This file specifically tests Janome's POS-filtered extraction
+    (the original tokenizer, still available but no longer the
+    default — see docs/07_decisions.md and the module docstring in
+    services/cooccurrence.py). The lightweight regex tokenizer that IS
+    the production default has its own tests in
+    tests/test_cooccurrence_simple.py.
+    """
+    monkeypatch.setenv("TOKENIZER_MODE", "janome")
 
 
 def _make_document(text: str) -> Document:

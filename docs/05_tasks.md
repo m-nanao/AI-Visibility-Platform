@@ -98,6 +98,7 @@
 ### 4.2 分析ロジック
 
 - [x] 共起語抽出ロジック（形態素解析ライブラリにJanomeを採用。ブランド名前後20文字のウィンドウ + 品詞フィルタ + ストップワードによるシンプルな実装。`backend/services/cooccurrence.py`）
+- [x] Render無料枠（512MB）で`/analyze`実行時にJanomeの辞書読み込みが原因の502/timeoutが発生する問題を修正（2026-07-16）。`TOKENIZER_MODE`環境変数を追加し、デフォルトを辞書不要の軽量トークナイザー（`simple`。英数字連続+ひらがな/カタカナ/漢字の文字種境界で分割、品詞フィルタなし）に変更。Janomeは`TOKENIZER_MODE=janome`を明示した場合のみのoptional扱いとして`backend/services/cooccurrence.py`に残した。Vercel/Render側の設定変更は不要（デフォルト値の変更のみ）。詳細は[11_architecture_v1.md](./11_architecture_v1.md)「4. Document Pipeline」Analyzer節参照
 - [x] URLから本文を取得して共起語解析に渡す最小機能（`backend/services/web_fetcher.py`。`POST /analyze` の `urls` パラメータ、優先順位は `documents` > `urls` > 開発用サンプル文章）
 - [x] URL取得の並列化（`ThreadPoolExecutor`、同時実行数3。1件の失敗が他を止めない）
 - [ ] **【次フェーズ推奨・一部着手済み】Document Pipelineへのリファクタリング**（Provider→Cleaner→Normalizer→Chunker→Analyzerの5段階に整理する。詳細は[11_architecture_v1.md](./11_architecture_v1.md)の「4. Document Pipeline」「10. 次フェーズ候補」参照）※粒度大。残作業は1件ずつに分解してから着手する
@@ -112,7 +113,7 @@
   - [ ] development sample文章を`Document[]`化するか、`DocumentSourceType`に対応する値を追加するか判断する（現状は対象外のまま`documentCount`/`sourceTypes`が`None`になる）
 - [ ] `Document.sourceType`（[11_architecture_v1.md](./11_architecture_v1.md)で定義）と既存の`meta.documentsSource`（[04_data_model.md](./04_data_model.md)）を統合するか、粒度の異なる別概念として並存させるか検討する（未確定のまま2つのフィールドが並存している状態）
 - [ ] 共起語抽出の精度向上（ウィンドウの重複による過剰カウント、ウィンドウサイズ外の関連語の取りこぼしなど、[07_decisions.md](./07_decisions.md) に記載の既知の制約を改善する）※粒度大。着手時は「①ウィンドウ重複によるカウント補正」「②ウィンドウサイズ外の関連語対応」等、[task_template.md](./task_template.md) 1件ずつに分解してから着手する
-- [ ] 形態素解析ライブラリをSudachiPy/MeCab等、より高精度なものに乗り換えるか再検討する
+- [ ] 形態素解析ライブラリをSudachiPy/MeCab等、より高精度なものに乗り換えるか再検討する（現状のデフォルトは辞書不要の軽量`simple`トークナイザー、Janomeはoptional。無料枠のメモリ制約と精度のトレードオフをどう解消するかも合わせて検討する）
 - [ ] 共起語ランキングのトレンド（up/down/flat）算出ロジック（前回分析との比較。現状は常に`"flat"`）
 - [ ] 文脈分類ロジック（比較検討 / 導入事例 / サポート・不満 等のカテゴリ分け）※粒度大。カテゴリ定義・分類ルール実装・テストの3タスクに分解してから着手する
 - [ ] センチメント分析ロジック（ルールベース or 軽量モデルの選定）※粒度大。まず「方式選定（調査のみ）」を1タスクとして切り出し、実装は選定後に別タスク化する
