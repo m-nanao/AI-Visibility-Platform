@@ -78,6 +78,27 @@ class Document(BaseModel):
     metadata: dict[str, object] | None = None
 
 
+class DocumentChunk(BaseModel):
+    """A single chunk of one Document's `text` (see Document above),
+    sized for future context-analysis/Embedding use. See
+    docs/11_architecture_v1.md "4. Document Pipeline" — the Pipeline's
+    "Chunker" stage. Internal processing shape only: never sent to the
+    frontend in bulk (only a count, via AnalysisMeta.chunkCount).
+    """
+
+    id: str
+    documentId: str
+    sourceType: DocumentSourceType
+    sourceUrl: str | None = None
+    title: str | None = None
+    domain: str | None = None
+    chunkIndex: int
+    text: str
+    charStart: int
+    charEnd: int
+    metadata: dict[str, object] | None = None
+
+
 class AnalysisMeta(BaseModel):
     sections: AnalysisSectionStatuses
     documentsSource: DocumentsSource
@@ -90,6 +111,13 @@ class AnalysisMeta(BaseModel):
     # development_sample) is wrapped as Document[].
     documentCount: int | None = None
     sourceTypes: list[DocumentSourceType] | None = None
+    # Count of DocumentChunk[] the Document[] above was split into (see
+    # DocumentChunk above and services/document_chunker.py). The
+    # Chunker's output isn't consumed by any Analyzer logic yet
+    # (co-occurrence still reads whole Document.text) — this field
+    # exists so the Chunker's presence is observable via the API ahead
+    # of that, without exposing chunk text itself.
+    chunkCount: int | None = None
 
 
 class SentimentBreakdown(BaseModel):

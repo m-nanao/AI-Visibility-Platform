@@ -154,6 +154,9 @@ def test_analyze_uses_sample_documents_when_documents_and_urls_omitted():
     # populated just like the other two sources.
     assert result.meta.documentCount == len(SAMPLE_DOCUMENT_TEMPLATES)
     assert result.meta.sourceTypes == ["development_sample"]
+    # Each sample document is short, so the Chunker produces exactly
+    # one chunk per document (see services/document_chunker.py).
+    assert result.meta.chunkCount == len(SAMPLE_DOCUMENT_TEMPLATES)
 
 
 def test_analyze_reports_document_count_and_source_types_for_user_provided_documents():
@@ -172,6 +175,24 @@ def test_analyze_reports_document_count_and_source_types_for_user_provided_docum
     result = AnalysisResult.model_validate(response.json())
     assert result.meta.documentCount == 2
     assert result.meta.sourceTypes == ["user_provided"]
+    assert result.meta.chunkCount == 2
+
+
+def test_analyze_reports_a_higher_chunk_count_for_a_long_document():
+    long_document = "OpenAIの料金プランについて教えてください。" + "あ" * 3000
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "OpenAI", "documents": [long_document]},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.documentCount == 1
+    # One long Document should split into multiple chunks, unlike the
+    # 1-chunk-per-short-document cases above.
+    assert result.meta.chunkCount is not None
+    assert result.meta.chunkCount > 1
 
 
 def test_analyze_accepts_empty_documents_list():

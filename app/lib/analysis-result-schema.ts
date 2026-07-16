@@ -54,6 +54,7 @@ const analysisMetaSchema = z.object({
   urlFetchResults: optionalFromPython(z.array(urlFetchResultSchema)),
   documentCount: optionalFromPython(z.number()),
   sourceTypes: optionalFromPython(z.array(documentSourceTypeSchema)),
+  chunkCount: optionalFromPython(z.number()),
 });
 
 const brandSummarySchema = z.object({

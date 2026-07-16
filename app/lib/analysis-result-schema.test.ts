@@ -187,6 +187,34 @@ describe("parseAnalysisResult", () => {
     }
   });
 
+  it("accepts meta.chunkCount when present", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: { ...buildDummyAnalysis("OpenAI").meta, chunkCount: 4 },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.chunkCount).toBe(4);
+    }
+  });
+
+  it("accepts meta.chunkCount: null the same way as other optional fields", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: { ...buildDummyAnalysis("OpenAI").meta, chunkCount: null },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.chunkCount).toBeUndefined();
+    }
+  });
+
   it("rejects a sourceTypes value outside the known DocumentSourceType set", () => {
     const invalid = {
       ...buildDummyAnalysis("OpenAI"),
