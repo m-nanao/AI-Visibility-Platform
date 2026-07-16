@@ -1,6 +1,6 @@
 # Python分析API（バックエンド）
 
-LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）を導入済みだが、DataForSEO本接続はまだ行っておらず、デフォルトの`mock`モードでは固定データを返す。Common Crawl / DataForSEO / DBにはまだ接続していない。
+LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）とDataForSEO認証情報・実行安全ルールの設計（`services/dataforseo_settings.py`、下記「DataForSEO設定」参照）を導入済みだが、DataForSEO本接続（実際の外部API呼び出し）はまだ行っておらず、デフォルトの`mock`モードでは固定データを返す。Common Crawl / DataForSEO / DBにはまだ接続していない。
 
 > **確認用環境として一時公開する場合の注意**: 本番運用を目的とした構成ではありません。認証・レート制限はなく、CORSもNext.js経由の呼び出しのみを前提に未設定です。公開手順は [../docs/09_deployment.md](../docs/09_deployment.md) を参照してください。
 
@@ -21,7 +21,8 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/brand_summary.py` — Document[]・cooccurrenceRanking・contextAnalysisから`summary`（ブランド認知サマリー）をルールベース・テンプレートで実計算する（Document Pipelineの「Analyzer」役、通称"brand-summary-lite"）。`build_brand_summary()`。詳細は下記「Brand Summary（ブランド認知サマリー）」参照
 - `services/improvement_suggestions.py` — cooccurrenceRanking・contextAnalysis・summaryから`improvements`（改善提案）をルールベースで実計算する（Document Pipelineの「Analyzer」役、通称"improvement-suggestions-lite"）。`build_improvement_suggestions()`。詳細は下記「Improvement Suggestions（改善提案）」参照
 - `services/ai_overview_provider.py` — `aiOverviewComparison`のデータ取得元を`mock`/`off`/`dataforseo`で切り替えるprovider抽象化層。`resolve_ai_overview_mode()`/`build_ai_overview_comparison()`/`build_mock_ai_overview_comparison()`。詳細は下記「AI Overview比較のprovider mode」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
+- `services/dataforseo_settings.py` — DataForSEO認証情報・実行モード（Sandbox/Live）・費用発生防止ルールを読み取る設定モジュール。外部APIは呼ばない。`get_dataforseo_settings()`。詳細は下記「DataForSEO設定（`dataforseo_settings.py`）」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -276,6 +277,35 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 **DataForSEO本接続はこのタスクの対象外**。今後、`dataforseo`モードの分岐を実際のAPI呼び出しに置き換える形で本接続を行う予定（[05_tasks.md](../docs/05_tasks.md)参照）。
 
+### DataForSEO設定（`dataforseo_settings.py`）
+
+DataForSEO本接続前に、認証情報・実行モード・Sandbox/Live切り替え・費用発生防止ルールだけを先に整理したモジュール。外部APIは一切呼ばない（このモジュール自体はDataForSEOと通信しない）。`get_dataforseo_settings() -> DataForSEOSettings`を公開し、`services/ai_overview_provider.py`の`dataforseo`モード分岐がこれを読んで安全な理由文言を組み立てる。
+
+**環境変数**（すべて未設定でも安全に動作する）:
+
+| 環境変数 | デフォルト | 説明 |
+| --- | --- | --- |
+| `DATAFORSEO_LOGIN` | 未設定 | DataForSEOアカウントのログインID（メールアドレス形式）。 |
+| `DATAFORSEO_PASSWORD` | 未設定 | DataForSEOアカウントのAPIパスワード。**実値は保持しない**（後述）。 |
+| `DATAFORSEO_API_ENV` | `sandbox` | `sandbox`/`live`。不正な値は`sandbox`にフォールバック（警告ログ付き）。 |
+| `DATAFORSEO_LIVE_API_ENABLED` | `false` | `true`のときのみLive API使用を許可する候補になる。 |
+| `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` | `1` | 1回の`/analyze`でDataForSEOへ投げてよい最大リクエスト数の上限値（将来の実装向け）。不正値・負値は`1`に、`10`（`MAX_REQUEST_LIMIT_PER_ANALYZE`）を超える値は`10`にフォールバックする。 |
+
+**`DataForSEOSettings`の安全設計**:
+
+- `login`は実際の値を保持する（DataForSEOのログインIDはメールアドレス形式で、パスワードほどの機密性はないため）。ただし`__repr__`/`__str__`ではオーバーライドにより`<set>`/`None`としてマスクし、意図せずログや例外メッセージに出力されても値自体は見えないようにしている。
+- `password`は**実値をそもそも保持しない**。読み取った瞬間に`password_configured: bool`へ変換し、実際の文字列はどの属性にも残らない。「露出させない」のではなく「露出しようがない」設計。
+- `is_configured`は`login`と`password_configured`の両方が揃っている場合のみ`True`。
+- `can_use_live_api`は`is_configured`・`api_env == "live"`・`live_api_enabled`の**3条件すべて**が揃わない限り`True`にならない。1つの環境変数の設定ミスだけでは実APIが誤って有効化されない設計。
+
+`ai_overview_provider.py`の`dataforseo`モード分岐は`get_dataforseo_settings()`を呼び、以下の優先順位で安全な理由文言を`reason`に返す（`login`/`password`の値そのものは絶対に含めない）。
+
+1. 認証情報未設定 → 「DataForSEO credentials are not configured (...); the DataForSEO provider is not yet implemented.」
+2. `DATAFORSEO_API_ENV=live`だが`DATAFORSEO_LIVE_API_ENABLED`が有効でない → 「Live API requested (...) but disabled (...); the DataForSEO provider is not yet implemented.」
+3. それ以外（sandbox設定済み、またはlive有効化済み） → 「DataForSEO credentials are configured ({api_env}); the DataForSEO provider is not yet implemented — no external API call was made.」
+
+いずれの場合も`aiOverviewComparison`は`[]`・section statusは`"unavailable"`のまま——**設定状態にかかわらず外部APIは今回一切呼ばない**。
+
 **運用上の注意（未実装のこと）**
 
 - **robots.txtは確認していない**。取得先ページの利用規約・robots.txtに照らして問題ないURLを渡すのは利用者の責任。
@@ -310,6 +340,7 @@ pytest
 - `AI_OVERVIEW_PROVIDER_MODE`/`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、`aiOverviewComparison`が`"mock"`・4件のデータが返り、`meta.aiOverviewProvider.mode`が`"mock"`になること。この間も`summary`/`cooccurrenceRanking`/`contextAnalysis`/`improvements`は引き続き`"real"`のままであること
 - `AI_OVERVIEW_PROVIDER_MODE=off`で`aiOverviewComparison`が`"unavailable"`・`[]`になること
 - `AI_OVERVIEW_PROVIDER_MODE=dataforseo`でも`aiOverviewComparison`が`"unavailable"`・`[]`になり、`meta.aiOverviewProvider.reason`に「not yet implemented」の旨が含まれること
+- `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ`DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`を設定した場合でも、`reason`が「sandbox設定済み」を安全に反映しつつ、`login`/`password`の値そのものは`reason`にもレスポンス本文全体にも一切含まれないこと
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、リクエストの`aiOverviewMode`（例:`"off"`）は無視され、環境変数のデフォルトのままになること
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`のとき、リクエストの`aiOverviewMode`が実際に反映されること
 - 不正な`aiOverviewMode`（`AiOverviewProviderMode`以外の値）が400 `{"error": "invalid request body"}`になること
@@ -435,6 +466,17 @@ pytest
 - `mock`モードで非空の`aiOverviewComparison`と`"mock"`ステータスが返ること
 - `off`モードで空配列と`"unavailable"`ステータスが返ること
 - `dataforseo`モードでも空配列と`"unavailable"`ステータスが返り、`"real"`には絶対にならないこと（外部APIを呼ばずに実データのように見せないことの回帰防止）
+- `dataforseo`モードの`reason`が認証情報未設定・sandbox設定済み・live要求だが無効の各状態を正しく反映すること、かつ`login`/`password`の実値が`reason`に一切含まれないこと
+
+`tests/test_dataforseo_settings.py` では `get_dataforseo_settings()` を直接テストしている。
+
+- 認証情報未設定では`is_configured=false`になること
+- `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`の両方が設定されていれば`is_configured=true`になること、片方だけでは`false`のままであること
+- `password`の実値が`repr()`/`str()`に一切現れないこと、`password`という属性自体が存在しないこと（保持していないため）
+- `DATAFORSEO_API_ENV`未設定では`"sandbox"`になること、不正な値は`"sandbox"`にフォールバックすること
+- `DATAFORSEO_API_ENV=live`でも`DATAFORSEO_LIVE_API_ENABLED=true`でなければ`can_use_live_api=false`のままであること
+- 認証情報が未設定の場合、`DATAFORSEO_API_ENV=live`かつ`DATAFORSEO_LIVE_API_ENABLED=true`でも`can_use_live_api=false`であること（3条件すべてが必要）
+- `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`が未設定/不正値/負値の場合はデフォルト（1）にフォールバックすること、上限（10）を超える値は上限にキャップされること
 
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
@@ -470,7 +512,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.urlFetchResults` | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
 | `meta.documentCount` / `meta.sourceTypes` | 実際に解析対象となった`Document[]`の件数・`sourceType`一覧（重複なし）。3つの取得元すべてで返る |
 | `meta.chunkCount` | `Document[]`をChunker（`services/document_chunker.py`）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析はこの値を使わないが、`contextAnalysis`はこのチャンクから計算される |
-| `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`。まだUIには表示していない。詳細は下記「AI Overview比較のprovider mode」参照 |
+| `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない（下記「DataForSEO設定」参照）。まだUIには表示していない。詳細は上記「AI Overview比較のprovider mode」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -481,7 +523,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - 文脈分析（`context_analysis.py`）のキーワードベースからの高度化（意味的な文脈理解・要約。現状はあくまで軽量なキーワード一致分類）
 - ブランド認知サマリー（`brand_summary.py`）のルールベース・テンプレート生成からの高度化（AI要約、実際のAIプラットフォーム横断比較等。現状は既存の分析結果を数える・振り分けるだけの軽量処理）
 - 改善提案（`improvement_suggestions.py`）のルールベースからの高度化（AI/LLMによる提案生成、DataForSEO等の実測データとの統合。現状は既存の分析結果に対する説明可能な条件分岐のみ）
-- AI Overview比較のDataForSEO本接続（`services/ai_overview_provider.py`の`dataforseo`モードを実際のAPI呼び出しに置き換える。provider切り替え基盤・`mock`/`off`モードは実装済み。認証情報・APIキーの追加も含めて今回は未着手）
+- AI Overview比較のDataForSEO本接続（`services/ai_overview_provider.py`の`dataforseo`モードを実際のAPI呼び出しに置き換える。provider切り替え基盤・`mock`/`off`モード・認証情報の受け皿（`dataforseo_settings.py`）は実装済みだが、実際のHTTPリクエスト・Sandbox/Live APIへの接続は今回も未着手）
 - AI Overview比較のprovider mode切り替えUI（現状はAPI経由（`aiOverviewMode`リクエストフィールド、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`時のみ有効）でのみ切り替え可能。画面上のトグル等はまだない）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）

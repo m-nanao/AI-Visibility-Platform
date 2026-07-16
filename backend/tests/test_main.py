@@ -255,6 +255,25 @@ def test_analyze_ai_overview_mode_dataforseo_returns_unavailable_without_externa
     assert "not yet implemented" in result.meta.aiOverviewProvider.reason
 
 
+def test_analyze_ai_overview_mode_dataforseo_reason_reflects_credential_state_safely(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    reason = result.meta.aiOverviewProvider.reason
+    assert "sandbox" in reason
+    assert "someone@example.com" not in reason
+    assert "super-secret-password" not in reason
+    # The password/login must not leak anywhere else in the response either.
+    raw_body = response.text
+    assert "super-secret-password" not in raw_body
+    assert "someone@example.com" not in raw_body
+
+
 def test_analyze_ignores_request_ai_overview_mode_override_by_default(monkeypatch):
     monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
     monkeypatch.delenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", raising=False)

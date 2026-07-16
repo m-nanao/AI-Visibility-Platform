@@ -78,7 +78,7 @@
 | `meta.documentCount` | `number`（任意） | 実際に解析対象となった`Document`（後述）の件数。`documentsSource` が `"development_sample"` の場合も含め、常に存在する（development sample文章も`Document[]`化されている） |
 | `meta.sourceTypes` | `("user_provided" \| "web_fetch" \| "development_sample" \| "common_crawl" \| "dataforseo")[]`（任意） | 実際に使われた`Document.sourceType`の一覧（重複なし）。`documentCount`と同じ条件でのみ存在する |
 | `meta.chunkCount` | `number`（任意） | `Document[]`をChunker（後述）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析（Analyzer）はこの値を使わないが、`contextAnalysis`（同じくAnalyzer）はこのチャンクから計算される |
-| `meta.aiOverviewProvider` | `{ mode: "mock" \| "off" \| "dataforseo"; status: SectionStatus; reason: string }`（任意） | `aiOverviewComparison`を生成したprovider modeとその理由。まだUIには表示していない。詳細は下記「AI Overview比較のprovider mode」参照 |
+| `meta.aiOverviewProvider` | `{ mode: "mock" \| "off" \| "dataforseo"; status: SectionStatus; reason: string }`（任意） | `aiOverviewComparison`を生成したprovider modeとその理由。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない。まだUIには表示していない。詳細は下記「AI Overview比較のprovider mode」「DataForSEO認証情報・実行安全ルール」参照 |
 
 **`"unavailable"` と `"real"`(0件) の違い**: `cooccurrenceRanking`/`contextAnalysis` が空配列 `[]` になるケースは2通りある。(1) `documents: []` を明示的に渡した、または実際に解析した結果0件だった場合は `"real"`（計算は実行され、結果がたまたま0件だった）。(2) `urls` に渡したURLが1件も取得できなかった場合は `"unavailable"`（計算に必要な文章が1件も得られなかった）。この区別により、UIやAPI利用者は「正常に分析して0件だった」のか「取得に失敗して分析自体ができなかった」のかを判別できる（[07_decisions.md](./07_decisions.md) 参照）。
 
@@ -92,6 +92,19 @@
 - `aiOverviewMode`に不正な値（`"mock"`/`"off"`/`"dataforseo"`以外）を渡した場合は、他の不正なリクエストと同じ400 `{"error": "invalid request body"}`になる。
 
 詳細は[backend/README.md](../backend/README.md)の「AI Overview比較のprovider mode」を参照。
+
+### DataForSEO認証情報・実行安全ルール
+
+DataForSEO本接続（`aiOverviewMode: "dataforseo"`が実際に外部APIを呼ぶようになること）に先立ち、認証情報の扱い方と誤実行防止ルールだけを整理した（`backend/services/dataforseo_settings.py`）。**このタスクでも外部API通信は一切行わない。**
+
+- **認証情報**: `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD`（Python API側の環境変数）。GitHubにはコミットしない、フロントエンドには渡さない、Render Environment Variablesにのみ設定する（Vercel/Next.js側では一切参照しない）。
+- **`password`は実値を保持しない**: 読み取った瞬間に「設定されているかどうか」の真偽値へ変換し、実際の文字列はどこにも残らない。ログ・APIレスポンス・`repr()`いずれにも露出しようがない設計。
+- **Sandbox/Live切り替え**: `DATAFORSEO_API_ENV`（`sandbox`（デフォルト）/`live`）。
+- **Live API誤有効化の防止**: `DATAFORSEO_LIVE_API_ENABLED`（デフォルト`false`）が`true`で、かつ`DATAFORSEO_API_ENV=live`で、かつ認証情報が設定されている——**3条件すべて**が揃わない限りLive APIは使用可能にならない。
+- **費用の急増防止**: `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`（デフォルト`1`、上限`10`）で1回の`/analyze`あたりのDataForSEOリクエスト数に上限を設ける（値自体は今回まだどこにも使われていない。将来の実装向けの受け皿）。
+- `aiOverviewMode: "dataforseo"`の`meta.aiOverviewProvider.reason`には、上記の設定状態に基づく安全な説明文（例:「credentials are not configured」「sandbox configured, connector not implemented yet」「live requested but not enabled」）が入るが、`login`/`password`の値そのものは絶対に含まれない。
+
+詳細は[backend/README.md](../backend/README.md)の「DataForSEO設定（`dataforseo_settings.py`）」、運用方針の経緯は[07_decisions.md](./07_decisions.md)を参照。
 
 ### `Document` / `DocumentChunk`（内部処理単位、v1.0アーキテクチャ）
 
@@ -245,7 +258,7 @@ Response（200 OK）: 更新後の設定オブジェクトを返す。
 
 ### 2.2 Python分析API（`backend/`、FastAPI・実装済みの土台）
 
-実装: [backend/main.py](../backend/main.py)（ルート定義）、[backend/models.py](../backend/models.py)（Pydanticモデル）、[backend/services/mock_analysis.py](../backend/services/mock_analysis.py)（ダミーデータ生成）、[backend/services/cooccurrence.py](../backend/services/cooccurrence.py)（共起語抽出の実計算）、[backend/services/context_analysis.py](../backend/services/context_analysis.py)（文脈分析の実計算、キーワードベースの軽量版）、[backend/services/brand_summary.py](../backend/services/brand_summary.py)（ブランド認知サマリーの実計算、ルールベース・テンプレート生成の軽量版）、[backend/services/improvement_suggestions.py](../backend/services/improvement_suggestions.py)（改善提案の実計算、ルールベースの軽量版）、[backend/services/ai_overview_provider.py](../backend/services/ai_overview_provider.py)（AI Overview比較のprovider切り替え、mock/off/dataforseo）、[backend/services/sample_documents.py](../backend/services/sample_documents.py)（開発用サンプル文章）、[backend/services/web_fetcher.py](../backend/services/web_fetcher.py)（URLから本文取得）。起動方法は [backend/README.md](../backend/README.md)。
+実装: [backend/main.py](../backend/main.py)（ルート定義）、[backend/models.py](../backend/models.py)（Pydanticモデル）、[backend/services/mock_analysis.py](../backend/services/mock_analysis.py)（ダミーデータ生成）、[backend/services/cooccurrence.py](../backend/services/cooccurrence.py)（共起語抽出の実計算）、[backend/services/context_analysis.py](../backend/services/context_analysis.py)（文脈分析の実計算、キーワードベースの軽量版）、[backend/services/brand_summary.py](../backend/services/brand_summary.py)（ブランド認知サマリーの実計算、ルールベース・テンプレート生成の軽量版）、[backend/services/improvement_suggestions.py](../backend/services/improvement_suggestions.py)（改善提案の実計算、ルールベースの軽量版）、[backend/services/ai_overview_provider.py](../backend/services/ai_overview_provider.py)（AI Overview比較のprovider切り替え、mock/off/dataforseo）、[backend/services/dataforseo_settings.py](../backend/services/dataforseo_settings.py)（DataForSEO認証情報・実行安全ルールの設定読み取り。外部API通信はしない）、[backend/services/sample_documents.py](../backend/services/sample_documents.py)（開発用サンプル文章）、[backend/services/web_fetcher.py](../backend/services/web_fetcher.py)（URLから本文取得）。起動方法は [backend/README.md](../backend/README.md)。
 
 Next.jsのRoute Handler（`/api/analyze`）からサーバー間通信で呼び出される。ブラウザから直接呼ばれることは想定していない。
 
