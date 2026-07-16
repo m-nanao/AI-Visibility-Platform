@@ -72,3 +72,77 @@ def test_build_ai_overview_comparison_dataforseo_mode_never_looks_real():
     _, status, _ = build_ai_overview_comparison("Acme", "dataforseo")
 
     assert status != "real"
+
+
+def _clear_dataforseo_env(monkeypatch):
+    for name in (
+        "DATAFORSEO_LOGIN",
+        "DATAFORSEO_PASSWORD",
+        "DATAFORSEO_API_ENV",
+        "DATAFORSEO_LIVE_API_ENABLED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_dataforseo_mode_reason_reports_missing_credentials(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    _, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert status == "unavailable"
+    assert "not configured" in reason
+
+
+def test_dataforseo_mode_reason_reports_sandbox_configured(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+
+    _, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert status == "unavailable"
+    assert "sandbox" in reason
+    assert "not yet implemented" in reason
+
+
+def test_dataforseo_mode_reason_reports_live_requested_but_disabled(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+
+    _, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert status == "unavailable"
+    assert "Live API" in reason
+    assert "disabled" in reason
+
+
+def test_dataforseo_mode_reason_never_includes_credential_values(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+
+    _, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert status == "unavailable"
+    assert "someone@example.com" not in reason
+    assert "super-secret-password" not in reason
+
+
+def test_dataforseo_mode_never_calls_an_external_api(monkeypatch):
+    # There is no HTTP client used anywhere in this module — this test
+    # documents/guards that expectation by asserting the mode still
+    # resolves synchronously and instantly regardless of credential
+    # configuration, rather than attempting a real network call.
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+
+    items, status, _ = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert items == []
+    assert status == "unavailable"

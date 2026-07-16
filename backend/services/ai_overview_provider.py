@@ -29,13 +29,18 @@ Three modes:
   [] / "unavailable" rather than ever faking a "real" result, so a
   misconfigured environment can never be mistaken for a working
   DataForSEO integration. See docs/05_tasks.md for the follow-up task
-  that will replace this branch with an actual DataForSEO call.
+  that will replace this branch with an actual DataForSEO call. The
+  reason string reflects DataForSEO credential/env configuration (via
+  services/dataforseo_settings.py) so an operator can tell *why* it's
+  unavailable — but never includes the login/password values
+  themselves, see that module's docstring.
 """
 
 import logging
 import os
 
 from models import AIOverviewComparisonItem, AiOverviewProviderMode, SectionStatus
+from services.dataforseo_settings import DataForSEOSettings, get_dataforseo_settings
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +116,32 @@ def build_mock_ai_overview_comparison(brand_name: str) -> list[AIOverviewCompari
     ]
 
 
+def _dataforseo_unavailable_reason(settings: DataForSEOSettings) -> str:
+    """Explains why "dataforseo" mode is unavailable, in priority order
+    of what's most actionable for whoever reads it — but never
+    includes settings.login or the password itself (which isn't even
+    held anywhere, see services/dataforseo_settings.py).
+    """
+    if not settings.is_configured:
+        return (
+            "DataForSEO credentials are not configured "
+            "(DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD); "
+            "the DataForSEO provider is not yet implemented."
+        )
+
+    if settings.api_env == "live" and not settings.live_api_enabled:
+        return (
+            "Live API requested (DATAFORSEO_API_ENV=live) but disabled "
+            "(DATAFORSEO_LIVE_API_ENABLED is not true); "
+            "the DataForSEO provider is not yet implemented."
+        )
+
+    return (
+        f"DataForSEO credentials are configured ({settings.api_env}); "
+        "the DataForSEO provider is not yet implemented — no external API call was made."
+    )
+
+
 def build_ai_overview_comparison(
     brand_name: str, mode: AiOverviewProviderMode
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str]:
@@ -130,7 +161,7 @@ def build_ai_overview_comparison(
         return (
             [],
             "unavailable",
-            "DataForSEO provider is not yet implemented; no external API call was made.",
+            _dataforseo_unavailable_reason(get_dataforseo_settings()),
         )
 
     # mode == "mock" — also the effective fallback for any unrecognized

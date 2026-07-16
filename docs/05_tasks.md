@@ -46,6 +46,7 @@
 
 ### 3.1 DataForSEO連携
 
+- [x] DataForSEO接続前の認証情報・実行安全ルール設計（`security/dataforseo-safety-settings`、2026-07-17）。`backend/services/dataforseo_settings.py`新設、`get_dataforseo_settings() -> DataForSEOSettings`。外部API通信はまだ一切行わない。環境変数`DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`（認証情報、GitHubにコミットしない・フロントには渡さない・Render Environment Variablesにのみ設定）、`DATAFORSEO_API_ENV`（`sandbox`（デフォルト）/`live`、不正値は`sandbox`にフォールバック）、`DATAFORSEO_LIVE_API_ENABLED`（デフォルト`false`）、`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`（デフォルト`1`、上限`10`）を追加。`password`は実値を一切保持せず`password_configured: bool`のみ保持する設計により、ログ・レスポンス・`repr()`のいずれにも露出しようがない。`can_use_live_api`は認証情報設定済み・`api_env=="live"`・`live_api_enabled`の3条件すべてが揃わない限り`True`にならない（1つの設定ミスだけでは実APIが誤って有効化されない）。`backend/services/ai_overview_provider.py`の`dataforseo`モード分岐がこれを読み、認証情報未設定/sandbox設定済み/live要求だが無効、の3状態を`meta.aiOverviewProvider.reason`に安全な文言で反映する（`login`/`password`の値そのものは含めない）。既存の`mock`/`off`モードの挙動・既存の実計算セクション（summary/cooccurrenceRanking/contextAnalysis/improvements）は変更なし。DataForSEO本接続（実際のHTTPリクエスト）自体は次タスク以降。運用方針は[07_decisions.md](./07_decisions.md)に記録
 - [ ] DataForSEOのアカウント・APIキー取得
 - [ ] 検索結果取得エンドポイントの仕様調査
 - [ ] AI Overview掲載状況を取得できるエンドポイントの有無・仕様調査
