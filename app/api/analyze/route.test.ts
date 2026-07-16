@@ -172,6 +172,44 @@ describe("POST /api/analyze", () => {
     ]);
   });
 
+  it("passes through a real brand summary from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      summary: {
+        brandName: "OpenAI",
+        visibilityScore: 24,
+        totalMentions: 2,
+        sentimentBreakdown: { positive: 0, neutral: 100, negative: 0 },
+        topPlatforms: ["入力テキスト"],
+        summaryText: "OpenAIは取得した文章内で2回言及され、主に料金・価格の文脈で語られています。",
+      },
+      meta: pythonMetaOverride({
+        documentsSource: "user_provided",
+        sections: { summary: "real", cooccurrenceRanking: "real", contextAnalysis: "real" },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", documents: ["OpenAIの料金プランについて教えてください。"] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.sections.summary).toBe("real");
+    expect(data.summary).toEqual({
+      brandName: "OpenAI",
+      visibilityScore: 24,
+      totalMentions: 2,
+      sentimentBreakdown: { positive: 0, neutral: 100, negative: 0 },
+      topPlatforms: ["入力テキスト"],
+      summaryText: "OpenAIは取得した文章内で2回言及され、主に料金・価格の文脈で語られています。",
+    });
+  });
+
   it("passes through an unavailable cooccurrenceRanking from the Python API", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = {

@@ -4,9 +4,10 @@ This mirrors the shape of the TypeScript `AnalysisResult` type
 (`app/lib/types.ts`), so that Next.js's `/api/analyze` route can call
 this service directly without any response transformation.
 
-The `cooccurrenceRanking` and `contextAnalysis` fields are computed for
-real (see services/cooccurrence.py and services/context_analysis.py)
-from one of, in priority order:
+The `cooccurrenceRanking`, `contextAnalysis`, and `summary` fields are
+computed for real (see services/cooccurrence.py,
+services/context_analysis.py, and services/brand_summary.py) from one
+of, in priority order:
 1. `documents` supplied in the request
 2. text fetched from `urls` supplied in the request (services/web_fetcher.py)
 3. development sample documents (services/sample_documents.py), if
@@ -19,11 +20,14 @@ The Document[] is also split into DocumentChunk[] (services/document_chunker.py,
 the Pipeline's "Chunker" stage) — `contextAnalysis` is the first
 Analyzer logic that actually reads chunks (a lightweight, rule-based
 categorization, no AI/LLM calls); `cooccurrenceRanking` still reads
-whole Document.text directly.
+whole Document.text directly. `summary` (brand-summary-lite) is built
+on top of the other two sections' already-computed output (mention
+counts, cooccurrence keywords, context categories) — again no AI/LLM
+calls, just simple counting/bucketing rules.
 
-`summary`, `aiOverviewComparison`, and `improvements` are still fixed
-placeholder data — `meta.sections` reports this per-section so callers
-don't have to guess. See docs/05_tasks.md (Phase 4) for what's next.
+`aiOverviewComparison` and `improvements` are still fixed placeholder
+data — `meta.sections` reports this per-section so callers don't have
+to guess. See docs/05_tasks.md (Phase 4) for what's next.
 """
 
 import logging
@@ -49,6 +53,7 @@ from models import (
     SectionStatus,
     UrlFetchResult,
 )
+from services.brand_summary import build_brand_summary
 from services.context_analysis import analyze_contexts
 from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
@@ -270,9 +275,20 @@ def analyze(payload: AnalyzeRequest):
     result.contextAnalysis = analyze_contexts(brand_name, chunks)
     logger.info("context analysis complete: %d context(s)", len(result.contextAnalysis))
 
+    # brandSummary ("summary" in AnalysisResult): lightweight, rule-based
+    # (no AI/LLM calls — see services/brand_summary.py), built from the
+    # Document[]/cooccurrenceRanking/contextAnalysis already computed
+    # above. Shares cooccurrence_status with the other two sections for
+    # the same reason contextAnalysis does: all three are derived from
+    # the same Document[]/chunk pipeline.
+    result.summary = build_brand_summary(
+        brand_name, documents_list, chunks, result.cooccurrenceRanking, result.contextAnalysis
+    )
+    logger.info("brand summary complete: visibilityScore=%d", result.summary.visibilityScore)
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
-            summary="mock",
+            summary=cooccurrence_status,
             cooccurrenceRanking=cooccurrence_status,
             contextAnalysis=cooccurrence_status,
             aiOverviewComparison="mock",
