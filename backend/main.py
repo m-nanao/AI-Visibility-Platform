@@ -4,10 +4,11 @@ This mirrors the shape of the TypeScript `AnalysisResult` type
 (`app/lib/types.ts`), so that Next.js's `/api/analyze` route can call
 this service directly without any response transformation.
 
-The `cooccurrenceRanking`, `contextAnalysis`, and `summary` fields are
-computed for real (see services/cooccurrence.py,
-services/context_analysis.py, and services/brand_summary.py) from one
-of, in priority order:
+The `cooccurrenceRanking`, `contextAnalysis`, `summary`, and
+`improvements` fields are computed for real (see
+services/cooccurrence.py, services/context_analysis.py,
+services/brand_summary.py, and services/improvement_suggestions.py)
+from one of, in priority order:
 1. `documents` supplied in the request
 2. text fetched from `urls` supplied in the request (services/web_fetcher.py)
 3. development sample documents (services/sample_documents.py), if
@@ -22,12 +23,15 @@ Analyzer logic that actually reads chunks (a lightweight, rule-based
 categorization, no AI/LLM calls); `cooccurrenceRanking` still reads
 whole Document.text directly. `summary` (brand-summary-lite) is built
 on top of the other two sections' already-computed output (mention
-counts, cooccurrence keywords, context categories) — again no AI/LLM
-calls, just simple counting/bucketing rules.
+counts, cooccurrence keywords, context categories), and `improvements`
+(improvement-suggestions-lite) is built on top of all three — again no
+AI/LLM/DataForSEO calls anywhere in this chain, just simple
+counting/bucketing/condition rules with an explainable reason attached
+to each suggestion.
 
-`aiOverviewComparison` and `improvements` are still fixed placeholder
-data — `meta.sections` reports this per-section so callers don't have
-to guess. See docs/05_tasks.md (Phase 4) for what's next.
+`aiOverviewComparison` is still fixed placeholder data — `meta.sections`
+reports this per-section so callers don't have to guess. See
+docs/05_tasks.md (Phase 4) for what's next.
 """
 
 import logging
@@ -55,6 +59,7 @@ from models import (
 )
 from services.brand_summary import build_brand_summary
 from services.context_analysis import analyze_contexts
+from services.improvement_suggestions import build_improvement_suggestions
 from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
@@ -286,13 +291,36 @@ def analyze(payload: AnalyzeRequest):
     )
     logger.info("brand summary complete: visibilityScore=%d", result.summary.visibilityScore)
 
+    # improvements: lightweight, rule-based (no AI/LLM/DataForSEO calls —
+    # see services/improvement_suggestions.py), built from the
+    # cooccurrenceRanking/contextAnalysis/summary already computed
+    # above. Shares cooccurrence_status with the other three sections
+    # for the same reason they do. Unlike those, build_improvement_suggestions()
+    # always returns at least one (fallback) suggestion for genuinely
+    # empty input, so when the status is "unavailable" (every url
+    # failed) we skip calling it and report [] directly instead —
+    # otherwise the fallback suggestion would render as if a
+    # computation had actually happened.
+    if cooccurrence_status == "unavailable":
+        result.improvements = []
+    else:
+        result.improvements = build_improvement_suggestions(
+            brand_name,
+            result.summary,
+            result.cooccurrenceRanking,
+            result.contextAnalysis,
+            document_count=document_count,
+            source_types=source_types,
+        )
+    logger.info("improvement suggestions complete: %d suggestion(s)", len(result.improvements))
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary=cooccurrence_status,
             cooccurrenceRanking=cooccurrence_status,
             contextAnalysis=cooccurrence_status,
             aiOverviewComparison="mock",
-            improvements="mock",
+            improvements=cooccurrence_status,
         ),
         documentsSource=documents_source,
         generatedAt=datetime.now(timezone.utc).isoformat(),
