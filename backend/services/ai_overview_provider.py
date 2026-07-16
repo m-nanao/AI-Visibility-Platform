@@ -24,23 +24,27 @@ Three modes:
   "unavailable" (there is no separate "disabled" status in
   SectionStatus yet — see docs/07_decisions.md's rationale for why
   "unavailable" already means "couldn't be computed", which fits).
-- "dataforseo": **NOT YET IMPLEMENTED.** No external API call is made
-  under any circumstances in this module — this deliberately returns
-  [] / "unavailable" rather than ever faking a "real" result, so a
-  misconfigured environment can never be mistaken for a working
-  DataForSEO integration. See docs/05_tasks.md for the follow-up task
-  that will replace this branch with an actual DataForSEO call. The
-  reason string reflects DataForSEO credential/env configuration (via
-  services/dataforseo_settings.py) so an operator can tell *why* it's
-  unavailable — but never includes the login/password values
-  themselves, see that module's docstring.
+- "dataforseo": Connects to **DataForSEO Sandbox only** — never Live,
+  regardless of `DATAFORSEO_API_ENV`/`DATAFORSEO_LIVE_API_ENABLED` (see
+  below). When `DATAFORSEO_API_ENV=live`, this mode deliberately
+  refuses to call anything at all and reports "unavailable"; Live
+  support is a distinct follow-up task (docs/05_tasks.md). When
+  `DATAFORSEO_API_ENV=sandbox` and credentials are configured, this
+  calls services/dataforseo_client.py's Sandbox connector and reports
+  "real" only if a usable AI Overview-type item was actually found and
+  parsed — any failure (missing credentials, network error, unexpected
+  response shape, no matching item) falls back to []/"unavailable"
+  with a safe, credential-free `reason` explaining why. `/analyze`
+  itself never fails because of this — a DataForSEO/Sandbox problem
+  only ever affects this one section.
 """
 
 import logging
 import os
 
 from models import AIOverviewComparisonItem, AiOverviewProviderMode, SectionStatus
-from services.dataforseo_settings import DataForSEOSettings, get_dataforseo_settings
+from services.dataforseo_client import fetch_ai_overview_sandbox
+from services.dataforseo_settings import DataForSEOSettings, get_dataforseo_credentials, get_dataforseo_settings
 
 logger = logging.getLogger(__name__)
 
@@ -116,39 +120,66 @@ def build_mock_ai_overview_comparison(brand_name: str) -> list[AIOverviewCompari
     ]
 
 
-def _dataforseo_unavailable_reason(settings: DataForSEOSettings) -> str:
-    """Explains why "dataforseo" mode is unavailable, in priority order
-    of what's most actionable for whoever reads it — but never
+def _run_dataforseo_mode(
+    brand_name: str, settings: DataForSEOSettings
+) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str]:
+    """Implements the "dataforseo" mode's full decision tree. Never
     includes settings.login or the password itself (which isn't even
-    held anywhere, see services/dataforseo_settings.py).
+    held anywhere, see services/dataforseo_settings.py) in any reason
+    string, and never calls anything for `api_env == "live"` —
+    that refusal is unconditional, independent of
+    `settings.can_use_live_api`/`DATAFORSEO_LIVE_API_ENABLED`, since
+    this task implements Sandbox only.
     """
     if not settings.is_configured:
         return (
-            "DataForSEO credentials are not configured "
-            "(DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD); "
-            "the DataForSEO provider is not yet implemented."
+            [],
+            "unavailable",
+            "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
         )
 
-    if settings.api_env == "live" and not settings.live_api_enabled:
+    if settings.api_env == "live":
         return (
-            "Live API requested (DATAFORSEO_API_ENV=live) but disabled "
-            "(DATAFORSEO_LIVE_API_ENABLED is not true); "
-            "the DataForSEO provider is not yet implemented."
+            [],
+            "unavailable",
+            "Live API is not implemented in this task; only DataForSEO Sandbox "
+            "(DATAFORSEO_API_ENV=sandbox) is supported.",
         )
 
-    return (
-        f"DataForSEO credentials are configured ({settings.api_env}); "
-        "the DataForSEO provider is not yet implemented — no external API call was made."
-    )
+    # api_env == "sandbox" and credentials are configured — the only
+    # branch that actually calls out to DataForSEO.
+    credentials = get_dataforseo_credentials()
+    if credentials is None:
+        # Defensive: is_configured already implies this can't happen.
+        return (
+            [],
+            "unavailable",
+            "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
+        )
+
+    result = fetch_ai_overview_sandbox(credentials, brand_name)
+    if not result.success:
+        return [], "unavailable", result.reason
+
+    items = [
+        AIOverviewComparisonItem(
+            platform="Google AI Overview (DataForSEO Sandbox)",
+            mentioned=result.mentioned,
+            rank=result.rank,
+            summary=result.summary or "",
+        )
+    ]
+    return items, "real", result.reason
 
 
 def build_ai_overview_comparison(
     brand_name: str, mode: AiOverviewProviderMode
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str]:
     """Returns (items, section status, human-readable reason) for the
-    given mode. Never calls an external API regardless of mode — see
-    module docstring for why "dataforseo" is a deliberate stub, not a
-    real connection, as of this task.
+    given mode. "mock"/"off" never call an external API. "dataforseo"
+    calls DataForSEO Sandbox — and only Sandbox, only when credentials
+    are configured and `DATAFORSEO_API_ENV=sandbox` — see module
+    docstring and _run_dataforseo_mode() for the full decision tree.
     """
     if mode == "off":
         return (
@@ -158,11 +189,7 @@ def build_ai_overview_comparison(
         )
 
     if mode == "dataforseo":
-        return (
-            [],
-            "unavailable",
-            _dataforseo_unavailable_reason(get_dataforseo_settings()),
-        )
+        return _run_dataforseo_mode(brand_name, get_dataforseo_settings())
 
     # mode == "mock" — also the effective fallback for any unrecognized
     # value, since resolve_ai_overview_mode()/_default_mode_from_env()
