@@ -57,6 +57,13 @@ export interface AnalysisMeta {
   // with (can vary per Document once multiple sources feed one
   // analysis, e.g. a future Common Crawl + web_fetch combination).
   sourceTypes?: DocumentSourceType[];
+  // Count of DocumentChunk[] the Document[] above was split into by
+  // the backend's Chunker stage (services/document_chunker.py, see
+  // docs/11_architecture_v1.md "4. Document Pipeline"). Not consumed
+  // by cooccurrenceRanking yet (that still reads whole Document.text)
+  // — this is only a count, not shown in the UI; chunk text itself is
+  // never sent to the client.
+  chunkCount?: number;
 }
 
 export interface BrandSummary {

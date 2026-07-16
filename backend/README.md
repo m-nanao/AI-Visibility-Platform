@@ -16,7 +16,8 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/web_fetcher.py` — URL検証・SSRF対策・HTTP取得を担う（Document Pipelineの「Provider」役）。HTML本文抽出自体は行わず、`services/document_cleaner.py`を呼び出す
 - `services/document_cleaner.py` — HTML解析・不要要素（script/style/nav/footer等）の除去・Cookieバナー/広告らしき要素の除去・タイトル抽出・本文テキスト抽出・空白整理を担う（Document Pipelineの「Cleaner」役）。詳細は下記「URL取得とHTMLクリーニング」参照
 - `services/document_normalizer.py` — Cleaner出力・`user_provided`文章・development sample文章それぞれに対するUnicode・空白・不可視文字の正規化を担う（Document Pipelineの「Normalizer」役）。`normalize_text()`。詳細は下記「Document Normalizer」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
+- `services/document_chunker.py` — `Document.text`を`DocumentChunk[]`へ分割する（Document Pipelineの「Chunker」役）。`chunk_document()`/`chunk_documents()`。詳細は下記「Document Chunker」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -129,11 +130,11 @@ TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 
 `documents` と `urls` を両方渡した場合、`urls` は無視される。
 
-3つの取得元すべてが最終的に`Document[]`（`sourceType`はそれぞれ`"user_provided"`/`"web_fetch"`/`"development_sample"`）へ変換され、`services/document_normalizer.py`の`normalize_text()`を通ってから`services/cooccurrence.py`で共起解析される（`main.py`の`analyze()`はこの1本の流れに統一されており、取得元による分岐は`meta.documentsSource`の値決定にのみ残る）。
+3つの取得元すべてが最終的に`Document[]`（`sourceType`はそれぞれ`"user_provided"`/`"web_fetch"`/`"development_sample"`）へ変換され、`services/document_normalizer.py`の`normalize_text()`を通ってから`services/cooccurrence.py`で共起解析される（`main.py`の`analyze()`はこの1本の流れに統一されており、取得元による分岐は`meta.documentsSource`の値決定にのみ残る）。同じ`Document[]`は`services/document_chunker.py`にも渡され、生成されたチャンク件数が`meta.chunkCount`としてレスポンスに含まれる（詳細は下記「Document Chunker」参照。共起解析自体はまだこのチャンクを消費していない）。
 
-## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py` / `services/document_normalizer.py`）
+## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py` / `services/document_normalizer.py` / `services/document_chunker.py`）
 
-`urls` が指定された場合の処理は、役割ごとに3つのモジュールへ分離している（Document Pipelineの「Provider」「Cleaner」「Normalizer」段階、詳細は[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）。
+`urls` が指定された場合の処理は、役割ごとに複数のモジュールへ分離している（Document Pipelineの「Provider」「Cleaner」「Normalizer」「Chunker」段階、詳細は[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）。
 
 ```
 URL
@@ -146,7 +147,9 @@ document_normalizer.py: Unicode・空白・不可視文字の正規化
   ↓
 Document(sourceType="web_fetch") 化
   ↓
-cooccurrence.py で共起解析
+document_chunker.py: DocumentChunk[]へ分割（件数のみmeta.chunkCountで観測可能）
+  ↓
+cooccurrence.py で共起解析（Document.text全体を直接読む。Chunkerの出力はまだ未使用）
 ```
 
 1件の失敗が他のURLの処理を止めることはない。
@@ -181,6 +184,18 @@ Cleanerが「HTMLから本文を取り出す」役割なのに対し、Normalize
 
 結果は `meta.urlFetchResults`（`{ url, success, error? }` の配列）としてレスポンスに含まれる。**全URLが失敗した場合**、`cooccurrenceRanking` を計算するための文章が1件もないため、`meta.sections.cooccurrenceRanking` は `"real"` ではなく **`"unavailable"`** になる（「正常に計算して0件だった」場合と区別するため）。
 
+### `document_chunker.py`（Chunker: `Document.text`をチャンクへ分割）
+
+Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し、Chunkerは「本文を分析しやすい小さな単位に分割する」役割。将来の文脈分析・Embedding・Knowledge Graphでの利用を見据えた土台で、`chunk_document(document, max_chars=1200, overlap_chars=150) -> list[DocumentChunk]` / `chunk_documents(documents, ...) -> list[DocumentChunk]`を公開する。
+
+1. **短い場合はそのまま1チャンク**: `Document.text`が`max_chars`以下ならチャンク分割せず1件にする。
+2. **自然な境界を優先**: 超える場合、段落区切り（`\n\n`）→改行→文末句読点（`。！？.!?`）→空白、の優先順で自然な境界を探して分割する。境界が見つからない場合は`max_chars`で強制的に切る（無限ループ・巨大チャンク化を防ぐフォールバック）。
+3. **オーバーラップ**: 隣接チャンクは`overlap_chars`分だけ重ねる（文脈の連続性を保つため）。
+4. **空白のみのchunkは作らない**: `chunkIndex`は0始まりで、実際に生成されたチャンクにのみ連番を振る。
+5. **メタデータの引き継ぎ**: `sourceType`/`sourceUrl`/`title`/`domain`は元の`Document`から引き継ぎ、`charStart`/`charEnd`は元の`Document.text`上の文字位置を表す。
+
+`DocumentChunk`（`backend/models.py`で定義）は内部処理用の構造であり、`DocumentChunk[]`自体・チャンク本文はAPIレスポンスに含めない。`main.py`の`analyze()`が`Document[]`から`chunk_documents()`を呼び、**件数のみ**を`meta.chunkCount`としてレスポンスに含める。**現時点では共起解析（Analyzer）はChunkerの出力を消費しない**（`compute_cooccurrence_ranking_from_documents()`は引き続き`Document.text`全体を直接読む）。文脈分析・Embedding・Knowledge Graphでの実際の活用はまだ未実装。
+
 **運用上の注意（未実装のこと）**
 
 - **robots.txtは確認していない**。取得先ページの利用規約・robots.txtに照らして問題ないURLを渡すのは利用者の責任。
@@ -202,7 +217,7 @@ pytest
 - `POST /analyze` が正常な `brandName` で200を返す
 - レスポンスを `models.AnalysisResult` で再パースしても壊れない（型が一致する）こと、`meta.sections.cooccurrenceRanking` が `"real"`・他の4セクションが `"mock"` であること
 - `documents` を明示的に渡すと、その内容から `cooccurrenceRanking` が計算されること（同じ語が複数文章に出た場合に加算されることも確認）、`meta.documentsSource` が `"user_provided"` になること
-- `documents` を省略すると開発用サンプル文章が使われ、`cooccurrenceRanking` が空でないこと、`meta.documentsSource` が `"development_sample"` になること、`meta.documentCount`/`meta.sourceTypes`（`["development_sample"]`）も他の取得元と同様に返ること
+- `documents` を省略すると開発用サンプル文章が使われ、`cooccurrenceRanking` が空でないこと、`meta.documentsSource` が `"development_sample"` になること、`meta.documentCount`/`meta.sourceTypes`（`["development_sample"]`）も他の取得元と同様に返ること、`meta.chunkCount`もサンプル文書数と同じ件数になること（各文書が短く1文書1チャンクになるため）
 - `documents: []` を渡すとエラーにならず `cooccurrenceRanking: []`・`meta.sections.cooccurrenceRanking: "real"` になること
 - ブランド名を全角文字（`ＯｐｅｎＡＩ`）でしか含まない`documents`でも、Normalizerが半角化するためブランド名前後ウィンドウが正しくマッチし、共起語が計算されること
 - `documents` と `urls` を両方渡すと `documents` が優先され、`meta.urlFetchResults` が付かないこと
@@ -213,6 +228,7 @@ pytest
 - 200文字ちょうどは通り、201文字以上は400になること
 - 不正な型（`brandName: 123`など）が400になること
 - `documents`/`urls` の件数・文字数制限を超えると400になること
+- 1件の長い`documents`（3000文字超の日本語文章）を渡すと`meta.chunkCount`が1より大きくなること（短い文書は1チャンクになるケースと区別）
 
 `tests/test_cooccurrence.py` では `TOKENIZER_MODE=janome`（optionalモード）を明示した上で `compute_cooccurrence_ranking()` を直接テストしている。
 
@@ -269,6 +285,18 @@ pytest
 - 空文字・空白のみの文字列でも例外が出ないこと（`""`を返す）
 - 過剰な連続句読点（4回以上）が軽く圧縮される一方、`...`のような通常の句読点連続は維持されること
 
+`tests/test_document_chunker.py` では `chunk_document()` / `chunk_documents()` を直接テストしている。
+
+- 短い`Document`は1チャンクになること
+- 長い`Document`は複数チャンクになり、`chunkIndex`が0から順に振られること
+- `charStart`/`charEnd`が元の`Document.text`の妥当な範囲を指し、実際にそのスライスと一致すること
+- `overlap_chars`分だけ隣接チャンクが重なること
+- 空白のみのスライスはチャンク化されないこと
+- 空文字・空白のみの`Document`はチャンクを1件も生成しないこと
+- 日本語の長文でも文字列が壊れず、文末句読点（「。」）を優先した自然な境界で分割されること
+- `sourceType`/`sourceUrl`/`title`/`domain`が元の`Document`から引き継がれること
+- `chunk_documents()`が複数の`Document`をまとめて処理できること、空リストでもエラーにならないこと
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -301,6 +329,8 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.documentsSource` | 共起語解析に使った文章の取得元（`development_sample`/`user_provided`/`web_fetch`。`dataforseo`/`common_crawl`は将来用） |
 | `meta.generatedAt` | 生成日時（ISO 8601, UTC）。Next.js側で `z.iso.datetime({ offset: true })` により検証される |
 | `meta.urlFetchResults` | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
+| `meta.documentCount` / `meta.sourceTypes` | 実際に解析対象となった`Document[]`の件数・`sourceType`一覧（重複なし）。3つの取得元すべてで返る |
+| `meta.chunkCount` | `Document[]`をChunker（`services/document_chunker.py`）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析はまだこの値を使わない（将来の文脈分析・Embedding向けの土台） |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -308,7 +338,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 
 ## 今後（未実装）
 
-- Document Chunker（長文を分析しやすい単位へ分割する処理）。Document Pipeline（Provider→Cleaner→Normalizer→Chunker→Analyzer）のうちChunkerのみ未実装（[../docs/11_architecture_v1.md](../docs/11_architecture_v1.md)参照）
+- Chunker（`services/document_chunker.py`）の出力（`DocumentChunk[]`）をAnalyzer側が実際に消費すること（現状は`meta.chunkCount`として件数のみ観測可能。共起解析は引き続き`Document.text`全体を直接読む。文脈分析・Embedding・Knowledge Graphの実装時に着手予定）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）

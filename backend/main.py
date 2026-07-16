@@ -14,6 +14,10 @@ services/cooccurrence.py) from one of, in priority order:
 All three sources are wrapped as Document[] (see
 docs/11_architecture_v1.md "4. Document Pipeline") before reaching the
 Analyzer, so `analyze()` never branches on source type past that point.
+The Document[] is also split into DocumentChunk[] (services/document_chunker.py,
+the Pipeline's "Chunker" stage) for future context-analysis/Embedding
+use — `cooccurrenceRanking` itself doesn't consume chunks yet, so only
+a count (`meta.chunkCount`) crosses the API boundary today.
 
 `summary`, `contextAnalysis`, `aiOverviewComparison`, and
 `improvements` are still fixed placeholder data — `meta.sections`
@@ -48,6 +52,7 @@ from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
 )
+from services.document_chunker import chunk_documents
 from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
 from services.sample_documents import build_sample_documents_as_documents
@@ -245,6 +250,16 @@ def analyze(payload: AnalyzeRequest):
     source_types = sorted({document.sourceType for document in documents_list})
     logger.info("cooccurrence complete: %d keyword(s)", len(result.cooccurrenceRanking))
 
+    # Chunker stage (see docs/11_architecture_v1.md "4. Document
+    # Pipeline"): splits Document[] into DocumentChunk[] for future
+    # context-analysis/Embedding use. Not consumed by
+    # compute_cooccurrence_ranking_from_documents() above (which still
+    # reads whole Document.text) — only the count crosses the API
+    # boundary, via meta.chunkCount, so the Chunker's presence is
+    # observable without exposing chunk text to the frontend.
+    chunk_count = len(chunk_documents(documents_list))
+    logger.info("chunking complete: %d chunk(s)", chunk_count)
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary="mock",
@@ -258,5 +273,6 @@ def analyze(payload: AnalyzeRequest):
         urlFetchResults=url_fetch_results,
         documentCount=document_count,
         sourceTypes=source_types,
+        chunkCount=chunk_count,
     )
     return result

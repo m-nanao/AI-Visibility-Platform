@@ -76,12 +76,15 @@
 | `meta.urlFetchResults` | `{ url: string; success: boolean; error?: string }[]`（任意） | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
 | `meta.documentCount` | `number`（任意） | 実際に解析対象となった`Document`（後述）の件数。`documentsSource` が `"development_sample"` の場合も含め、常に存在する（development sample文章も`Document[]`化されている） |
 | `meta.sourceTypes` | `("user_provided" \| "web_fetch" \| "development_sample" \| "common_crawl" \| "dataforseo")[]`（任意） | 実際に使われた`Document.sourceType`の一覧（重複なし）。`documentCount`と同じ条件でのみ存在する |
+| `meta.chunkCount` | `number`（任意） | `Document[]`をChunker（後述）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析（Analyzer）はまだこの値を使わない（将来の文脈分析・Embedding向けの土台） |
 
 **`"unavailable"` と `"real"`(0件) の違い**: `cooccurrenceRanking` が空配列 `[]` になるケースは2通りある。(1) `documents: []` を明示的に渡した、または実際に解析した結果キーワードが見つからなかった場合は `"real"`（計算は実行され、結果がたまたま0件だった）。(2) `urls` に渡したURLが1件も取得できなかった場合は `"unavailable"`（計算に必要な文章が1件も得られなかった）。この区別により、UIやAPI利用者は「正常に分析して0件だった」のか「取得に失敗して分析自体ができなかった」のかを判別できる（[07_decisions.md](./07_decisions.md) 参照）。
 
-### `Document`（内部処理単位、v1.0アーキテクチャ）
+### `Document` / `DocumentChunk`（内部処理単位、v1.0アーキテクチャ）
 
 `documents`（ユーザー入力）・`urls`（URL取得結果）・開発用サンプル文章（`documents`/`urls`いずれも未指定の場合）は、Python側の内部処理では最終的に共通の`Document`型へ変換されてから共起語解析に渡される。`meta.documentCount`/`meta.sourceTypes`はこの`Document[]`の要約であり、`Document[]`そのものがAPIレスポンスに含まれることはない（本文を大量にフロントへ返さないため）。`Document`の定義・変換フロー（Provider→Cleaner→Normalizer→Chunker→Analyzer）の詳細は[11_architecture_v1.md](./11_architecture_v1.md)の「4. Document Pipeline」を参照。実装は[app/lib/document.ts](../app/lib/document.ts)（TypeScript側の型定義のみ、現時点でランタイムでは未使用）、`backend/models.py`の`Document`モデル、`backend/main.py`の`_documents_from_strings()`、`backend/services/web_fetcher.py`の`to_documents()`、`backend/services/sample_documents.py`の`build_sample_documents_as_documents()`。development sample文章（`documentsSource: "development_sample"`）も2026-07-16に`Document[]`化された（`sourceType: "development_sample"`）。
+
+`Document[]`は同日、`backend/services/document_chunker.py`（Pipelineの「Chunker」段階）によって`DocumentChunk[]`へさらに分割されるようになった（`chunk_document()`/`chunk_documents()`、`backend/models.py`の`DocumentChunk`モデル）。段落/改行/句読点/空白の優先順で自然な境界を探し、`overlap_chars`分だけ隣接チャンクを重ねる軽量な分割ロジック。`main.py`の`analyze()`はチャンク**件数のみ**を`meta.chunkCount`としてレスポンスに含め、`DocumentChunk[]`自体・チャンク本文はAPIレスポンスに含まれない（TypeScript側にも対応する型は追加していない）。共起解析（Analyzer）は現時点ではこの出力を消費せず、引き続き`Document.text`全体を直接読む——文脈分析・Embedding・Knowledge Graphでの実際の活用は今後のタスク。
 
 Next.js側の完全なフォールバック（Python APIが不通、またはレスポンスがスキーマ不一致）の場合、`cooccurrenceRanking` を含む全セクションが `"mock"` になる（何も実計算されていないため）。`documentsSource` はこの場合意味を持たないが、値としては便宜的に `"development_sample"` を使う。
 
