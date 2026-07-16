@@ -89,15 +89,17 @@ def test_analyze_response_matches_analysis_result_shape():
     # ValidationError if the response doesn't actually match AnalysisResult.
     result = AnalysisResult.model_validate(response.json())
     assert result.brandName == "OpenAI"
-    # cooccurrenceRanking is always genuinely computed (from
-    # caller-supplied documents/urls, or development sample documents),
-    # but the other sections are still fixed placeholder data.
+    # cooccurrenceRanking and contextAnalysis are always genuinely
+    # computed (from caller-supplied documents/urls, or development
+    # sample documents), but the other sections are still fixed
+    # placeholder data.
     assert result.meta.sections.cooccurrenceRanking == "real"
     assert result.meta.sections.summary == "mock"
-    assert result.meta.sections.contextAnalysis == "mock"
+    assert result.meta.sections.contextAnalysis == "real"
     assert result.meta.sections.aiOverviewComparison == "mock"
     assert result.meta.sections.improvements == "mock"
     assert result.meta.documentsSource == "development_sample"
+    assert len(result.contextAnalysis) > 0
 
 
 def test_analyze_computes_cooccurrence_ranking_from_provided_documents():
@@ -118,6 +120,26 @@ def test_analyze_computes_cooccurrence_ranking_from_provided_documents():
     counts = {kw.keyword: kw.count for kw in result.cooccurrenceRanking}
     assert counts["料金"] == 2
     assert counts["プラン"] == 2
+
+
+def test_analyze_computes_context_analysis_from_provided_documents():
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "documents": [
+                "OpenAIの料金プランについて教えてください。",
+                "OpenAIのサポートへの問い合わせはとても迅速です。",
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.contextAnalysis == "real"
+    assert len(result.contextAnalysis) > 0
+    labels = {item.context for item in result.contextAnalysis}
+    assert "料金・価格" in labels
 
 
 def test_analyze_normalizes_fullwidth_user_provided_documents_before_cooccurrence():
@@ -208,6 +230,10 @@ def test_analyze_accepts_empty_documents_list():
     # a valid "analyze zero documents" request, not a skipped pipeline.
     assert result.meta.documentCount == 0
     assert result.meta.sourceTypes == []
+    # contextAnalysis mirrors cooccurrenceRanking's status: "real" with
+    # zero chunks to analyze, same "computed over zero input" semantics.
+    assert result.meta.sections.contextAnalysis == "real"
+    assert result.contextAnalysis == []
 
 
 def test_analyze_documents_take_priority_over_urls():
@@ -245,6 +271,8 @@ def test_analyze_urls_with_disallowed_host_report_failure_but_still_return_200()
     # computing zero results.
     assert result.cooccurrenceRanking == []
     assert result.meta.sections.cooccurrenceRanking == "unavailable"
+    assert result.contextAnalysis == []
+    assert result.meta.sections.contextAnalysis == "unavailable"
 
 
 def test_analyze_rejects_empty_urls_list():
@@ -280,6 +308,8 @@ def test_analyze_urls_all_succeed_reports_real_status(monkeypatch):
     # Both URLs succeeded -> both became Documents.
     assert result.meta.documentCount == 2
     assert result.meta.sourceTypes == ["web_fetch"]
+    assert result.meta.sections.contextAnalysis == "real"
+    assert len(result.contextAnalysis) > 0
 
 
 def test_analyze_urls_partial_failure_reports_real_status_and_both_results(monkeypatch):
@@ -340,6 +370,8 @@ def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
     # nothing to wrap (0 documents, not omitted).
     assert result.meta.documentCount == 0
     assert result.meta.sourceTypes == []
+    assert result.meta.sections.contextAnalysis == "unavailable"
+    assert result.contextAnalysis == []
 
 
 @pytest.mark.parametrize(
