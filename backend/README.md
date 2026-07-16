@@ -1,6 +1,6 @@
 # Python分析API（バックエンド）
 
-LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）と`contextAnalysis`（文脈分析、キーワードベースの軽量版）は入力文章から実際に計算するが、`summary` / `aiOverviewComparison` / `improvements` はまだ固定データ。Common Crawl / DataForSEO / DBにはまだ接続していない。
+LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）は入力文章から実際に計算するが、`aiOverviewComparison` / `improvements` はまだ固定データ。Common Crawl / DataForSEO / DBにはまだ接続していない。
 
 > **確認用環境として一時公開する場合の注意**: 本番運用を目的とした構成ではありません。認証・レート制限はなく、CORSもNext.js経由の呼び出しのみを前提に未設定です。公開手順は [../docs/09_deployment.md](../docs/09_deployment.md) を参照してください。
 
@@ -18,7 +18,8 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/document_normalizer.py` — Cleaner出力・`user_provided`文章・development sample文章それぞれに対するUnicode・空白・不可視文字の正規化を担う（Document Pipelineの「Normalizer」役）。`normalize_text()`。詳細は下記「Document Normalizer」参照
 - `services/document_chunker.py` — `Document.text`を`DocumentChunk[]`へ分割する（Document Pipelineの「Chunker」役）。`chunk_document()`/`chunk_documents()`。詳細は下記「Document Chunker」参照
 - `services/context_analysis.py` — `DocumentChunk[]`からキーワードベースで`contextAnalysis`を実計算する（Document Pipelineの「Analyzer」役、通称"context-analysis-lite"）。`analyze_contexts()`。詳細は下記「Context Analysis（文脈分析）」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
+- `services/brand_summary.py` — Document[]・cooccurrenceRanking・contextAnalysisから`summary`（ブランド認知サマリー）をルールベース・テンプレートで実計算する（Document Pipelineの「Analyzer」役、通称"brand-summary-lite"）。`build_brand_summary()`。詳細は下記「Brand Summary（ブランド認知サマリー）」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -131,7 +132,7 @@ TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 
 `documents` と `urls` を両方渡した場合、`urls` は無視される。
 
-3つの取得元すべてが最終的に`Document[]`（`sourceType`はそれぞれ`"user_provided"`/`"web_fetch"`/`"development_sample"`）へ変換され、`services/document_normalizer.py`の`normalize_text()`を通ってから`services/cooccurrence.py`で共起解析される（`main.py`の`analyze()`はこの1本の流れに統一されており、取得元による分岐は`meta.documentsSource`の値決定にのみ残る）。同じ`Document[]`は`services/document_chunker.py`にも渡され、生成された`DocumentChunk[]`が`services/context_analysis.py`（`contextAnalysis`の実計算）に渡される。チャンク件数は`meta.chunkCount`としてもレスポンスに含まれる（詳細は下記「Document Chunker」「Context Analysis（文脈分析）」参照。共起解析自体はまだチャンクを消費せず`Document.text`全体を直接読む）。
+3つの取得元すべてが最終的に`Document[]`（`sourceType`はそれぞれ`"user_provided"`/`"web_fetch"`/`"development_sample"`）へ変換され、`services/document_normalizer.py`の`normalize_text()`を通ってから`services/cooccurrence.py`で共起解析される（`main.py`の`analyze()`はこの1本の流れに統一されており、取得元による分岐は`meta.documentsSource`の値決定にのみ残る）。同じ`Document[]`は`services/document_chunker.py`にも渡され、生成された`DocumentChunk[]`が`services/context_analysis.py`（`contextAnalysis`の実計算）に渡される。チャンク件数は`meta.chunkCount`としてもレスポンスに含まれる（詳細は下記「Document Chunker」「Context Analysis（文脈分析）」参照。共起解析自体はまだチャンクを消費せず`Document.text`全体を直接読む）。さらに、`Document[]`・`cooccurrenceRanking`・`contextAnalysis`はまとめて`services/brand_summary.py`（`summary`の実計算）にも渡される（詳細は下記「Brand Summary（ブランド認知サマリー）」参照）。
 
 ## URL取得とHTMLクリーニング（`services/web_fetcher.py` / `services/document_cleaner.py` / `services/document_normalizer.py` / `services/document_chunker.py`）
 
@@ -148,11 +149,16 @@ document_normalizer.py: Unicode・空白・不可視文字の正規化
   ↓
 Document(sourceType="web_fetch") 化
   ↓
-├─ cooccurrence.py で共起解析（Document.text全体を直接読む。Chunker非経由）
-└─ document_chunker.py: DocumentChunk[]へ分割
-     ↓
-   context_analysis.py: contextAnalysisを実計算（件数はmeta.chunkCountでも観測可能）
+(A) cooccurrence.py で共起解析（Document.text全体を直接読む。Chunker非経由）
+  ↓
+(B) document_chunker.py: DocumentChunk[]へ分割
+  ↓
+(C) context_analysis.py: contextAnalysisを実計算（件数はmeta.chunkCountでも観測可能）
+  ↓
+(D) brand_summary.py: Document[] と (A)(C) の結果からsummaryを実計算
 ```
+
+（実際の`main.py`では(A)〜(D)は上から順に呼ばれる。分岐ではなく、(D)が(A)と(C)の結果を両方受け取る単純な直列処理）
 
 1件の失敗が他のURLの処理を止めることはない。
 
@@ -209,6 +215,18 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 既存の`ContextAnalysisItem`型・APIレスポンス形状をそのまま使うため、`app/lib/types.ts`・`app/lib/analysis-result-schema.ts`・フロントの`ContextAnalysisSection.tsx`はいずれも変更していない。`meta.sections.contextAnalysis`は共起解析と同じ`cooccurrence_status`変数を共有しており、`"unavailable"`（全URL取得失敗時）・`"real"`（それ以外。`documents: []`で0件を計算した場合も含む）のいずれかになる。
 
+### `brand_summary.py`（Analyzer: 軽量ブランド認知サマリー、通称"brand-summary-lite"）
+
+`summary`（`BrandSummary`）を固定データから実データ由来にする。AI/LLM要約は使わず、`Document[]`・`cooccurrenceRanking`・`contextAnalysis`という**既に計算済みの結果を数える・振り分けるだけ**の軽量処理にとどめている（Render無料枠でも軽く動くことを優先）。`build_brand_summary(brand_name, documents, chunks, cooccurrence_ranking, context_analysis) -> BrandSummary`を公開する（`chunks`は`contextAnalysis`側で既に要約済みのため、この関数自体はシグネチャの一貫性のために受け取るのみで内部では使わない）。
+
+1. **`totalMentions`**: `Document.text`（Normalizer済み、大文字小文字を区別しない）中の`brand_name`の出現回数を全`Document`にわたって単純合計する。
+2. **`visibilityScore`**: 言及数・Document件数・共起語件数・contextAnalysis件数・sourceTypesの種類数から0〜100の点数を加算式で算出する（`_estimate_visibility_score()`）。**実際の生成AIにおける認知度を測定したものではなく、MVP用の簡易推定値**であることをコード・ドキュメントの両方で明記している。`sourceTypes`が`development_sample`のみ（実際のWebページやユーザー入力の裏付けがない）の場合は55点を上限にキャップする。
+3. **`sentimentBreakdown`**: `contextAnalysis`の各アイテムを、そのカテゴリ（`pricing`/`feature`/...）に応じて`positive`/`neutral`/`negative`のいずれかに振り分ける（`feature`/`use_case`/`support`/`reliability`→positive、`risk_or_issue`→negative、`pricing`/`comparison`/`general`→neutral）。件数を均等に重み付けし、必ず合計100%になるよう百分率化する（`neutral`が端数の受け皿）。`contextAnalysis`が空の場合は`neutral: 100`。文章そのものの感情分析ではなく、あくまでカテゴリ単位の大まかな振り分け。
+4. **`topPlatforms`**: 実測していないChatGPT/Perplexity/Google AI Overviewのような固有プラットフォーム名を実データとして出さないよう、実際に解析した`Document.sourceType`（`web_fetch`→「Webページ」、`user_provided`→「入力テキスト」、`development_sample`→「開発用サンプル」）に置き換えている。フィールド名・UIラベル（「主要プラットフォーム」）は変更していない。
+5. **`summaryText`**: AI生成ではなくテンプレート文字列。`contextAnalysis`上位カテゴリ・`cooccurrenceRanking`上位キーワードを埋め込む。`contextAnalysis`が空の場合は「十分な文脈は取得できませんでした」という専用テンプレートを返す。
+
+`meta.sections.summary`も共起解析・文脈分析と同じ`cooccurrence_status`を共有し、`"unavailable"`（全URL取得失敗時）・`"real"`（それ以外）のいずれかになる。`aiOverviewComparison`・`improvements`は今回の対象外で、引き続き`services/mock_analysis.py`の固定データのまま。
+
 **運用上の注意（未実装のこと）**
 
 - **robots.txtは確認していない**。取得先ページの利用規約・robots.txtに照らして問題ないURLを渡すのは利用者の責任。
@@ -228,16 +246,17 @@ pytest
 
 - `GET /health` が200を返す
 - `POST /analyze` が正常な `brandName` で200を返す
-- レスポンスを `models.AnalysisResult` で再パースしても壊れない（型が一致する）こと、`meta.sections.cooccurrenceRanking`/`.contextAnalysis` が `"real"`・残る3セクション（`summary`/`aiOverviewComparison`/`improvements`）が `"mock"` であること、`contextAnalysis` が空でないこと
+- レスポンスを `models.AnalysisResult` で再パースしても壊れない（型が一致する）こと、`meta.sections.cooccurrenceRanking`/`.contextAnalysis`/`.summary` が `"real"`・残る2セクション（`aiOverviewComparison`/`improvements`）が `"mock"` であること、`contextAnalysis` が空でないこと、`summary.visibilityScore`が0〜100の範囲内であること
 - `documents` を明示的に渡すと、その内容から `cooccurrenceRanking` が計算されること（同じ語が複数文章に出た場合に加算されることも確認）、`meta.documentsSource` が `"user_provided"` になること
 - `documents` に「料金プラン」「サポート」といった文章を渡すと、`contextAnalysis` が `"real"` になり、`料金・価格` のようなカテゴリラベルが含まれること
+- `documents` に「料金プラン」を2件渡すと、`summary` が `"real"` になり、`summary.totalMentions` がブランド名の出現回数と一致すること、`sentimentBreakdown`の3値合計が100になること、`topPlatforms`に実測していないAIプラットフォーム名（ChatGPT等）が含まれないこと、`aiOverviewComparison`/`improvements`は引き続き`"mock"`のままであること
 - `documents` を省略すると開発用サンプル文章が使われ、`cooccurrenceRanking` が空でないこと、`meta.documentsSource` が `"development_sample"` になること、`meta.documentCount`/`meta.sourceTypes`（`["development_sample"]`）も他の取得元と同様に返ること、`meta.chunkCount`もサンプル文書数と同じ件数になること（各文書が短く1文書1チャンクになるため）
-- `documents: []` を渡すとエラーにならず `cooccurrenceRanking: []`・`contextAnalysis: []`・両方の`meta.sections`が `"real"` になること（0件を実計算した扱い）
+- `documents: []` を渡すとエラーにならず `cooccurrenceRanking: []`・`contextAnalysis: []`・`summary.totalMentions: 0`・`summary.sentimentBreakdown.neutral: 100`・3セクションすべての`meta.sections`が `"real"` になること（0件を実計算した扱い）
 - ブランド名を全角文字（`ＯｐｅｎＡＩ`）でしか含まない`documents`でも、Normalizerが半角化するためブランド名前後ウィンドウが正しくマッチし、共起語が計算されること
 - `documents` と `urls` を両方渡すと `documents` が優先され、`meta.urlFetchResults` が付かないこと
-- `urls` に許可されないホスト（localhost等）を渡すと、200のまま `meta.sections.cooccurrenceRanking`/`.contextAnalysis` が両方 `"unavailable"`・`contextAnalysis: []` になること
+- `urls` に許可されないホスト（localhost等）を渡すと、200のまま `meta.sections.cooccurrenceRanking`/`.contextAnalysis`/`.summary` がすべて `"unavailable"`・`contextAnalysis: []`・`summary.totalMentions: 0` になること
 - `urls: []`（空配列）が400になること
-- モックした `fetch_url_texts` で、全URL成功・一部失敗・全失敗のそれぞれで `meta.sections.cooccurrenceRanking`/`.contextAnalysis`（`"real"`/`"real"`/`"unavailable"`、両セクションとも同じ値）と `meta.urlFetchResults` の内容が正しいこと
+- モックした `fetch_url_texts` で、全URL成功・一部失敗・全失敗のそれぞれで `meta.sections.cooccurrenceRanking`/`.contextAnalysis`/`.summary`（`"real"`/`"real"`/`"unavailable"`、3セクションとも同じ値）と `meta.urlFetchResults` の内容が正しいこと
 - 空文字・空白のみ・未指定の `brandName` が400になること
 - 200文字ちょうどは通り、201文字以上は400になること
 - 不正な型（`brandName: 123`など）が400になること
@@ -322,6 +341,20 @@ pytest
 - `max_contexts`で件数が制限されること
 - 各アイテムの`context`（カテゴリラベル）が重複しないこと（フロント側で`item.context`をReactの`key`に使うため）
 
+`tests/test_brand_summary.py` では `build_brand_summary()` を直接テストしている。
+
+- ブランド名の出現回数が大文字小文字を区別せず正しく数えられること
+- `documents`/チャンクが1件もない場合に`totalMentions: 0`になること
+- `contextAnalysis`がある場合に`sentimentBreakdown`の3値合計が必ず100になること
+- `risk_or_issue`カテゴリがある場合に`negative`が増えること
+- `feature`/`use_case`/`support`/`reliability`カテゴリがある場合に`positive`が増えること
+- `contextAnalysis`が空の場合に`neutral: 100`になること
+- `cooccurrenceRanking`の上位語が`summaryText`に反映されること
+- `sourceType`が`development_sample`/`web_fetch`いずれの場合も、実測していないChatGPT/Perplexity/Google AI Overview/Copilotを`topPlatforms`に含めないこと
+- `sourceTypes`が`development_sample`のみの場合、`visibilityScore`が55以下にキャップされること
+- `visibilityScore`が常に0〜100の範囲に収まること
+- すべての入力が空でも例外にならないこと
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -350,7 +383,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 
 | フィールド | 説明 |
 | --- | --- |
-| `meta.sections.summary` / `.cooccurrenceRanking` / `.contextAnalysis` / `.aiOverviewComparison` / `.improvements` | 各セクションが実計算(`"real"`)・固定データ(`"mock"`)・計算不能(`"unavailable"`)のいずれか。このAPIでは `cooccurrenceRanking` と `contextAnalysis` のみ `"real"`/`"unavailable"` になり得る（両者は同じ判定を共有する） |
+| `meta.sections.summary` / `.cooccurrenceRanking` / `.contextAnalysis` / `.aiOverviewComparison` / `.improvements` | 各セクションが実計算(`"real"`)・固定データ(`"mock"`)・計算不能(`"unavailable"`)のいずれか。このAPIでは `cooccurrenceRanking` / `contextAnalysis` / `summary` の3つが `"real"`/`"unavailable"` になり得る（3つとも同じ判定を共有する） |
 | `meta.documentsSource` | 共起語解析に使った文章の取得元（`development_sample`/`user_provided`/`web_fetch`。`dataforseo`/`common_crawl`は将来用） |
 | `meta.generatedAt` | 生成日時（ISO 8601, UTC）。Next.js側で `z.iso.datetime({ offset: true })` により検証される |
 | `meta.urlFetchResults` | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
@@ -364,7 +397,9 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 ## 今後（未実装）
 
 - 文脈分析（`context_analysis.py`）のキーワードベースからの高度化（意味的な文脈理解・要約。現状はあくまで軽量なキーワード一致分類）
-- 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`は既にChunker出力を消費している）
+- ブランド認知サマリー（`brand_summary.py`）のルールベース・テンプレート生成からの高度化（AI要約、実際のAIプラットフォーム横断比較等。現状は既存の分析結果を数える・振り分けるだけの軽量処理）
+- AI Overview比較（`aiOverviewComparison`）・改善提案（`improvements`）の実装（現状は`services/mock_analysis.py`の固定データのまま）
+- 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`は既にChunker出力（経由の結果）を消費している）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）

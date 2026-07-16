@@ -89,17 +89,19 @@ def test_analyze_response_matches_analysis_result_shape():
     # ValidationError if the response doesn't actually match AnalysisResult.
     result = AnalysisResult.model_validate(response.json())
     assert result.brandName == "OpenAI"
-    # cooccurrenceRanking and contextAnalysis are always genuinely
-    # computed (from caller-supplied documents/urls, or development
-    # sample documents), but the other sections are still fixed
-    # placeholder data.
+    # cooccurrenceRanking, contextAnalysis, and summary are always
+    # genuinely computed (from caller-supplied documents/urls, or
+    # development sample documents), but aiOverviewComparison/
+    # improvements are still fixed placeholder data.
     assert result.meta.sections.cooccurrenceRanking == "real"
-    assert result.meta.sections.summary == "mock"
+    assert result.meta.sections.summary == "real"
     assert result.meta.sections.contextAnalysis == "real"
     assert result.meta.sections.aiOverviewComparison == "mock"
     assert result.meta.sections.improvements == "mock"
     assert result.meta.documentsSource == "development_sample"
     assert len(result.contextAnalysis) > 0
+    assert result.summary.brandName == "OpenAI"
+    assert 0 <= result.summary.visibilityScore <= 100
 
 
 def test_analyze_computes_cooccurrence_ranking_from_provided_documents():
@@ -140,6 +142,36 @@ def test_analyze_computes_context_analysis_from_provided_documents():
     assert len(result.contextAnalysis) > 0
     labels = {item.context for item in result.contextAnalysis}
     assert "料金・価格" in labels
+
+
+def test_analyze_computes_brand_summary_from_provided_documents():
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "documents": [
+                "OpenAIの料金プランについて教えてください。",
+                "OpenAIの料金プランはとても安いです。",
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.summary == "real"
+    assert result.summary.brandName == "OpenAI"
+    # brandName appears twice above, once per document.
+    assert result.summary.totalMentions == 2
+    breakdown = result.summary.sentimentBreakdown
+    assert breakdown.positive + breakdown.neutral + breakdown.negative == 100
+    # documents came from user_provided text, not real AI platforms —
+    # topPlatforms must not claim ChatGPT/Perplexity/etc. were measured.
+    unmeasured_platform_names = {"ChatGPT", "Perplexity", "Google AI Overview", "Copilot"}
+    assert not unmeasured_platform_names.intersection(result.summary.topPlatforms)
+    # aiOverviewComparison/improvements remain mock even though summary
+    # is now real.
+    assert result.meta.sections.aiOverviewComparison == "mock"
+    assert result.meta.sections.improvements == "mock"
 
 
 def test_analyze_normalizes_fullwidth_user_provided_documents_before_cooccurrence():
@@ -230,10 +262,14 @@ def test_analyze_accepts_empty_documents_list():
     # a valid "analyze zero documents" request, not a skipped pipeline.
     assert result.meta.documentCount == 0
     assert result.meta.sourceTypes == []
-    # contextAnalysis mirrors cooccurrenceRanking's status: "real" with
-    # zero chunks to analyze, same "computed over zero input" semantics.
+    # contextAnalysis/summary mirror cooccurrenceRanking's status:
+    # "real" with zero chunks/documents to analyze, same "computed over
+    # zero input" semantics.
     assert result.meta.sections.contextAnalysis == "real"
     assert result.contextAnalysis == []
+    assert result.meta.sections.summary == "real"
+    assert result.summary.totalMentions == 0
+    assert result.summary.sentimentBreakdown.neutral == 100
 
 
 def test_analyze_documents_take_priority_over_urls():
@@ -273,6 +309,8 @@ def test_analyze_urls_with_disallowed_host_report_failure_but_still_return_200()
     assert result.meta.sections.cooccurrenceRanking == "unavailable"
     assert result.contextAnalysis == []
     assert result.meta.sections.contextAnalysis == "unavailable"
+    assert result.meta.sections.summary == "unavailable"
+    assert result.summary.totalMentions == 0
 
 
 def test_analyze_rejects_empty_urls_list():
@@ -310,6 +348,8 @@ def test_analyze_urls_all_succeed_reports_real_status(monkeypatch):
     assert result.meta.sourceTypes == ["web_fetch"]
     assert result.meta.sections.contextAnalysis == "real"
     assert len(result.contextAnalysis) > 0
+    assert result.meta.sections.summary == "real"
+    assert result.summary.totalMentions > 0
 
 
 def test_analyze_urls_partial_failure_reports_real_status_and_both_results(monkeypatch):
@@ -372,6 +412,7 @@ def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
     assert result.meta.sourceTypes == []
     assert result.meta.sections.contextAnalysis == "unavailable"
     assert result.contextAnalysis == []
+    assert result.meta.sections.summary == "unavailable"
 
 
 @pytest.mark.parametrize(
