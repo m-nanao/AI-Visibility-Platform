@@ -10,7 +10,7 @@
 - 加えて、Phase 4.5として**依頼者確認用のWeb公開**まで完了している（[05_tasks.md](./05_tasks.md)参照）。
 - Phase 3（Common Crawl / DataForSEO連携）、Phase 5（PostgreSQL永続化）、Phase 6（プロダクション化）は未着手。
 - 解析エンジンの内部設計を整理した[11_architecture_v1.md](./11_architecture_v1.md)（v1.0アーキテクチャ設計書）を追加済み（2026-07-15）。Common Crawl / DataForSEOなど取得元が増えても解析側を変えずに済むよう、すべての取得元を`Document[]`へ変換する「Document Pipeline」の考え方を明文化した。
-- Document Pipeline（Provider→Cleaner→Normalizer→Chunker→Analyzer）の5段階すべてが実装済みになった（Chunkerを2026-07-16に追加）。`Document`型定義・Providerレベルの変換（`user_provided`/`web_fetch`/`development_sample`→`Document[]`）・Cleanerの分離（`backend/services/document_cleaner.py`）・Normalizerの追加（`backend/services/document_normalizer.py`）・Chunkerの追加（`backend/services/document_chunker.py`）・Analyzer側アダプターまで実装済み。ただし共起解析（Analyzer）はまだChunkerの出力を消費しておらず、`Document.text`全体を直接読む（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
+- Document Pipeline（Provider→Cleaner→Normalizer→Chunker→Analyzer）の5段階すべてが実装済みになった（Chunkerを2026-07-16に追加）。`Document`型定義・Providerレベルの変換（`user_provided`/`web_fetch`/`development_sample`→`Document[]`）・Cleanerの分離（`backend/services/document_cleaner.py`）・Normalizerの追加（`backend/services/document_normalizer.py`）・Chunkerの追加（`backend/services/document_chunker.py`）・Analyzer側アダプターまで実装済み。同日、軽量な文脈分析（`backend/services/context_analysis.py`）がChunkerの出力を実際に消費する最初のAnalyzerロジックになった。共起解析は引き続き`Document.text`全体を直接読み、Chunker非経由のまま（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
 
 ## 実装済み機能
 
@@ -22,19 +22,20 @@
 - `Document`型定義（[app/lib/document.ts](../app/lib/document.ts)、`backend/models.py`）と、`user_provided`/`web_fetch`/`development_sample`すべての`Document[]`変換・共起解析への受け渡し。`meta.documentCount`/`meta.sourceTypes`として要約をAPIレスポンスに含める（development_sampleの場合も常に値が入るようになった、2026-07-16。[03_api_design.md](./03_api_design.md)、[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - Document Cleaner（`backend/services/document_cleaner.py`）としてHTML本文抽出・不要要素除去を`web_fetcher.py`から分離。Cookieバナー・広告らしき要素のヒューリスティック除去も含む（[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - Document Normalizer（`backend/services/document_normalizer.py`、2026-07-16）として`normalize_text()`を実装。Unicode NFKC正規化（全角英数字の半角化等）・zero-width等不可視文字/制御文字の除去・タブ/連続空白/連続改行の整理・過剰な連続句読点の軽い圧縮を行う。`web_fetch`（Cleaner出力）・`user_provided`（`documents`各要素）・`development_sample`（サンプルテンプレート）すべてに適用（[11_architecture_v1.md](./11_architecture_v1.md)参照）
-- Document Chunker（`backend/services/document_chunker.py`、2026-07-16）として`Document.text`を`DocumentChunk[]`へ分割。`chunk_document()`/`chunk_documents()`。段落/改行/句読点/空白の優先順で自然な境界を探し、`overlap_chars`分だけ隣接チャンクを重ねる。`/analyze`がDocument[]から生成したチャンク件数のみ`meta.chunkCount`としてレスポンスに含める（`DocumentChunk[]`自体・チャンク本文はフロントへ返さない）。共起解析（Analyzer）はまだこの出力を消費していない（[11_architecture_v1.md](./11_architecture_v1.md)参照）
+- Document Chunker（`backend/services/document_chunker.py`、2026-07-16）として`Document.text`を`DocumentChunk[]`へ分割。`chunk_document()`/`chunk_documents()`。段落/改行/句読点/空白の優先順で自然な境界を探し、`overlap_chars`分だけ隣接チャンクを重ねる。`/analyze`がDocument[]から生成したチャンク件数のみ`meta.chunkCount`としてレスポンスに含める（`DocumentChunk[]`自体・チャンク本文はフロントへ返さない）
+- 軽量な文脈分析（`backend/services/context_analysis.py`、2026-07-16、通称"context-analysis-lite"）として`contextAnalysis`セクションを実データ由来にした。AI/LLMは使わず、`pricing`/`feature`/`use_case`/`support`/`reliability`/`comparison`/`risk_or_issue`/`general`の8カテゴリへキーワード一致ベースで分類し、簡易センチメント（positive/neutral/negative）も判定する。ブランド名を含む`DocumentChunk`を優先、0件ならフォールバック。既存の`ContextAnalysisItem`型のまま返すため、APIレスポンス形式・UIの変更は不要だった。`meta.sections.contextAnalysis`は共起解析と同じ`"real"`/`"unavailable"`判定を共有する（[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - 依頼者確認用のVercel/Render公開（[09_deployment.md](./09_deployment.md)参照）
 - ステージング環境の最低限保護: 簡易パスコードガード（[proxy.ts](../proxy.ts)、`STAGING_ACCESS_CODE`未設定時はローカル開発に影響なし）と`noindex`設定（[app/layout.tsx](../app/layout.tsx)の`metadata.robots`＋`X-Robots-Tag`ヘッダー）
 
 ## 一部実データの機能
 
-- **共起語ランキング（`cooccurrenceRanking`）のみ実計算**。ブランド名前後20文字ウィンドウ＋トークナイザーという単純な方式（[services/cooccurrence.py](../backend/services/cooccurrence.py)、[03_api_design.md](./03_api_design.md)参照）。トークナイザーは`TOKENIZER_MODE`環境変数で切り替え可能で、**デフォルトは辞書不要の軽量`simple`モード**（正規表現による英数字/日本語文字種境界での簡易分割、品詞フィルタなし）。Janomeによる形態素解析（品詞フィルタつき、より高精度）は`TOKENIZER_MODE=janome`を明示した場合のみのoptional扱い（2026-07-16変更。理由: Render無料枠512MBで`/analyze`実行時にJanomeの辞書読み込みが原因の502/timeoutが発生していたため、確認用環境では精度よりも安定動作を優先。詳細は[11_architecture_v1.md](./11_architecture_v1.md)のAnalyzer節）。精度向上は未着手（[05_tasks.md](./05_tasks.md) Phase 4.2）。
-- `simple`モードの明らかなノイズ削減を実施済み（2026-07-16）。①ブランド前後20文字ウィンドウがASCII単語の途中で切れる場合に単語境界まで拡張（例:「second」の途中で切れて「nd」が出る問題を解消）、②英語の一般的な機能語（on/to/in/of/the等）をstopwordsに追加、③ASCII側トークンのみ最小3文字に強化（`AI`のような2文字語は今回は許容して除外）。日本語側の最小2文字ルールは変更なし。本格的な文脈分析・Embedding・Knowledge Graphは引き続き未実装（Normalizer・Chunkerは上記の通り実装済み）。
+- **共起語ランキング（`cooccurrenceRanking`）**が実計算。ブランド名前後20文字ウィンドウ＋トークナイザーという単純な方式（[services/cooccurrence.py](../backend/services/cooccurrence.py)、[03_api_design.md](./03_api_design.md)参照）。トークナイザーは`TOKENIZER_MODE`環境変数で切り替え可能で、**デフォルトは辞書不要の軽量`simple`モード**（正規表現による英数字/日本語文字種境界での簡易分割、品詞フィルタなし）。Janomeによる形態素解析（品詞フィルタつき、より高精度）は`TOKENIZER_MODE=janome`を明示した場合のみのoptional扱い（2026-07-16変更。理由: Render無料枠512MBで`/analyze`実行時にJanomeの辞書読み込みが原因の502/timeoutが発生していたため、確認用環境では精度よりも安定動作を優先。詳細は[11_architecture_v1.md](./11_architecture_v1.md)のAnalyzer節）。精度向上は未着手（[05_tasks.md](./05_tasks.md) Phase 4.2）。
+- `simple`モードの明らかなノイズ削減を実施済み（2026-07-16）。①ブランド前後20文字ウィンドウがASCII単語の途中で切れる場合に単語境界まで拡張（例:「second」の途中で切れて「nd」が出る問題を解消）、②英語の一般的な機能語（on/to/in/of/the等）をstopwordsに追加、③ASCII側トークンのみ最小3文字に強化（`AI`のような2文字語は今回は許容して除外）。日本語側の最小2文字ルールは変更なし。
+- **文脈分析（`contextAnalysis`）**も実計算（`backend/services/context_analysis.py`、2026-07-16、"context-analysis-lite"）。ただしキーワード一致による軽量な分類にとどまり、AIによる意味理解・要約ではない（詳細は上記「実装済み機能」・[11_architecture_v1.md](./11_architecture_v1.md)参照）。本格的な文脈理解・Embedding・Knowledge Graphは引き続き未実装。
 
 ## まだダミー（固定データ）の機能
 
 - ブランド認知サマリー（`summary`）
-- 文脈分析（`contextAnalysis`）
 - AI Overview比較（`aiOverviewComparison`）
 - 改善提案（`improvements`）
 
@@ -72,6 +73,7 @@
 
 - 簡易パスコードガードは導入したが、あくまで誤アクセス防止用。確認終了後、公開を止めるか正式な認証を追加するかの判断はまだ済んでいない（[05_tasks.md](./05_tasks.md) Phase 4.5）。
 - 共起語抽出は簡易な実装であり、ウィンドウ重複によるカウント過多・ウィンドウ外の関連語の取りこぼしがある（[07_decisions.md](./07_decisions.md)に既知の制約として記録済み）。加えて、デフォルトの軽量`simple`トークナイザーは品詞情報を持たないため、Janomeより単語境界の精度が低い（例: 連続する漢字の複合語を分割できない）。`on`/`to`/`nd`のような明らかなノイズは削減済みだが（2026-07-16、上記「一部実データの機能」参照）、網羅的なstopwordsリストではないため、未知の英語ノイズ語が残る可能性がある。
+- 文脈分析（context-analysis-lite）はキーワードの単純な出現回数勝負でカテゴリを決めるため、複数カテゴリのキーワードが同数ヒットした場合は`CATEGORY_KEYWORDS`の宣言順（`pricing`→`feature`→...）で先勝ちになる。例えば「対応」（`feature`）と「サポート」（`support`）が同数ヒットすると`feature`が選ばれる。意味的な優先度ではなく実装上の仕様であり、既知の制約として残す（[11_architecture_v1.md](./11_architecture_v1.md)参照）。
 - `documents`（文章を直接渡す入力）にはまだ画面からの入力UIがない（`urls`のみUIがある）。
 - URL取得はrobots.txt確認・レート制限・DNS rebinding対策が未実装（運用者の責任として文書化のみ、[backend/README.md](../backend/README.md)参照）。
 - ~~GitHub ActionsでNode.js 20 deprecation warning~~ → 調査済み・対応済み（2026-07-15）。GitHubがActions runner上のNode.js 20ランタイムを段階的に廃止しており（2026-06-16よりNode24がデフォルト、2026-09-16に完全廃止予定）、`actions/checkout`・`actions/setup-node`・`actions/setup-python`がNode.js 20ランタイムで動いていることに起因する警告だった。`.github/workflows/ci.yml`の各actionを、Node24対応が確認できるバージョン（`actions/checkout@v5`、`actions/setup-node@v5`、`actions/setup-python@v6`）へ更新して解消した。**アプリのビルド/テストに使う`node-version: "20"`（Next.js 16系の要件）とは無関係**であり、これは変更していない。
@@ -81,9 +83,9 @@
 優先度の目安。詳細・粒度は [05_tasks.md](./05_tasks.md) を参照。
 
 1. 確認用公開環境の今後を決める（止める／簡易パスコードのままにする／正式な認証を足す）
-2. **Chunkerの出力をAnalyzerに繋ぐ**: `DocumentChunk[]`は生成されるようになったが（`meta.chunkCount`として件数のみ観測可能）、共起解析はまだこれを消費しない。文脈分析・Embedding着手時にこの接続を検討する（[11_architecture_v1.md](./11_architecture_v1.md)「10. 次フェーズ候補」参照。Document Pipelineの5段階自体は2026-07-16に一通り完了）
+2. ~~Chunkerの出力をAnalyzerに繋ぐ~~ → 文脈分析（context-analysis-lite）が最初にChunker出力を消費するAnalyzerロジックとして完了（2026-07-16）。共起解析自体は引き続き`Document.text`を直接読み、Chunker非経由（[11_architecture_v1.md](./11_architecture_v1.md)「10. 次フェーズ候補」参照）
 3. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
-4. 共起語抽出の精度向上、またはPhase 4.2の他ロジック（文脈分類・センチメント分析等）への着手
+4. 共起語抽出の精度向上、または文脈分析のキーワードベースからの高度化（意味的理解・要約等）、AI Overview比較・改善提案・ブランド認知サマリーの実装着手
 5. Phase 3（Common Crawl / DataForSEO）の調査開始
 
 ## 関連ドキュメント

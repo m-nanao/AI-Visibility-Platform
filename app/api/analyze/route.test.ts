@@ -134,6 +134,44 @@ describe("POST /api/analyze", () => {
     expect(data.meta.chunkCount).toBe(3);
   });
 
+  it("passes through a real contextAnalysis from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      contextAnalysis: [
+        {
+          context: "料金・価格",
+          description: "「OpenAI」に関連する文脈のうち、料金・価格に関する言及が1件見つかりました。",
+          sentiment: "neutral",
+          exampleQuote: "OpenAIの料金プランについて教えてください。",
+        },
+      ],
+      meta: pythonMetaOverride({
+        documentsSource: "user_provided",
+        sections: { cooccurrenceRanking: "real", contextAnalysis: "real" },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", documents: ["OpenAIの料金プランについて教えてください。"] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.sections.contextAnalysis).toBe("real");
+    expect(data.contextAnalysis).toEqual([
+      {
+        context: "料金・価格",
+        description: "「OpenAI」に関連する文脈のうち、料金・価格に関する言及が1件見つかりました。",
+        sentiment: "neutral",
+        exampleQuote: "OpenAIの料金プランについて教えてください。",
+      },
+    ]);
+  });
+
   it("passes through an unavailable cooccurrenceRanking from the Python API", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = {

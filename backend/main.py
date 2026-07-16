@@ -4,8 +4,9 @@ This mirrors the shape of the TypeScript `AnalysisResult` type
 (`app/lib/types.ts`), so that Next.js's `/api/analyze` route can call
 this service directly without any response transformation.
 
-The `cooccurrenceRanking` field is computed for real (see
-services/cooccurrence.py) from one of, in priority order:
+The `cooccurrenceRanking` and `contextAnalysis` fields are computed for
+real (see services/cooccurrence.py and services/context_analysis.py)
+from one of, in priority order:
 1. `documents` supplied in the request
 2. text fetched from `urls` supplied in the request (services/web_fetcher.py)
 3. development sample documents (services/sample_documents.py), if
@@ -15,14 +16,14 @@ All three sources are wrapped as Document[] (see
 docs/11_architecture_v1.md "4. Document Pipeline") before reaching the
 Analyzer, so `analyze()` never branches on source type past that point.
 The Document[] is also split into DocumentChunk[] (services/document_chunker.py,
-the Pipeline's "Chunker" stage) for future context-analysis/Embedding
-use — `cooccurrenceRanking` itself doesn't consume chunks yet, so only
-a count (`meta.chunkCount`) crosses the API boundary today.
+the Pipeline's "Chunker" stage) — `contextAnalysis` is the first
+Analyzer logic that actually reads chunks (a lightweight, rule-based
+categorization, no AI/LLM calls); `cooccurrenceRanking` still reads
+whole Document.text directly.
 
-`summary`, `contextAnalysis`, `aiOverviewComparison`, and
-`improvements` are still fixed placeholder data — `meta.sections`
-reports this per-section so callers don't have to guess. See
-docs/05_tasks.md (Phase 4) for what's next.
+`summary`, `aiOverviewComparison`, and `improvements` are still fixed
+placeholder data — `meta.sections` reports this per-section so callers
+don't have to guess. See docs/05_tasks.md (Phase 4) for what's next.
 """
 
 import logging
@@ -48,6 +49,7 @@ from models import (
     SectionStatus,
     UrlFetchResult,
 )
+from services.context_analysis import analyze_contexts
 from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
@@ -251,20 +253,28 @@ def analyze(payload: AnalyzeRequest):
     logger.info("cooccurrence complete: %d keyword(s)", len(result.cooccurrenceRanking))
 
     # Chunker stage (see docs/11_architecture_v1.md "4. Document
-    # Pipeline"): splits Document[] into DocumentChunk[] for future
-    # context-analysis/Embedding use. Not consumed by
-    # compute_cooccurrence_ranking_from_documents() above (which still
-    # reads whole Document.text) — only the count crosses the API
-    # boundary, via meta.chunkCount, so the Chunker's presence is
-    # observable without exposing chunk text to the frontend.
-    chunk_count = len(chunk_documents(documents_list))
-    logger.info("chunking complete: %d chunk(s)", chunk_count)
+    # Pipeline"): splits Document[] into DocumentChunk[]. Used below by
+    # context_analysis.analyze_contexts() — the first Analyzer logic to
+    # actually consume Chunker output, rather than just reporting a
+    # count. compute_cooccurrence_ranking_from_documents() above still
+    # reads whole Document.text directly and is unaffected.
+    chunks = chunk_documents(documents_list)
+    logger.info("chunking complete: %d chunk(s)", len(chunks))
+
+    # contextAnalysis: lightweight, rule-based (no AI/LLM calls — see
+    # services/context_analysis.py). Shares cooccurrence_status with
+    # cooccurrenceRanking above since both are derived from the same
+    # Document[]/chunk pipeline: "unavailable" when every url fetch
+    # failed (nothing to chunk), "real" otherwise (including the
+    # documents: [] case, which legitimately analyzes zero chunks).
+    result.contextAnalysis = analyze_contexts(brand_name, chunks)
+    logger.info("context analysis complete: %d context(s)", len(result.contextAnalysis))
 
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary="mock",
             cooccurrenceRanking=cooccurrence_status,
-            contextAnalysis="mock",
+            contextAnalysis=cooccurrence_status,
             aiOverviewComparison="mock",
             improvements="mock",
         ),
@@ -273,6 +283,6 @@ def analyze(payload: AnalyzeRequest):
         urlFetchResults=url_fetch_results,
         documentCount=document_count,
         sourceTypes=source_types,
-        chunkCount=chunk_count,
+        chunkCount=len(chunks),
     )
     return result
