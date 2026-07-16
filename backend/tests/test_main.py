@@ -89,19 +89,20 @@ def test_analyze_response_matches_analysis_result_shape():
     # ValidationError if the response doesn't actually match AnalysisResult.
     result = AnalysisResult.model_validate(response.json())
     assert result.brandName == "OpenAI"
-    # cooccurrenceRanking, contextAnalysis, and summary are always
-    # genuinely computed (from caller-supplied documents/urls, or
-    # development sample documents), but aiOverviewComparison/
-    # improvements are still fixed placeholder data.
+    # cooccurrenceRanking, contextAnalysis, summary, and improvements
+    # are always genuinely computed (from caller-supplied documents/
+    # urls, or development sample documents), but aiOverviewComparison
+    # is still fixed placeholder data.
     assert result.meta.sections.cooccurrenceRanking == "real"
     assert result.meta.sections.summary == "real"
     assert result.meta.sections.contextAnalysis == "real"
     assert result.meta.sections.aiOverviewComparison == "mock"
-    assert result.meta.sections.improvements == "mock"
+    assert result.meta.sections.improvements == "real"
     assert result.meta.documentsSource == "development_sample"
     assert len(result.contextAnalysis) > 0
     assert result.summary.brandName == "OpenAI"
     assert 0 <= result.summary.visibilityScore <= 100
+    assert len(result.improvements) > 0
 
 
 def test_analyze_computes_cooccurrence_ranking_from_provided_documents():
@@ -168,10 +169,36 @@ def test_analyze_computes_brand_summary_from_provided_documents():
     # topPlatforms must not claim ChatGPT/Perplexity/etc. were measured.
     unmeasured_platform_names = {"ChatGPT", "Perplexity", "Google AI Overview", "Copilot"}
     assert not unmeasured_platform_names.intersection(result.summary.topPlatforms)
-    # aiOverviewComparison/improvements remain mock even though summary
-    # is now real.
+    # aiOverviewComparison remains mock even though summary is now real.
     assert result.meta.sections.aiOverviewComparison == "mock"
-    assert result.meta.sections.improvements == "mock"
+
+
+def test_analyze_computes_improvement_suggestions_from_provided_documents():
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "documents": [
+                "OpenAIの料金プランについて教えてください。",
+                "OpenAIの料金プランはとても安いです。",
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.improvements == "real"
+    assert len(result.improvements) > 0
+    # No context category besides pricing was surfaced by these two
+    # documents, so at least one missing-category suggestion (e.g. use
+    # case) should be raised, each carrying its own reason.
+    for suggestion in result.improvements:
+        assert suggestion.description
+        assert suggestion.priority in ("high", "medium", "low")
+    titles = [s.title for s in result.improvements]
+    assert len(titles) == len(set(titles))
+    # aiOverviewComparison remains mock even though improvements is now real.
+    assert result.meta.sections.aiOverviewComparison == "mock"
 
 
 def test_analyze_normalizes_fullwidth_user_provided_documents_before_cooccurrence():
@@ -270,6 +297,11 @@ def test_analyze_accepts_empty_documents_list():
     assert result.meta.sections.summary == "real"
     assert result.summary.totalMentions == 0
     assert result.summary.sentimentBreakdown.neutral == 100
+    # improvements mirrors the same status too: 0 documents is a valid
+    # "analyzed zero input" state, so build_improvement_suggestions()
+    # still runs and returns its fallback suggestion rather than [].
+    assert result.meta.sections.improvements == "real"
+    assert len(result.improvements) > 0
 
 
 def test_analyze_documents_take_priority_over_urls():
@@ -311,6 +343,12 @@ def test_analyze_urls_with_disallowed_host_report_failure_but_still_return_200()
     assert result.meta.sections.contextAnalysis == "unavailable"
     assert result.meta.sections.summary == "unavailable"
     assert result.summary.totalMentions == 0
+    # Every url failed -> nothing to base suggestions on, so
+    # improvements is "unavailable" and [] rather than a fallback
+    # suggestion (that fallback is only for a legitimate zero-input
+    # analysis, e.g. documents: []).
+    assert result.meta.sections.improvements == "unavailable"
+    assert result.improvements == []
 
 
 def test_analyze_rejects_empty_urls_list():
@@ -350,6 +388,8 @@ def test_analyze_urls_all_succeed_reports_real_status(monkeypatch):
     assert len(result.contextAnalysis) > 0
     assert result.meta.sections.summary == "real"
     assert result.summary.totalMentions > 0
+    assert result.meta.sections.improvements == "real"
+    assert len(result.improvements) > 0
 
 
 def test_analyze_urls_partial_failure_reports_real_status_and_both_results(monkeypatch):
@@ -413,6 +453,8 @@ def test_analyze_urls_all_fail_reports_unavailable_status(monkeypatch):
     assert result.meta.sections.contextAnalysis == "unavailable"
     assert result.contextAnalysis == []
     assert result.meta.sections.summary == "unavailable"
+    assert result.meta.sections.improvements == "unavailable"
+    assert result.improvements == []
 
 
 @pytest.mark.parametrize(

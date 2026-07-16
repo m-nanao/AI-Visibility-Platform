@@ -210,6 +210,49 @@ describe("POST /api/analyze", () => {
     });
   });
 
+  it("passes through real improvement suggestions from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      improvements: [
+        {
+          title: "導入事例・活用シーンの追加",
+          description:
+            "現在の文脈分析では導入事例・活用シーンに関する言及が確認できないため、具体的な導入事例やユースケースの追加を推奨します。",
+          priority: "medium",
+        },
+      ],
+      meta: pythonMetaOverride({
+        documentsSource: "user_provided",
+        sections: {
+          summary: "real",
+          cooccurrenceRanking: "real",
+          contextAnalysis: "real",
+          improvements: "real",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", documents: ["OpenAIの料金プランについて教えてください。"] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.sections.improvements).toBe("real");
+    expect(data.improvements).toEqual([
+      {
+        title: "導入事例・活用シーンの追加",
+        description:
+          "現在の文脈分析では導入事例・活用シーンに関する言及が確認できないため、具体的な導入事例やユースケースの追加を推奨します。",
+        priority: "medium",
+      },
+    ]);
+  });
+
   it("passes through an unavailable cooccurrenceRanking from the Python API", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = {
