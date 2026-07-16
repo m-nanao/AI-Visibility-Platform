@@ -20,6 +20,7 @@ const documentsSourceSchema = z.enum([
   "common_crawl",
 ]);
 const documentSourceTypeSchema = z.enum(DOCUMENT_SOURCE_TYPES);
+const aiOverviewProviderModeSchema = z.enum(["mock", "off", "dataforseo"]);
 
 const analysisSectionStatusesSchema = z.object({
   summary: sectionStatusSchema,
@@ -44,6 +45,12 @@ const urlFetchResultSchema = z.object({
   error: optionalFromPython(z.string()),
 });
 
+const aiOverviewProviderInfoSchema = z.object({
+  mode: aiOverviewProviderModeSchema,
+  status: sectionStatusSchema,
+  reason: z.string(),
+});
+
 const analysisMetaSchema = z.object({
   sections: analysisSectionStatusesSchema,
   documentsSource: documentsSourceSchema,
@@ -55,6 +62,7 @@ const analysisMetaSchema = z.object({
   documentCount: optionalFromPython(z.number()),
   sourceTypes: optionalFromPython(z.array(documentSourceTypeSchema)),
   chunkCount: optionalFromPython(z.number()),
+  aiOverviewProvider: optionalFromPython(aiOverviewProviderInfoSchema),
 });
 
 const brandSummarySchema = z.object({

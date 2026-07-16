@@ -29,9 +29,17 @@ AI/LLM/DataForSEO calls anywhere in this chain, just simple
 counting/bucketing/condition rules with an explainable reason attached
 to each suggestion.
 
-`aiOverviewComparison` is still fixed placeholder data — `meta.sections`
-reports this per-section so callers don't have to guess. See
-docs/05_tasks.md (Phase 4) for what's next.
+`aiOverviewComparison` is still fixed placeholder data by default, but
+as of 2026-07-17 it's served through a swappable provider (see
+services/ai_overview_provider.py) rather than being hardcoded here:
+mode is "mock" (default), "off" (section disabled), or "dataforseo"
+(not yet implemented — never calls an external API), selected via the
+AI_OVERVIEW_PROVIDER_MODE env var and optionally overridden per-request
+via `aiOverviewMode` only when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
+`meta.sections` reports the resulting status per-section so callers
+don't have to guess; `meta.aiOverviewProvider` additionally reports
+which mode actually ran and why. See docs/05_tasks.md (Phase 4) for
+what's next (the real DataForSEO connection).
 """
 
 import logging
@@ -48,6 +56,7 @@ from models import (
     MAX_DOCUMENTS_COUNT,
     MAX_TOTAL_DOCUMENTS_LENGTH,
     MAX_URLS,
+    AIOverviewProviderInfo,
     AnalysisMeta,
     AnalysisResult,
     AnalysisSectionStatuses,
@@ -57,6 +66,7 @@ from models import (
     SectionStatus,
     UrlFetchResult,
 )
+from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
 from services.brand_summary import build_brand_summary
 from services.context_analysis import analyze_contexts
 from services.improvement_suggestions import build_improvement_suggestions
@@ -314,12 +324,31 @@ def analyze(payload: AnalyzeRequest):
         )
     logger.info("improvement suggestions complete: %d suggestion(s)", len(result.improvements))
 
+    # aiOverviewComparison: swappable provider (see
+    # services/ai_overview_provider.py), independent of the
+    # Document[]/cooccurrence_status pipeline above — its mode comes
+    # from AI_OVERVIEW_PROVIDER_MODE (env, default "mock"), optionally
+    # overridden per-request only when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
+    # No external API call happens here regardless of mode; a real
+    # DataForSEO connection is a follow-up task.
+    ai_overview_mode = resolve_ai_overview_mode(payload.aiOverviewMode)
+    (
+        result.aiOverviewComparison,
+        ai_overview_status,
+        ai_overview_reason,
+    ) = build_ai_overview_comparison(brand_name, ai_overview_mode)
+    logger.info(
+        "ai overview comparison complete: mode=%s status=%s",
+        ai_overview_mode,
+        ai_overview_status,
+    )
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary=cooccurrence_status,
             cooccurrenceRanking=cooccurrence_status,
             contextAnalysis=cooccurrence_status,
-            aiOverviewComparison="mock",
+            aiOverviewComparison=ai_overview_status,
             improvements=cooccurrence_status,
         ),
         documentsSource=documents_source,
@@ -328,5 +357,8 @@ def analyze(payload: AnalyzeRequest):
         documentCount=document_count,
         sourceTypes=source_types,
         chunkCount=len(chunks),
+        aiOverviewProvider=AIOverviewProviderInfo(
+            mode=ai_overview_mode, status=ai_overview_status, reason=ai_overview_reason
+        ),
     )
     return result

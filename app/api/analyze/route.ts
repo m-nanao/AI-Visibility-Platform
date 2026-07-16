@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
-import type { AnalysisResult } from "../../lib/types";
+import type { AiOverviewProviderMode, AnalysisResult } from "../../lib/types";
+
+const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = ["mock", "off", "dataforseo"];
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
 
@@ -35,6 +37,7 @@ async function fetchFromPythonApi(
   brandName: string,
   documents?: string[],
   urls?: string[],
+  aiOverviewMode?: AiOverviewProviderMode,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable" };
@@ -45,11 +48,19 @@ async function fetchFromPythonApi(
     PYTHON_API_TIMEOUT_MS,
   );
 
-  const requestBody: { brandName: string; documents?: string[]; urls?: string[] } = {
-    brandName,
-  };
+  const requestBody: {
+    brandName: string;
+    documents?: string[];
+    urls?: string[];
+    aiOverviewMode?: AiOverviewProviderMode;
+  } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
+  // Forwarded as-is; the Python API decides whether to actually honor
+  // it (ALLOW_AI_OVERVIEW_MODE_OVERRIDE) or ignore it in favor of its
+  // own AI_OVERVIEW_PROVIDER_MODE default. Next.js does not gate this
+  // itself — it's a pure passthrough field, not yet exposed in the UI.
+  if (aiOverviewMode) requestBody.aiOverviewMode = aiOverviewMode;
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
@@ -138,8 +149,17 @@ export async function POST(request: Request) {
   const urls = Array.isArray(body?.urls)
     ? body.urls.filter((url: unknown): url is string => typeof url === "string")
     : undefined;
+  // Optional per-request override of the aiOverviewComparison provider
+  // mode (see backend/services/ai_overview_provider.py). An invalid
+  // value here is simply dropped (forwarded as undefined) rather than
+  // rejected with 400 — this field doesn't affect any of the
+  // already-real sections, and the Python API independently decides
+  // whether to honor it at all (ALLOW_AI_OVERVIEW_MODE_OVERRIDE).
+  const aiOverviewMode = AI_OVERVIEW_MODES.includes(body?.aiOverviewMode)
+    ? (body.aiOverviewMode as AiOverviewProviderMode)
+    : undefined;
 
-  const outcome = await fetchFromPythonApi(trimmedBrandName, documents, urls);
+  const outcome = await fetchFromPythonApi(trimmedBrandName, documents, urls, aiOverviewMode);
 
   if (outcome.kind === "success") {
     return NextResponse.json(outcome.data);

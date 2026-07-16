@@ -1,6 +1,6 @@
 # Python分析API（バックエンド）
 
-LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算するが、`aiOverviewComparison` はまだ固定データ。Common Crawl / DataForSEO / DBにはまだ接続していない。
+LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）を導入済みだが、DataForSEO本接続はまだ行っておらず、デフォルトの`mock`モードでは固定データを返す。Common Crawl / DataForSEO / DBにはまだ接続していない。
 
 > **確認用環境として一時公開する場合の注意**: 本番運用を目的とした構成ではありません。認証・レート制限はなく、CORSもNext.js経由の呼び出しのみを前提に未設定です。公開手順は [../docs/09_deployment.md](../docs/09_deployment.md) を参照してください。
 
@@ -20,7 +20,8 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/context_analysis.py` — `DocumentChunk[]`からキーワードベースで`contextAnalysis`を実計算する（Document Pipelineの「Analyzer」役、通称"context-analysis-lite"）。`analyze_contexts()`。詳細は下記「Context Analysis（文脈分析）」参照
 - `services/brand_summary.py` — Document[]・cooccurrenceRanking・contextAnalysisから`summary`（ブランド認知サマリー）をルールベース・テンプレートで実計算する（Document Pipelineの「Analyzer」役、通称"brand-summary-lite"）。`build_brand_summary()`。詳細は下記「Brand Summary（ブランド認知サマリー）」参照
 - `services/improvement_suggestions.py` — cooccurrenceRanking・contextAnalysis・summaryから`improvements`（改善提案）をルールベースで実計算する（Document Pipelineの「Analyzer」役、通称"improvement-suggestions-lite"）。`build_improvement_suggestions()`。詳細は下記「Improvement Suggestions（改善提案）」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
+- `services/ai_overview_provider.py` — `aiOverviewComparison`のデータ取得元を`mock`/`off`/`dataforseo`で切り替えるprovider抽象化層。`resolve_ai_overview_mode()`/`build_ai_overview_comparison()`/`build_mock_ai_overview_comparison()`。詳細は下記「AI Overview比較のprovider mode」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -228,7 +229,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 4. **`topPlatforms`**: 実測していないChatGPT/Perplexity/Google AI Overviewのような固有プラットフォーム名を実データとして出さないよう、実際に解析した`Document.sourceType`（`web_fetch`→「Webページ」、`user_provided`→「入力テキスト」、`development_sample`→「開発用サンプル」）に置き換えている。フィールド名・UIラベル（「主要プラットフォーム」）は変更していない。
 5. **`summaryText`**: AI生成ではなくテンプレート文字列。`contextAnalysis`上位カテゴリ・`cooccurrenceRanking`上位キーワードを埋め込む。`contextAnalysis`が空の場合は「十分な文脈は取得できませんでした」という専用テンプレートを返す。
 
-`meta.sections.summary`も共起解析・文脈分析と同じ`cooccurrence_status`を共有し、`"unavailable"`（全URL取得失敗時）・`"real"`（それ以外）のいずれかになる。`aiOverviewComparison`は今回の対象外で、引き続き`services/mock_analysis.py`の固定データのまま。
+`meta.sections.summary`も共起解析・文脈分析と同じ`cooccurrence_status`を共有し、`"unavailable"`（全URL取得失敗時）・`"real"`（それ以外）のいずれかになる。`aiOverviewComparison`は独立したprovider切り替え基盤（`services/ai_overview_provider.py`、下記「AI Overview比較のprovider mode」参照）を持ち、`cooccurrence_status`とは連動しない。
 
 ### `improvement_suggestions.py`（Analyzer: 軽量改善提案、通称"improvement-suggestions-lite"）
 
@@ -249,6 +250,31 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 `meta.sections.improvements`も他の3セクションと同じ`cooccurrence_status`を共有するが、`"unavailable"`（全URL取得失敗）の場合は`build_improvement_suggestions()`自体を呼ばず`main.py`側で`improvements: []`にする——同関数は常に最低1件（フォールバック含む）を返す設計のため、そのままでは「計算不能」と「0件だが提案あり」の区別がつかなくなるのを防ぐため。
 
 既存の`ImprovementSuggestion`型（`title`/`description`/`priority`）をそのまま使うため、APIレスポンス形式・Zodスキーマ・フロントUIの変更は不要だった。提案はMVP用の簡易トリアージであり、最終的なSEO/LLMO施策の採否判断には人間の確認が必要（コード・ドキュメント双方に明記）。
+
+### AI Overview比較のprovider mode（`ai_overview_provider.py`）
+
+`aiOverviewComparison`のデータ取得元を切り替えられる抽象化層。DataForSEO本接続はまだ行っていないが、テスト中に誤って（費用が発生し得る）実APIを叩いてしまうことを防ぐため、本接続の前に切り替え基盤だけを先に用意した。`resolve_ai_overview_mode(request_override) -> AiOverviewProviderMode`と`build_ai_overview_comparison(brand_name, mode) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str]`（items, セクションstatus, 人が読める理由）を公開する。
+
+**3つのmode**（`AiOverviewProviderMode = Literal["mock", "off", "dataforseo"]`、`backend/models.py`で定義）:
+
+| mode | 挙動 | `aiOverviewComparison` | section status |
+| --- | --- | --- | --- |
+| `mock`（デフォルト） | 固定の開発用データを返す | 4件の固定データ | `"mock"` |
+| `off` | セクションを無効化する | `[]` | `"unavailable"`（`SectionStatus`に`"disabled"`は無いため、計算不能扱いの`"unavailable"`を流用） |
+| `dataforseo` | **今回は未実装**。外部APIは一切呼ばない | `[]` | `"unavailable"` |
+
+**mode切り替えの2段階ゲート**（誤って実APIを実行しないための安全設計）:
+
+1. **`AI_OVERVIEW_PROVIDER_MODE`環境変数**（未設定時のデフォルトは`mock`）。無効な値が設定された場合は警告ログを出しつつ`mock`にフォールバックする（クラッシュさせない。`TOKENIZER_MODE`の既存パターンに合わせた）。
+2. **`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`環境変数**（未設定/`false`時はリクエスト単位のoverrideを一切受け付けない）。`true`のときのみ、`POST /analyze`のリクエストボディの`aiOverviewMode`フィールド（`AnalyzeRequest.aiOverviewMode`）が採用される。
+
+この2段階により、**リクエストボディだけでは`dataforseo`のような費用が発生し得るmodeを有効化できない**——運用者が明示的に環境変数で許可した環境でのみ、リクエスト単位の切り替えが機能する。`aiOverviewMode`に`AiOverviewProviderMode`以外の値（例: `"real"`）を渡した場合は、Pydanticのバリデーションエラーとして既存の`{"error": "invalid request body"}`（400）に統一される（新しいエラー処理コードパスは追加していない）。
+
+`main.py`の`analyze()`に組み込み、`meta.sections.aiOverviewComparison`に上記のstatusを反映する。加えて`meta.aiOverviewProvider`（`{mode, status, reason}`、`AnalysisMeta`に追加した任意フィールド）として、実際に使われたmodeとその理由を返す（画面にはまだ表示しない。既存UI・Zodスキーマは`optional`扱いのため壊れない）。
+
+旧`services/mock_analysis.py`に直書きされていたAI Overview比較の固定データ（4件）は、`build_mock_ai_overview_comparison(brand_name)`としてこのモジュールへ移設した。`mock_analysis.py`の`build_dummy_analysis()`はこの関数を呼び出すだけになり、固定データの実体は`ai_overview_provider.py`が唯一の所有者になった。
+
+**DataForSEO本接続はこのタスクの対象外**。今後、`dataforseo`モードの分岐を実際のAPI呼び出しに置き換える形で本接続を行う予定（[05_tasks.md](../docs/05_tasks.md)参照）。
 
 **運用上の注意（未実装のこと）**
 
@@ -281,6 +307,12 @@ pytest
 - `urls` に許可されないホスト（localhost等）を渡すと、200のまま `meta.sections.cooccurrenceRanking`/`.contextAnalysis`/`.summary`/`.improvements` がすべて `"unavailable"`・`contextAnalysis: []`・`improvements: []`・`summary.totalMentions: 0` になること
 - `urls: []`（空配列）が400になること
 - モックした `fetch_url_texts` で、全URL成功・一部失敗・全失敗のそれぞれで `meta.sections.cooccurrenceRanking`/`.contextAnalysis`/`.summary`/`.improvements`（`"real"`/`"real"`/`"unavailable"`、4セクションとも同じ値）と `meta.urlFetchResults` の内容が正しいこと
+- `AI_OVERVIEW_PROVIDER_MODE`/`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、`aiOverviewComparison`が`"mock"`・4件のデータが返り、`meta.aiOverviewProvider.mode`が`"mock"`になること。この間も`summary`/`cooccurrenceRanking`/`contextAnalysis`/`improvements`は引き続き`"real"`のままであること
+- `AI_OVERVIEW_PROVIDER_MODE=off`で`aiOverviewComparison`が`"unavailable"`・`[]`になること
+- `AI_OVERVIEW_PROVIDER_MODE=dataforseo`でも`aiOverviewComparison`が`"unavailable"`・`[]`になり、`meta.aiOverviewProvider.reason`に「not yet implemented」の旨が含まれること
+- `ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、リクエストの`aiOverviewMode`（例:`"off"`）は無視され、環境変数のデフォルトのままになること
+- `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`のとき、リクエストの`aiOverviewMode`が実際に反映されること
+- 不正な`aiOverviewMode`（`AiOverviewProviderMode`以外の値）が400 `{"error": "invalid request body"}`になること
 - 空文字・空白のみ・未指定の `brandName` が400になること
 - 200文字ちょうどは通り、201文字以上は400になること
 - 不正な型（`brandName: 123`など）が400になること
@@ -394,6 +426,16 @@ pytest
 - 各提案の`title`が重複しないこと（フロント側で`item.title`をReactの`key`に使うため）
 - すべての入力が空でも例外にならないこと
 
+`tests/test_ai_overview_provider.py` では `resolve_ai_overview_mode()` / `build_ai_overview_comparison()` を直接テストしている。
+
+- `AI_OVERVIEW_PROVIDER_MODE`/`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、デフォルトが`"mock"`になること
+- `AI_OVERVIEW_PROVIDER_MODE`環境変数の値が正しく読み取られること、不正な値（未知の文字列）の場合は`"mock"`にフォールバックすること
+- `ALLOW_AI_OVERVIEW_MODE_OVERRIDE`が未設定/`false`の場合、リクエストのoverrideが無視されること
+- `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`（大文字小文字を区別しない）の場合、リクエストのoverrideが反映されること
+- `mock`モードで非空の`aiOverviewComparison`と`"mock"`ステータスが返ること
+- `off`モードで空配列と`"unavailable"`ステータスが返ること
+- `dataforseo`モードでも空配列と`"unavailable"`ステータスが返り、`"real"`には絶対にならないこと（外部APIを呼ばずに実データのように見せないことの回帰防止）
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -428,6 +470,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.urlFetchResults` | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
 | `meta.documentCount` / `meta.sourceTypes` | 実際に解析対象となった`Document[]`の件数・`sourceType`一覧（重複なし）。3つの取得元すべてで返る |
 | `meta.chunkCount` | `Document[]`をChunker（`services/document_chunker.py`）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析はこの値を使わないが、`contextAnalysis`はこのチャンクから計算される |
+| `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`。まだUIには表示していない。詳細は下記「AI Overview比較のprovider mode」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -438,7 +481,8 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - 文脈分析（`context_analysis.py`）のキーワードベースからの高度化（意味的な文脈理解・要約。現状はあくまで軽量なキーワード一致分類）
 - ブランド認知サマリー（`brand_summary.py`）のルールベース・テンプレート生成からの高度化（AI要約、実際のAIプラットフォーム横断比較等。現状は既存の分析結果を数える・振り分けるだけの軽量処理）
 - 改善提案（`improvement_suggestions.py`）のルールベースからの高度化（AI/LLMによる提案生成、DataForSEO等の実測データとの統合。現状は既存の分析結果に対する説明可能な条件分岐のみ）
-- AI Overview比較（`aiOverviewComparison`）の実装（現状は`services/mock_analysis.py`の固定データのまま）
+- AI Overview比較のDataForSEO本接続（`services/ai_overview_provider.py`の`dataforseo`モードを実際のAPI呼び出しに置き換える。provider切り替え基盤・`mock`/`off`モードは実装済み。認証情報・APIキーの追加も含めて今回は未着手）
+- AI Overview比較のprovider mode切り替えUI（現状はAPI経由（`aiOverviewMode`リクエストフィールド、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`時のみ有効）でのみ切り替え可能。画面上のトグル等はまだない）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）

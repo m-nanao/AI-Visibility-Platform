@@ -8,7 +8,6 @@ app/lib/dummy-data.ts's buildDummyAnalysis.
 from datetime import datetime, timezone
 
 from models import (
-    AIOverviewComparisonItem,
     AnalysisMeta,
     AnalysisResult,
     AnalysisSectionStatuses,
@@ -18,6 +17,7 @@ from models import (
     ImprovementSuggestion,
     SentimentBreakdown,
 )
+from services.ai_overview_provider import build_mock_ai_overview_comparison
 
 
 def build_dummy_analysis(brand_name: str) -> AnalysisResult:
@@ -81,32 +81,13 @@ def build_dummy_analysis(brand_name: str) -> AnalysisResult:
                 exampleQuote=f"「{brand_name}はサポート対応に時間がかかるという意見もあります」",
             ),
         ],
-        aiOverviewComparison=[
-            AIOverviewComparisonItem(
-                platform="Google AI Overview",
-                mentioned=True,
-                rank=2,
-                summary="比較記事からの引用として2番目に表示されることが多い。",
-            ),
-            AIOverviewComparisonItem(
-                platform="ChatGPT",
-                mentioned=True,
-                rank=1,
-                summary="関連する質問に対して第一想起として挙げられる頻度が高い。",
-            ),
-            AIOverviewComparisonItem(
-                platform="Perplexity",
-                mentioned=True,
-                rank=3,
-                summary="情報源として公式サイトとレビューサイトが引用される傾向。",
-            ),
-            AIOverviewComparisonItem(
-                platform="Copilot",
-                mentioned=False,
-                rank=None,
-                summary="現時点では明確な言及が確認されていません。",
-            ),
-        ],
+        # Moved to services/ai_overview_provider.py (2026-07-17) so the
+        # aiOverviewComparison provider (mock/off/dataforseo) has a
+        # single owner instead of this module and main.py both holding
+        # a copy. build_dummy_analysis() still uses the mock branch's
+        # data by default — main.py overwrites this per the resolved
+        # provider mode before returning.
+        aiOverviewComparison=build_mock_ai_overview_comparison(brand_name),
         improvements=[
             ImprovementSuggestion(
                 title="比較コンテンツの拡充",

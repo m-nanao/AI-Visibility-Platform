@@ -338,6 +338,84 @@ describe("POST /api/analyze", () => {
     expect(forwardedBody.urls).toBeUndefined();
   });
 
+  it("forwards a valid aiOverviewMode to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", aiOverviewMode: "off" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.aiOverviewMode).toBe("off");
+  });
+
+  it("drops an invalid aiOverviewMode instead of forwarding it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", aiOverviewMode: "real" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.aiOverviewMode).toBeUndefined();
+  });
+
+  it("omits aiOverviewMode from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.aiOverviewMode).toBeUndefined();
+  });
+
+  it("accepts an unavailable aiOverviewComparison with aiOverviewProvider metadata from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "unavailable" },
+        aiOverviewProvider: {
+          mode: "dataforseo",
+          status: "unavailable",
+          reason: "DataForSEO provider is not yet implemented; no external API call was made.",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.sections.aiOverviewComparison).toBe("unavailable");
+    expect(data.aiOverviewComparison).toEqual([]);
+    expect(data.meta.aiOverviewProvider).toEqual({
+      mode: "dataforseo",
+      status: "unavailable",
+      reason: "DataForSEO provider is not yet implemented; no external API call was made.",
+    });
+  });
+
   it("falls back to dummy data when the Python API response fails schema validation", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(
