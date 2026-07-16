@@ -2,7 +2,7 @@
 
 別チャット・将来のAI（ChatGPT・Claude Code問わず）が、このプロジェクトの「今」を素早く把握するための1ファイル。詳細な経緯は各docsを参照。このファイルは**要点のみ**を保ち、詳細を書きたくなったら該当するdocsへ書いて、ここからはリンクする。
 
-**最終更新日: 2026-07-16**
+**最終更新日: 2026-07-17**
 
 ## 現在のフェーズ
 
@@ -10,7 +10,7 @@
 - 加えて、Phase 4.5として**依頼者確認用のWeb公開**まで完了している（[05_tasks.md](./05_tasks.md)参照）。
 - Phase 3（Common Crawl / DataForSEO連携）、Phase 5（PostgreSQL永続化）、Phase 6（プロダクション化）は未着手。
 - 解析エンジンの内部設計を整理した[11_architecture_v1.md](./11_architecture_v1.md)（v1.0アーキテクチャ設計書）を追加済み（2026-07-15）。Common Crawl / DataForSEOなど取得元が増えても解析側を変えずに済むよう、すべての取得元を`Document[]`へ変換する「Document Pipeline」の考え方を明文化した。
-- Document Pipeline（Provider→Cleaner→Normalizer→Chunker→Analyzer）の5段階すべてが実装済みになった（Chunkerを2026-07-16に追加）。`Document`型定義・Providerレベルの変換（`user_provided`/`web_fetch`/`development_sample`→`Document[]`）・Cleanerの分離（`backend/services/document_cleaner.py`）・Normalizerの追加（`backend/services/document_normalizer.py`）・Chunkerの追加（`backend/services/document_chunker.py`）・Analyzer側アダプターまで実装済み。同日、軽量な文脈分析（`backend/services/context_analysis.py`）がChunkerの出力を実際に消費する最初のAnalyzerロジックになった。共起解析は引き続き`Document.text`全体を直接読み、Chunker非経由のまま。さらに同日、軽量なブランド認知サマリー（`backend/services/brand_summary.py`）が共起解析・文脈分析の結果から`summary`を実データ由来にし、軽量な改善提案（`backend/services/improvement_suggestions.py`）が共起解析・文脈分析・ブランド認知サマリーの結果から`improvements`を実データ由来にした（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
+- Document Pipeline（Provider→Cleaner→Normalizer→Chunker→Analyzer）の5段階すべてが実装済みになった（Chunkerを2026-07-16に追加）。`Document`型定義・Providerレベルの変換（`user_provided`/`web_fetch`/`development_sample`→`Document[]`）・Cleanerの分離（`backend/services/document_cleaner.py`）・Normalizerの追加（`backend/services/document_normalizer.py`）・Chunkerの追加（`backend/services/document_chunker.py`）・Analyzer側アダプターまで実装済み。同日、軽量な文脈分析（`backend/services/context_analysis.py`）がChunkerの出力を実際に消費する最初のAnalyzerロジックになった。共起解析は引き続き`Document.text`全体を直接読み、Chunker非経由のまま。さらに同日、軽量なブランド認知サマリー（`backend/services/brand_summary.py`）が共起解析・文脈分析の結果から`summary`を実データ由来にし、軽量な改善提案（`backend/services/improvement_suggestions.py`）が共起解析・文脈分析・ブランド認知サマリーの結果から`improvements`を実データ由来にした。2026-07-17には、残る唯一のmockセクションであるAI Overview比較にもprovider切り替え基盤（`backend/services/ai_overview_provider.py`、mock/off/dataforseoモード）が導入された（DataForSEO本接続自体はまだ）（詳細は下記「実装済み機能」、[11_architecture_v1.md](./11_architecture_v1.md)の「10. 次フェーズ候補」）。
 
 ## 実装済み機能
 
@@ -26,6 +26,7 @@
 - 軽量な文脈分析（`backend/services/context_analysis.py`、2026-07-16、通称"context-analysis-lite"）として`contextAnalysis`セクションを実データ由来にした。AI/LLMは使わず、`pricing`/`feature`/`use_case`/`support`/`reliability`/`comparison`/`risk_or_issue`/`general`の8カテゴリへキーワード一致ベースで分類し、簡易センチメント（positive/neutral/negative）も判定する。ブランド名を含む`DocumentChunk`を優先、0件ならフォールバック。既存の`ContextAnalysisItem`型のまま返すため、APIレスポンス形式・UIの変更は不要だった。`meta.sections.contextAnalysis`は共起解析と同じ`"real"`/`"unavailable"`判定を共有する（[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - 軽量なブランド認知サマリー（`backend/services/brand_summary.py`、2026-07-16、通称"brand-summary-lite"）として`summary`セクションを実データ由来にした。AI/LLM要約は使わず、既存の`Document[]`/`cooccurrenceRanking`/`contextAnalysis`を数える・振り分けるだけ。`totalMentions`はブランド名の出現回数の単純合計、`visibilityScore`は言及数等から0〜100を算出するMVP用の簡易推定値（development_sampleのみの場合は55点上限）、`sentimentBreakdown`は`contextAnalysis`のカテゴリ傾向から百分率化（必ず合計100%）、`topPlatforms`は実測していないChatGPT等ではなく実際の`Document.sourceType`ラベルに置き換え、`summaryText`はテンプレート文字列。既存の`BrandSummary`型のまま返すため、APIレスポンス形式・UIの変更は不要だった。`meta.sections.summary`も共起解析・文脈分析と同じ`"real"`/`"unavailable"`判定を共有する（[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - 軽量な改善提案（`backend/services/improvement_suggestions.py`、2026-07-16、通称"improvement-suggestions-lite"）として`improvements`セクションを実データ由来にした。AI API・LLM・DataForSEOは使わず、既存の`cooccurrenceRanking`/`contextAnalysis`/`summary`に対する説明可能な条件分岐のみで提案を生成する（例:「pricingカテゴリが未検出のため料金・プラン情報の明確化を提案」）。`risk_or_issue`検出時は高優先度、development_sampleのみの場合は`high`優先度を`medium`にキャップ、最大5件を優先度順に返す。どのルールにも当てはまらない場合でも低優先度のフォールバック提案を1件返す（空配列にはしない）。既存の`ImprovementSuggestion`型のまま返すため、APIレスポンス形式・UIの変更は不要だった。`meta.sections.improvements`も他の3セクションと同じ`"real"`/`"unavailable"`判定を共有する（[11_architecture_v1.md](./11_architecture_v1.md)参照）
+- AI Overview比較のprovider切り替え基盤（`backend/services/ai_overview_provider.py`、2026-07-17）として`mock`（デフォルト、固定データ）/`off`（セクション無効化）/`dataforseo`（今回は未実装、外部APIは呼ばない）の3モードを導入した。DataForSEO本接続前に、テスト中の意図しない実API実行（費用発生の可能性）を防ぐ目的。環境変数`AI_OVERVIEW_PROVIDER_MODE`でデフォルトを決め、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`のときのみ`POST /analyze`の`aiOverviewMode`フィールドでリクエスト単位に上書きできる（デフォルトはfalseで、リクエストだけでは有効化できない安全設計）。`meta.aiOverviewProvider`（`{mode, status, reason}`、任意フィールド）で実際に使われたmodeを報告する（画面表示はまだ次タスク）。既存の`AIOverviewComparisonItem`型・APIレスポンス形状・UIの変更は不要だった（[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - 依頼者確認用のVercel/Render公開（[09_deployment.md](./09_deployment.md)参照）
 - ステージング環境の最低限保護: 簡易パスコードガード（[proxy.ts](../proxy.ts)、`STAGING_ACCESS_CODE`未設定時はローカル開発に影響なし）と`noindex`設定（[app/layout.tsx](../app/layout.tsx)の`metadata.robots`＋`X-Robots-Tag`ヘッダー）
 
@@ -39,9 +40,9 @@
 
 ## まだダミー（固定データ）の機能
 
-- AI Overview比較（`aiOverviewComparison`）
+- AI Overview比較（`aiOverviewComparison`）— provider切り替え基盤（`backend/services/ai_overview_provider.py`、2026-07-17）は導入済みだが、デフォルトの`mock`モードでは引き続き固定データを返す。DataForSEO本接続はまだ行っていない（`AI_OVERVIEW_PROVIDER_MODE=off`にすれば`"unavailable"`として無効化することも可能。詳細は上記「実装済み機能」・[11_architecture_v1.md](./11_architecture_v1.md)参照）。
 
-いずれも `backend/services/mock_analysis.py` の固定データを返す。`meta.sections.*` が `"mock"` になっているセクションがこれに該当する。
+`meta.sections.*` が `"mock"` になっているセクションがこれに該当する。
 
 ## 未接続の外部サービス・機能
 
@@ -78,6 +79,7 @@
 - 文脈分析（context-analysis-lite）はキーワードの単純な出現回数勝負でカテゴリを決めるため、複数カテゴリのキーワードが同数ヒットした場合は`CATEGORY_KEYWORDS`の宣言順（`pricing`→`feature`→...）で先勝ちになる。例えば「対応」（`feature`）と「サポート」（`support`）が同数ヒットすると`feature`が選ばれる。意味的な優先度ではなく実装上の仕様であり、既知の制約として残す（[11_architecture_v1.md](./11_architecture_v1.md)参照）。
 - ブランド認知サマリー（brand-summary-lite）の`visibilityScore`は言及数・Document件数等を加算するだけのMVP用の簡易推定値であり、実際の生成AIにおける認知度を測定したものではない。`sentimentBreakdown`も`contextAnalysis`のカテゴリ傾向（`feature`→positive等）から均等重みで振り分けるだけで、文章そのものの感情分析ではない。いずれも今後高度化する余地がある既知の制約（[11_architecture_v1.md](./11_architecture_v1.md)参照）。
 - 改善提案（improvement-suggestions-lite）はAI/LLMによる提案生成ではなく、`contextAnalysis`のカテゴリ有無等に対する説明可能なルールベースのトリアージにとどまる。カテゴリの有無は二値判定（各カテゴリ最大1件しか`contextAnalysis`に現れないため、「少ない」という段階的な判定はできない）であり、DataForSEO等の実測データとの統合もまだない。最終的なSEO/LLMO施策の採否判断には人間の確認が必要（[11_architecture_v1.md](./11_architecture_v1.md)参照）。
+- AI Overview比較（`ai_overview_provider.py`）は`mock`/`off`/`dataforseo`のprovider切り替え基盤のみが完了しており、DataForSEO本接続（認証情報・実際のAPI呼び出し）自体はまだ未着手。`dataforseo`モードを指定しても外部APIは呼ばれず、常に`"unavailable"`になる（[11_architecture_v1.md](./11_architecture_v1.md)参照）。
 - `documents`（文章を直接渡す入力）にはまだ画面からの入力UIがない（`urls`のみUIがある）。
 - URL取得はrobots.txt確認・レート制限・DNS rebinding対策が未実装（運用者の責任として文書化のみ、[backend/README.md](../backend/README.md)参照）。
 - ~~GitHub ActionsでNode.js 20 deprecation warning~~ → 調査済み・対応済み（2026-07-15）。GitHubがActions runner上のNode.js 20ランタイムを段階的に廃止しており（2026-06-16よりNode24がデフォルト、2026-09-16に完全廃止予定）、`actions/checkout`・`actions/setup-node`・`actions/setup-python`がNode.js 20ランタイムで動いていることに起因する警告だった。`.github/workflows/ci.yml`の各actionを、Node24対応が確認できるバージョン（`actions/checkout@v5`、`actions/setup-node@v5`、`actions/setup-python@v6`）へ更新して解消した。**アプリのビルド/テストに使う`node-version: "20"`（Next.js 16系の要件）とは無関係**であり、これは変更していない。
@@ -89,8 +91,9 @@
 1. 確認用公開環境の今後を決める（止める／簡易パスコードのままにする／正式な認証を足す）
 2. ~~Chunkerの出力をAnalyzerに繋ぐ~~ → 文脈分析（context-analysis-lite）が最初にChunker出力を消費するAnalyzerロジックとして完了（2026-07-16）。共起解析自体は引き続き`Document.text`を直接読み、Chunker非経由（[11_architecture_v1.md](./11_architecture_v1.md)「10. 次フェーズ候補」参照）
 3. CI/CDのCD側（Vercel/Renderへの自動反映）の検討
-4. 共起語抽出の精度向上、または文脈分析・ブランド認知サマリー・改善提案のルールベースからの高度化（意味的理解・要約等）、AI Overview比較の実装着手
-5. Phase 3（Common Crawl / DataForSEO）の調査開始
+4. 共起語抽出の精度向上、または文脈分析・ブランド認知サマリー・改善提案のルールベースからの高度化（意味的理解・要約等）
+5. AI Overview比較のDataForSEO本接続（provider切り替え基盤・`mock`/`off`モードは完了済み。`dataforseo`モードを実際のAPI呼び出しに置き換える。認証情報・APIキーの追加を含む）
+6. Phase 3（Common Crawl / DataForSEO）の調査開始
 
 ## 関連ドキュメント
 

@@ -36,6 +36,15 @@ DocumentSourceType = Literal[
     "user_provided", "web_fetch", "development_sample", "common_crawl", "dataforseo"
 ]
 
+# Which data source aiOverviewComparison is built from. See
+# services/ai_overview_provider.py — "mock" (fixed dev data, default),
+# "off" (section disabled, section status "unavailable"), or
+# "dataforseo" (not yet implemented in this task; never calls the
+# external API, also reports "unavailable"). Selected via the
+# AI_OVERVIEW_PROVIDER_MODE env var, optionally overridden per-request
+# via AnalyzeRequest.aiOverviewMode when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
+AiOverviewProviderMode = Literal["mock", "off", "dataforseo"]
+
 MAX_BRAND_NAME_LENGTH = 200
 
 # documents[] input limits (requirement: count / per-item / total).
@@ -99,6 +108,19 @@ class DocumentChunk(BaseModel):
     metadata: dict[str, object] | None = None
 
 
+class AIOverviewProviderInfo(BaseModel):
+    """Reports which aiOverviewComparison provider actually ran, and
+    why — see services/ai_overview_provider.py. Not shown in the UI
+    yet (that's a future task); exists so callers/logs/tests can tell
+    "mock", "off", and "not yet implemented (dataforseo)" apart
+    without guessing from the section status alone.
+    """
+
+    mode: AiOverviewProviderMode
+    status: SectionStatus
+    reason: str
+
+
 class AnalysisMeta(BaseModel):
     sections: AnalysisSectionStatuses
     documentsSource: DocumentsSource
@@ -118,6 +140,10 @@ class AnalysisMeta(BaseModel):
     # exists so the Chunker's presence is observable via the API ahead
     # of that, without exposing chunk text itself.
     chunkCount: int | None = None
+    # Which aiOverviewComparison provider mode actually ran this
+    # request (see AIOverviewProviderInfo above). Optional so existing
+    # clients/tests that don't know about it aren't broken.
+    aiOverviewProvider: AIOverviewProviderInfo | None = None
 
 
 class SentimentBreakdown(BaseModel):
@@ -178,6 +204,16 @@ class AnalyzeRequest(BaseModel):
     # documents" (yields an empty cooccurrenceRanking, not an error).
     documents: list[str] | None = None
     urls: list[str] | None = None
+    # Optional per-request override of the aiOverviewComparison
+    # provider mode (see services/ai_overview_provider.py). Only
+    # honored when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true — otherwise
+    # main.py ignores this and uses AI_OVERVIEW_PROVIDER_MODE instead,
+    # so a request body alone can never turn on a paid provider in an
+    # environment that isn't configured to allow it. An invalid value
+    # (anything outside AiOverviewProviderMode) fails Pydantic
+    # validation and becomes the same 400 {"error": "invalid request
+    # body"} as other malformed request fields.
+    aiOverviewMode: AiOverviewProviderMode | None = None
 
 
 class ErrorResponse(BaseModel):

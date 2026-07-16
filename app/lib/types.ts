@@ -37,6 +37,21 @@ export interface UrlFetchResult {
   error?: string;
 }
 
+// Which data source aiOverviewComparison is built from — see
+// backend/services/ai_overview_provider.py. "mock" (fixed dev data,
+// default), "off" (section disabled), or "dataforseo" (not yet
+// implemented server-side; never triggers a real external call).
+export type AiOverviewProviderMode = "mock" | "off" | "dataforseo";
+
+// Reports which aiOverviewComparison provider actually ran, and why.
+// Not surfaced in the UI yet — informational/debugging only, mirrors
+// backend/models.py's AIOverviewProviderInfo.
+export interface AIOverviewProviderInfo {
+  mode: AiOverviewProviderMode;
+  status: SectionStatus;
+  reason: string;
+}
+
 export interface AnalysisMeta {
   sections: AnalysisSectionStatuses;
   documentsSource: DocumentsSource;
@@ -64,6 +79,10 @@ export interface AnalysisMeta {
   // — this is only a count, not shown in the UI; chunk text itself is
   // never sent to the client.
   chunkCount?: number;
+  // Which aiOverviewComparison provider mode actually ran this
+  // request. Optional so existing clients/tests that don't know about
+  // it aren't broken.
+  aiOverviewProvider?: AIOverviewProviderInfo;
 }
 
 export interface BrandSummary {

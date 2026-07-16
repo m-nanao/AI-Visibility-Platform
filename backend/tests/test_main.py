@@ -201,6 +201,99 @@ def test_analyze_computes_improvement_suggestions_from_provided_documents():
     assert result.meta.sections.aiOverviewComparison == "mock"
 
 
+def test_analyze_default_ai_overview_mode_is_mock(monkeypatch):
+    monkeypatch.delenv("AI_OVERVIEW_PROVIDER_MODE", raising=False)
+    monkeypatch.delenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", raising=False)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "mock"
+    assert len(result.aiOverviewComparison) > 0
+    assert result.meta.aiOverviewProvider is not None
+    assert result.meta.aiOverviewProvider.mode == "mock"
+    assert result.meta.aiOverviewProvider.status == "mock"
+    # The other sections must stay real and unaffected by aiOverviewComparison's mode.
+    assert result.meta.sections.summary == "real"
+    assert result.meta.sections.cooccurrenceRanking == "real"
+    assert result.meta.sections.contextAnalysis == "real"
+    assert result.meta.sections.improvements == "real"
+
+
+def test_analyze_ai_overview_mode_off_returns_unavailable_and_empty(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "off")
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "unavailable"
+    assert result.aiOverviewComparison == []
+    assert result.meta.aiOverviewProvider is not None
+    assert result.meta.aiOverviewProvider.mode == "off"
+    assert result.meta.aiOverviewProvider.status == "unavailable"
+    # The other sections must stay real and unaffected.
+    assert result.meta.sections.summary == "real"
+    assert result.meta.sections.cooccurrenceRanking == "real"
+    assert result.meta.sections.contextAnalysis == "real"
+    assert result.meta.sections.improvements == "real"
+
+
+def test_analyze_ai_overview_mode_dataforseo_returns_unavailable_without_external_call(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "unavailable"
+    assert result.aiOverviewComparison == []
+    assert result.meta.aiOverviewProvider is not None
+    assert result.meta.aiOverviewProvider.mode == "dataforseo"
+    assert result.meta.aiOverviewProvider.status == "unavailable"
+    assert "not yet implemented" in result.meta.aiOverviewProvider.reason
+
+
+def test_analyze_ignores_request_ai_overview_mode_override_by_default(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.delenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", raising=False)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "off"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    # ALLOW_AI_OVERVIEW_MODE_OVERRIDE is unset, so the request's
+    # aiOverviewMode must be ignored in favor of the env default.
+    assert result.meta.sections.aiOverviewComparison == "mock"
+    assert result.meta.aiOverviewProvider.mode == "mock"
+
+
+def test_analyze_honors_request_ai_overview_mode_override_when_allowed(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "off"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "unavailable"
+    assert result.aiOverviewComparison == []
+    assert result.meta.aiOverviewProvider.mode == "off"
+
+
+def test_analyze_rejects_invalid_ai_overview_mode_value():
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "real"}
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid request body"}
+
+
 def test_analyze_normalizes_fullwidth_user_provided_documents_before_cooccurrence():
     # The document below only mentions the brand in full-width form
     # ("ＯｐｅｎＡＩ"). Without the Normalizer stage folding it to
