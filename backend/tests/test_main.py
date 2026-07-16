@@ -2,6 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,7 @@ from models import (
     MAX_URLS,
     AnalysisResult,
 )
+from services import dataforseo_client
 from services.sample_documents import SAMPLE_DOCUMENT_TEMPLATES
 from services.web_fetcher import UrlFetchResult as FetcherResult
 
@@ -240,8 +242,15 @@ def test_analyze_ai_overview_mode_off_returns_unavailable_and_empty(monkeypatch)
     assert result.meta.sections.improvements == "real"
 
 
-def test_analyze_ai_overview_mode_dataforseo_returns_unavailable_without_external_call(monkeypatch):
+def test_analyze_ai_overview_mode_dataforseo_returns_unavailable_without_credentials(monkeypatch):
     monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.delenv("DATAFORSEO_LOGIN", raising=False)
+    monkeypatch.delenv("DATAFORSEO_PASSWORD", raising=False)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without DataForSEO credentials")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
 
     response = client.post("/analyze", json={"brandName": "OpenAI"})
     assert response.status_code == 200
@@ -252,26 +261,96 @@ def test_analyze_ai_overview_mode_dataforseo_returns_unavailable_without_externa
     assert result.meta.aiOverviewProvider is not None
     assert result.meta.aiOverviewProvider.mode == "dataforseo"
     assert result.meta.aiOverviewProvider.status == "unavailable"
-    assert "not yet implemented" in result.meta.aiOverviewProvider.reason
+    assert "not configured" in result.meta.aiOverviewProvider.reason
 
 
-def test_analyze_ai_overview_mode_dataforseo_reason_reflects_credential_state_safely(monkeypatch):
+def test_analyze_ai_overview_mode_dataforseo_sandbox_reason_reflects_credential_state_safely(monkeypatch):
+    # No httpx mocking here on purpose: this test documents that the
+    # Live API is never reached even with credentials configured, by
+    # asserting on the "live" branch's reason — which is decided
+    # entirely by env vars, before any HTTP call would be attempted.
     monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
     monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
     monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
 
     response = client.post("/analyze", json={"brandName": "OpenAI"})
     assert response.status_code == 200
 
     result = AnalysisResult.model_validate(response.json())
     reason = result.meta.aiOverviewProvider.reason
-    assert "sandbox" in reason
+    assert "Live API" in reason
     assert "someone@example.com" not in reason
     assert "super-secret-password" not in reason
     # The password/login must not leak anywhere else in the response either.
     raw_body = response.text
     assert "super-secret-password" not in raw_body
     assert "someone@example.com" not in raw_body
+
+
+def test_analyze_ai_overview_mode_dataforseo_sandbox_success_is_reflected_in_response(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "items": [
+                            {"type": "ai_overview", "rank_absolute": 1, "text": "OpenAI is a well-known AI lab."}
+                        ]
+                    }
+                ]
+            }
+        ],
+    }
+
+    def fake_post(url, **kwargs):
+        assert "sandbox.dataforseo.com" in url
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "real"
+    assert len(result.aiOverviewComparison) == 1
+    assert result.aiOverviewComparison[0].mentioned is True
+    assert result.meta.aiOverviewProvider.status == "real"
+    # Other real sections must be unaffected by aiOverviewComparison's mode.
+    assert result.meta.sections.summary == "real"
+    assert result.meta.sections.cooccurrenceRanking == "real"
+    assert result.meta.sections.contextAnalysis == "real"
+    assert result.meta.sections.improvements == "real"
+
+
+def test_analyze_ai_overview_mode_dataforseo_sandbox_failure_does_not_break_analyze(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    def raise_timeout(url, **kwargs):
+        raise httpx.ConnectTimeout("timeout", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", raise_timeout)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "unavailable"
+    assert result.aiOverviewComparison == []
+    # Other real sections must be unaffected.
+    assert result.meta.sections.summary == "real"
+    assert result.meta.sections.improvements == "real"
 
 
 def test_analyze_ignores_request_ai_overview_mode_override_by_default(monkeypatch):
