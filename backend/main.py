@@ -29,17 +29,19 @@ AI/LLM/DataForSEO calls anywhere in this chain, just simple
 counting/bucketing/condition rules with an explainable reason attached
 to each suggestion.
 
-`aiOverviewComparison` is still fixed placeholder data by default, but
-as of 2026-07-17 it's served through a swappable provider (see
+`aiOverviewComparison` is fixed placeholder data by default, but is
+served through a swappable provider (see
 services/ai_overview_provider.py) rather than being hardcoded here:
 mode is "mock" (default), "off" (section disabled), or "dataforseo"
-(not yet implemented — never calls an external API), selected via the
+(connects to DataForSEO **Sandbox only** — Live is deliberately never
+called, see services/ai_overview_provider.py and
+services/dataforseo_client.py), selected via the
 AI_OVERVIEW_PROVIDER_MODE env var and optionally overridden per-request
 via `aiOverviewMode` only when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
 `meta.sections` reports the resulting status per-section so callers
 don't have to guess; `meta.aiOverviewProvider` additionally reports
 which mode actually ran and why. See docs/05_tasks.md (Phase 4) for
-what's next (the real DataForSEO connection).
+what's next (a real DataForSEO Live connection, still unimplemented).
 """
 
 import logging

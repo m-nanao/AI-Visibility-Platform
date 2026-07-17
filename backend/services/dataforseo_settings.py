@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 
 DataForSEOApiEnv = Literal["sandbox", "live"]
 
+# Base URLs for the two DataForSEO API environments. Only
+# SANDBOX_BASE_URL is ever actually requested by this codebase (see
+# services/dataforseo_client.py) — LIVE_BASE_URL is defined here for
+# completeness/documentation only, so a future task that does
+# implement Live has a single place to read it from, but no code path
+# in this task constructs a request against it.
+SANDBOX_BASE_URL = "https://sandbox.dataforseo.com"
+LIVE_BASE_URL = "https://api.dataforseo.com"
+
 # Default number of DataForSEO requests a single /analyze call is
 # allowed to make, once a real connector exists. Kept deliberately low
 # — DataForSEO is billed per request. MAX_REQUEST_LIMIT_PER_ANALYZE is
@@ -118,6 +127,38 @@ def _resolve_request_limit() -> int:
         return MAX_REQUEST_LIMIT_PER_ANALYZE
 
     return value
+
+
+@dataclass(frozen=True)
+class DataForSEOCredentials:
+    """The actual login/password pair, for the one place that legitimately
+    needs it: building the Basic Auth header for a Sandbox request (see
+    services/dataforseo_client.py). Deliberately a *separate* type from
+    DataForSEOSettings above — that object is designed to be safe to log
+    or hand to callers freely, and must never be extended to also carry
+    the real password. This type is the opposite: never logged, never
+    put in a response, and held only for the duration of building one
+    HTTP request.
+    """
+
+    login: str
+    password: str
+
+    def __repr__(self) -> str:
+        return "DataForSEOCredentials(login=<redacted>, password=<redacted>)"
+
+
+def get_dataforseo_credentials() -> DataForSEOCredentials | None:
+    """Returns the actual credential pair, or None if either half is
+    unset. Callers should use this only to build an HTTP Basic Auth
+    tuple immediately before a request — never store, log, or forward
+    the result elsewhere.
+    """
+    login = os.environ.get("DATAFORSEO_LOGIN", "").strip()
+    password = os.environ.get("DATAFORSEO_PASSWORD", "").strip()
+    if not login or not password:
+        return None
+    return DataForSEOCredentials(login=login, password=password)
 
 
 def get_dataforseo_settings() -> DataForSEOSettings:

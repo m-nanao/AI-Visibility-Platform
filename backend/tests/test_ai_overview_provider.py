@@ -1,3 +1,6 @@
+import httpx
+
+from services import dataforseo_client
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
 
 
@@ -57,23 +60,6 @@ def test_build_ai_overview_comparison_off_mode_returns_empty_and_unavailable():
     assert reason
 
 
-def test_build_ai_overview_comparison_dataforseo_mode_returns_empty_and_unavailable():
-    items, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
-
-    assert items == []
-    assert status == "unavailable"
-    assert "not yet implemented" in reason
-
-
-def test_build_ai_overview_comparison_dataforseo_mode_never_looks_real():
-    # dataforseo must never be reported as "real" — that would imply an
-    # actual DataForSEO call happened, which this task deliberately
-    # does not implement yet.
-    _, status, _ = build_ai_overview_comparison("Acme", "dataforseo")
-
-    assert status != "real"
-
-
 def _clear_dataforseo_env(monkeypatch):
     for name in (
         "DATAFORSEO_LOGIN",
@@ -82,6 +68,18 @@ def _clear_dataforseo_env(monkeypatch):
         "DATAFORSEO_LIVE_API_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def test_build_ai_overview_comparison_dataforseo_mode_returns_empty_and_unavailable_without_credentials(
+    monkeypatch,
+):
+    _clear_dataforseo_env(monkeypatch)
+
+    items, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert items == []
+    assert status == "unavailable"
+    assert "not configured" in reason
 
 
 def test_dataforseo_mode_reason_reports_missing_credentials(monkeypatch):
@@ -93,19 +91,60 @@ def test_dataforseo_mode_reason_reports_missing_credentials(monkeypatch):
     assert "not configured" in reason
 
 
-def test_dataforseo_mode_reason_reports_sandbox_configured(monkeypatch):
+def test_dataforseo_mode_never_calls_the_sandbox_client_without_credentials(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without credentials")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    build_ai_overview_comparison("Acme", "dataforseo")
+
+
+def test_dataforseo_mode_sandbox_success_reports_real_status(monkeypatch):
     _clear_dataforseo_env(monkeypatch)
     monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
     monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
 
-    _, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "Acme is great."}]}]}],
+    }
 
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert status == "real"
+    assert len(items) == 1
+    assert items[0].mentioned is True
+    assert "sandbox" in reason.lower() or "Sandbox" in reason
+
+
+def test_dataforseo_mode_sandbox_failure_reports_unavailable_without_crashing(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    def raise_timeout(url, **kwargs):
+        raise httpx.ConnectTimeout("timeout", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", raise_timeout)
+
+    items, status, reason = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert items == []
     assert status == "unavailable"
-    assert "sandbox" in reason
-    assert "not yet implemented" in reason
+    assert reason
 
 
-def test_dataforseo_mode_reason_reports_live_requested_but_disabled(monkeypatch):
+def test_dataforseo_mode_reason_reports_live_not_implemented(monkeypatch):
     _clear_dataforseo_env(monkeypatch)
     monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
     monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
@@ -115,7 +154,22 @@ def test_dataforseo_mode_reason_reports_live_requested_but_disabled(monkeypatch)
 
     assert status == "unavailable"
     assert "Live API" in reason
-    assert "disabled" in reason
+    assert "not implemented" in reason
+
+
+def test_dataforseo_mode_never_calls_the_sandbox_client_for_live_env(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should never be called when DATAFORSEO_API_ENV=live")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    build_ai_overview_comparison("Acme", "dataforseo")
 
 
 def test_dataforseo_mode_reason_never_includes_credential_values(monkeypatch):
@@ -130,19 +184,3 @@ def test_dataforseo_mode_reason_never_includes_credential_values(monkeypatch):
     assert status == "unavailable"
     assert "someone@example.com" not in reason
     assert "super-secret-password" not in reason
-
-
-def test_dataforseo_mode_never_calls_an_external_api(monkeypatch):
-    # There is no HTTP client used anywhere in this module — this test
-    # documents/guards that expectation by asserting the mode still
-    # resolves synchronously and instantly regardless of credential
-    # configuration, rather than attempting a real network call.
-    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
-    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
-    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
-    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
-
-    items, status, _ = build_ai_overview_comparison("Acme", "dataforseo")
-
-    assert items == []
-    assert status == "unavailable"

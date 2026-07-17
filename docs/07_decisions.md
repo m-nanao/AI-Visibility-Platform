@@ -567,3 +567,32 @@ DataForSEO本接続（`aiOverviewComparison`の`dataforseo`モードを実際の
 - DataForSEOへの実際のHTTPリクエスト実装・Sandbox/Live APIへの接続自体は次タスク以降（[05_tasks.md](./05_tasks.md) Phase 3.1参照）。
 
 **状態**: 確定（MVP検証・確認用環境向けの運用方針。本番SaaS化・複数クライアント対応時に請求分離/アカウント分離を再検討）
+
+## 2026-07-17 — DataForSEO SandboxのみHTTP接続を実装し、Live APIは今回も対象外にする
+
+**決定**
+
+`aiOverviewComparison`の`dataforseo`モードに、実際にDataForSEOへHTTP接続する初回実装（`backend/services/dataforseo_client.py`）を追加した。ただし**Live APIへの接続はこのタスクでも実装しない**——`DATAFORSEO_API_ENV=live`の場合は`DATAFORSEO_LIVE_API_ENABLED`の値に関わらず常に外部API呼び出しをスキップし`"unavailable"`を返す。
+
+- **エンドポイント**: `/v3/serp/google/organic/live/advanced`（Google Organic SERP、DataForSEOの命名で「Live」＝即時レスポンス方式を指す）を、**Sandbox環境**（`https://sandbox.dataforseo.com`）に対してのみ呼び出す。`/v3/serp/google/ai_mode/live/advanced`（Google AI Mode）は意図的に避けた。
+- **キーワード**: MVPでは`brand_name`をそのままキーワードとして1回だけ送信する（複合キーワード・複数キーワードのバッチ送信は対象外）。
+- **認証情報**: 既存の`DataForSEOSettings`（実値を持たない、安全にログ可能な型）とは別に、実際の`login`/`password`を保持する`DataForSEOCredentials`型を新設し、Sandbox接続のBasic Auth構築の直前にのみ使う（保存・ログ出力しない）。
+- **レスポンス変換**: レスポンス内の`items[]`から`ai_overview`タイプの項目を探し、見つかった場合のみ`AIOverviewComparisonItem`（`mentioned`/`rank`/`summary`）に変換して`"real"`を返す。見つからない・レスポンスが想定外の形の場合は`[]`・`"unavailable"`にフォールバックする。
+- **失敗時の扱い**: ネットワークエラー・タイムアウト・非200・不正JSON・想定外の`status_code`は、いずれも例外を送出せず安全な`reason`（認証情報を含まない）とともに`"unavailable"`を返す。`/analyze`全体は常に200を維持する。
+
+**理由**
+
+- **エンドポイント選定**: Google Organic SERPのレスポンスは、Googleがそのクエリに対してAI Overviewを表示している場合、追加の課金階層なしに`items[]`内へ`ai_overview`タイプの項目として現れる。より高額な`/v3/serp/google/ai_mode/live/advanced`（Google AI Mode、AI Overviewとは別製品）は、タスクの指示で名指しで避けるよう明示されていたため使わなかった。
+- **Live APIを対象外にする理由**: DataForSEO Live APIは実際に費用が発生し得る。このタスクの目的はあくまで「Sandboxへ安全に接続できることの確認」であり、Live接続の安全性・コスト管理は別タスクとして切り出す方が、変更の影響範囲を小さく保てる。
+- **認証情報を2つの型に分離した理由**: 既存の`DataForSEOSettings`は「安全にログ・受け渡しできる」ことを保証する設計だった（前回決定）。実際の認証には本物のパスワードが必要になるため、この保証を壊さずに済むよう、パスワードの実値を持つ型を意図的に別に新設した。
+- **`success`の意味を「HTTP成功」ではなく「AI Overview項目を発見」に統一した理由**: DataForSEO Sandboxの実際のレスポンス形状はこの開発環境から検証できないため、「HTTP的には成功したが期待した項目がない」状態を`"real"`として扱うと、実際には得られていないデータを実データのように見せてしまうリスクがある。「項目が見つかった場合のみ`"real"`」という単純な二値の境界にすることで、この誤表示を防いだ。
+
+**影響**
+
+- `backend/services/dataforseo_client.py`（新規）: `fetch_ai_overview_sandbox()`。Sandboxのベースリクエストのみを構築し、Liveのベースホストを参照するコードパスは存在しない。
+- `backend/services/dataforseo_settings.py`: `SANDBOX_BASE_URL`/`LIVE_BASE_URL`（Liveは値の定義のみで未使用）、`DataForSEOCredentials`/`get_dataforseo_credentials()`を追加。既存の`DataForSEOSettings`自体は変更なし。
+- `backend/services/ai_overview_provider.py`: `dataforseo`モードの分岐（`_run_dataforseo_mode()`）が、認証情報未設定→`live`要求→Sandbox接続、の順で判定するようになった。Live要求の拒否は`can_use_live_api`の値を参照せず無条件で行う。
+- テスト（`test_dataforseo_client.py`/`test_ai_overview_provider.py`/`test_main.py`）はすべて`httpx.post`をmonkeypatchで差し替え、実際のDataForSEO APIへは一切接続しない。
+- DataForSEO Live APIへの接続、Standard方式（`task_post`/`task_get`）、複数キーワード対応は引き続き未実装（[05_tasks.md](./05_tasks.md) Phase 3.1参照）。
+
+**状態**: 確定（Sandbox接続のみのMVP実装。Live API接続は別タスクとして今後検討する）
