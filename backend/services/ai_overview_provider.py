@@ -30,13 +30,17 @@ Three modes:
   refuses to call anything at all and reports "unavailable"; Live
   support is a distinct follow-up task (docs/05_tasks.md). When
   `DATAFORSEO_API_ENV=sandbox` and credentials are configured, this
-  calls services/dataforseo_client.py's Sandbox connector and reports
-  "real" only if a usable AI Overview-type item was actually found and
-  parsed — any failure (missing credentials, network error, unexpected
-  response shape, no matching item) falls back to []/"unavailable"
-  with a safe, credential-free `reason` explaining why. `/analyze`
-  itself never fails because of this — a DataForSEO/Sandbox problem
-  only ever affects this one section.
+  calls services/dataforseo_client.py's Sandbox connector — by default
+  against DataForSEO's Google AI Mode endpoint
+  (`DATAFORSEO_SERP_ENDPOINT=google_ai_mode_live_advanced`, the only
+  endpoint manually confirmed to reliably surface an `ai_overview` item
+  in Sandbox; see docs/07_decisions.md) — and reports "real" only if a
+  usable AI Overview-type item was actually found and parsed — any
+  failure (missing credentials, network error, unexpected response
+  shape, no matching item) falls back to []/"unavailable" with a safe,
+  credential-free `reason` explaining why. `/analyze` itself never
+  fails because of this — a DataForSEO/Sandbox problem only ever
+  affects this one section.
 """
 
 import logging
@@ -157,13 +161,21 @@ def _run_dataforseo_mode(
             "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
         )
 
-    result = fetch_ai_overview_sandbox(credentials, brand_name)
+    result = fetch_ai_overview_sandbox(
+        credentials,
+        brand_name,
+        endpoint=settings.serp_endpoint,
+        location_code=settings.location_code,
+        language_code=settings.language_code,
+        device=settings.device,
+        os_name=settings.os,
+    )
     if not result.success:
         return [], "unavailable", result.reason
 
     items = [
         AIOverviewComparisonItem(
-            platform="Google AI Overview (DataForSEO Sandbox)",
+            platform="Google AI Mode (DataForSEO Sandbox)",
             mentioned=result.mentioned,
             rank=result.rank,
             summary=result.summary or "",
