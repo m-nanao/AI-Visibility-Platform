@@ -1,5 +1,10 @@
 from services.dataforseo_settings import (
+    DEFAULT_DEVICE,
+    DEFAULT_LANGUAGE_CODE,
+    DEFAULT_LOCATION_CODE,
+    DEFAULT_OS,
     DEFAULT_REQUEST_LIMIT_PER_ANALYZE,
+    DEFAULT_SERP_ENDPOINT,
     MAX_REQUEST_LIMIT_PER_ANALYZE,
     get_dataforseo_settings,
 )
@@ -12,6 +17,11 @@ def _clear_dataforseo_env(monkeypatch):
         "DATAFORSEO_API_ENV",
         "DATAFORSEO_LIVE_API_ENABLED",
         "DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE",
+        "DATAFORSEO_SERP_ENDPOINT",
+        "DATAFORSEO_LOCATION_CODE",
+        "DATAFORSEO_LANGUAGE_CODE",
+        "DATAFORSEO_DEVICE",
+        "DATAFORSEO_OS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -155,3 +165,129 @@ def test_request_limit_is_capped_at_the_safety_ceiling(monkeypatch):
     settings = get_dataforseo_settings()
 
     assert settings.request_limit_per_analyze == MAX_REQUEST_LIMIT_PER_ANALYZE
+
+
+def test_serp_endpoint_defaults_to_ai_mode_when_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.serp_endpoint == DEFAULT_SERP_ENDPOINT
+    assert settings.serp_endpoint == "google_ai_mode_live_advanced"
+
+
+def test_serp_endpoint_can_be_set_to_organic(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_SERP_ENDPOINT", "google_organic_live_advanced")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.serp_endpoint == "google_organic_live_advanced"
+
+
+def test_serp_endpoint_falls_back_to_default_for_invalid_value(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_SERP_ENDPOINT", "not-a-real-endpoint")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.serp_endpoint == DEFAULT_SERP_ENDPOINT
+
+
+def test_location_code_defaults_when_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.location_code == DEFAULT_LOCATION_CODE
+    assert settings.location_code == 2392
+
+
+def test_location_code_falls_back_to_default_for_non_integer_value(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOCATION_CODE", "not-a-number")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.location_code == DEFAULT_LOCATION_CODE
+
+
+def test_location_code_can_be_overridden(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOCATION_CODE", "2840")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.location_code == 2840
+
+
+def test_language_code_defaults_to_ja_when_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.language_code == DEFAULT_LANGUAGE_CODE
+    assert settings.language_code == "ja"
+
+
+def test_language_code_defaults_to_ja_when_empty(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LANGUAGE_CODE", "   ")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.language_code == "ja"
+
+
+def test_device_defaults_to_desktop_when_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.device == DEFAULT_DEVICE
+    assert settings.device == "desktop"
+
+
+def test_device_can_be_set_to_mobile(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_DEVICE", "mobile")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.device == "mobile"
+
+
+def test_device_falls_back_to_desktop_for_invalid_value(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_DEVICE", "tablet")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.device == "desktop"
+
+
+def test_os_defaults_to_windows_when_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.os == DEFAULT_OS
+    assert settings.os == "windows"
+
+
+def test_os_can_be_set_to_a_valid_alternative(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_OS", "android")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.os == "android"
+
+
+def test_os_falls_back_to_windows_for_invalid_value(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_OS", "not-a-real-os")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.os == "windows"
