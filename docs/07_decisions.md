@@ -627,3 +627,44 @@ DataForSEO本接続（`aiOverviewComparison`の`dataforseo`モードを実際の
 - DataForSEO Live APIへの接続、Standard方式（`task_post`/`task_get`）、複数キーワード対応は引き続き未実装。
 
 **状態**: 確定（Sandbox・AI Modeエンドポイントでの実装。Live API接続は別タスクとして今後検討する）
+
+## 2026-07-23 — DataForSEO Live APIを「複数の明示的ゲートが揃った場合のみの手動1回確認」として許可する
+
+**決定**
+
+これまで`DATAFORSEO_API_ENV=live`を無条件で拒否していたが、今回のタスクでその拒否を完全に撤廃するのではなく、**以下5つの環境変数条件がすべて同時に揃った場合に限り、DataForSEO Live本番ホスト（`https://api.dataforseo.com`）への1リクエストを許可する**よう変更した。
+
+1. `DATAFORSEO_API_ENV=live`
+2. `DATAFORSEO_LIVE_API_ENABLED=true`
+3. `DATAFORSEO_LIVE_CONFIRM_TEXT=ALLOW_DATAFORSEO_LIVE_ONCE`（完全一致。大文字小文字・前後の空白を含め一致しなければ無効）
+4. `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE=1`（未設定でデフォルトの1のままでも可）
+5. `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`が両方設定済み
+
+これらを`DataForSEOSettings.is_live_allowed_for_manual_check`という単一のプロパティに集約し、`services/ai_overview_provider.py`の`_run_dataforseo_mode()`が`api_env=="live"`のときに必ずこれを確認してから`dataforseo_client.py`を呼ぶ（1つでも欠けていれば外部APIへは一切接続しない）。通常運用のデフォルト（`AI_OVERVIEW_PROVIDER_MODE=mock`、`DATAFORSEO_API_ENV=sandbox`）はこれまでどおり維持し、これらの環境変数を意図的にすべて設定しない限りLiveへは到達しない。
+
+併せて、これまでSandbox専用だった`dataforseo_client.py`の`fetch_ai_overview_sandbox()`を汎用化した`fetch_ai_overview_serp(credentials, brand_name, *, api_env="sandbox", ...)`にリネームし、`DataForSEOSandboxResult`も`DataForSEOSerpResult`にリネームした。`api_env`引数で`SANDBOX_BASE_URL`/`LIVE_BASE_URL`のどちらへ接続するかを切り替えるが、**このクライアント自体には「Liveを呼んでよいか」のゲート判定ロジックを一切持たせない**——呼び出し元の`ai_overview_provider.py`がゲート確認済みの`api_env`だけを渡す設計にした。
+
+`status`（`"mock"`/`"real"`/`"unavailable"`）だけではSandbox成功とLive成功を区別できないため、`AiOverviewEnvironment`（`"mock"`/`"sandbox"`/`"live"`/`"off"`/`"unavailable"`）という新しい型を`backend/models.py`に追加し、`build_ai_overview_comparison()`の戻り値を3要素から4要素のタプルへ拡張した。`meta.aiOverviewProvider`にも任意フィールド`environment`を追加したが、既存の`mode`/`status`/`reason`は変更していない。
+
+**理由**
+
+- 依頼者側で「実際にDataForSEO Live APIを叩いた場合の挙動・費用感を確認したい」というニーズがあり、Sandboxだけでは確認できない（Sandboxはテスト用モックデータであり、本番SERPの実際の挙動を反映しない）。
+- 一方でLive APIは費用が発生し得るため、Sandbox実装時と同様の「誤って有効化されない」設計思想を維持する必要があった。単一のフラグ（例えば`DATAFORSEO_LIVE_API_ENABLED=true`だけ）で有効化できると、他のタスクや将来の開発者が意図せずオンにしたまま忘れる、あるいはテスト中に誤って有効化する、といったリスクがある。
+- 5条件のうち`DATAFORSEO_LIVE_CONFIRM_TEXT`という「意味のある固定文字列との完全一致」を要求する設計は、単純な真偽値フラグよりも「今まさに意図してLiveを有効化しようとしている」ことを強く示す証跡になる。`.env`ファイルのコピーや、他の設定と一緒に誤って`true`にしてしまうような事故に対する追加の防御層として機能する。
+- `request_limit_per_analyze==1`もゲートの1つに含めたのは、将来複数キーワード対応を実装した際に、うっかり大きな値を設定したままLiveへ接続してしまう事故を防ぐため（今回のタスクではこの値自体は複数キーワード送信に使われていないが、値の整合性チェックとしての意味がある）。
+- クライアント（`dataforseo_client.py`）自体にゲート判定を持たせなかったのは、ゲートロジックを2箇所に重複させると、片方だけ更新して食い違う（例えば新しいゲートを`ai_overview_provider.py`にだけ追加してしまう）リスクがあるため。単一の、十分にテストされたゲートを1箇所（`ai_overview_provider.py`）に集約する方が安全と判断した。
+- `environment`フィールドを追加したのは、UI側でSandbox結果とLive結果を明確に区別して表示する必要があったため（Sandbox結果を「本番の実測結果」と誤解させないという、既存の設計方針の延長）。`mode`/`status`の組み合わせだけでは`dataforseo`+`real`がSandbox由来かLive由来か判別できなかった。
+
+**影響**
+
+- `backend/services/dataforseo_settings.py`: `DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED`定数、`_resolve_live_confirm_text_matches()`、`DataForSEOSettings`への`live_confirm_text_matches`/`is_sandbox_env`/`is_live_env`/`is_live_allowed_for_manual_check`フィールド追加。既存の`can_use_live_api`は後方互換のため残しているが、実際のゲートとしては`is_live_allowed_for_manual_check`が使われる。
+- `backend/services/dataforseo_client.py`: `fetch_ai_overview_sandbox()`→`fetch_ai_overview_serp()`、`DataForSEOSandboxResult`→`DataForSEOSerpResult`にリネーム。`api_env`引数を追加し、`_ENV_BASE_URLS`/`_ENV_LABELS`でSandbox/Liveそれぞれのホスト・reasonラベルを切り替える。
+- `backend/services/ai_overview_provider.py`: `_run_dataforseo_mode()`が`settings.is_live_env`/`is_live_allowed_for_manual_check`を確認するよう変更。ゲート不足時の具体的なreasonを生成する`_live_gate_rejection_reason()`を新設。`platform`ラベルもSandbox/Liveで`"Google AI Mode (DataForSEO Sandbox)"`/`"Google AI Mode (DataForSEO Live)"`と区別する。
+- `backend/models.py`: `AiOverviewEnvironment`型、`AIOverviewProviderInfo.environment`（任意）フィールドを追加。
+- `backend/main.py`: `build_ai_overview_comparison()`の戻り値を4要素へ拡張し、`environment`を`AIOverviewProviderInfo`へ渡すよう変更。
+- `app/lib/types.ts`/`app/lib/analysis-result-schema.ts`: `AiOverviewEnvironment`型・`environment`（任意）フィールドを追加。既存の`mode`/`status`/`reason`は変更していないため、後方互換。
+- `app/lib/meta-label.ts`: `getAiOverviewProviderStatusDisplay()`が`environment`を優先して判定し、無い場合は`mode`/`status`から推測するフォールバックを持つ。`getSectionStatusSummary()`もSandbox/Liveを区別して表示する。
+- テスト（`test_dataforseo_settings.py`/`test_dataforseo_client.py`/`test_ai_overview_provider.py`/`test_main.py`/`meta-label.test.ts`/`route.test.ts`）はすべて`httpx.post`をmonkeypatchで差し替え、実際のDataForSEO API（Sandbox・Live共通）へは一切接続していない。
+- 複数キーワード送信、DataForSEO Standard方式（`task_post`/`task_get`）、DB保存、課金管理、UI上のLive実行ボタン、常時のLive運用・自動スケジュール実行は今回も対象外。
+
+**状態**: 確定（手動での1回限りの確認用ゲートとして実装。常時のLive運用は別タスクとして今後検討する）
