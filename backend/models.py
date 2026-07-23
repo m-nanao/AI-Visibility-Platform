@@ -39,11 +39,23 @@ DocumentSourceType = Literal[
 # Which data source aiOverviewComparison is built from. See
 # services/ai_overview_provider.py — "mock" (fixed dev data, default),
 # "off" (section disabled, section status "unavailable"), or
-# "dataforseo" (not yet implemented in this task; never calls the
-# external API, also reports "unavailable"). Selected via the
-# AI_OVERVIEW_PROVIDER_MODE env var, optionally overridden per-request
-# via AnalyzeRequest.aiOverviewMode when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
+# "dataforseo" (connects to DataForSEO Sandbox by default, or Live only
+# for a fully-gated manual check — see AiOverviewEnvironment below for
+# which one actually ran). Selected via the AI_OVERVIEW_PROVIDER_MODE
+# env var, optionally overridden per-request via
+# AnalyzeRequest.aiOverviewMode when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
 AiOverviewProviderMode = Literal["mock", "off", "dataforseo"]
+
+# Which concrete data source actually produced aiOverviewComparison —
+# distinct from AiOverviewProviderMode/SectionStatus because neither
+# can tell a Sandbox success apart from a Live success (both are
+# mode="dataforseo", status="real"). "mock"/"off" mirror the mode of
+# the same name; "sandbox"/"live" only appear when mode="dataforseo"
+# and a usable AI Overview-type item was actually found; "unavailable"
+# covers every dataforseo failure case (missing credentials, Live gates
+# not satisfied, network/parse failure, no matching item). See
+# services/ai_overview_provider.py's build_ai_overview_comparison().
+AiOverviewEnvironment = Literal["mock", "sandbox", "live", "off", "unavailable"]
 
 MAX_BRAND_NAME_LENGTH = 200
 
@@ -110,15 +122,21 @@ class DocumentChunk(BaseModel):
 
 class AIOverviewProviderInfo(BaseModel):
     """Reports which aiOverviewComparison provider actually ran, and
-    why — see services/ai_overview_provider.py. Not shown in the UI
-    yet (that's a future task); exists so callers/logs/tests can tell
-    "mock", "off", and "not yet implemented (dataforseo)" apart
-    without guessing from the section status alone.
+    why — see services/ai_overview_provider.py. Surfaced in the UI near
+    the AI Overview比較 section (app/lib/meta-label.ts's
+    getAiOverviewProviderStatusDisplay) so a DataForSEO Sandbox or Live
+    response is never mistaken for the other, or for mock data.
+
+    `environment` is optional so older clients that only know about
+    `mode`/`status` keep working (they can no longer tell a Sandbox
+    success from a Live success apart, but nothing breaks); new
+    clients should prefer it over inferring from `mode`/`status`.
     """
 
     mode: AiOverviewProviderMode
     status: SectionStatus
     reason: str
+    environment: AiOverviewEnvironment | None = None
 
 
 class AnalysisMeta(BaseModel):

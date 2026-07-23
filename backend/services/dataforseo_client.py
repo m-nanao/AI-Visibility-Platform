@@ -1,12 +1,21 @@
-"""DataForSEO Sandbox HTTP client, used as the first probe for whether
-an AI Overview-type SERP feature can be observed for a brand.
+"""DataForSEO HTTP client, used as the probe for whether an AI
+Overview-type SERP feature can be observed for a brand — against
+either DataForSEO Sandbox (the default, always-safe path) or, only for
+a deliberate one-off manual check, DataForSEO Live.
 
-**This module only ever calls DataForSEO Sandbox — never Live.** There
-is no code path here that constructs a request against
-`services.dataforseo_settings.LIVE_BASE_URL`; only `SANDBOX_BASE_URL`
-is used. Whether to call this client at all (based on
-`DATAFORSEO_API_ENV`/credentials) is decided by the caller
-(services/ai_overview_provider.py), not by this module.
+**This module never decides *whether* to call Live — only *how*.**
+Which host a given call actually reaches is controlled entirely by the
+`api_env` argument the caller passes in; this module has no env-var
+reads and no gating logic of its own. All of the actual safety
+gating — whether `api_env="live"` is even reachable at all — lives in
+services/ai_overview_provider.py's `_run_dataforseo_mode()`, which only
+ever passes `api_env="live"` after confirming
+`DataForSEOSettings.is_live_allowed_for_manual_check` is `True` (all
+five independent env-var gates satisfied at once; see
+services/dataforseo_settings.py and docs/07_decisions.md). This module
+being simple and gate-free is intentional: a single, thoroughly-tested
+gate in one place is safer than duplicating gate logic across two
+modules that could drift out of sync.
 
 Endpoint choice (see docs/07_decisions.md for the full rationale,
 updated after manual verification against DataForSEO Sandbox):
@@ -28,9 +37,9 @@ updated after manual verification against DataForSEO Sandbox):
   instant-response request method (as opposed to their asynchronous
   `task_post`/`task_get` "Standard" method) — orthogonal to the
   Sandbox/Live *environment* distinction (`DATAFORSEO_API_ENV`) this
-  codebase cares about. Regardless of which endpoint is selected, the
-  HTTP host requested is always `SANDBOX_BASE_URL`; this module has no
-  code path that can construct a request against the Live host.
+  codebase cares about. This applies equally to a Sandbox call (the
+  common case) and a manually-gated Live call — the endpoint path is
+  the same either way; only the host differs (see `_ENV_BASE_URLS`).
 - Google AI Overview and Google AI Mode are still understood to be
   distinct Google features/products; this module reports whichever one
   DataForSEO's chosen endpoint actually returns, and the AI Mode
@@ -45,11 +54,11 @@ updated after manual verification against DataForSEO Sandbox):
   somewhat by endpoint) — any unexpected shape is treated as "no
   supported item found" rather than raising.
 
-This client never raises out of `fetch_ai_overview_sandbox()` —
-network errors, timeouts, non-2xx responses, and unexpected response
-shapes are all caught and converted into a `DataForSEOSandboxResult`
-with `success=False` and a safe (credential-free) `reason`, so a
-DataForSEO outage or Sandbox quirk can never take down `/analyze`.
+This client never raises out of `fetch_ai_overview_serp()` — network
+errors, timeouts, non-2xx responses, and unexpected response shapes
+are all caught and converted into a `DataForSEOSerpResult` with
+`success=False` and a safe (credential-free) `reason`, so a DataForSEO
+outage or response-shape quirk can never take down `/analyze`.
 """
 
 import logging
@@ -64,12 +73,29 @@ from services.dataforseo_settings import (
     DEFAULT_LOCATION_CODE,
     DEFAULT_OS,
     DEFAULT_SERP_ENDPOINT,
+    LIVE_BASE_URL,
     SANDBOX_BASE_URL,
+    DataForSEOApiEnv,
     DataForSEOCredentials,
     DataForSEOSerpEndpoint,
 )
 
 logger = logging.getLogger(__name__)
+
+# Which host each DataForSEO API environment resolves to. Note that
+# *this* dict, not any per-call decision in fetch_ai_overview_serp()
+# itself, is the only place a request could ever be pointed at the Live
+# host — and the caller (services/ai_overview_provider.py) never passes
+# api_env="live" unless DataForSEOSettings.is_live_allowed_for_manual_check
+# is True.
+_ENV_BASE_URLS: dict[DataForSEOApiEnv, str] = {
+    "sandbox": SANDBOX_BASE_URL,
+    "live": LIVE_BASE_URL,
+}
+_ENV_LABELS: dict[DataForSEOApiEnv, str] = {
+    "sandbox": "Sandbox",
+    "live": "Live",
+}
 
 # One path per DataForSEOSerpEndpoint value — see module docstring for
 # why "google_ai_mode_live_advanced" is the recommended default.
@@ -108,8 +134,8 @@ _MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 
 
 @dataclass(frozen=True)
-class DataForSEOSandboxResult:
-    """Outcome of one Sandbox call, already reduced to what
+class DataForSEOSerpResult:
+    """Outcome of one Sandbox-or-Live call, already reduced to what
     ai_overview_provider.py needs — never holds the raw JSON response
     or any credential. `reason` is always a complete, safe-to-surface
     sentence (see module docstring); `success` is True only when a
@@ -244,7 +270,7 @@ def _summarize_item(item: dict, brand_name: str) -> tuple[bool, int | None, str]
     joined = _clean_markdown(" ".join(summary_source_parts))
 
     if not joined:
-        summary = "DataForSEO Sandbox returned an AI Overview-type item with no readable text."
+        summary = "DataForSEO returned an AI Overview-type item with no readable text."
     elif len(joined) > _SUMMARY_MAX_CHARS:
         summary = joined[:_SUMMARY_MAX_CHARS].rstrip() + "…"
     else:
@@ -253,27 +279,34 @@ def _summarize_item(item: dict, brand_name: str) -> tuple[bool, int | None, str]
     return mentioned, rank, summary
 
 
-def fetch_ai_overview_sandbox(
+def fetch_ai_overview_serp(
     credentials: DataForSEOCredentials,
     brand_name: str,
     *,
+    api_env: DataForSEOApiEnv = "sandbox",
     endpoint: DataForSEOSerpEndpoint = DEFAULT_SERP_ENDPOINT,
     location_code: int = DEFAULT_LOCATION_CODE,
     language_code: str = DEFAULT_LANGUAGE_CODE,
     device: str = DEFAULT_DEVICE,
     os_name: str = DEFAULT_OS,
-) -> DataForSEOSandboxResult:
-    """Calls DataForSEO Sandbox's chosen SERP "live/advanced" endpoint
-    for `brand_name` and looks for an AI Overview-type item. Always
-    hits SANDBOX_BASE_URL — never the Live host, regardless of which
-    `endpoint` is selected. Issues exactly one HTTP request
-    (multi-keyword batching is out of scope for this task, so
-    DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE isn't consulted here — the
-    current implementation always makes 1 request regardless of that
-    setting's configured value).
+) -> DataForSEOSerpResult:
+    """Calls DataForSEO's chosen SERP "live/advanced" endpoint for
+    `brand_name` and looks for an AI Overview-type item, against
+    whichever host `api_env` selects (`SANDBOX_BASE_URL` for
+    `"sandbox"`, `LIVE_BASE_URL` for `"live"`). Issues exactly one HTTP
+    request regardless of `api_env` (multi-keyword batching is out of
+    scope, so `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` isn't consulted
+    here).
+
+    This function itself does not decide whether `api_env="live"` is
+    *allowed* — see the module docstring: that gating lives entirely in
+    services/ai_overview_provider.py, which only ever passes
+    `api_env="live"` once `DataForSEOSettings.is_live_allowed_for_manual_check`
+    is confirmed `True`.
     """
+    env_label = _ENV_LABELS[api_env]
     endpoint_label = _ENDPOINT_LABELS[endpoint]
-    url = f"{SANDBOX_BASE_URL}{_ENDPOINT_PATHS[endpoint]}"
+    url = f"{_ENV_BASE_URLS[api_env]}{_ENDPOINT_PATHS[endpoint]}"
     body = _build_request_body(brand_name, location_code, language_code, device, os_name)
 
     try:
@@ -284,50 +317,50 @@ def fetch_ai_overview_sandbox(
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError:
-        logger.warning("DataForSEO Sandbox request failed (network/timeout error)")
-        return DataForSEOSandboxResult(
+        logger.warning("DataForSEO %s request failed (network/timeout error)", env_label)
+        return DataForSEOSerpResult(
             success=False,
-            reason="DataForSEO Sandbox request failed due to a network or timeout error.",
+            reason=f"DataForSEO {env_label} request failed due to a network or timeout error.",
         )
 
     if response.status_code != 200:
-        logger.warning("DataForSEO Sandbox returned HTTP %d", response.status_code)
-        return DataForSEOSandboxResult(
+        logger.warning("DataForSEO %s returned HTTP %d", env_label, response.status_code)
+        return DataForSEOSerpResult(
             success=False,
-            reason=f"DataForSEO Sandbox request failed with HTTP {response.status_code}.",
+            reason=f"DataForSEO {env_label} request failed with HTTP {response.status_code}.",
         )
 
     try:
         payload = response.json()
     except ValueError:
-        logger.warning("DataForSEO Sandbox returned a non-JSON response")
-        return DataForSEOSandboxResult(
+        logger.warning("DataForSEO %s returned a non-JSON response", env_label)
+        return DataForSEOSerpResult(
             success=False,
-            reason="DataForSEO Sandbox request failed: response was not valid JSON.",
+            reason=f"DataForSEO {env_label} request failed: response was not valid JSON.",
         )
 
     status_code = payload.get("status_code") if isinstance(payload, dict) else None
     if status_code != _DATAFORSEO_SUCCESS_STATUS_CODE:
-        logger.warning("DataForSEO Sandbox response was not successful: status_code=%r", status_code)
-        return DataForSEOSandboxResult(
+        logger.warning("DataForSEO %s response was not successful: status_code=%r", env_label, status_code)
+        return DataForSEOSerpResult(
             success=False,
-            reason="DataForSEO Sandbox request failed: unexpected response status.",
+            reason=f"DataForSEO {env_label} request failed: unexpected response status.",
         )
 
     item = _extract_ai_overview_item(payload)
     if item is None:
-        return DataForSEOSandboxResult(
+        return DataForSEOSerpResult(
             success=False,
             reason=(
-                "DataForSEO Sandbox response received, but no ai_overview item "
+                f"DataForSEO {env_label} response received, but no ai_overview item "
                 f"was found. endpoint={endpoint}"
             ),
         )
 
     mentioned, rank, summary = _summarize_item(item, brand_name)
-    return DataForSEOSandboxResult(
+    return DataForSEOSerpResult(
         success=True,
-        reason=f"DataForSEO Sandbox {endpoint_label} request succeeded.",
+        reason=f"DataForSEO {env_label} {endpoint_label} request succeeded.",
         mentioned=mentioned,
         rank=rank,
         summary=summary,
