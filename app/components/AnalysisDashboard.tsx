@@ -17,7 +17,7 @@ export default function AnalysisDashboard({
       </div>
       <CooccurrenceRankingSection items={result.cooccurrenceRanking} meta={result.meta} />
       <ContextAnalysisSection items={result.contextAnalysis} />
-      <AIOverviewComparisonSection items={result.aiOverviewComparison} />
+      <AIOverviewComparisonSection items={result.aiOverviewComparison} meta={result.meta} />
       <ImprovementSuggestionsSection items={result.improvements} />
     </div>
   );

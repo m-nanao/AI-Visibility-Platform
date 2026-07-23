@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  getAiOverviewProviderStatusDisplay,
   getCooccurrenceUnavailableMessage,
   getSectionStatusSummary,
   getUrlFetchSummary,
@@ -51,6 +52,114 @@ describe("getSectionStatusSummary", () => {
     };
 
     expect(getSectionStatusSummary(meta)).toBe("すべて実計算");
+  });
+
+  it("calls out a DataForSEO Sandbox aiOverviewComparison separately instead of lumping it into 実計算", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      sections: {
+        summary: "real",
+        cooccurrenceRanking: "real",
+        contextAnalysis: "real",
+        aiOverviewComparison: "real",
+        improvements: "real",
+      },
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Sandbox AI Mode request succeeded.",
+      },
+    };
+
+    const summary = getSectionStatusSummary(meta);
+    expect(summary).not.toBe("すべて実計算");
+    expect(summary).toContain("AI Overview比較はDataForSEO Sandbox");
+    expect(summary).not.toContain("AI Overview比較のみ実計算");
+  });
+
+  it("still reports the co-occurrence-only-real summary when aiOverviewComparison is mock", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      sections: { ...baseMeta().sections, cooccurrenceRanking: "real" },
+      aiOverviewProvider: {
+        mode: "mock",
+        status: "mock",
+        reason: "Using mock AI Overview data for development.",
+      },
+    };
+
+    expect(getSectionStatusSummary(meta)).toBe(
+      "共起語のみ実計算、その他は開発用データ",
+    );
+  });
+});
+
+describe("getAiOverviewProviderStatusDisplay", () => {
+  it("returns null when meta.aiOverviewProvider is absent (e.g. the client-side dummy fallback)", () => {
+    expect(getAiOverviewProviderStatusDisplay(baseMeta())).toBeNull();
+  });
+
+  it("describes mock mode as development data", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "mock",
+        status: "mock",
+        reason: "Using mock AI Overview data for development.",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("開発用データ");
+    expect(display?.tone).toBe("neutral");
+    expect(display?.caution).toBeUndefined();
+  });
+
+  it("describes off mode as disabled", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "off",
+        status: "unavailable",
+        reason: "AI Overview comparison is disabled (AI_OVERVIEW_PROVIDER_MODE=off).",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("無効");
+    expect(display?.tone).toBe("neutral");
+  });
+
+  it("describes a successful DataForSEO Sandbox result with a caution that it isn't production data", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Sandbox AI Mode request succeeded.",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("DataForSEO Sandbox");
+    expect(display?.tone).toBe("caution");
+    expect(display?.caution).toContain("本番");
+  });
+
+  it("describes a failed/unavailable DataForSEO attempt without exposing the raw reason", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "unavailable",
+        reason: "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("DataForSEO 未取得");
+    expect(display?.tone).toBe("neutral");
+    expect(display?.description).not.toContain("DATAFORSEO_LOGIN");
   });
 });
 
