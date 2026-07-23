@@ -44,8 +44,10 @@ export interface UrlFetchResult {
 export type AiOverviewProviderMode = "mock" | "off" | "dataforseo";
 
 // Reports which aiOverviewComparison provider actually ran, and why.
-// Not surfaced in the UI yet — informational/debugging only, mirrors
-// backend/models.py's AIOverviewProviderInfo.
+// Surfaced near the AI Overview比較 section (see
+// app/lib/meta-label.ts's getAiOverviewProviderStatusDisplay) so a
+// DataForSEO Sandbox response is never mistaken for a real production
+// result. Mirrors backend/models.py's AIOverviewProviderInfo.
 export interface AIOverviewProviderInfo {
   mode: AiOverviewProviderMode;
   status: SectionStatus;

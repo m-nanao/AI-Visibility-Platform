@@ -1,16 +1,43 @@
 import Card from "../Card";
-import type { AIOverviewComparisonItem } from "../../lib/types";
+import { getAiOverviewProviderStatusDisplay } from "../../lib/meta-label";
+import type { AIOverviewComparisonItem, AnalysisMeta } from "../../lib/types";
 
 export default function AIOverviewComparisonSection({
   items,
+  meta,
 }: {
   items: AIOverviewComparisonItem[];
+  meta: AnalysisMeta;
 }) {
+  const providerStatus = getAiOverviewProviderStatusDisplay(meta);
+
   return (
     <Card
       title="4. AI Overview比較"
       description="主要AIサービスにおける掲載・言及状況の比較"
     >
+      {providerStatus && (
+        <div className="mb-3 flex flex-col items-start gap-1">
+          <span
+            className={`rounded px-1.5 py-0.5 text-xs ${
+              providerStatus.tone === "caution"
+                ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400"
+                : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+            }`}
+          >
+            {providerStatus.label}
+          </span>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            {providerStatus.description}
+          </p>
+          {providerStatus.caution && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              {providerStatus.caution}
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
