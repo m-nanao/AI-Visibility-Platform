@@ -21,6 +21,7 @@ const documentsSourceSchema = z.enum([
 ]);
 const documentSourceTypeSchema = z.enum(DOCUMENT_SOURCE_TYPES);
 const aiOverviewProviderModeSchema = z.enum(["mock", "off", "dataforseo"]);
+const aiOverviewEnvironmentSchema = z.enum(["mock", "sandbox", "live", "off", "unavailable"]);
 
 const analysisSectionStatusesSchema = z.object({
   summary: sectionStatusSchema,
@@ -49,6 +50,7 @@ const aiOverviewProviderInfoSchema = z.object({
   mode: aiOverviewProviderModeSchema,
   status: sectionStatusSchema,
   reason: z.string(),
+  environment: optionalFromPython(aiOverviewEnvironmentSchema),
 });
 
 const analysisMetaSchema = z.object({

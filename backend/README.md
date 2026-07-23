@@ -1,6 +1,6 @@
 # Python分析API（バックエンド）
 
-LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）を持ち、デフォルトの`mock`モードでは固定データを返す。`dataforseo`モードではDataForSEO **Sandbox**への接続を実装済み（`services/dataforseo_client.py`、下記「DataForSEO Sandbox接続」参照）——ただし**Live APIへの接続はこのプロジェクトではまだ実装しておらず、`DATAFORSEO_API_ENV=live`の場合は常に`"unavailable"`を返す**（費用が発生し得るためLiveは意図的に対象外にしている）。Common Crawl / DBにはまだ接続していない。
+LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）を持ち、デフォルトの`mock`モードでは固定データを返す。`dataforseo`モードではDataForSEO **Sandbox**への接続を実装済み（`services/dataforseo_client.py`、下記「DataForSEO Sandbox/Live接続」参照）。**DataForSEO Live本番APIへの接続も実装済みだが、複数の明示的な手動確認用ゲート（環境変数5つすべて）が揃った場合のみ、1回限りの手動確認としてのみ許可される**——通常運用のデフォルトは常に`mock`のままで、`DATAFORSEO_API_ENV=live`を設定しただけでは接続されない（費用が発生し得るため）。Common Crawl / DBにはまだ接続していない。
 
 > **確認用環境として一時公開する場合の注意**: 本番運用を目的とした構成ではありません。認証・レート制限はなく、CORSもNext.js経由の呼び出しのみを前提に未設定です。公開手順は [../docs/09_deployment.md](../docs/09_deployment.md) を参照してください。
 
@@ -20,9 +20,9 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/context_analysis.py` — `DocumentChunk[]`からキーワードベースで`contextAnalysis`を実計算する（Document Pipelineの「Analyzer」役、通称"context-analysis-lite"）。`analyze_contexts()`。詳細は下記「Context Analysis（文脈分析）」参照
 - `services/brand_summary.py` — Document[]・cooccurrenceRanking・contextAnalysisから`summary`（ブランド認知サマリー）をルールベース・テンプレートで実計算する（Document Pipelineの「Analyzer」役、通称"brand-summary-lite"）。`build_brand_summary()`。詳細は下記「Brand Summary（ブランド認知サマリー）」参照
 - `services/improvement_suggestions.py` — cooccurrenceRanking・contextAnalysis・summaryから`improvements`（改善提案）をルールベースで実計算する（Document Pipelineの「Analyzer」役、通称"improvement-suggestions-lite"）。`build_improvement_suggestions()`。詳細は下記「Improvement Suggestions（改善提案）」参照
-- `services/ai_overview_provider.py` — `aiOverviewComparison`のデータ取得元を`mock`/`off`/`dataforseo`で切り替えるprovider抽象化層。`resolve_ai_overview_mode()`/`build_ai_overview_comparison()`/`build_mock_ai_overview_comparison()`。`dataforseo`モードの分岐（`_run_dataforseo_mode()`）はSandbox接続の可否判定・Live拒否を含む。詳細は下記「AI Overview比較のprovider mode」参照
-- `services/dataforseo_settings.py` — DataForSEO認証情報・実行モード（Sandbox/Live）・費用発生防止ルール・Sandbox/Live各APIのベースURLを読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。`get_dataforseo_settings()`/`get_dataforseo_credentials()`/`SANDBOX_BASE_URL`/`LIVE_BASE_URL`。詳細は下記「DataForSEO設定（`dataforseo_settings.py`）」参照
-- `services/dataforseo_client.py` — DataForSEO **Sandbox**へ実際にHTTP接続しAI Overview相当のSERP項目を取得するクライアント（**Sandboxのみ、Liveへは接続しない**）。`fetch_ai_overview_sandbox()`。詳細は下記「DataForSEO Sandbox接続（`dataforseo_client.py`）」参照
+- `services/ai_overview_provider.py` — `aiOverviewComparison`のデータ取得元を`mock`/`off`/`dataforseo`で切り替えるprovider抽象化層。`resolve_ai_overview_mode()`/`build_ai_overview_comparison()`/`build_mock_ai_overview_comparison()`。`dataforseo`モードの分岐（`_run_dataforseo_mode()`）はSandbox接続、およびLive手動確認用ゲート判定を含む。詳細は下記「AI Overview比較のprovider mode」参照
+- `services/dataforseo_settings.py` — DataForSEO認証情報・実行モード（Sandbox/Live）・費用発生防止ルール・Live手動確認用ゲート・Sandbox/Live各APIのベースURLを読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。`get_dataforseo_settings()`/`get_dataforseo_credentials()`/`SANDBOX_BASE_URL`/`LIVE_BASE_URL`。詳細は下記「DataForSEO設定（`dataforseo_settings.py`）」参照
+- `services/dataforseo_client.py` — DataForSEO **SandboxまたはLive**へ実際にHTTP接続しAI Overview相当のSERP項目を取得するクライアント（どちらのホストを使うかは呼び出し元の`ai_overview_provider.py`が決め、このモジュール自体にゲート判定ロジックはない）。`fetch_ai_overview_serp()`。詳細は下記「DataForSEO Sandbox/Live接続（`dataforseo_client.py`）」参照
 - `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
@@ -255,21 +255,21 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 ### AI Overview比較のprovider mode（`ai_overview_provider.py`）
 
-`aiOverviewComparison`のデータ取得元を切り替えられる抽象化層。`resolve_ai_overview_mode(request_override) -> AiOverviewProviderMode`と`build_ai_overview_comparison(brand_name, mode) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str]`（items, セクションstatus, 人が読める理由）を公開する。
+`aiOverviewComparison`のデータ取得元を切り替えられる抽象化層。`resolve_ai_overview_mode(request_override) -> AiOverviewProviderMode`と`build_ai_overview_comparison(brand_name, mode) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]`（items, セクションstatus, 人が読める理由, 実際に使われた環境）を公開する。`AiOverviewEnvironment`（`backend/models.py`）は`"mock"`/`"sandbox"`/`"live"`/`"off"`/`"unavailable"`のいずれかで、`status`だけでは区別できないSandbox成功とLive成功を見分けるために追加した（詳細は下記「meta.aiOverviewProviderのenvironment」参照）。
 
 **3つのmode**（`AiOverviewProviderMode = Literal["mock", "off", "dataforseo"]`、`backend/models.py`で定義）:
 
-| mode | 挙動 | `aiOverviewComparison` | section status |
-| --- | --- | --- | --- |
-| `mock`（デフォルト） | 固定の開発用データを返す | 4件の固定データ | `"mock"` |
-| `off` | セクションを無効化する | `[]` | `"unavailable"`（`SectionStatus`に`"disabled"`は無いため、計算不能扱いの`"unavailable"`を流用） |
-| `dataforseo` | `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済みの場合のみDataForSEO **Sandbox**へ実際に接続する（下記「DataForSEO Sandbox接続」参照）。認証情報未設定・`DATAFORSEO_API_ENV=live`・Sandbox接続失敗のいずれの場合も外部APIは呼ばれない（または呼んでも結果を採用しない） | Sandbox接続が成功した場合のみ1件のデータ、それ以外は`[]` | Sandbox接続成功時は`"real"`、それ以外は`"unavailable"` |
+| mode | 挙動 | `aiOverviewComparison` | section status | environment |
+| --- | --- | --- | --- | --- |
+| `mock`（デフォルト） | 固定の開発用データを返す | 4件の固定データ | `"mock"` | `"mock"` |
+| `off` | セクションを無効化する | `[]` | `"unavailable"`（`SectionStatus`に`"disabled"`は無いため、計算不能扱いの`"unavailable"`を流用） | `"off"` |
+| `dataforseo` | `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済みならDataForSEO **Sandbox**へ、`DATAFORSEO_API_ENV=live`かつ下記5条件すべてが揃った場合のみDataForSEO **Live**へ実際に接続する（下記「DataForSEO Sandbox/Live接続」参照）。いずれの条件も欠けていれば外部APIは呼ばれない | 接続成功時のみ1件のデータ、それ以外は`[]` | 接続成功時は`"real"`、それ以外は`"unavailable"` | 成功時は`"sandbox"`/`"live"`、それ以外は`"unavailable"` |
 
-`dataforseo`モードの内部の意思決定は`_run_dataforseo_mode()`が担い、以下の順で判定する（詳細は下記「DataForSEO Sandbox接続」参照）。
+`dataforseo`モードの内部の意思決定は`_run_dataforseo_mode()`が担い、以下の順で判定する（詳細は下記「DataForSEO Sandbox/Live接続」参照）。
 
-1. 認証情報未設定 → 外部APIを呼ばず`[]`・`"unavailable"`
-2. `DATAFORSEO_API_ENV=live` → **`DATAFORSEO_LIVE_API_ENABLED`の値に関わらず**外部APIを呼ばず`[]`・`"unavailable"`（Live APIはこのプロジェクトでは未実装）
-3. `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済み → Sandboxへ実際に接続し、AI Overview相当の項目が取得できれば`"real"`、失敗・該当項目なしなら`[]`・`"unavailable"`（`/analyze`自体は常に200を返す）
+1. 認証情報未設定 → 外部APIを呼ばず`[]`・`"unavailable"`・environment`"unavailable"`
+2. `DATAFORSEO_API_ENV=live`だが`is_live_allowed_for_manual_check`（下記参照）が`False` → 外部APIを呼ばず`[]`・`"unavailable"`・environment`"unavailable"`（欠けているゲートに応じた具体的なreasonを返す）
+3. `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済み、または`DATAFORSEO_API_ENV=live`かつ`is_live_allowed_for_manual_check`が`True` → 対応するホストへ実際に接続し、AI Overview相当の項目が取得できれば`"real"`（environmentは`"sandbox"`/`"live"`）、失敗・該当項目なしなら`[]`・`"unavailable"`（environmentは`"unavailable"`。`/analyze`自体は常に200を返す）
 
 **mode切り替えの2段階ゲート**（誤って実APIを実行しないための安全設計）:
 
@@ -278,15 +278,15 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 この2段階により、**リクエストボディだけでは`dataforseo`のような費用が発生し得るmodeを有効化できない**——運用者が明示的に環境変数で許可した環境でのみ、リクエスト単位の切り替えが機能する。`aiOverviewMode`に`AiOverviewProviderMode`以外の値（例: `"real"`）を渡した場合は、Pydanticのバリデーションエラーとして既存の`{"error": "invalid request body"}`（400）に統一される（新しいエラー処理コードパスは追加していない）。
 
-`main.py`の`analyze()`に組み込み、`meta.sections.aiOverviewComparison`に上記のstatusを反映する。加えて`meta.aiOverviewProvider`（`{mode, status, reason}`、`AnalysisMeta`に追加した任意フィールド）として、実際に使われたmodeとその理由を返す（画面にはまだ表示しない。既存UI・Zodスキーマは`optional`扱いのため壊れない）。
+`main.py`の`analyze()`に組み込み、`meta.sections.aiOverviewComparison`に上記のstatusを反映する。加えて`meta.aiOverviewProvider`（`{mode, status, reason, environment}`、`AnalysisMeta`に追加した任意フィールド。`environment`は2026-07-23追加）として、実際に使われたmodeとその理由を返す。画面には`meta.aiOverviewProvider`の内容に応じたバッジ・説明文が表示される（`app/lib/meta-label.ts`の`getAiOverviewProviderStatusDisplay()`）。
 
 旧`services/mock_analysis.py`に直書きされていたAI Overview比較の固定データ（4件）は、`build_mock_ai_overview_comparison(brand_name)`としてこのモジュールへ移設した。`mock_analysis.py`の`build_dummy_analysis()`はこの関数を呼び出すだけになり、固定データの実体は`ai_overview_provider.py`が唯一の所有者になった。
 
-**DataForSEO Sandbox接続は実装済み、Live接続は今後の対象**。`dataforseo`モードの分岐は実際にSandbox APIを呼び出すようになったが、`DATAFORSEO_API_ENV=live`の場合は今回も外部APIを呼ばず`"unavailable"`のままにしている（[05_tasks.md](../docs/05_tasks.md)参照）。
+**DataForSEO Sandbox接続、および手動確認用ゲート付きのLive接続はいずれも実装済み**。`dataforseo`モードの分岐は実際にSandbox APIを呼び出すほか、5つの手動確認用ゲートがすべて揃った場合に限りLive本番APIも呼び出せるようになった（[05_tasks.md](../docs/05_tasks.md)参照）。常時のLive運用・自動スケジュール実行は対象外で、あくまで人間が1回だけ意図的に確認するための経路である。
 
 ### DataForSEO設定（`dataforseo_settings.py`）
 
-認証情報・実行モード・Sandbox/Live切り替え・費用発生防止ルール・Sandbox/Live各APIのベースURLを整理したモジュール。**このモジュール自体は外部APIを呼ばない**（実際にSandboxへ接続するのは`services/dataforseo_client.py`）。`get_dataforseo_settings() -> DataForSEOSettings`を公開し、`services/ai_overview_provider.py`の`dataforseo`モード分岐がこれを読んで安全な理由文言を組み立てる。
+認証情報・実行モード・Sandbox/Live切り替え・費用発生防止ルール・Live手動確認用ゲート・Sandbox/Live各APIのベースURLを整理したモジュール。**このモジュール自体は外部APIを呼ばない**（実際に接続するのは`services/dataforseo_client.py`）。`get_dataforseo_settings() -> DataForSEOSettings`を公開し、`services/ai_overview_provider.py`の`dataforseo`モード分岐がこれを読んで安全な理由文言を組み立てる。
 
 **環境変数**（すべて未設定でも安全に動作する）:
 
@@ -294,10 +294,11 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 | --- | --- | --- |
 | `DATAFORSEO_LOGIN` | 未設定 | DataForSEOアカウントのログインID（メールアドレス形式）。 |
 | `DATAFORSEO_PASSWORD` | 未設定 | DataForSEOアカウントのAPIパスワード。**実値は保持しない**（後述）。 |
-| `DATAFORSEO_API_ENV` | `sandbox` | `sandbox`/`live`。不正な値は`sandbox`にフォールバック（警告ログ付き）。 |
-| `DATAFORSEO_LIVE_API_ENABLED` | `false` | `true`のときのみLive API使用を許可する候補になる。 |
-| `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` | `1` | 1回の`/analyze`でDataForSEOへ投げてよい最大リクエスト数の上限値（Sandbox接続は常に1リクエストのみのため現状未参照）。不正値・負値は`1`に、`10`（`MAX_REQUEST_LIMIT_PER_ANALYZE`）を超える値は`10`にフォールバックする。 |
-| `DATAFORSEO_SERP_ENDPOINT` | `google_ai_mode_live_advanced` | `google_ai_mode_live_advanced`（推奨・デフォルト）/`google_organic_live_advanced`（旧実装との互換用）。不正な値はデフォルトにフォールバック。詳細は下記「DataForSEO Sandbox接続」参照。 |
+| `DATAFORSEO_API_ENV` | `sandbox` | `sandbox`/`live`。不正な値は`sandbox`にフォールバック（警告ログ付き）。**通常運用では常に`sandbox`のままにしておくこと。** |
+| `DATAFORSEO_LIVE_API_ENABLED` | `false` | `true`のときのみLive API使用を許可する候補になる（他の手動確認用ゲートとすべて揃わない限り実際には呼ばれない）。 |
+| `DATAFORSEO_LIVE_CONFIRM_TEXT` | 未設定 | Live手動確認用の確認文字列。完全一致（大文字小文字・前後空白を含む）で`ALLOW_DATAFORSEO_LIVE_ONCE`と一致した場合のみゲートの1つを満たす。 |
+| `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` | `1` | 1回の`/analyze`でDataForSEOへ投げてよい最大リクエスト数の上限値。Sandbox接続は常に1リクエストのみのため未参照だが、**Live手動確認用ゲートの1つでもあり、この値が1でない場合はLiveへ接続しない**。不正値・負値は`1`に、`10`（`MAX_REQUEST_LIMIT_PER_ANALYZE`）を超える値は`10`にフォールバックする。 |
+| `DATAFORSEO_SERP_ENDPOINT` | `google_ai_mode_live_advanced` | `google_ai_mode_live_advanced`（推奨・デフォルト）/`google_organic_live_advanced`（旧実装との互換用）。不正な値はデフォルトにフォールバック。詳細は下記「DataForSEO Sandbox/Live接続」参照。 |
 | `DATAFORSEO_LOCATION_CODE` | `2392`（日本） | DataForSEOのSERPリクエストに使う`location_code`。整数変換できない値はデフォルトにフォールバック。 |
 | `DATAFORSEO_LANGUAGE_CODE` | `ja` | DataForSEOのSERPリクエストに使う`language_code`。空文字はデフォルトにフォールバック。 |
 | `DATAFORSEO_DEVICE` | `desktop` | `desktop`/`mobile`のみ許可。不正な値はデフォルトにフォールバック。 |
@@ -307,38 +308,49 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 - `login`は実際の値を保持する（DataForSEOのログインIDはメールアドレス形式で、パスワードほどの機密性はないため）。ただし`__repr__`/`__str__`ではオーバーライドにより`<set>`/`None`としてマスクし、意図せずログや例外メッセージに出力されても値自体は見えないようにしている。
 - `password`は**実値をそもそも保持しない**。読み取った瞬間に`password_configured: bool`へ変換し、実際の文字列はどの属性にも残らない。「露出させない」のではなく「露出しようがない」設計。
+- `live_confirm_text_matches`も同様に、`DATAFORSEO_LIVE_CONFIRM_TEXT`の実値ではなく「必要な文字列と完全一致したかどうか」の真偽値のみを保持する。
 - `is_configured`は`login`と`password_configured`の両方が揃っている場合のみ`True`。
-- `can_use_live_api`は`is_configured`・`api_env == "live"`・`live_api_enabled`の**3条件すべて**が揃わない限り`True`にならない。1つの環境変数の設定ミスだけでは実APIが誤って有効化されない設計。ただし今回の実装では`_run_dataforseo_mode()`が`api_env == "live"`の場合に`can_use_live_api`の値に関わらず無条件でLiveを拒否するため、この値は現状参照されていない（将来Liveを実装する際の下地として残している）。
+- `is_sandbox_env`/`is_live_env`は`api_env`の値をそのまま真偽値にした補助プロパティ。
+- `can_use_live_api`は`is_configured`・`api_env == "live"`・`live_api_enabled`の**3条件**が揃わない限り`True`にならない（旧実装から存在するプロパティ。現在の実装では下記`is_live_allowed_for_manual_check`の方が実際のゲートとして使われており、`can_use_live_api`自体は参照されていない）。
+- **`is_live_allowed_for_manual_check`**（2026-07-23追加）は以下の**5条件すべて**が揃った場合のみ`True`になる。これが実際にLiveホストへの接続を許可する唯一の判定であり、`services/ai_overview_provider.py`の`_run_dataforseo_mode()`が`api_env == "live"`のときに必ずこれを確認してからでないと`dataforseo_client.py`を呼ばない。
+  1. `api_env == "live"`
+  2. `live_api_enabled`（`DATAFORSEO_LIVE_API_ENABLED=true`）
+  3. `live_confirm_text_matches`（`DATAFORSEO_LIVE_CONFIRM_TEXT`が`ALLOW_DATAFORSEO_LIVE_ONCE`と完全一致）
+  4. `request_limit_per_analyze == 1`（`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`が1、または未設定でデフォルトの1のまま）
+  5. `is_configured`（`DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`が両方設定済み）
 
-**`SANDBOX_BASE_URL`/`LIVE_BASE_URL`**: DataForSEOの2つのAPI環境のベースURL定数。`SANDBOX_BASE_URL`（`https://sandbox.dataforseo.com`）のみが`dataforseo_client.py`から実際にリクエストされる。`LIVE_BASE_URL`（`https://api.dataforseo.com`）は将来Liveを実装する際の参照用に定義しているだけで、このプロジェクトのどのコードパスからも呼び出されない。
+**`SANDBOX_BASE_URL`/`LIVE_BASE_URL`**: DataForSEOの2つのAPI環境のベースURL定数。`SANDBOX_BASE_URL`（`https://sandbox.dataforseo.com`）は`dataforseo mode`＋sandbox環境のときに、`LIVE_BASE_URL`（`https://api.dataforseo.com`）は`is_live_allowed_for_manual_check`が`True`の場合のみ、それぞれ`dataforseo_client.py`から実際にリクエストされる。
 
-**`DataForSEOCredentials`/`get_dataforseo_credentials()`**: `DataForSEOSettings`とは別に用意した、実際の`login`/`password`の両方を保持する型。`DataForSEOSettings`が「ログや呼び出し元に安全に渡せる」ことを目的にしているのに対し、こちらは「Sandbox接続のBasic Auth構築の直前でのみ使い、保存もログ出力も一切しない」という真逆の用途に限定している。`__repr__`は`login`/`password`いずれも`<redacted>`にオーバーライドしている。`get_dataforseo_credentials()`は`DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`のいずれかが空の場合は`None`を返す。
+**`DataForSEOCredentials`/`get_dataforseo_credentials()`**: `DataForSEOSettings`とは別に用意した、実際の`login`/`password`の両方を保持する型。`DataForSEOSettings`が「ログや呼び出し元に安全に渡せる」ことを目的にしているのに対し、こちらは「Sandbox/Live接続のBasic Auth構築の直前でのみ使い、保存もログ出力も一切しない」という真逆の用途に限定している。`__repr__`は`login`/`password`いずれも`<redacted>`にオーバーライドしている。`get_dataforseo_credentials()`は`DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`のいずれかが空の場合は`None`を返す。
 
 `ai_overview_provider.py`の`_run_dataforseo_mode()`は以下の優先順位で判定・`reason`を組み立てる（`login`/`password`の値そのものは絶対に含めない）。
 
-1. 認証情報未設定 → 外部APIを呼ばず`[]`・`"unavailable"`、reason「DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).」
-2. `DATAFORSEO_API_ENV=live` → **`DATAFORSEO_LIVE_API_ENABLED`の値に関わらず**外部APIを呼ばず`[]`・`"unavailable"`、reason「Live API is not implemented in this task; only DataForSEO Sandbox (DATAFORSEO_API_ENV=sandbox) is supported.」
-3. `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済み → `dataforseo_settings.py`から読んだ`serp_endpoint`/`location_code`/`language_code`/`device`/`os`を添えて`dataforseo_client.fetch_ai_overview_sandbox()`を呼び出す。成功（`ai_overview`タイプの項目を発見）すれば`"real"`・reasonは「DataForSEO Sandbox AI Mode request succeeded.」（endpointに応じて"AI Mode"/"Organic"が変わる）、失敗すれば`[]`・`"unavailable"`・reasonはクライアントが返した安全な失敗理由（下記「DataForSEO Sandbox接続」参照）
+1. 認証情報未設定 → 外部APIを呼ばず`[]`・`"unavailable"`・environment`"unavailable"`、reason「DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).」
+2. `DATAFORSEO_API_ENV=live`だが`is_live_allowed_for_manual_check`が`False` → 外部APIを呼ばず`[]`・`"unavailable"`・environment`"unavailable"`。欠けているゲートに応じて以下のいずれかのreasonを返す（`_live_gate_rejection_reason()`が`live_api_enabled`→`live_confirm_text_matches`→`request_limit_per_analyze`の順に確認し、最初に見つかった不足を報告する）:
+   - 「DataForSEO Live API is disabled. Set all manual live confirmation gates to enable one manual request.」（`live_api_enabled`が`False`）
+   - 「DataForSEO Live API requires explicit manual confirmation.」（確認文字列が不一致）
+   - 「DataForSEO Live API request limit must be 1.」（`request_limit_per_analyze`が1でない）
+3. `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済み、または`DATAFORSEO_API_ENV=live`かつ`is_live_allowed_for_manual_check`が`True` → `dataforseo_settings.py`から読んだ`serp_endpoint`/`location_code`/`language_code`/`device`/`os`を添えて対応するホストへ`dataforseo_client.fetch_ai_overview_serp()`を呼び出す。成功（`ai_overview`タイプの項目を発見）すれば`"real"`・environmentは`"sandbox"`/`"live"`・reasonは「DataForSEO Sandbox AI Mode request succeeded.」または「DataForSEO Live AI Mode request succeeded.」（endpointに応じて"AI Mode"/"Organic"が変わる）、失敗すれば`[]`・`"unavailable"`・environment`"unavailable"`・reasonはクライアントが返した安全な失敗理由（下記「DataForSEO Sandbox/Live接続」参照）
 
 いずれの場合も`/analyze`自体は常に200を返す——DataForSEO側の問題は`aiOverviewComparison`セクション1つだけに閉じ込められる。
 
-### DataForSEO Sandbox接続（`dataforseo_client.py`）
+### DataForSEO Sandbox/Live接続（`dataforseo_client.py`）
 
-`dataforseo_settings.py`が認証情報・実行モードを読み取るだけなのに対し、こちらは実際にDataForSEO **Sandbox**へHTTP接続する唯一のモジュール。**Sandboxのみを呼び出し、Liveへは一切接続しない**（`LIVE_BASE_URL`を参照するコードパスがそもそも存在しない）。呼び出すかどうかの判断（`DATAFORSEO_API_ENV`・認証情報の有無）は呼び出し元の`ai_overview_provider.py`が行う。
+`dataforseo_settings.py`が認証情報・実行モードを読み取るだけなのに対し、こちらは実際にDataForSEO SandboxまたはLiveへHTTP接続する唯一のモジュール。**このモジュール自体には「Liveを呼んでよいか」の判断ロジックが一切ない**——どちらのホストへ接続するかは呼び出し元の`ai_overview_provider.py`が`api_env`引数として渡す値だけで決まり、`ai_overview_provider.py`は`DataForSEOSettings.is_live_allowed_for_manual_check`が`True`の場合のみ`api_env="live"`を渡す（詳細は上記「DataForSEO設定」参照）。単一の、十分にテストされたゲートを1箇所に置く方が、複数モジュールにゲートロジックを重複させて食い違うリスクより安全という判断による設計。
 
 **エンドポイントの選定（`DATAFORSEO_SERP_ENDPOINT`）**: デフォルト・推奨は`google_ai_mode_live_advanced`（`/v3/serp/google/ai_mode/live/advanced`、Googleの「AI Mode」機能に対するDataForSEOのエンドポイント）。旧実装との互換用に`google_organic_live_advanced`（`/v3/serp/google/organic/live/advanced`）も選択できる。
 
 - DataForSEO Sandboxに対して手動で「Vercel」を`location_code=2392`（日本）・`language_code=ja`・`device=desktop`・`os=windows`の条件で検索したところ、`google_ai_mode_live_advanced`は`item_types: ["ai_overview"]`・`items[0].type == "ai_overview"`・`items[0].markdown`・`items[0].references`を含む結果を確実に返した。同条件で`google_organic_live_advanced`を試した際は`ai_overview`項目が確実には得られなかった（詳細は[07_decisions.md](../docs/07_decisions.md)参照）。このため今回、標準エンドポイントを`google_organic_live_advanced`から`google_ai_mode_live_advanced`へ変更した。
-- どちらのエンドポイント名にも含まれる「live」はDataForSEO独自の呼び出し方式（即時レスポンス）の名称であり、このプロジェクトが区別しているSandbox/Live**環境**（`DATAFORSEO_API_ENV`）とは別の軸——どちらのエンドポイントを選んでも、実際にリクエストするホストは常に`SANDBOX_BASE_URL`（`https://sandbox.dataforseo.com`）のみで、Liveホストを構築するコードパスは存在しない。
-- **注意**: Google AI OverviewとGoogle AI Modeは別の機能・製品である。本実装は「DataForSEOの`ai_mode`エンドポイントが返す`ai_overview`タイプの項目」を、このMVPの「AI Overview比較」の目的においては同等に扱っている。Sandboxが期待通りのデータを返さない場合は、パーサーが「該当項目なし」として安全に`"unavailable"`にフォールバックする設計にしている。
+- どちらのエンドポイント名にも含まれる「live」はDataForSEO独自の呼び出し方式（即時レスポンス）の名称であり、このプロジェクトが区別しているSandbox/Live**環境**（`DATAFORSEO_API_ENV`）とは別の軸——どちらのエンドポイントを選んでも、`api_env`引数に応じて`SANDBOX_BASE_URL`（`https://sandbox.dataforseo.com`）または`LIVE_BASE_URL`（`https://api.dataforseo.com`）のいずれかにリクエストする（ホスト選択のロジック自体はこのモジュールには無く、呼び出し元の`api_env`引数の値だけで決まる）。
+- **注意**: Google AI OverviewとGoogle AI Modeは別の機能・製品である。本実装は「DataForSEOの`ai_mode`エンドポイントが返す`ai_overview`タイプの項目」を、このMVPの「AI Overview比較」の目的においては同等に扱っている。Sandbox/Liveいずれも期待通りのデータを返さない場合は、パーサーが「該当項目なし」として安全に`"unavailable"`にフォールバックする設計にしている。
 
-**リクエストパラメータ（`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`）**: いずれも環境変数で上書き可能で、デフォルトは手動検証で成功した組み合わせ（`location_code=2392`・`language_code=ja`・`device=desktop`・`os=windows`）。不正値は安全なデフォルトへフォールバックする（`device`は`desktop`/`mobile`のみ、`os`は`windows`/`macos`/`linux`/`android`/`ios`のみ許可）。
+**リクエストパラメータ（`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`）**: いずれも環境変数で上書き可能で、デフォルトは手動検証で成功した組み合わせ（`location_code=2392`・`language_code=ja`・`device=desktop`・`os=windows`）。不正値は安全なデフォルトへフォールバックする（`device`は`desktop`/`mobile`のみ、`os`は`windows`/`macos`/`linux`/`android`/`ios`のみ許可）。Sandbox/Liveどちらの接続でも同じ値が使われる。
 
-**認証**: `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`によるHTTP Basic Auth。`login`/`password`はリクエスト構築の直前にのみメモリ上に存在し、ログ・エラーメッセージ・レスポンスのいずれにも一切出力しない。
+**認証**: `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`によるHTTP Basic Auth。`login`/`password`はリクエスト構築の直前にのみメモリ上に存在し、ログ・エラーメッセージ・レスポンスのいずれにも一切出力しない（Sandbox/Live共通）。
 
-**キーワード**: MVPでは`brand_name`をそのままキーワードとして1回だけ送信する（「{ブランド名} 料金」のような複合キーワードや複数キーワードのバッチ送信は対象外）。
+**キーワード**: MVPでは`brand_name`をそのままキーワードとして1回だけ送信する（「{ブランド名} 料金」のような複合キーワードや複数キーワードのバッチ送信は対象外。Sandbox/Live共通）。
 
-**実際に送信するリクエストボディ**（`DATAFORSEO_SERP_ENDPOINT`で選んだエンドポイントの`https://sandbox.dataforseo.com`へPOST）:
+**実際に送信するリクエストボディ**（`DATAFORSEO_SERP_ENDPOINT`で選んだエンドポイントの`https://sandbox.dataforseo.com`または`https://api.dataforseo.com`へPOST）:
 
 ```json
 [
@@ -356,23 +368,25 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 | フィールド | 内容 |
 | --- | --- |
-| `platform` | `"Google AI Mode (DataForSEO Sandbox)"` |
+| `platform` | `"Google AI Mode (DataForSEO Sandbox)"` または `"Google AI Mode (DataForSEO Live)"`（接続先に応じて`ai_overview_provider.py`が選択） |
 | `mentioned` | レスポンス中の`ai_overview`項目の`markdown`/`text`、ネストされた`items[]`の`markdown`/`text`、および`references[]`の`title`/`text`/`domain`を連結した文字列に`brand_name`が含まれるか（大文字小文字を区別しない） |
 | `rank` | 項目の`rank_absolute`（整数として取得できた場合）、なければ`rank_group`（同様）、いずれもなければ`None` |
 | `summary` | `markdown`を優先し、なければ`text`から作る短い抜粋（最大200文字、超える場合は`…`で省略）。markdownの画像記法・リンク記法は軽く平文化する。**referencesの一覧やレスポンスの生データ全文は含めない** |
 
-**失敗時の扱い**: ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外・`ai_overview`タイプの項目が見つからない、のいずれの場合も例外を送出せず`DataForSEOSandboxResult(success=False, reason="...")`を返す。`reason`は常に安全（認証情報を含まない）な完全な文で、`ai_overview`項目が見つからない場合は選択中のエンドポイント名も含める（例:「DataForSEO Sandbox response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」）。`ai_overview_provider.py`はこれをそのまま`aiOverviewComparison`の`"unavailable"`理由として使う。タイムアウトは12秒（`REQUEST_TIMEOUT_SECONDS`）。
+**失敗時の扱い**: ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外・`ai_overview`タイプの項目が見つからない、のいずれの場合も例外を送出せず`DataForSEOSerpResult(success=False, reason="...")`を返す（Sandbox/Live共通）。`reason`は常に安全（認証情報を含まない）な完全な文で、接続先（"Sandbox"/"Live"）を明記し、`ai_overview`項目が見つからない場合は選択中のエンドポイント名も含める（例:「DataForSEO Sandbox response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」「DataForSEO Live response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」）。`ai_overview_provider.py`はこれをそのまま`aiOverviewComparison`の`"unavailable"`理由として使う。タイムアウトは12秒（`REQUEST_TIMEOUT_SECONDS`、Sandbox/Live共通）。
 
-**検証済みの前提・既知の制約**: 上記の`google_ai_mode_live_advanced`エンドポイント・パラメータの組み合わせでSandboxが`ai_overview`項目を返すことは手動で確認済み。ただし、これはSandbox環境での一時点の確認であり、DataForSEO側の仕様変更やクエリ内容によって挙動が変わる可能性は残る。パーサーは`isinstance()`による防御的な実装にしており、想定外の形状は例外にせず「該当項目なし」（`"unavailable"`）として扱う。
+**検証済みの前提・既知の制約**: 上記の`google_ai_mode_live_advanced`エンドポイント・パラメータの組み合わせでSandboxが`ai_overview`項目を返すことは手動で確認済み。ただし、これはSandbox環境での一時点の確認であり、DataForSEO側の仕様変更やクエリ内容によって挙動が変わる可能性は残る。**Live本番ホストに対する同様の動作確認は、実際の手動確認実施時に行う想定**（このプロジェクトの開発環境からは実施していない）。パーサーは`isinstance()`による防御的な実装にしており、想定外の形状は例外にせず「該当項目なし」（`"unavailable"`）として扱う。
+
+**Live手動確認の運用手順**: `DATAFORSEO_API_ENV=live`・`DATAFORSEO_LIVE_API_ENABLED=true`・`DATAFORSEO_LIVE_CONFIRM_TEXT=ALLOW_DATAFORSEO_LIVE_ONCE`・`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE=1`・本物の`DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`をすべて設定した状態で`/analyze`を1回呼び出すと、Live本番ホストへ実際に1リクエストが送られる（**費用が発生し得る**）。確認が終わったら、これらの環境変数を必ず`sandbox`側の設定（または`AI_OVERVIEW_PROVIDER_MODE=mock`）へ戻すこと。**このプロジェクトには確認後に自動でsandbox/mockへ戻す仕組みはない**——手動で戻す運用が前提。
 
 **運用上の注意（未実装のこと）**
 
 - **robots.txtは確認していない**（URL取得機能に関する既存の注意、`web_fetcher.py`側）。取得先ページの利用規約・robots.txtに照らして問題ないURLを渡すのは利用者の責任。
 - **利用規約への配慮・アクセス負荷への配慮（レート制限等）は自動化されていない**。`MAX_URLS=10` の上限のみでアクセス量を抑えている。
 - **DNS Rebinding（TOCTOU）対策は不完全**。安全性チェック時と実際のリクエスト時で名前解決結果が変わるケースへの防御はない。
-- **DataForSEO Live APIへの接続は未実装**。`DATAFORSEO_API_ENV=live`は常に`"unavailable"`を返す。
-- **DataForSEO Standard方式（`task_post`/`task_get`による非同期タスク管理）は対象外**。今回選んだのは即時レスポンス方式（"live"）のみ。
-- **Sandboxのレスポンスは実際の本番SERPデータではない**（DataForSEOのテスト用モックデータであり、実際にGoogleがそのクエリに対してAI Overviewを表示するかどうかを表さない）。
+- **DataForSEO Live APIの常時運用・自動スケジュール実行は未実装**。今回実装したのはあくまで手動での1回限りの確認用ゲートであり、本番の定常運用（複数キーワード・DB保存・課金管理を含む）は対象外。
+- **DataForSEO Standard方式（`task_post`/`task_get`による非同期タスク管理）は対象外**。今回選んだのは即時レスポンス方式（"live"）のみ（Sandbox/Live共通）。
+- **Sandboxのレスポンスは実際の本番SERPデータではない**（DataForSEOのテスト用モックデータであり、実際にGoogleがそのクエリに対してAI Overviewを表示するかどうかを表さない）。Live接続時のレスポンスは実際の本番SERPデータである（費用が発生し得る所以）。
 
 これらは [../docs/05_tasks.md](../docs/05_tasks.md) に今後のタスクとして記録している。
 
@@ -533,25 +547,27 @@ pytest
 - `dataforseo`モードで認証情報未設定の場合、`httpx.post`が一切呼ばれないまま空配列と`"unavailable"`ステータス・「not configured」を含む`reason`が返ること
 - `dataforseo`モードで`DATAFORSEO_API_ENV=sandbox`・認証情報設定済みの場合、`httpx.post`をmonkeypatchした成功レスポンスから`"real"`ステータス・1件のアイテム・`mentioned: true`が返ること
 - 同条件でSandbox呼び出しがネットワークエラーで失敗しても、例外を送出せず空配列と`"unavailable"`ステータスが返ること
-- `dataforseo`モードで`DATAFORSEO_API_ENV=live`の場合、`httpx.post`が一切呼ばれないまま空配列と`"unavailable"`ステータス・「Live API」「not implemented」を含む`reason`が返ること（`DATAFORSEO_LIVE_API_ENABLED=true`でも同じ）
-- `dataforseo`モードの`reason`に`login`/`password`の実値が一切含まれないこと
-- `dataforseo`モードがデフォルトで`/v3/serp/google/ai_mode/live/advanced`エンドポイントを呼ぶこと、`items[0].platform`が`"Google AI Mode (DataForSEO Sandbox)"`になること
+- `dataforseo`モードで`DATAFORSEO_API_ENV=live`だが他の手動確認用ゲート（`DATAFORSEO_LIVE_API_ENABLED`/`DATAFORSEO_LIVE_CONFIRM_TEXT`/`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`）が1つでも欠けている場合、`httpx.post`が一切呼ばれないまま空配列と`"unavailable"`ステータス・environment`"unavailable"`・欠けているゲートに応じた具体的な`reason`（「disabled」「requires explicit manual confirmation」「request limit must be 1」）が返ること。認証情報が欠けている場合はゲート判定より先に「not configured」が返ること
+- `dataforseo`モードで5つのLive手動確認用ゲートがすべて満たされた場合のみ、`https://api.dataforseo.com`へ実際にリクエストされ、成功時は`"real"`ステータス・environment`"live"`・`platform`が`"Google AI Mode (DataForSEO Live)"`・reasonが「DataForSEO Live AI Mode request succeeded.」になること。リクエストボディは1キーワードのみであること
+- `dataforseo`モードの`reason`に`login`/`password`の実値が一切含まれないこと（Sandbox/Live成功時・失敗時いずれも）
+- `dataforseo`モードがデフォルトで`/v3/serp/google/ai_mode/live/advanced`エンドポイントを呼ぶこと、Sandbox成功時`items[0].platform`が`"Google AI Mode (DataForSEO Sandbox)"`になること
 - `DATAFORSEO_SERP_ENDPOINT`/`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`の設定値が、実際にリクエストされるURL・JSONボディへ正しく反映されること
 
-`tests/test_dataforseo_client.py` では `fetch_ai_overview_sandbox()` を直接テストしている（すべて`httpx.post`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
+`tests/test_dataforseo_client.py` では `fetch_ai_overview_serp()` を直接テストしている（すべて`httpx.post`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
-- デフォルトでは`SANDBOX_BASE_URL` + `/v3/serp/google/ai_mode/live/advanced`（`AI_MODE_LIVE_ADVANCED_PATH`）へリクエストすること、`endpoint="google_organic_live_advanced"`を明示すると`ORGANIC_LIVE_ADVANCED_PATH`へリクエストすること（Liveのホストへは接続しないことの回帰防止でもある）
-- 渡した`login`/`password`でHTTP Basic Authが構築されること
-- `keyword`/`location_code`/`language_code`/`device`/`os`がリクエストボディに正しく含まれること
+- デフォルト（`api_env`省略）では`SANDBOX_BASE_URL` + `/v3/serp/google/ai_mode/live/advanced`（`AI_MODE_LIVE_ADVANCED_PATH`）へリクエストすること、`endpoint="google_organic_live_advanced"`を明示すると`ORGANIC_LIVE_ADVANCED_PATH`へリクエストすること
+- `api_env="live"`を明示すると`LIVE_BASE_URL`（`https://api.dataforseo.com`）へリクエストすること（Sandbox/Liveどちらも同じエンドポイントパスの選択ロジックを共有していることの確認）
+- 渡した`login`/`password`でHTTP Basic AuthがSandbox/Liveいずれの場合も構築されること
+- `keyword`/`location_code`/`language_code`/`device`/`os`がリクエストボディに正しく含まれること（Sandbox/Live共通、常に1件のみ）
 - レスポンス内の`ai_overview`タイプの項目からブランド名の言及有無・`rank_absolute`（優先）/`rank_group`（フォールバック）・`markdown`優先のテキスト抜粋を正しく変換すること（入れ子の`items[].text`/`.markdown`、`references[].title`/`.text`/`.domain`も`mentioned`判定に使われるが`summary`には含まれないことも確認）
 - ブランド名が項目テキストに含まれない場合、`mentioned: false`になること
 - `ai_overview`タイプの項目が存在しない場合、`success: false`・「no ai_overview item was found」と選択中のエンドポイント名（例:「endpoint=google_ai_mode_live_advanced」）を含む`reason`になること
-- 成功時の`reason`がエンドポイントラベル（「AI Mode」/「Organic」）を含むこと（例:「DataForSEO Sandbox AI Mode request succeeded.」）
+- 成功時の`reason`が接続先ラベル（「Sandbox」/「Live」）とエンドポイントラベル（「AI Mode」/「Organic」）を含むこと（例:「DataForSEO Sandbox AI Mode request succeeded.」「DataForSEO Live AI Mode request succeeded.」）
 - markdownの画像記法・リンク記法が`summary`から軽く除去されること
-- ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外、のいずれの場合も例外を送出せず`success: false`になること（`httpx.HTTPError`以外の想定外の例外はこのクライアントの設計上あえて送出させたままにしていることも確認）
-- いずれの失敗パターン・成功パターンでも`reason`に`login`/`password`の実値が含まれないこと
+- ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外、のいずれの場合も例外を送出せず`success: false`になること（Sandbox/Live共通。`httpx.HTTPError`以外の想定外の例外はこのクライアントの設計上あえて送出させたままにしていることも確認）
+- いずれの失敗パターン・成功パターンでも`reason`に`login`/`password`の実値が含まれないこと（Sandbox/Live共通）
 - `summary`が短い抜粋（`_SUMMARY_MAX_CHARS`＝200文字）に切り詰められること
-- 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
+- 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること（Sandbox/Live共通）
 
 `tests/test_dataforseo_settings.py` では `get_dataforseo_settings()` を直接テストしている。
 
@@ -562,6 +578,9 @@ pytest
 - `DATAFORSEO_API_ENV=live`でも`DATAFORSEO_LIVE_API_ENABLED=true`でなければ`can_use_live_api=false`のままであること
 - 認証情報が未設定の場合、`DATAFORSEO_API_ENV=live`かつ`DATAFORSEO_LIVE_API_ENABLED=true`でも`can_use_live_api=false`であること（3条件すべてが必要）
 - `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`が未設定/不正値/負値の場合はデフォルト（1）にフォールバックすること、上限（10）を超える値は上限にキャップされること
+- `is_sandbox_env`/`is_live_env`が`DATAFORSEO_API_ENV`の値を正しく反映すること（互いに排他であること）
+- `is_live_allowed_for_manual_check`が、確認文字列未設定・確認文字列不一致（大文字小文字違い含む）・`DATAFORSEO_LIVE_API_ENABLED=false`・`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`が1以外・認証情報未設定・`DATAFORSEO_API_ENV=sandbox`、のいずれの場合も`false`になること、5条件すべてが揃った場合のみ`true`になること
+- `DATAFORSEO_LIVE_CONFIRM_TEXT`の実値が`repr()`/`str()`に一切現れないこと（真偽値`live_confirm_text_matches`のみ保持する設計）
 - `DATAFORSEO_SERP_ENDPOINT`未設定では`"google_ai_mode_live_advanced"`になること、`"google_organic_live_advanced"`を明示的に設定できること、不正な値はデフォルトにフォールバックすること
 - `DATAFORSEO_LOCATION_CODE`未設定では`2392`になること、整数変換できない値はデフォルトにフォールバックすること、有効な値は上書きされること
 - `DATAFORSEO_LANGUAGE_CODE`未設定・空文字では`"ja"`になること
@@ -602,7 +621,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.urlFetchResults` | `documentsSource` が `"web_fetch"` の場合のみ存在。URLごとの取得成否 |
 | `meta.documentCount` / `meta.sourceTypes` | 実際に解析対象となった`Document[]`の件数・`sourceType`一覧（重複なし）。3つの取得元すべてで返る |
 | `meta.chunkCount` | `Document[]`をChunker（`services/document_chunker.py`）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析はこの値を使わないが、`contextAnalysis`はこのチャンクから計算される |
-| `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない（下記「DataForSEO設定」参照）。まだUIには表示していない。詳細は上記「AI Overview比較のprovider mode」参照 |
+| `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason, environment}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`、`environment`（任意、2026-07-23追加）は`"mock"`/`"sandbox"`/`"live"`/`"off"`/`"unavailable"`で、`status`だけでは区別できないSandbox成功とLive成功を見分けるために追加した。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない（下記「DataForSEO設定」参照）。画面には`mock`/`sandbox`/`live`/`unavailable`/`off`を区別するバッジ・説明文が表示される。詳細は上記「AI Overview比較のprovider mode」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -613,10 +632,10 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - 文脈分析（`context_analysis.py`）のキーワードベースからの高度化（意味的な文脈理解・要約。現状はあくまで軽量なキーワード一致分類）
 - ブランド認知サマリー（`brand_summary.py`）のルールベース・テンプレート生成からの高度化（AI要約、実際のAIプラットフォーム横断比較等。現状は既存の分析結果を数える・振り分けるだけの軽量処理）
 - 改善提案（`improvement_suggestions.py`）のルールベースからの高度化（AI/LLMによる提案生成、DataForSEO等の実測データとの統合。現状は既存の分析結果に対する説明可能な条件分岐のみ）
-- AI Overview比較のDataForSEO **Live** API接続（`dataforseo_client.py`はSandboxのみに実装済み。Liveは費用が発生し得るため今回も意図的に対象外。`DATAFORSEO_API_ENV=live`は常に`"unavailable"`を返す）
-- DataForSEO Standard方式（`task_post`/`task_get`による非同期タスクの永続管理）の実装（今回選んだのは即時レスポンス方式のみ）
-- 複数キーワードでのDataForSEOリクエスト（MVPでは`brand_name`単体・1リクエストのみ）
-- Google AI OverviewとGoogle AI Modeが実際に同一のSandboxレスポンス構造で表現されるかどうかの検証（この開発環境からは実APIへアクセスできず未検証）
+- AI Overview比較のDataForSEO **Live** APIの常時運用・自動スケジュール実行（`dataforseo_client.py`/`ai_overview_provider.py`は手動確認用の1回限りのLive接続のみ実装済み。5つの手動確認用ゲートがすべて揃わない限り呼ばれない。費用管理・複数キーワード・DB保存を伴う本番運用は対象外）
+- DataForSEO Standard方式（`task_post`/`task_get`による非同期タスクの永続管理）の実装（今回選んだのは即時レスポンス方式のみ、Sandbox/Live共通）
+- 複数キーワードでのDataForSEOリクエスト（MVPでは`brand_name`単体・1リクエストのみ、Sandbox/Live共通）
+- Google AI OverviewとGoogle AI Modeが実際に同一のレスポンス構造で表現されるかどうかの、Live本番ホストに対する検証（Sandboxでは確認済みだが、この開発環境からLive本番ホストへはアクセスできず未検証）
 - AI Overview比較のprovider mode切り替えUI（現状はAPI経由（`aiOverviewMode`リクエストフィールド、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`時のみ有効）でのみ切り替え可能。画面上のトグル等はまだない）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）

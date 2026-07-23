@@ -2,9 +2,9 @@
 safe-to-pass-around settings object.
 
 This module does not call DataForSEO — it exists purely to centralize
-how credentials/mode env vars are read, ahead of the actual connector
-being implemented (see services/ai_overview_provider.py, which is the
-only current caller). Two properties matter for safety:
+how credentials/mode env vars are read (see services/ai_overview_provider.py,
+the only caller that actually decides whether to connect). Two
+properties matter for safety:
 
 1. The actual password value is never stored anywhere, not even in
    this settings object — only whether one was set
@@ -12,11 +12,18 @@ only current caller). Two properties matter for safety:
    log line, an API response, or a stray `repr()`/`str()` call, since
    the value simply isn't held in memory beyond the one line that
    checks for its presence.
-2. `can_use_live_api` requires three things to *all* be true —
-   credentials configured, `DATAFORSEO_API_ENV=live`, and
-   `DATAFORSEO_LIVE_API_ENABLED=true` — so a single misconfigured
-   environment variable can't accidentally enable a real (billable)
-   API call once a real connector exists.
+2. `is_live_allowed_for_manual_check` requires *five* independent
+   things to all be true at once — credentials configured,
+   `DATAFORSEO_API_ENV=live`, `DATAFORSEO_LIVE_API_ENABLED=true`, an
+   exact-match manual confirmation string
+   (`DATAFORSEO_LIVE_CONFIRM_TEXT=ALLOW_DATAFORSEO_LIVE_ONCE`), and
+   `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE=1` — so no single
+   misconfigured environment variable, and no accidental "leave live
+   mode on" after a manual check, can enable a real (billable) Live
+   API call. There is deliberately no way to make Live the *persistent*
+   default from this module alone: reaching `dataforseo` mode at all
+   still requires `AI_OVERVIEW_PROVIDER_MODE`/`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`
+   to agree first (see services/ai_overview_provider.py).
 """
 
 import logging
@@ -79,6 +86,15 @@ MAX_REQUEST_LIMIT_PER_ANALYZE = 10
 
 _VALID_API_ENVS: tuple[DataForSEOApiEnv, ...] = ("sandbox", "live")
 
+# Exact string an operator must set DATAFORSEO_LIVE_CONFIRM_TEXT to in
+# order to satisfy the manual Live confirmation gate (see
+# is_live_allowed_for_manual_check below). Deliberately not a simple
+# "true"/"1" boolean flag — a distinctive, unlikely-to-be-set-by-accident
+# string makes it much harder to enable a billable Live request through
+# a copy-pasted `.env` template or a stray "true" left over from testing
+# a different flag.
+DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED = "ALLOW_DATAFORSEO_LIVE_ONCE"
+
 
 @dataclass(frozen=True)
 class DataForSEOSettings:
@@ -94,9 +110,13 @@ class DataForSEOSettings:
     password_configured: bool
     api_env: DataForSEOApiEnv
     live_api_enabled: bool
+    live_confirm_text_matches: bool
     request_limit_per_analyze: int
     is_configured: bool
     can_use_live_api: bool
+    is_sandbox_env: bool
+    is_live_env: bool
+    is_live_allowed_for_manual_check: bool
     serp_endpoint: DataForSEOSerpEndpoint
     location_code: int
     language_code: str
@@ -107,9 +127,11 @@ class DataForSEOSettings:
         # Overridden so accidentally logging/printing this object (or
         # a dataclass default repr scan of it) can never show the
         # login value either, even though it's technically not the
-        # secret half of the credential pair. The SERP request
-        # parameters (endpoint/location/language/device/os) aren't
-        # secrets, so they're shown as-is.
+        # secret half of the credential pair. Everything else here
+        # (env/flags/gates/SERP request parameters) isn't a secret, so
+        # it's shown as-is — including live_confirm_text_matches, which
+        # is only a bool (whether the configured text matched the
+        # required constant), never the configured text itself.
         login_display = "<set>" if self.login else None
         return (
             "DataForSEOSettings("
@@ -117,9 +139,13 @@ class DataForSEOSettings:
             f"password_configured={self.password_configured}, "
             f"api_env={self.api_env!r}, "
             f"live_api_enabled={self.live_api_enabled}, "
+            f"live_confirm_text_matches={self.live_confirm_text_matches}, "
             f"request_limit_per_analyze={self.request_limit_per_analyze}, "
             f"is_configured={self.is_configured}, "
             f"can_use_live_api={self.can_use_live_api}, "
+            f"is_sandbox_env={self.is_sandbox_env}, "
+            f"is_live_env={self.is_live_env}, "
+            f"is_live_allowed_for_manual_check={self.is_live_allowed_for_manual_check}, "
             f"serp_endpoint={self.serp_endpoint!r}, "
             f"location_code={self.location_code}, "
             f"language_code={self.language_code!r}, "
@@ -171,6 +197,16 @@ def _resolve_request_limit() -> int:
         return MAX_REQUEST_LIMIT_PER_ANALYZE
 
     return value
+
+
+def _resolve_live_confirm_text_matches() -> bool:
+    # Intentionally an exact, case-sensitive match — no trimming beyond
+    # surrounding whitespace, no case-insensitivity, no truthy-string
+    # coercion like the other boolean flags in this module use. This is
+    # a one-time manual confirmation phrase, not a persistent settings
+    # flag, so it should not be easy to satisfy by accident.
+    raw = os.environ.get("DATAFORSEO_LIVE_CONFIRM_TEXT", "").strip()
+    return raw == DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED
 
 
 def _resolve_serp_endpoint() -> DataForSEOSerpEndpoint:
@@ -279,19 +315,39 @@ def get_dataforseo_settings() -> DataForSEOSettings:
         "yes",
         "on",
     }
+    live_confirm_text_matches = _resolve_live_confirm_text_matches()
     request_limit_per_analyze = _resolve_request_limit()
 
     is_configured = login is not None and password_configured
     can_use_live_api = is_configured and api_env == "live" and live_api_enabled
+    is_sandbox_env = api_env == "sandbox"
+    is_live_env = api_env == "live"
+    # All five gates below must hold at once — see module docstring and
+    # docs/07_decisions.md for why each one exists. Unlike
+    # `can_use_live_api` above (kept for backwards compatibility, not
+    # currently consulted for the actual Live-vs-Sandbox host decision),
+    # this is the one property services/ai_overview_provider.py actually
+    # checks before ever building a request against the Live host.
+    is_live_allowed_for_manual_check = (
+        is_live_env
+        and live_api_enabled
+        and live_confirm_text_matches
+        and request_limit_per_analyze == 1
+        and is_configured
+    )
 
     return DataForSEOSettings(
         login=login,
         password_configured=password_configured,
         api_env=api_env,
         live_api_enabled=live_api_enabled,
+        live_confirm_text_matches=live_confirm_text_matches,
         request_limit_per_analyze=request_limit_per_analyze,
         is_configured=is_configured,
         can_use_live_api=can_use_live_api,
+        is_sandbox_env=is_sandbox_env,
+        is_live_env=is_live_env,
+        is_live_allowed_for_manual_check=is_live_allowed_for_manual_check,
         serp_endpoint=_resolve_serp_endpoint(),
         location_code=_resolve_location_code(),
         language_code=_resolve_language_code(),

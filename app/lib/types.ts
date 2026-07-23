@@ -39,19 +39,31 @@ export interface UrlFetchResult {
 
 // Which data source aiOverviewComparison is built from — see
 // backend/services/ai_overview_provider.py. "mock" (fixed dev data,
-// default), "off" (section disabled), or "dataforseo" (not yet
-// implemented server-side; never triggers a real external call).
+// default), "off" (section disabled), or "dataforseo" (connects to
+// DataForSEO Sandbox by default, or Live only for a fully-gated manual
+// check — see AiOverviewEnvironment below for which one actually ran).
 export type AiOverviewProviderMode = "mock" | "off" | "dataforseo";
+
+// Which concrete data source actually produced aiOverviewComparison —
+// distinct from AiOverviewProviderMode/SectionStatus because neither
+// can tell a Sandbox success apart from a Live success (both are
+// mode="dataforseo", status="real"). Mirrors backend/models.py's
+// AiOverviewEnvironment.
+export type AiOverviewEnvironment = "mock" | "sandbox" | "live" | "off" | "unavailable";
 
 // Reports which aiOverviewComparison provider actually ran, and why.
 // Surfaced near the AI Overview比較 section (see
 // app/lib/meta-label.ts's getAiOverviewProviderStatusDisplay) so a
-// DataForSEO Sandbox response is never mistaken for a real production
-// result. Mirrors backend/models.py's AIOverviewProviderInfo.
+// DataForSEO Sandbox or Live response is never mistaken for the other,
+// or for mock data. Mirrors backend/models.py's AIOverviewProviderInfo.
+// `environment` is optional so a response from an older backend that
+// only sends mode/status/reason still parses (getAiOverviewProviderStatusDisplay
+// falls back to inferring from mode/status in that case).
 export interface AIOverviewProviderInfo {
   mode: AiOverviewProviderMode;
   status: SectionStatus;
   reason: string;
+  environment?: AiOverviewEnvironment;
 }
 
 export interface AnalysisMeta {

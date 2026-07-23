@@ -416,6 +416,36 @@ describe("POST /api/analyze", () => {
     });
   });
 
+  it("passes through aiOverviewProvider.environment (sandbox/live) from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Google AI Mode (DataForSEO Live)", mentioned: true, rank: 1, summary: "OpenAI is..." },
+      ],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "real" },
+        aiOverviewProvider: {
+          mode: "dataforseo",
+          status: "real",
+          reason: "DataForSEO Live AI Mode request succeeded.",
+          environment: "live",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.aiOverviewProvider.environment).toBe("live");
+  });
+
   it("falls back to dummy data when the Python API response fails schema validation", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(

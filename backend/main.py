@@ -338,6 +338,7 @@ def analyze(payload: AnalyzeRequest):
         result.aiOverviewComparison,
         ai_overview_status,
         ai_overview_reason,
+        ai_overview_environment,
     ) = build_ai_overview_comparison(brand_name, ai_overview_mode)
     logger.info(
         "ai overview comparison complete: mode=%s status=%s",
@@ -360,7 +361,10 @@ def analyze(payload: AnalyzeRequest):
         sourceTypes=source_types,
         chunkCount=len(chunks),
         aiOverviewProvider=AIOverviewProviderInfo(
-            mode=ai_overview_mode, status=ai_overview_status, reason=ai_overview_reason
+            mode=ai_overview_mode,
+            status=ai_overview_status,
+            reason=ai_overview_reason,
+            environment=ai_overview_environment,
         ),
     )
     return result

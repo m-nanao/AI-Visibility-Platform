@@ -261,13 +261,15 @@ def test_analyze_ai_overview_mode_dataforseo_returns_unavailable_without_credent
     assert result.meta.aiOverviewProvider is not None
     assert result.meta.aiOverviewProvider.mode == "dataforseo"
     assert result.meta.aiOverviewProvider.status == "unavailable"
+    assert result.meta.aiOverviewProvider.environment == "unavailable"
     assert "not configured" in result.meta.aiOverviewProvider.reason
 
 
-def test_analyze_ai_overview_mode_dataforseo_sandbox_reason_reflects_credential_state_safely(monkeypatch):
+def test_analyze_ai_overview_mode_dataforseo_live_env_without_confirm_text_is_rejected_safely(monkeypatch):
     # No httpx mocking here on purpose: this test documents that the
-    # Live API is never reached even with credentials configured, by
-    # asserting on the "live" branch's reason — which is decided
+    # Live host is never reached when the manual confirmation gates
+    # aren't all satisfied (DATAFORSEO_LIVE_CONFIRM_TEXT is left unset
+    # here), by asserting on the rejection reason — which is decided
     # entirely by env vars, before any HTTP call would be attempted.
     monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
     monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
@@ -279,11 +281,64 @@ def test_analyze_ai_overview_mode_dataforseo_sandbox_reason_reflects_credential_
     assert response.status_code == 200
 
     result = AnalysisResult.model_validate(response.json())
+    assert result.meta.aiOverviewProvider.environment == "unavailable"
     reason = result.meta.aiOverviewProvider.reason
     assert "Live API" in reason
     assert "someone@example.com" not in reason
     assert "super-secret-password" not in reason
     # The password/login must not leak anywhere else in the response either.
+    raw_body = response.text
+    assert "super-secret-password" not in raw_body
+    assert "someone@example.com" not in raw_body
+
+
+def test_analyze_ai_overview_mode_dataforseo_live_env_with_all_gates_satisfied_is_reflected_in_response(
+    monkeypatch,
+):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", "ALLOW_DATAFORSEO_LIVE_ONCE")
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "items": [
+                            {"type": "ai_overview", "rank_absolute": 1, "markdown": "OpenAI is a well-known AI lab."}
+                        ]
+                    }
+                ]
+            }
+        ],
+    }
+
+    seen_urls = []
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    assert seen_urls == ["https://api.dataforseo.com/v3/serp/google/ai_mode/live/advanced"]
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "real"
+    assert result.meta.aiOverviewProvider.status == "real"
+    assert result.meta.aiOverviewProvider.environment == "live"
+    assert len(result.aiOverviewComparison) == 1
+    assert result.aiOverviewComparison[0].platform == "Google AI Mode (DataForSEO Live)"
+    assert result.aiOverviewComparison[0].mentioned is True
+    # credentials never leak into the response body.
     raw_body = response.text
     assert "super-secret-password" not in raw_body
     assert "someone@example.com" not in raw_body
@@ -324,6 +379,7 @@ def test_analyze_ai_overview_mode_dataforseo_sandbox_success_is_reflected_in_res
     assert len(result.aiOverviewComparison) == 1
     assert result.aiOverviewComparison[0].mentioned is True
     assert result.meta.aiOverviewProvider.status == "real"
+    assert result.meta.aiOverviewProvider.environment == "sandbox"
     # Other real sections must be unaffected by aiOverviewComparison's mode.
     assert result.meta.sections.summary == "real"
     assert result.meta.sections.cooccurrenceRanking == "real"
