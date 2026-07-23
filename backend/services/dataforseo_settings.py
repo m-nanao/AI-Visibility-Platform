@@ -28,6 +28,38 @@ logger = logging.getLogger(__name__)
 
 DataForSEOApiEnv = Literal["sandbox", "live"]
 
+# Which DataForSEO SERP endpoint to request. "google_ai_mode_live_advanced"
+# is the recommended default — manual verification against DataForSEO
+# Sandbox (see docs/07_decisions.md) confirmed that the Google Organic
+# endpoint does *not* reliably surface an "ai_overview" item for the
+# queries tried, while the AI Mode endpoint does. "google_organic_live_advanced"
+# is kept only for backwards compatibility with the previous
+# implementation. Note that "live" in both endpoint names is DataForSEO's
+# own naming for their instant-response request method — orthogonal to
+# the Sandbox/Live *environment* distinction (DATAFORSEO_API_ENV) this
+# codebase cares about; the actual HTTP host requested is always decided
+# by DATAFORSEO_API_ENV, never by this setting.
+DataForSEOSerpEndpoint = Literal["google_ai_mode_live_advanced", "google_organic_live_advanced"]
+DEFAULT_SERP_ENDPOINT: DataForSEOSerpEndpoint = "google_ai_mode_live_advanced"
+_VALID_SERP_ENDPOINTS: tuple[DataForSEOSerpEndpoint, ...] = (
+    "google_ai_mode_live_advanced",
+    "google_organic_live_advanced",
+)
+
+# Request parameters for the SERP call, all overridable via env vars.
+# Defaults match the exact combination manually verified to return an
+# "ai_overview" item for a "Vercel" query against DataForSEO Sandbox
+# (see docs/07_decisions.md): Japan/Japanese, desktop, Windows.
+DEFAULT_LOCATION_CODE = 2392  # DataForSEO location_code for "Japan"
+DEFAULT_LANGUAGE_CODE = "ja"
+DEFAULT_DEVICE = "desktop"
+_VALID_DEVICES: tuple[str, ...] = ("desktop", "mobile")
+DEFAULT_OS = "windows"
+# Not exhaustive of everything DataForSEO accepts, but covers the OS
+# values it documents for desktop (windows/macos/linux) and mobile
+# (android/ios); anything else falls back to the safe default.
+_VALID_OS_VALUES: tuple[str, ...] = ("windows", "macos", "linux", "android", "ios")
+
 # Base URLs for the two DataForSEO API environments. Only
 # SANDBOX_BASE_URL is ever actually requested by this codebase (see
 # services/dataforseo_client.py) — LIVE_BASE_URL is defined here for
@@ -65,12 +97,19 @@ class DataForSEOSettings:
     request_limit_per_analyze: int
     is_configured: bool
     can_use_live_api: bool
+    serp_endpoint: DataForSEOSerpEndpoint
+    location_code: int
+    language_code: str
+    device: str
+    os: str
 
     def __repr__(self) -> str:
         # Overridden so accidentally logging/printing this object (or
         # a dataclass default repr scan of it) can never show the
         # login value either, even though it's technically not the
-        # secret half of the credential pair.
+        # secret half of the credential pair. The SERP request
+        # parameters (endpoint/location/language/device/os) aren't
+        # secrets, so they're shown as-is.
         login_display = "<set>" if self.login else None
         return (
             "DataForSEOSettings("
@@ -80,7 +119,12 @@ class DataForSEOSettings:
             f"live_api_enabled={self.live_api_enabled}, "
             f"request_limit_per_analyze={self.request_limit_per_analyze}, "
             f"is_configured={self.is_configured}, "
-            f"can_use_live_api={self.can_use_live_api})"
+            f"can_use_live_api={self.can_use_live_api}, "
+            f"serp_endpoint={self.serp_endpoint!r}, "
+            f"location_code={self.location_code}, "
+            f"language_code={self.language_code!r}, "
+            f"device={self.device!r}, "
+            f"os={self.os!r})"
         )
 
 
@@ -127,6 +171,63 @@ def _resolve_request_limit() -> int:
         return MAX_REQUEST_LIMIT_PER_ANALYZE
 
     return value
+
+
+def _resolve_serp_endpoint() -> DataForSEOSerpEndpoint:
+    raw = os.environ.get("DATAFORSEO_SERP_ENDPOINT", DEFAULT_SERP_ENDPOINT).strip().lower()
+    if raw not in _VALID_SERP_ENDPOINTS:
+        logger.warning(
+            "DATAFORSEO_SERP_ENDPOINT=%r is not one of %s; falling back to %r",
+            raw,
+            _VALID_SERP_ENDPOINTS,
+            DEFAULT_SERP_ENDPOINT,
+        )
+        return DEFAULT_SERP_ENDPOINT
+    return raw  # type: ignore[return-value]
+
+
+def _resolve_location_code() -> int:
+    raw = os.environ.get("DATAFORSEO_LOCATION_CODE", str(DEFAULT_LOCATION_CODE)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "DATAFORSEO_LOCATION_CODE=%r is not an integer; falling back to %d",
+            raw,
+            DEFAULT_LOCATION_CODE,
+        )
+        return DEFAULT_LOCATION_CODE
+
+
+def _resolve_language_code() -> str:
+    raw = os.environ.get("DATAFORSEO_LANGUAGE_CODE", "").strip()
+    return raw or DEFAULT_LANGUAGE_CODE
+
+
+def _resolve_device() -> str:
+    raw = os.environ.get("DATAFORSEO_DEVICE", DEFAULT_DEVICE).strip().lower()
+    if raw not in _VALID_DEVICES:
+        logger.warning(
+            "DATAFORSEO_DEVICE=%r is not one of %s; falling back to %r",
+            raw,
+            _VALID_DEVICES,
+            DEFAULT_DEVICE,
+        )
+        return DEFAULT_DEVICE
+    return raw
+
+
+def _resolve_os() -> str:
+    raw = os.environ.get("DATAFORSEO_OS", DEFAULT_OS).strip().lower()
+    if raw not in _VALID_OS_VALUES:
+        logger.warning(
+            "DATAFORSEO_OS=%r is not one of %s; falling back to %r",
+            raw,
+            _VALID_OS_VALUES,
+            DEFAULT_OS,
+        )
+        return DEFAULT_OS
+    return raw
 
 
 @dataclass(frozen=True)
@@ -191,4 +292,9 @@ def get_dataforseo_settings() -> DataForSEOSettings:
         request_limit_per_analyze=request_limit_per_analyze,
         is_configured=is_configured,
         can_use_live_api=can_use_live_api,
+        serp_endpoint=_resolve_serp_endpoint(),
+        location_code=_resolve_location_code(),
+        language_code=_resolve_language_code(),
+        device=_resolve_device(),
+        os=_resolve_os(),
     )

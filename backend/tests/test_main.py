@@ -331,6 +331,63 @@ def test_analyze_ai_overview_mode_dataforseo_sandbox_success_is_reflected_in_res
     assert result.meta.sections.improvements == "real"
 
 
+def test_analyze_ai_overview_mode_dataforseo_uses_ai_mode_endpoint_by_default(monkeypatch):
+    # Mirrors the shape manually confirmed against DataForSEO Sandbox's
+    # AI Mode endpoint (see docs/07_decisions.md): item_types includes
+    # "ai_overview", and the item carries markdown + references rather
+    # than a plain "text" field.
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "item_types": ["ai_overview"],
+                        "items_count": 1,
+                        "items": [
+                            {
+                                "type": "ai_overview",
+                                "rank_group": 1,
+                                "markdown": "OpenAI is a well-known AI lab that builds ChatGPT.",
+                                "references": [
+                                    {"title": "OpenAI", "domain": "openai.com", "text": "Official site"}
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ],
+    }
+
+    seen_urls = []
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    assert seen_urls[0].endswith("/v3/serp/google/ai_mode/live/advanced")
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.sections.aiOverviewComparison == "real"
+    assert len(result.aiOverviewComparison) == 1
+    assert result.aiOverviewComparison[0].mentioned is True
+    assert result.aiOverviewComparison[0].rank == 1
+    assert result.aiOverviewComparison[0].platform == "Google AI Mode (DataForSEO Sandbox)"
+    # references are not surfaced verbatim in the summary.
+    assert "openai.com" not in result.aiOverviewComparison[0].summary
+
+
 def test_analyze_ai_overview_mode_dataforseo_sandbox_failure_does_not_break_analyze(monkeypatch):
     monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
     monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")

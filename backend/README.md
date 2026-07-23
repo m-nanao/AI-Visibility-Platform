@@ -296,7 +296,12 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 | `DATAFORSEO_PASSWORD` | 未設定 | DataForSEOアカウントのAPIパスワード。**実値は保持しない**（後述）。 |
 | `DATAFORSEO_API_ENV` | `sandbox` | `sandbox`/`live`。不正な値は`sandbox`にフォールバック（警告ログ付き）。 |
 | `DATAFORSEO_LIVE_API_ENABLED` | `false` | `true`のときのみLive API使用を許可する候補になる。 |
-| `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` | `1` | 1回の`/analyze`でDataForSEOへ投げてよい最大リクエスト数の上限値（将来の実装向け）。不正値・負値は`1`に、`10`（`MAX_REQUEST_LIMIT_PER_ANALYZE`）を超える値は`10`にフォールバックする。 |
+| `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` | `1` | 1回の`/analyze`でDataForSEOへ投げてよい最大リクエスト数の上限値（Sandbox接続は常に1リクエストのみのため現状未参照）。不正値・負値は`1`に、`10`（`MAX_REQUEST_LIMIT_PER_ANALYZE`）を超える値は`10`にフォールバックする。 |
+| `DATAFORSEO_SERP_ENDPOINT` | `google_ai_mode_live_advanced` | `google_ai_mode_live_advanced`（推奨・デフォルト）/`google_organic_live_advanced`（旧実装との互換用）。不正な値はデフォルトにフォールバック。詳細は下記「DataForSEO Sandbox接続」参照。 |
+| `DATAFORSEO_LOCATION_CODE` | `2392`（日本） | DataForSEOのSERPリクエストに使う`location_code`。整数変換できない値はデフォルトにフォールバック。 |
+| `DATAFORSEO_LANGUAGE_CODE` | `ja` | DataForSEOのSERPリクエストに使う`language_code`。空文字はデフォルトにフォールバック。 |
+| `DATAFORSEO_DEVICE` | `desktop` | `desktop`/`mobile`のみ許可。不正な値はデフォルトにフォールバック。 |
+| `DATAFORSEO_OS` | `windows` | `windows`/`macos`/`linux`/`android`/`ios`を想定（網羅的ではない）。不正な値はデフォルトにフォールバック。 |
 
 **`DataForSEOSettings`の安全設計**:
 
@@ -313,7 +318,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 1. 認証情報未設定 → 外部APIを呼ばず`[]`・`"unavailable"`、reason「DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).」
 2. `DATAFORSEO_API_ENV=live` → **`DATAFORSEO_LIVE_API_ENABLED`の値に関わらず**外部APIを呼ばず`[]`・`"unavailable"`、reason「Live API is not implemented in this task; only DataForSEO Sandbox (DATAFORSEO_API_ENV=sandbox) is supported.」
-3. `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済み → `dataforseo_client.fetch_ai_overview_sandbox()`を呼び出す。成功（AI Overview相当の項目を発見）すれば`"real"`・reasonは「DataForSEO Sandbox request succeeded.」、失敗すれば`[]`・`"unavailable"`・reasonはクライアントが返した安全な失敗理由（下記「DataForSEO Sandbox接続」参照）
+3. `DATAFORSEO_API_ENV=sandbox`かつ認証情報設定済み → `dataforseo_settings.py`から読んだ`serp_endpoint`/`location_code`/`language_code`/`device`/`os`を添えて`dataforseo_client.fetch_ai_overview_sandbox()`を呼び出す。成功（`ai_overview`タイプの項目を発見）すれば`"real"`・reasonは「DataForSEO Sandbox AI Mode request succeeded.」（endpointに応じて"AI Mode"/"Organic"が変わる）、失敗すれば`[]`・`"unavailable"`・reasonはクライアントが返した安全な失敗理由（下記「DataForSEO Sandbox接続」参照）
 
 いずれの場合も`/analyze`自体は常に200を返す——DataForSEO側の問題は`aiOverviewComparison`セクション1つだけに閉じ込められる。
 
@@ -321,28 +326,44 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 `dataforseo_settings.py`が認証情報・実行モードを読み取るだけなのに対し、こちらは実際にDataForSEO **Sandbox**へHTTP接続する唯一のモジュール。**Sandboxのみを呼び出し、Liveへは一切接続しない**（`LIVE_BASE_URL`を参照するコードパスがそもそも存在しない）。呼び出すかどうかの判断（`DATAFORSEO_API_ENV`・認証情報の有無）は呼び出し元の`ai_overview_provider.py`が行う。
 
-**エンドポイントの選定**: `/v3/serp/google/organic/live/advanced`（DataForSEOの命名で「Standard/Live」＝即時レスポンス方式のGoogle Organic SERP APIを指す。ここでの「live」はDataForSEO独自の呼び出し方式の名称であり、このプロジェクトが区別しているSandbox/Live**環境**とは別の軸——実装上は常にSandboxのホストへのみ向ける）を選んだ。理由:
+**エンドポイントの選定（`DATAFORSEO_SERP_ENDPOINT`）**: デフォルト・推奨は`google_ai_mode_live_advanced`（`/v3/serp/google/ai_mode/live/advanced`、Googleの「AI Mode」機能に対するDataForSEOのエンドポイント）。旧実装との互換用に`google_organic_live_advanced`（`/v3/serp/google/organic/live/advanced`）も選択できる。
 
-- Google Organic SERPのレスポンスは、Googleがそのクエリに対してAI Overviewを表示している場合、`items[]`内に`ai_overview`タイプの項目として同じレスポンスに含まれる（追加の課金階層なし）。
-- タスクの指示で名指しで避けるよう指定された`/v3/serp/google/ai_mode/live/advanced`（Google Organic検索とは別の「AI Mode」/`udm=50`という別製品。DataForSEOでの課金もより高い）は意図的に呼ばない。
-- **注意**: Google AI OverviewとGoogle AI Modeは別の機能であり、この選定はSandbox環境の実際のレスポンスで検証できていない（このプロジェクトの開発環境からは実際のDataForSEO APIへアクセスできないため）。Sandboxが期待通りのAI Overview相当のデータを返さない場合は、パーサーが「該当項目なし」として安全に`"unavailable"`にフォールバックする設計にしている。
+- DataForSEO Sandboxに対して手動で「Vercel」を`location_code=2392`（日本）・`language_code=ja`・`device=desktop`・`os=windows`の条件で検索したところ、`google_ai_mode_live_advanced`は`item_types: ["ai_overview"]`・`items[0].type == "ai_overview"`・`items[0].markdown`・`items[0].references`を含む結果を確実に返した。同条件で`google_organic_live_advanced`を試した際は`ai_overview`項目が確実には得られなかった（詳細は[07_decisions.md](../docs/07_decisions.md)参照）。このため今回、標準エンドポイントを`google_organic_live_advanced`から`google_ai_mode_live_advanced`へ変更した。
+- どちらのエンドポイント名にも含まれる「live」はDataForSEO独自の呼び出し方式（即時レスポンス）の名称であり、このプロジェクトが区別しているSandbox/Live**環境**（`DATAFORSEO_API_ENV`）とは別の軸——どちらのエンドポイントを選んでも、実際にリクエストするホストは常に`SANDBOX_BASE_URL`（`https://sandbox.dataforseo.com`）のみで、Liveホストを構築するコードパスは存在しない。
+- **注意**: Google AI OverviewとGoogle AI Modeは別の機能・製品である。本実装は「DataForSEOの`ai_mode`エンドポイントが返す`ai_overview`タイプの項目」を、このMVPの「AI Overview比較」の目的においては同等に扱っている。Sandboxが期待通りのデータを返さない場合は、パーサーが「該当項目なし」として安全に`"unavailable"`にフォールバックする設計にしている。
+
+**リクエストパラメータ（`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`）**: いずれも環境変数で上書き可能で、デフォルトは手動検証で成功した組み合わせ（`location_code=2392`・`language_code=ja`・`device=desktop`・`os=windows`）。不正値は安全なデフォルトへフォールバックする（`device`は`desktop`/`mobile`のみ、`os`は`windows`/`macos`/`linux`/`android`/`ios`のみ許可）。
 
 **認証**: `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`によるHTTP Basic Auth。`login`/`password`はリクエスト構築の直前にのみメモリ上に存在し、ログ・エラーメッセージ・レスポンスのいずれにも一切出力しない。
 
 **キーワード**: MVPでは`brand_name`をそのままキーワードとして1回だけ送信する（「{ブランド名} 料金」のような複合キーワードや複数キーワードのバッチ送信は対象外）。
 
+**実際に送信するリクエストボディ**（`DATAFORSEO_SERP_ENDPOINT`で選んだエンドポイントの`https://sandbox.dataforseo.com`へPOST）:
+
+```json
+[
+  {
+    "keyword": "<brand_name>",
+    "location_code": 2392,
+    "language_code": "ja",
+    "device": "desktop",
+    "os": "windows"
+  }
+]
+```
+
 **リクエスト/レスポンス変換**（既存の`AIOverviewComparisonItem`型は変更していない）:
 
 | フィールド | 内容 |
 | --- | --- |
-| `platform` | `"Google AI Overview (DataForSEO Sandbox)"` |
-| `mentioned` | レスポンス中のAI Overview項目のテキストに`brand_name`が含まれるか（大文字小文字を区別しない） |
-| `rank` | 項目の`rank_absolute`（整数として取得できた場合のみ、それ以外は`None`） |
-| `summary` | 項目テキストの短い抜粋（最大200文字、超える場合は`…`で省略）。**レスポンスの生データ全文は絶対に含めない** |
+| `platform` | `"Google AI Mode (DataForSEO Sandbox)"` |
+| `mentioned` | レスポンス中の`ai_overview`項目の`markdown`/`text`、ネストされた`items[]`の`markdown`/`text`、および`references[]`の`title`/`text`/`domain`を連結した文字列に`brand_name`が含まれるか（大文字小文字を区別しない） |
+| `rank` | 項目の`rank_absolute`（整数として取得できた場合）、なければ`rank_group`（同様）、いずれもなければ`None` |
+| `summary` | `markdown`を優先し、なければ`text`から作る短い抜粋（最大200文字、超える場合は`…`で省略）。markdownの画像記法・リンク記法は軽く平文化する。**referencesの一覧やレスポンスの生データ全文は含めない** |
 
-**失敗時の扱い**: ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外・AI Overview相当の項目が見つからない、のいずれの場合も例外を送出せず`DataForSEOSandboxResult(success=False, reason="...")`を返す。`reason`は常に安全（認証情報を含まない）な完全な文で、`ai_overview_provider.py`はこれをそのまま`aiOverviewComparison`の`"unavailable"`理由として使う。タイムアウトは12秒（`REQUEST_TIMEOUT_SECONDS`）。
+**失敗時の扱い**: ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外・`ai_overview`タイプの項目が見つからない、のいずれの場合も例外を送出せず`DataForSEOSandboxResult(success=False, reason="...")`を返す。`reason`は常に安全（認証情報を含まない）な完全な文で、`ai_overview`項目が見つからない場合は選択中のエンドポイント名も含める（例:「DataForSEO Sandbox response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」）。`ai_overview_provider.py`はこれをそのまま`aiOverviewComparison`の`"unavailable"`理由として使う。タイムアウトは12秒（`REQUEST_TIMEOUT_SECONDS`）。
 
-**未検証の前提（既知の制約）**: DataForSEO Sandboxの実際のレスポンス形状（特にAI Overview項目の正確なキー名）は、この開発環境から実APIへアクセスできないため検証できていない。パーサーは`isinstance()`による防御的な実装にしており、想定外の形状は例外にせず「該当項目なし」（`"unavailable"`）として扱う。
+**検証済みの前提・既知の制約**: 上記の`google_ai_mode_live_advanced`エンドポイント・パラメータの組み合わせでSandboxが`ai_overview`項目を返すことは手動で確認済み。ただし、これはSandbox環境での一時点の確認であり、DataForSEO側の仕様変更やクエリ内容によって挙動が変わる可能性は残る。パーサーは`isinstance()`による防御的な実装にしており、想定外の形状は例外にせず「該当項目なし」（`"unavailable"`）として扱う。
 
 **運用上の注意（未実装のこと）**
 
@@ -383,6 +404,7 @@ pytest
 - `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ認証情報未設定の場合、`httpx.post`が一切呼ばれないまま`aiOverviewComparison`が`"unavailable"`・`[]`になり、`meta.aiOverviewProvider.reason`に「not configured」の旨が含まれること
 - `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ`DATAFORSEO_API_ENV=live`（`DATAFORSEO_LIVE_API_ENABLED=true`・認証情報設定済みでも）の場合、`reason`に「Live API」の旨が安全に反映されつつ`login`/`password`の値そのものは`reason`にもレスポンス本文全体にも一切含まれないこと（Sandbox/Liveの区別はこのテストでは`httpx`をmonkeypatchせず、env変数だけでLive分岐に到達し外部呼び出し自体が起きないことを確認している）
 - `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ`DATAFORSEO_API_ENV=sandbox`・認証情報設定済みで、`httpx.post`をmonkeypatchしてAI Overview相当の項目を含む成功レスポンスを返すと、`aiOverviewComparison`が`"real"`・1件・`mentioned: true`になり、他の`"real"`セクション（`summary`/`cooccurrenceRanking`/`contextAnalysis`/`improvements`）には影響しないこと
+- デフォルト設定（`DATAFORSEO_SERP_ENDPOINT`未設定）の場合、実際にリクエストされるURLが`/v3/serp/google/ai_mode/live/advanced`で終わること。手動検証で確認した`item_types: ["ai_overview"]`・`markdown`・`references`を含むレスポンス形状をmonkeypatchで再現し、`rank`（`rank_group`由来）・`platform`（`"Google AI Mode (DataForSEO Sandbox)"`）・`mentioned`が正しく変換されること、`summary`に`references`のドメイン名が含まれないこと
 - 同条件で`httpx.post`をmonkeypatchしてネットワークタイムアウトを発生させると、`/analyze`は200のまま`aiOverviewComparison`が`"unavailable"`・`[]`になり、他の`"real"`セクションは影響を受けないこと（Sandbox接続失敗が`/analyze`全体をクラッシュさせないことの回帰防止）
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、リクエストの`aiOverviewMode`（例:`"off"`）は無視され、環境変数のデフォルトのままになること
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`のとき、リクエストの`aiOverviewMode`が実際に反映されること
@@ -513,16 +535,21 @@ pytest
 - 同条件でSandbox呼び出しがネットワークエラーで失敗しても、例外を送出せず空配列と`"unavailable"`ステータスが返ること
 - `dataforseo`モードで`DATAFORSEO_API_ENV=live`の場合、`httpx.post`が一切呼ばれないまま空配列と`"unavailable"`ステータス・「Live API」「not implemented」を含む`reason`が返ること（`DATAFORSEO_LIVE_API_ENABLED=true`でも同じ）
 - `dataforseo`モードの`reason`に`login`/`password`の実値が一切含まれないこと
+- `dataforseo`モードがデフォルトで`/v3/serp/google/ai_mode/live/advanced`エンドポイントを呼ぶこと、`items[0].platform`が`"Google AI Mode (DataForSEO Sandbox)"`になること
+- `DATAFORSEO_SERP_ENDPOINT`/`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`の設定値が、実際にリクエストされるURL・JSONボディへ正しく反映されること
 
 `tests/test_dataforseo_client.py` では `fetch_ai_overview_sandbox()` を直接テストしている（すべて`httpx.post`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
-- `SANDBOX_BASE_URL` + `/v3/serp/google/organic/live/advanced`（`ORGANIC_LIVE_ADVANCED_PATH`）へリクエストすること（Liveのホストへは接続しないことの回帰防止でもある）
+- デフォルトでは`SANDBOX_BASE_URL` + `/v3/serp/google/ai_mode/live/advanced`（`AI_MODE_LIVE_ADVANCED_PATH`）へリクエストすること、`endpoint="google_organic_live_advanced"`を明示すると`ORGANIC_LIVE_ADVANCED_PATH`へリクエストすること（Liveのホストへは接続しないことの回帰防止でもある）
 - 渡した`login`/`password`でHTTP Basic Authが構築されること
-- レスポンス内の`ai_overview`タイプの項目からブランド名の言及有無・`rank_absolute`・テキスト抜粋を正しく変換すること（入れ子の`items[].text`も結合されること）
+- `keyword`/`location_code`/`language_code`/`device`/`os`がリクエストボディに正しく含まれること
+- レスポンス内の`ai_overview`タイプの項目からブランド名の言及有無・`rank_absolute`（優先）/`rank_group`（フォールバック）・`markdown`優先のテキスト抜粋を正しく変換すること（入れ子の`items[].text`/`.markdown`、`references[].title`/`.text`/`.domain`も`mentioned`判定に使われるが`summary`には含まれないことも確認）
 - ブランド名が項目テキストに含まれない場合、`mentioned: false`になること
-- `ai_overview`タイプの項目が存在しない場合、`success: false`・「no supported AI overview item was found」を含む`reason`になること
+- `ai_overview`タイプの項目が存在しない場合、`success: false`・「no ai_overview item was found」と選択中のエンドポイント名（例:「endpoint=google_ai_mode_live_advanced」）を含む`reason`になること
+- 成功時の`reason`がエンドポイントラベル（「AI Mode」/「Organic」）を含むこと（例:「DataForSEO Sandbox AI Mode request succeeded.」）
+- markdownの画像記法・リンク記法が`summary`から軽く除去されること
 - ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外、のいずれの場合も例外を送出せず`success: false`になること（`httpx.HTTPError`以外の想定外の例外はこのクライアントの設計上あえて送出させたままにしていることも確認）
-- いずれの失敗パターンでも`reason`に`login`/`password`の実値が含まれないこと
+- いずれの失敗パターン・成功パターンでも`reason`に`login`/`password`の実値が含まれないこと
 - `summary`が短い抜粋（`_SUMMARY_MAX_CHARS`＝200文字）に切り詰められること
 - 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
 
@@ -535,6 +562,11 @@ pytest
 - `DATAFORSEO_API_ENV=live`でも`DATAFORSEO_LIVE_API_ENABLED=true`でなければ`can_use_live_api=false`のままであること
 - 認証情報が未設定の場合、`DATAFORSEO_API_ENV=live`かつ`DATAFORSEO_LIVE_API_ENABLED=true`でも`can_use_live_api=false`であること（3条件すべてが必要）
 - `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`が未設定/不正値/負値の場合はデフォルト（1）にフォールバックすること、上限（10）を超える値は上限にキャップされること
+- `DATAFORSEO_SERP_ENDPOINT`未設定では`"google_ai_mode_live_advanced"`になること、`"google_organic_live_advanced"`を明示的に設定できること、不正な値はデフォルトにフォールバックすること
+- `DATAFORSEO_LOCATION_CODE`未設定では`2392`になること、整数変換できない値はデフォルトにフォールバックすること、有効な値は上書きされること
+- `DATAFORSEO_LANGUAGE_CODE`未設定・空文字では`"ja"`になること
+- `DATAFORSEO_DEVICE`未設定では`"desktop"`になること、`"mobile"`に設定できること、不正な値は`"desktop"`にフォールバックすること
+- `DATAFORSEO_OS`未設定では`"windows"`になること、`"android"`等の有効な値に設定できること、不正な値は`"windows"`にフォールバックすること
 
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 

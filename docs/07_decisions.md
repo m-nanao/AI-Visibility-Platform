@@ -596,3 +596,34 @@ DataForSEO本接続（`aiOverviewComparison`の`dataforseo`モードを実際の
 - DataForSEO Live APIへの接続、Standard方式（`task_post`/`task_get`）、複数キーワード対応は引き続き未実装（[05_tasks.md](./05_tasks.md) Phase 3.1参照）。
 
 **状態**: 確定（Sandbox接続のみのMVP実装。Live API接続は別タスクとして今後検討する）
+
+## 2026-07-23 — DataForSEO SandboxのSERPエンドポイントをGoogle Organic SERPからGoogle AI Modeへ切り替える
+
+**決定**
+
+`dataforseo`モードが呼ぶDataForSEO SandboxのSERPエンドポイントの標準を、前回決定した`/v3/serp/google/organic/live/advanced`（`google_organic_live_advanced`）から`/v3/serp/google/ai_mode/live/advanced`（`google_ai_mode_live_advanced`）へ変更した。加えて、`location_code`/`language_code`/`device`/`os`のリクエストパラメータを環境変数で設定できるようにした（`DATAFORSEO_SERP_ENDPOINT`/`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`、いずれも未設定・不正値は安全なデフォルトへフォールバック）。**今回もLive本番ホスト（`api.dataforseo.com`）へは一切接続しない**——エンドポイント名の「live」は前回同様、DataForSEO独自の即時応答方式の名称であり、`DATAFORSEO_API_ENV`（Sandbox/Live環境選択）とは別軸のまま変わらない。
+
+- 新しい標準: `google_ai_mode_live_advanced`（デフォルト、推奨）。
+- 後方互換用に`google_organic_live_advanced`も`DATAFORSEO_SERP_ENDPOINT`で選択可能なまま残す。
+- 新しいデフォルトパラメータ: `location_code=2392`（日本）・`language_code=ja`・`device=desktop`・`os=windows`。
+
+**理由**
+
+- 前回の決定時点では、この開発環境からDataForSEO Sandboxへ実際に接続して検証することができず、「Google Organic SERPのレスポンスに`ai_overview`タイプの項目が含まれるはず」という文書ベースの推測だけでエンドポイントを選んでいた。
+- 今回、Vercel（Next.js）→Render（FastAPI）→DataForSEO Sandboxという実際の経路で手動確認を行ったところ、認証・Sandbox接続自体は成功したが、`google_organic_live_advanced`のレスポンスには`ai_overview`タイプの項目が見つからず、`meta.aiOverviewProvider`は「no supported AI overview item was found」を伴う`"unavailable"`のままだった。
+- 一方、DataForSEOの管理画面から`google/ai_mode/live/advanced`に対して`location_code=2392`・`language_code=ja`・`device=desktop`・`os=windows`で「Vercel」を検索したところ、`item_types: ["ai_overview"]`・`items_count: 1`・`items[0].type == "ai_overview"`・`items[0].markdown`（AI Overview本文）・`items[0].references`（引用元一覧）を含む結果が確実に得られた。
+- この結果を踏まえ、実際に`ai_overview`タイプの項目を返すことが手動で確認できたエンドポイント・パラメータの組み合わせを新しい標準にする方が、「理論上ありえるはず」という推測に基づく前回の選択より確実である。
+- **Google AI OverviewとGoogle AI Modeは別のGoogle機能・製品である**ことは変わらず認識している。DataForSEOの`ai_mode`エンドポイントが返す`ai_overview`タイプの項目を、このMVPの「AI Overview比較」という比較目的においては同等に扱う、という単純化を今回も維持している（本来のGoogle AI Overview機能そのものを検証したものではない）。
+- パラメータ（location/language/device/os）を環境変数化したのは、地域・言語・デバイスによってDataForSEOが返す結果が変わりうるため、今回確認した組み合わせ以外も将来試せるようにする狙い。
+
+**影響**
+
+- `backend/services/dataforseo_settings.py`: `DataForSEOSerpEndpoint`型・`DEFAULT_SERP_ENDPOINT`（`google_ai_mode_live_advanced`）・`DATAFORSEO_SERP_ENDPOINT`/`DATAFORSEO_LOCATION_CODE`/`DATAFORSEO_LANGUAGE_CODE`/`DATAFORSEO_DEVICE`/`DATAFORSEO_OS`の解決関数・`DataForSEOSettings`への対応フィールド追加。既存の認証・Sandbox/Live判定ロジックは変更なし。
+- `backend/services/dataforseo_client.py`: `AI_MODE_LIVE_ADVANCED_PATH`（新標準）を追加、`ORGANIC_LIVE_ADVANCED_PATH`は互換用に残す。`fetch_ai_overview_sandbox()`が`endpoint`/`device`/`os_name`引数を受け取るようになり、リクエストボディに`device`/`os`を追加。パーサーは`rank_absolute`優先・`rank_group`フォールバック、`markdown`優先・`text`フォールバックでsummaryを作成し、`mentioned`判定には`markdown`/`text`に加え入れ子`items[]`・`references[].title/.text/.domain`も使う（`references`自体は`summary`には含めない）。reason文言にエンドポイントラベル（「AI Mode」/「Organic」）・エンドポイント名を含めるようにした。
+- `backend/services/ai_overview_provider.py`: `_run_dataforseo_mode()`が設定から読んだ`serp_endpoint`/`location_code`/`language_code`/`device`/`os`を`fetch_ai_overview_sandbox()`へ渡すようになった。`AIOverviewComparisonItem.platform`を`"Google AI Overview (DataForSEO Sandbox)"`から`"Google AI Mode (DataForSEO Sandbox)"`へ変更（画面上の意味として、DataForSEOのAI Modeエンドポイントから得た結果であることを明示する方が誤解が少ないと判断）。
+- `.env.example`: 新しい5つの環境変数を追加（実際の値は書かない）。
+- テスト（`test_dataforseo_settings.py`/`test_dataforseo_client.py`/`test_ai_overview_provider.py`/`test_main.py`）はすべて`httpx.post`をmonkeypatchで差し替え、実際のDataForSEO APIへは一切接続していない。
+- `meta.aiOverviewProvider`の形状（`{mode, status, reason}`）・`AIOverviewComparisonItem`の型自体は変更しておらず、フロントの型・Zodスキーマの変更は不要だった。
+- DataForSEO Live APIへの接続、Standard方式（`task_post`/`task_get`）、複数キーワード対応は引き続き未実装。
+
+**状態**: 確定（Sandbox・AI Modeエンドポイントでの実装。Live API接続は別タスクとして今後検討する）

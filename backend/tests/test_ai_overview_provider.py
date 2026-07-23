@@ -66,6 +66,11 @@ def _clear_dataforseo_env(monkeypatch):
         "DATAFORSEO_PASSWORD",
         "DATAFORSEO_API_ENV",
         "DATAFORSEO_LIVE_API_ENABLED",
+        "DATAFORSEO_SERP_ENDPOINT",
+        "DATAFORSEO_LOCATION_CODE",
+        "DATAFORSEO_LANGUAGE_CODE",
+        "DATAFORSEO_DEVICE",
+        "DATAFORSEO_OS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -123,7 +128,67 @@ def test_dataforseo_mode_sandbox_success_reports_real_status(monkeypatch):
     assert status == "real"
     assert len(items) == 1
     assert items[0].mentioned is True
+    assert items[0].platform == "Google AI Mode (DataForSEO Sandbox)"
     assert "sandbox" in reason.lower() or "Sandbox" in reason
+
+
+def test_dataforseo_mode_calls_the_ai_mode_endpoint_by_default(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    seen_urls = []
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        payload = {"status_code": 20000, "tasks": [{"result": [{"items": []}]}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert len(seen_urls) == 1
+    assert seen_urls[0].endswith("/v3/serp/google/ai_mode/live/advanced")
+
+
+def test_dataforseo_mode_forwards_endpoint_location_language_device_os_settings(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+    monkeypatch.setenv("DATAFORSEO_SERP_ENDPOINT", "google_organic_live_advanced")
+    monkeypatch.setenv("DATAFORSEO_LOCATION_CODE", "2840")
+    monkeypatch.setenv("DATAFORSEO_LANGUAGE_CODE", "en")
+    monkeypatch.setenv("DATAFORSEO_DEVICE", "mobile")
+    monkeypatch.setenv("DATAFORSEO_OS", "android")
+
+    seen_urls = []
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        seen_bodies.append(kwargs.get("json"))
+        payload = {"status_code": 20000, "tasks": [{"result": [{"items": []}]}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert seen_urls[0].endswith("/v3/serp/google/organic/live/advanced")
+    assert seen_bodies == [
+        [
+            {
+                "keyword": "Acme",
+                "location_code": 2840,
+                "language_code": "en",
+                "device": "mobile",
+                "os": "android",
+            }
+        ]
+    ]
 
 
 def test_dataforseo_mode_sandbox_failure_reports_unavailable_without_crashing(monkeypatch):
