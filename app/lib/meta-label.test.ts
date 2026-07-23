@@ -92,6 +92,30 @@ describe("getSectionStatusSummary", () => {
       "共起語のみ実計算、その他は開発用データ",
     );
   });
+
+  it("calls out a DataForSEO Live aiOverviewComparison separately from both 実計算 and Sandbox", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      sections: {
+        summary: "real",
+        cooccurrenceRanking: "real",
+        contextAnalysis: "real",
+        aiOverviewComparison: "real",
+        improvements: "real",
+      },
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Live AI Mode request succeeded.",
+        environment: "live",
+      },
+    };
+
+    const summary = getSectionStatusSummary(meta);
+    expect(summary).not.toBe("すべて実計算");
+    expect(summary).toContain("AI Overview比較はDataForSEO Live");
+    expect(summary).not.toContain("DataForSEO Sandbox");
+  });
 });
 
 describe("getAiOverviewProviderStatusDisplay", () => {
@@ -160,6 +184,87 @@ describe("getAiOverviewProviderStatusDisplay", () => {
     expect(display?.label).toBe("DataForSEO 未取得");
     expect(display?.tone).toBe("neutral");
     expect(display?.description).not.toContain("DATAFORSEO_LOGIN");
+  });
+
+  it("describes environment=sandbox explicitly the same way as the mode/status fallback", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Sandbox AI Mode request succeeded.",
+        environment: "sandbox",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("DataForSEO Sandbox");
+    expect(display?.tone).toBe("caution");
+    expect(display?.caution).toContain("本番");
+  });
+
+  it("describes environment=live with a distinct label and a cost-risk caution", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Live AI Mode request succeeded.",
+        environment: "live",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("DataForSEO Live");
+    expect(display?.tone).toBe("caution");
+    expect(display?.label).not.toBe("DataForSEO Sandbox");
+    expect(display?.caution).toContain("費用");
+  });
+
+  it("describes environment=unavailable as not fetched, even when it came from a rejected Live attempt", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "unavailable",
+        reason: "DataForSEO Live API is disabled. Set all manual live confirmation gates to enable one manual request.",
+        environment: "unavailable",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("DataForSEO 未取得");
+    expect(display?.tone).toBe("neutral");
+  });
+
+  it("describes environment=off as disabled, mirroring the mode=off fallback", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "off",
+        status: "unavailable",
+        reason: "AI Overview comparison is disabled (AI_OVERVIEW_PROVIDER_MODE=off).",
+        environment: "off",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("無効");
+  });
+
+  it("falls back to inferring sandbox from mode/status when environment is absent (older-backend compatibility)", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Sandbox AI Mode request succeeded.",
+        // environment intentionally omitted.
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.label).toBe("DataForSEO Sandbox");
   });
 });
 

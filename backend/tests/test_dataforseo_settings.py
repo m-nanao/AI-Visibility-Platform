@@ -1,4 +1,5 @@
 from services.dataforseo_settings import (
+    DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED,
     DEFAULT_DEVICE,
     DEFAULT_LANGUAGE_CODE,
     DEFAULT_LOCATION_CODE,
@@ -16,6 +17,7 @@ def _clear_dataforseo_env(monkeypatch):
         "DATAFORSEO_PASSWORD",
         "DATAFORSEO_API_ENV",
         "DATAFORSEO_LIVE_API_ENABLED",
+        "DATAFORSEO_LIVE_CONFIRM_TEXT",
         "DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE",
         "DATAFORSEO_SERP_ENDPOINT",
         "DATAFORSEO_LOCATION_CODE",
@@ -24,6 +26,15 @@ def _clear_dataforseo_env(monkeypatch):
         "DATAFORSEO_OS",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def _set_all_live_gates(monkeypatch):
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
 
 
 def test_is_configured_false_when_credentials_are_unset(monkeypatch):
@@ -291,3 +302,124 @@ def test_os_falls_back_to_windows_for_invalid_value(monkeypatch):
     settings = get_dataforseo_settings()
 
     assert settings.os == "windows"
+
+
+# --- is_sandbox_env / is_live_env -------------------------------------------
+
+
+def test_is_sandbox_env_true_and_is_live_env_false_when_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_sandbox_env is True
+    assert settings.is_live_env is False
+
+
+def test_is_live_env_true_and_is_sandbox_env_false_when_api_env_is_live(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_live_env is True
+    assert settings.is_sandbox_env is False
+
+
+# --- is_live_allowed_for_manual_check ----------------------------------------
+
+
+def test_is_live_allowed_for_manual_check_false_when_confirm_text_is_unset(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+    # DATAFORSEO_LIVE_CONFIRM_TEXT deliberately left unset.
+
+    settings = get_dataforseo_settings()
+
+    assert settings.live_confirm_text_matches is False
+    assert settings.is_live_allowed_for_manual_check is False
+
+
+def test_is_live_allowed_for_manual_check_false_when_confirm_text_does_not_match(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", "allow_dataforseo_live_once")  # wrong case
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.live_confirm_text_matches is False
+    assert settings.is_live_allowed_for_manual_check is False
+
+
+def test_is_live_allowed_for_manual_check_false_when_live_api_enabled_is_false(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "false")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_live_allowed_for_manual_check is False
+
+
+def test_is_live_allowed_for_manual_check_false_when_request_limit_is_not_one(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "2")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_live_allowed_for_manual_check is False
+
+
+def test_is_live_allowed_for_manual_check_false_when_credentials_are_missing(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+    # DATAFORSEO_LOGIN/PASSWORD deliberately left unset.
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_configured is False
+    assert settings.is_live_allowed_for_manual_check is False
+
+
+def test_is_live_allowed_for_manual_check_false_when_api_env_is_sandbox_even_with_other_gates_set(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_live_allowed_for_manual_check is False
+
+
+def test_is_live_allowed_for_manual_check_true_only_when_every_gate_is_satisfied(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    assert settings.is_live_allowed_for_manual_check is True
+
+
+def test_live_confirm_text_value_never_appears_in_repr_or_str(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+
+    settings = get_dataforseo_settings()
+
+    # Only the boolean match result is exposed via repr/str — the
+    # confirm text isn't a secret, but there's no need to echo it back
+    # either, and this guards against ever adding a field that does.
+    assert DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED not in repr(settings)
+    assert DATAFORSEO_LIVE_CONFIRM_TEXT_REQUIRED not in str(settings)
