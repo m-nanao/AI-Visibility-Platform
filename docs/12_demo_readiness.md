@@ -19,6 +19,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 - AI Overview取得モードselector（検証用UI、`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR`）
 - ChatGPT回答の安定化（`CHATGPT_TEMPERATURE`、構造化プロンプト）
 - 短いAI Overview / ChatGPT本文の全文表示、長文のみ「続きを見る」
+- AI Overview取得モードの`dataforseo_sandbox`/`dataforseo_live`明示選択（`DATAFORSEO_API_ENV`の値に依存せずSandbox/Liveを画面から明示的に選べる。Liveは既存の5つの手動確認用ゲートがすべて揃った場合のみ実行）
 
 ## 2. 次フェーズ扱い（明日は見せない）
 
@@ -62,7 +63,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 | `DATAFORSEO_OS` | `windows` | |
 | `DATAFORSEO_LOGIN` | Renderに設定済みの値 | このファイルには書かない |
 | `DATAFORSEO_PASSWORD` | Renderに設定済みの値 | このファイルには書かない |
-| `AI_OVERVIEW_PROVIDER_MODE` | `dataforseo` | デモではdataforseoモードを既定にし、画面selectorで一時的にoff等へ切り替えて見せる |
+| `AI_OVERVIEW_PROVIDER_MODE` | `dataforseo_sandbox` | デモでは明示的なSandboxモードを既定にし、画面selectorで一時的にoff等へ切り替えて見せる。`dataforseo`（env駆動の旧互換）よりも`dataforseo_sandbox`/`dataforseo_live`の明示指定を推奨 |
 | `ALLOW_AI_OVERVIEW_MODE_OVERRIDE` | `true` | 画面selectorでの上書きを許可 |
 
 #### ChatGPT / OpenAI
@@ -92,15 +93,17 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 
 ## 5. デモ時の画面設定
 
+「AI Overview取得モード（検証用）」selectorには`dataforseo_sandbox`（DataForSEO Sandbox）・`dataforseo_live`（DataForSEO Live）が表示される（2026-07-28追加、明示指定を推奨。env駆動の旧互換`dataforseo`も選択肢としては残っている）。
+
 ### 5.1 安全に見せる基本設定
 
 | Selector | 値 |
 | --- | --- |
-| AI Overview取得モード | `dataforseo` |
+| AI Overview取得モード | `dataforseo_sandbox` |
 | ChatGPT観測モード | `openai` |
 
 この状態では:
-- DataForSEOはSandbox（Live APIは使わない）
+- DataForSEOはSandbox（`DATAFORSEO_API_ENV`の値に関わらず常にSandbox、Live APIは使わない）
 - ChatGPTはOpenAI APIで1問観測
 - Google AI Mode Sandboxカード + ChatGPTカードの両方が表示される
 
@@ -119,12 +122,21 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 
 | Selector | 値 |
 | --- | --- |
-| AI Overview取得モード | `dataforseo` |
+| AI Overview取得モード | `dataforseo_sandbox` |
 | ChatGPT観測モード | `off` |
 
 この状態では:
 - DataForSEO Sandboxカードだけ確認できる
 - OpenAI APIは呼ばれない（課金なし）
+
+### 5.4 DataForSEO Liveを明示的に確認したい場合（費用が発生し得るため通常のデモでは使わない）
+
+| Selector | 値 |
+| --- | --- |
+| AI Overview取得モード | `dataforseo_live` |
+| ChatGPT観測モード | 任意 |
+
+この状態でも、Render側の5つの手動確認用ゲート（`DATAFORSEO_API_ENV=live`・`DATAFORSEO_LIVE_API_ENABLED=true`・`DATAFORSEO_LIVE_CONFIRM_TEXT=ALLOW_DATAFORSEO_LIVE_ONCE`・`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE=1`・認証情報設定済み）が**すべて**揃っていない限り、DataForSEO Liveへは接続されず`unavailable`になる（課金は発生しない）。ゲートが揃っている場合のみ実際にLive本番APIへ接続され費用が発生し得るため、依頼者へのデモ本番中に明示的な許可なくこの状態にしないこと。
 
 ## 6. デモ用入力例
 
@@ -177,7 +189,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 ## 9. 既知の制約（依頼者に聞かれたら説明する）
 
 - **これはChatGPTアプリ画面そのものの内部認識を再現するものではない。** OpenAI APIのモデルへの1問の質問と回答を「ChatGPT相当モデルの観測結果」として表示している（詳細は[07_decisions.md](./07_decisions.md)）。
-- DataForSEO **Sandbox**のレスポンスは接続確認用のテストデータであり、実際の本番SERPを反映したものではない（Live接続時のみ実際の本番データだが、費用が発生し得るため今回のデモでは使わない）。
+- DataForSEO **Sandbox**のレスポンスは接続確認用のテストデータであり、実際の本番SERPを反映したものではない（Live接続時のみ実際の本番データだが、費用が発生し得るため今回のデモでは使わない）。`dataforseo_live`を明示的に選んでも、Render側の5つの手動確認用ゲートがすべて揃っていない限り実際には接続されない（安全設計）。
 - `visibilityScore`・改善提案はMVP用のルールベース簡易処理であり、AI/LLMによる高度な分析ではない（詳細は[11_architecture_v1.md](./11_architecture_v1.md)）。
 - 分析結果は永続化されない（DB未接続、画面をリロードすると消える）。
 - Render無料プランのためコールドスタートがある（スリープ復帰に約20〜25秒。この間はダミーデータにフォールバックすることがある。詳細は[09_deployment.md](./09_deployment.md)「コールドスタートに関する注意」）。**デモ直前に一度アクセスして起こしておくことを推奨する。**
