@@ -135,6 +135,7 @@
 - **1 analyzeあたりの呼び出し回数**: 常に最大1回。DataForSEOの呼び出し回数・条件（`backend/services/dataforseo_*.py`）には一切影響しない。
 - `meta.chatgptProvider`（`{mode, status, reason, environment}`、`meta.aiOverviewProvider`とは独立）で実際に使われたmodeと理由を報告する。`reason`にAPIキーの値そのものが含まれることは絶対にない。
 - **デモ・検証時の回答安定化（`CHATGPT_TEMPERATURE`、2026-07-28追加）**: OpenAI API呼び出しの`temperature`をデフォルト`0.2`（0.0〜1.0、範囲外・不正値は`0.2`にフォールバック）に設定し、同じブランド名に対する回答のばらつきを抑える。合わせてsystem/userプロンプトを構造化し、「何を提供しているか／主な利用者または用途／代表的な特徴や強み」の3観点を含む3〜5文程度の自然文（箇条書き禁止、参照元・URLなし）で回答するよう指示するようにした。**呼び出し回数（1 analyzeあたり最大1回）・安全ゲート・references取得の対象外扱いはいずれも変更していない**。
+- **gpt-5系モデルではtemperatureを送らない（2026-07-28追加）**: `CHATGPT_MODEL=gpt-5-mini` + `CHATGPT_TEMPERATURE=0.2`の組み合わせでOpenAI Responses APIがHTTP 400を返し、ChatGPTカードが表示されない不具合が判明した（`gpt-4.1-mini`では同じ設定で正常動作）。`backend/services/chatgpt_client.py`にモデル名判定helper（`should_send_temperature()`）を追加し、モデル名（大文字小文字を区別しない）が`"gpt-5"`から始まる場合はリクエストボディへ`temperature`キー自体を含めないようにした。`CHATGPT_TEMPERATURE`環境変数自体は引き続き読み取り・バリデーションされ、`gpt-4.1`系/`gpt-4o`系では従来通り送信される。`model`/`input`/`max_output_tokens`/`store: false`は変更なし。詳細は[backend/README.md](../backend/README.md)「ChatGPT相当モデルの1問観測」参照。
 
 詳細は[backend/README.md](../backend/README.md)の「ChatGPT相当モデルの1問観測」を参照。
 

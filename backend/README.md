@@ -457,11 +457,11 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 **AI Overview比較との結合ルール（`main.py`）**: `aiOverviewMode`（AI Overview比較全体のprovider mode）が`"mock"`の場合、ChatGPT観測は**常にスキップ**される（`chatgptMode`の値やゲートの充足状況に関わらず、OpenAI APIは一切呼ばれない）。これは、`mock`モードの固定`aiOverviewComparison`フィクスチャに既に「ChatGPT」という名前のダミーカードが含まれており、そこへ実データのChatGPTカードを追加すると重複して紛らわしくなるため。`aiOverviewMode`が`"dataforseo"`または`"off"`の場合のみ、ChatGPT観測が候補になる。成功した場合、既存のGoogle AI Mode/AI Overviewカードを置き換えず、`aiOverviewComparison`配列へ**追加**する（0件または1件）。
 
-**リクエスト内容**（OpenAI Responses API、`POST https://api.openai.com/v1/responses`）:
+**リクエスト内容**（OpenAI Responses API、`POST https://api.openai.com/v1/responses`）。`gpt-4.1-mini`/`gpt-4o-mini`等、temperatureに対応するモデルの場合:
 
 ```json
 {
-  "model": "gpt-5-mini",
+  "model": "gpt-4.1-mini",
   "input": [
     {
       "role": "system",
@@ -478,9 +478,22 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 }
 ```
 
+`gpt-5`/`gpt-5-mini`等、`gpt-5`で始まるモデルの場合は`temperature`キー自体をリクエストボディへ含めない（`model`/`input`/`max_output_tokens`/`store`は同じ）:
+
+```json
+{
+  "model": "gpt-5-mini",
+  "input": ["...", "..."],
+  "max_output_tokens": 700,
+  "store": false
+}
+```
+
 `store: false`を常に指定し、OpenAI側にもこの1回限りの観測を保存させない（このプロジェクト自体もDB保存はしない）。`Authorization: Bearer <OPENAI_API_KEY>`ヘッダーで認証する。`httpx`による直接のREST呼び出しで、`openai` SDKは使わない（`requirements.txt`にまだ含まれておらず、今回のスコープでは新規ライブラリ追加を避けた）。
 
 **デモ・検証時の回答安定化（`CHATGPT_TEMPERATURE`、2026-07-28追加）**: 同じブランド名でも実行ごとに回答・summary/fullSummaryの長さが変わりすぎる課題を受け、`temperature`をデフォルト`0.2`（低め）に設定し、回答のばらつきを抑えている。加えて、systemプロンプト・userプロンプトを構造化し、「何を提供しているか／主な利用者または用途／代表的な特徴や強み」の3観点を含む3〜5文程度の自然文で回答するよう明示的に指示している（箇条書き禁止、参照元・URLを挙げない指示も明記）。これによりsummary/fullSummaryが極端に短くなりすぎず、デモ時に読みやすい分量に安定しやすくなる。**OpenAI API呼び出し回数（1 analyzeあたり最大1回）・安全ゲート・references取得の対象外扱いはいずれも変更していない**——あくまで同じ1回の呼び出しの中身（temperature・prompt文面）を変えただけ。`CHATGPT_TEMPERATURE`は0.0〜1.0の範囲外・不正値は`0.2`にフォールバックする。
+
+**gpt-5系モデルではtemperatureを送らない（`chatgpt_client.py`の`should_send_temperature()`、2026-07-28追加）**: `CHATGPT_MODEL=gpt-5-mini` + `CHATGPT_TEMPERATURE=0.2`の組み合わせでOpenAI Responses APIがHTTP 400を返し、ChatGPTカードが表示されない不具合が判明した（`CHATGPT_MODEL=gpt-4.1-mini`では同じ`temperature`値で正常動作していた）。原因はgpt-5系モデルが`temperature`パラメータ自体を受け付けないためと判断し、`_build_request_body()`をモデル名に応じた条件分岐にした——`model`を小文字化・前後空白除去した上で`"gpt-5"`から始まる場合（`gpt-5`/`gpt-5-mini`等、大文字小文字を区別しない）は`temperature`キーをリクエストボディへ一切含めず、それ以外（`gpt-4.1-mini`/`gpt-4o-mini`等）では従来通り含める。`CHATGPT_TEMPERATURE`環境変数自体は`chatgpt_settings.py`側で引き続き読み取り・バリデーションされる（モデルに関わらず同じ値が保持される）——送信するかどうかだけが`chatgpt_client.py`側でモデル名に応じて決まる。省略時はログに`temperature was omitted for gpt-5 model compatibility`と記録するのみで、`meta.chatgptProvider.reason`やUIには通常表示しない。`model`/`input`/`max_output_tokens`/`store: false`はいずれのモデルでも変更なし。デモの現行推奨は引き続き`gpt-4.1-mini`だが、将来的に`gpt-5-mini`へ戻してもこの対応によりHTTP 400にはならない。
 
 **レスポンス変換**: `response.output_text`（トップレベルの便宜フィールド）があれば優先して使い、なければ`output[].content[].text`をたどって連結する。いずれも得られない場合は`"unavailable"`（`"OpenAI API returned no readable text."`）にフォールバックする。`mentioned`はブランド名が回答テキストに含まれるかの単純な大文字小文字を区別しない判定。`summary`は短い抜粋（最大200文字）、`fullSummary`はより長い抜粋（最大2500文字）。既存の`AIOverviewComparisonItem`型をそのまま使うため、`rank`は`null`固定、`references`/`referenceSummary`/`ownDomainReferenced`はいずれも`None`固定（ChatGPT観測には参照元の概念がないため）。
 
@@ -710,6 +723,7 @@ pytest
 - `CHATGPT_MAX_OUTPUT_TOKENS`未設定/不正値/範囲外（100〜1500外）はデフォルト（700）にフォールバックすること、範囲内の値は上書きされること
 - `CHATGPT_REQUEST_LIMIT_PER_ANALYZE`未設定/不正値はデフォルト（1）にフォールバックすること。ただし`2`のような正当な整数値は**そのまま**読み取られる（`1`へは矯正しない——ゲート判定側の役割であるため）
 - `CHATGPT_TEMPERATURE`未設定ではデフォルト（0.2）になること、`0.0`/`1.0`の境界値は有効な値として読み取られること、範囲外（`-1`・`1.5`）や不正値（数値でない文字列）はデフォルト（0.2）にフォールバックすること
+- `CHATGPT_MODEL=gpt-5-mini`を設定していても`get_chatgpt_settings().temperature`は引き続き`CHATGPT_TEMPERATURE`の値をそのまま返すこと（設定読み取り自体にモデル依存のロジックはなく、送信可否の判断は`chatgpt_client.py`側の責務であることの確認）
 
 `tests/test_chatgpt_client.py` では `fetch_chatgpt_observation()` を直接テストしている（すべて`httpx.post`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
@@ -727,6 +741,10 @@ pytest
 - ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON、のいずれの場合も例外を送出せず`success: false`になること
 - いずれの失敗パターン・成功パターンでも`reason`/`full_summary`にAPIキーの実値が含まれないこと
 - 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
+- `should_send_temperature()`が`gpt-4.1-mini`/`gpt-4o-mini`に対して`True`、`gpt-5-mini`/`gpt-5`に対して`False`を返すこと（大文字小文字を区別しない、`"GPT-5-MINI"`でも`False`）
+- `gpt-4.1-mini`/`gpt-4o-mini`を指定した場合、リクエストボディに`temperature`が含まれること
+- `gpt-5-mini`/`gpt-5`（大文字混在含む）を指定した場合、リクエストボディに`temperature`キー自体が含まれないこと（`model`/`max_output_tokens`/`store: false`は引き続き含まれる）
+- `gpt-5-mini`でも成功レスポンスのパース（`mentioned`/`full_summary`/成功時の`reason`）が壊れないこと、失敗時（HTTP 400等）も`reason`にAPIキーの実値が含まれないこと
 
 `tests/test_chatgpt_provider.py` では `resolve_chatgpt_mode()` / `build_chatgpt_observation()` を直接テストしている。
 
@@ -737,7 +755,8 @@ pytest
 - `openai`モードでAPIキー未設定の場合、`httpx.post`が一切呼ばれないまま`item: None`・`status: "unavailable"`・「not configured」を含む`reason`が返ること
 - `openai`モードで`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`が1以外の場合、`httpx.post`が一切呼ばれないまま`reason`が「ChatGPT request limit must be 1.」になること
 - `openai`モードで全ゲートが満たされた場合、`httpx.post`をmonkeypatchした成功レスポンスから`AIOverviewComparisonItem`（`platform: "ChatGPT (OpenAI API)"`・`rank: None`・`references`/`referenceSummary`/`ownDomainReferenced`はいずれも`None`）が返ること
-- 設定した`CHATGPT_MODEL`/`CHATGPT_MAX_OUTPUT_TOKENS`/`CHATGPT_TEMPERATURE`がリクエストボディに反映されること、`CHATGPT_TEMPERATURE`未設定時はデフォルト（0.2）が使われること
+- 設定した`CHATGPT_MODEL`/`CHATGPT_MAX_OUTPUT_TOKENS`/`CHATGPT_TEMPERATURE`がリクエストボディに反映されること（temperatureに対応するモデルの場合）、`CHATGPT_TEMPERATURE`未設定時はデフォルト（0.2）が使われること
+- `CHATGPT_MODEL`未設定（デフォルトの`gpt-5-mini`が使われる）の場合、`build_chatgpt_observation()`を通してもリクエストボディに`temperature`が含まれないこと（HTTP 400を引き起こしていた組み合わせの回帰防止）
 - 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
 - 失敗時・成功時いずれも`reason`にAPIキーの実値が含まれないこと
 
