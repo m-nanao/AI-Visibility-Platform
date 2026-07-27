@@ -38,13 +38,20 @@ DocumentSourceType = Literal[
 
 # Which data source aiOverviewComparison is built from. See
 # services/ai_overview_provider.py — "mock" (fixed dev data, default),
-# "off" (section disabled, section status "unavailable"), or
-# "dataforseo" (connects to DataForSEO Sandbox by default, or Live only
-# for a fully-gated manual check — see AiOverviewEnvironment below for
-# which one actually ran). Selected via the AI_OVERVIEW_PROVIDER_MODE
-# env var, optionally overridden per-request via
-# AnalyzeRequest.aiOverviewMode when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
-AiOverviewProviderMode = Literal["mock", "off", "dataforseo"]
+# "off" (section disabled, section status "unavailable"), "dataforseo"
+# (env-driven: connects to DataForSEO Sandbox by default, or Live only
+# for a fully-gated manual check — kept for backwards compatibility),
+# "dataforseo_sandbox" (explicitly forces the Sandbox host regardless of
+# DATAFORSEO_API_ENV, no Live gate involved), or "dataforseo_live"
+# (explicitly requests Live — still only actually calls the Live host
+# once every one of the five manual-confirmation gates holds; see
+# AiOverviewEnvironment below for which one actually ran). Selected via
+# the AI_OVERVIEW_PROVIDER_MODE env var, optionally overridden
+# per-request via AnalyzeRequest.aiOverviewMode when
+# ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
+AiOverviewProviderMode = Literal[
+    "mock", "off", "dataforseo", "dataforseo_sandbox", "dataforseo_live"
+]
 
 # Which concrete data source actually produced aiOverviewComparison —
 # distinct from AiOverviewProviderMode/SectionStatus because neither

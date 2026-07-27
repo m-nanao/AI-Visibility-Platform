@@ -3,7 +3,13 @@ import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
 import type { AiOverviewProviderMode, AnalysisResult, ChatGptProviderMode } from "../../lib/types";
 
-const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = ["mock", "off", "dataforseo"];
+const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = [
+  "mock",
+  "off",
+  "dataforseo",
+  "dataforseo_sandbox",
+  "dataforseo_live",
+];
 const CHATGPT_MODES: readonly ChatGptProviderMode[] = ["off", "openai"];
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;

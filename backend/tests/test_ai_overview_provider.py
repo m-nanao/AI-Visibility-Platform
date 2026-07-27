@@ -398,6 +398,306 @@ def test_dataforseo_mode_reason_never_includes_credential_values_when_live_gates
     assert "super-secret-password" not in reason
 
 
+# --- explicit dataforseo_sandbox / dataforseo_live modes -------------------
+
+
+def test_dataforseo_sandbox_mode_forces_sandbox_host_regardless_of_api_env(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    # Deliberately set to "live" — dataforseo_sandbox must ignore this.
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+
+    seen_urls = []
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        payload = {"status_code": 20000, "tasks": [{"result": [{"items": []}]}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_sandbox")
+
+    assert seen_urls[0].startswith("https://sandbox.dataforseo.com")
+    assert environment == "unavailable"  # no ai_overview item in this payload
+    assert items == []
+    assert status == "unavailable"
+    assert reason
+
+
+def test_dataforseo_sandbox_mode_reports_sandbox_environment_on_success(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")  # still ignored
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "Acme is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_sandbox")
+
+    assert status == "real"
+    assert environment == "sandbox"
+    assert len(items) == 1
+    assert items[0].platform == "Google AI Mode (DataForSEO Sandbox)"
+    assert reason
+
+
+def test_dataforseo_sandbox_mode_requires_no_live_gate_and_never_checks_it(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    # None of the live gates are set at all — dataforseo_sandbox must not care.
+    monkeypatch.delenv("DATAFORSEO_LIVE_API_ENABLED", raising=False)
+    monkeypatch.delenv("DATAFORSEO_LIVE_CONFIRM_TEXT", raising=False)
+
+    def fake_post(url, **kwargs):
+        payload = {"status_code": 20000, "tasks": [{"result": [{"items": []}]}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    _, status, _, environment = build_ai_overview_comparison("Acme", "dataforseo_sandbox")
+
+    # Reaches the sandbox call (not rejected by a gate check) — status is
+    # "unavailable" only because the fake payload has no ai_overview item.
+    assert environment == "unavailable"
+    assert status == "unavailable"
+
+
+def test_dataforseo_sandbox_mode_without_credentials_never_calls_httpx(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without credentials")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_sandbox")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert "not configured" in reason
+
+
+def test_dataforseo_live_mode_rejected_when_api_env_is_not_live(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", _LIVE_CONFIRM_TEXT)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called when DATAFORSEO_API_ENV isn't live")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert reason == "DataForSEO Live mode was requested, but DATAFORSEO_API_ENV is not live."
+
+
+def test_dataforseo_live_mode_rejected_when_live_api_enabled_is_false(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", _LIVE_CONFIRM_TEXT)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+    # DATAFORSEO_LIVE_API_ENABLED deliberately left unset (false).
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called when LIVE_API_ENABLED isn't true")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert reason == "DataForSEO Live mode was requested, but DATAFORSEO_LIVE_API_ENABLED is not true."
+
+
+def test_dataforseo_live_mode_rejected_when_confirm_text_does_not_match(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", "not-the-right-text")
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called with a wrong confirm text")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert (
+        reason
+        == "DataForSEO Live mode was requested, but DATAFORSEO_LIVE_CONFIRM_TEXT does not match "
+        "the required confirmation text."
+    )
+
+
+def test_dataforseo_live_mode_rejected_when_request_limit_is_not_one(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", _LIVE_CONFIRM_TEXT)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "2")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called when the request limit isn't 1")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert reason == "DataForSEO Live mode was requested, but request limit is not 1."
+
+
+def test_dataforseo_live_mode_rejected_when_credentials_are_missing(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", _LIVE_CONFIRM_TEXT)
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+    # DATAFORSEO_LOGIN/PASSWORD deliberately left unset.
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without credentials")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert "not configured" in reason
+
+
+def test_dataforseo_live_mode_calls_the_live_host_when_all_gates_are_satisfied(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+
+    seen_urls = []
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "markdown": "Acme is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert seen_urls == ["https://api.dataforseo.com/v3/serp/google/ai_mode/live/advanced"]
+    assert status == "real"
+    assert environment == "live"
+    assert len(items) == 1
+    assert items[0].platform == "Google AI Mode (DataForSEO Live)"
+    assert reason == "DataForSEO Live AI Mode request succeeded."
+
+
+def test_dataforseo_live_mode_sends_only_one_request_when_all_gates_satisfied(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_post(url, **kwargs):
+        calls["count"] += 1
+        payload = {"status_code": 20000, "tasks": [{"result": [{"items": []}]}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert calls["count"] == 1
+
+
+def test_dataforseo_live_mode_failure_reports_unavailable_without_crashing(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+
+    def raise_timeout(url, **kwargs):
+        raise httpx.ConnectTimeout("timeout", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", raise_timeout)
+
+    items, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert items == []
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert reason
+
+
+def test_dataforseo_live_mode_reason_never_includes_credential_values(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+
+    _, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert status == "unavailable"
+    assert environment == "unavailable"
+    assert "someone@example.com" not in reason
+    assert "super-secret-password" not in reason
+
+
+def test_dataforseo_live_mode_reason_never_includes_credential_values_on_success(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "markdown": "Acme is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    _, status, reason, environment = build_ai_overview_comparison("Acme", "dataforseo_live")
+
+    assert status == "real"
+    assert "someone@example.com" not in reason
+    assert "super-secret-password" not in reason
+
+
+def test_resolve_ai_overview_mode_accepts_dataforseo_sandbox_and_dataforseo_live(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+
+    assert resolve_ai_overview_mode("dataforseo_sandbox") == "dataforseo_sandbox"
+    assert resolve_ai_overview_mode("dataforseo_live") == "dataforseo_live"
+
+
 # --- fullSummary / references / ownDomainReferenced ------------------------
 
 

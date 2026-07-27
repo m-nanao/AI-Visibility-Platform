@@ -16,7 +16,7 @@ returned:
    request body and it changes nothing; only the environment default
    applies.
 
-Three modes:
+Five modes:
 
 - "mock": fixed development data (unchanged from what previously lived
   directly in services/mock_analysis.py). Section status: "mock".
@@ -24,8 +24,9 @@ Three modes:
   "unavailable" (there is no separate "disabled" status in
   SectionStatus yet — see docs/07_decisions.md's rationale for why
   "unavailable" already means "couldn't be computed", which fits).
-- "dataforseo": Connects to DataForSEO — **Sandbox by default, Live
-  only for a deliberate, fully-gated one-off manual check** (see
+- "dataforseo": **env-driven, kept for backwards compatibility.**
+  Connects to DataForSEO — **Sandbox by default, Live only for a
+  deliberate, fully-gated one-off manual check** (see
   `_run_dataforseo_mode()` below and docs/07_decisions.md for the full
   rationale). When `DATAFORSEO_API_ENV=sandbox` and credentials are
   configured, this calls services/dataforseo_client.py's connector
@@ -42,12 +43,28 @@ Three modes:
   `DATAFORSEO_LIVE_CONFIRM_TEXT=ALLOW_DATAFORSEO_LIVE_ONCE`,
   `DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE=1`, credentials configured, and
   `DATAFORSEO_API_ENV=live` itself) — any single gate missing means no
-  external call is made at all. Either way, any failure (missing
-  credentials, network error, unexpected response shape, no matching
-  item, insufficient Live gates) falls back to []/"unavailable" with a
-  safe, credential-free `reason` explaining why. `/analyze` itself
-  never fails because of this — a DataForSEO problem only ever affects
-  this one section.
+  external call is made at all.
+- "dataforseo_sandbox": **explicit, recommended for normal
+  verification/demo use.** Forces the Sandbox host regardless of what
+  `DATAFORSEO_API_ENV` happens to be set to — no Live gate is involved
+  at all, since Sandbox is never billed. Only requires credentials to
+  be configured; see `_run_dataforseo_sandbox_mode()`.
+- "dataforseo_live": **explicit, for a deliberate one-off Live check.**
+  Still only actually calls the Live host once every one of the same
+  five manual-confirmation gates `is_live_allowed_for_manual_check`
+  checks holds — including `DATAFORSEO_API_ENV=live` itself, since
+  selecting this mode does not by itself flip the environment. See
+  `_run_dataforseo_live_mode()`. Unlike "dataforseo" (which silently
+  falls back to Sandbox when `DATAFORSEO_API_ENV` isn't "live"),
+  requesting "dataforseo_live" while a gate is unmet is reported with a
+  reason that explicitly says Live mode was requested but a specific
+  gate is missing — see `_explicit_live_gate_rejection_reason()`.
+
+Either way, any failure (missing credentials, network error,
+unexpected response shape, no matching item, insufficient Live gates)
+falls back to []/"unavailable" with a safe, credential-free `reason`
+explaining why. `/analyze` itself never fails because of this — a
+DataForSEO problem only ever affects this one section.
 
 On a "dataforseo" success, AIOverviewComparisonItem also carries
 `fullSummary` (a longer, still-bounded excerpt), `references` (up to 10
@@ -93,7 +110,13 @@ from services.dataforseo_settings import (
 
 logger = logging.getLogger(__name__)
 
-_VALID_MODES: tuple[AiOverviewProviderMode, ...] = ("mock", "off", "dataforseo")
+_VALID_MODES: tuple[AiOverviewProviderMode, ...] = (
+    "mock",
+    "off",
+    "dataforseo",
+    "dataforseo_sandbox",
+    "dataforseo_live",
+)
 
 
 def _env_flag(name: str) -> bool:
@@ -194,6 +217,43 @@ def _live_gate_rejection_reason(settings: DataForSEOSettings) -> str:
     # is_live_allowed_for_manual_check's own definition, the only gate
     # that can still be unmet here is the request limit.
     return "DataForSEO Live API request limit must be 1."
+
+
+def _explicit_live_gate_rejection_reason(settings: DataForSEOSettings, credentials_configured: bool) -> str:
+    """Reason for why "dataforseo_live" mode couldn't call the Live
+    host. Unlike _live_gate_rejection_reason above (only ever called
+    after settings.is_live_env is already confirmed true, since
+    "dataforseo" mode only reaches the Live branch when
+    DATAFORSEO_API_ENV=live), "dataforseo_live" can be explicitly
+    requested while DATAFORSEO_API_ENV is still "sandbox" (or unset) —
+    so is_live_env itself has to be checked here too, and the message
+    says so explicitly rather than assuming the operator already knows
+    Live mode requires DATAFORSEO_API_ENV=live.
+
+    Checked in order from "most fundamental" to "most specific" (same
+    ordering rationale as _live_gate_rejection_reason), so an operator
+    who got partway through the manual-check checklist gets a message
+    pointing at exactly what's still missing. Never includes
+    settings.login or the password itself (see module docstring).
+    """
+    if not credentials_configured:
+        return (
+            "DataForSEO Live mode was requested, but DataForSEO credentials are not "
+            "configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD)."
+        )
+    if not settings.is_live_env:
+        return "DataForSEO Live mode was requested, but DATAFORSEO_API_ENV is not live."
+    if not settings.live_api_enabled:
+        return "DataForSEO Live mode was requested, but DATAFORSEO_LIVE_API_ENABLED is not true."
+    if not settings.live_confirm_text_matches:
+        return (
+            "DataForSEO Live mode was requested, but DATAFORSEO_LIVE_CONFIRM_TEXT does not "
+            "match the required confirmation text."
+        )
+    # credentials, is_live_env, live_api_enabled, and live_confirm_text_matches
+    # all hold — per is_live_allowed_for_manual_check's own definition, the
+    # only gate that can still be unmet here is the request limit.
+    return "DataForSEO Live mode was requested, but request limit is not 1."
 
 
 def _extract_domain(url: str) -> str | None:
@@ -468,14 +528,57 @@ def _run_dataforseo_mode(
     return _call_dataforseo_serp(brand_name, settings, api_env="sandbox", input_urls=input_urls)
 
 
+def _run_dataforseo_sandbox_mode(
+    brand_name: str, settings: DataForSEOSettings, input_urls: list[str] | None = None
+) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
+    """Implements "dataforseo_sandbox" mode: forces the Sandbox host
+    regardless of settings.api_env (DATAFORSEO_API_ENV) — no Live gate
+    is consulted at all, since Sandbox is never billed. The only
+    requirement is that credentials are configured.
+    """
+    if not settings.is_configured:
+        return (
+            [],
+            "unavailable",
+            "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
+            "unavailable",
+        )
+    return _call_dataforseo_serp(brand_name, settings, api_env="sandbox", input_urls=input_urls)
+
+
+def _run_dataforseo_live_mode(
+    brand_name: str, settings: DataForSEOSettings, input_urls: list[str] | None = None
+) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
+    """Implements "dataforseo_live" mode: calls the Live host only once
+    settings.is_live_allowed_for_manual_check confirms every one of the
+    five manual-confirmation gates holds (same property "dataforseo"
+    mode's Live branch checks) — including DATAFORSEO_API_ENV=live
+    itself, since requesting this mode does not by itself change the
+    environment. A single missing gate means no request is ever built
+    against the Live host; see _explicit_live_gate_rejection_reason for
+    the (gate-specific, credential-free) reason text.
+    """
+    if not settings.is_live_allowed_for_manual_check:
+        return (
+            [],
+            "unavailable",
+            _explicit_live_gate_rejection_reason(settings, settings.is_configured),
+            "unavailable",
+        )
+    return _call_dataforseo_serp(brand_name, settings, api_env="live", input_urls=input_urls)
+
+
 def build_ai_overview_comparison(
     brand_name: str, mode: AiOverviewProviderMode, input_urls: list[str] | None = None
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
     """Returns (items, section status, human-readable reason,
     environment) for the given mode. "mock"/"off" never call an
     external API. "dataforseo" calls DataForSEO Sandbox by default, or
-    Live only when every manual-check gate is satisfied — see module
-    docstring and _run_dataforseo_mode() for the full decision tree.
+    Live only when every manual-check gate is satisfied (env-driven,
+    see _run_dataforseo_mode()). "dataforseo_sandbox"/"dataforseo_live"
+    are the explicit variants — see module docstring and
+    _run_dataforseo_sandbox_mode()/_run_dataforseo_live_mode() for the
+    full decision tree of each.
 
     `environment` exists because `status` alone can't distinguish a
     Sandbox success from a Live success (both report "real") — see
@@ -498,6 +601,12 @@ def build_ai_overview_comparison(
 
     if mode == "dataforseo":
         return _run_dataforseo_mode(brand_name, get_dataforseo_settings(), input_urls)
+
+    if mode == "dataforseo_sandbox":
+        return _run_dataforseo_sandbox_mode(brand_name, get_dataforseo_settings(), input_urls)
+
+    if mode == "dataforseo_live":
+        return _run_dataforseo_live_mode(brand_name, get_dataforseo_settings(), input_urls)
 
     # mode == "mock" — also the effective fallback for any unrecognized
     # value, since resolve_ai_overview_mode()/_default_mode_from_env()

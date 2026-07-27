@@ -20,7 +20,13 @@ const documentsSourceSchema = z.enum([
   "common_crawl",
 ]);
 const documentSourceTypeSchema = z.enum(DOCUMENT_SOURCE_TYPES);
-const aiOverviewProviderModeSchema = z.enum(["mock", "off", "dataforseo"]);
+const aiOverviewProviderModeSchema = z.enum([
+  "mock",
+  "off",
+  "dataforseo",
+  "dataforseo_sandbox",
+  "dataforseo_live",
+]);
 const aiOverviewEnvironmentSchema = z.enum(["mock", "sandbox", "live", "off", "unavailable"]);
 const chatGptProviderModeSchema = z.enum(["off", "openai"]);
 const chatGptStatusSchema = z.enum(["real", "off", "unavailable"]);

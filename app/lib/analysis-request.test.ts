@@ -107,6 +107,20 @@ describe("buildAnalyzeRequestBody", () => {
     expect(buildAnalyzeRequestBody("Acme", [], "dataforseo").aiOverviewMode).toBe("dataforseo");
   });
 
+  it("includes the explicit dataforseo_sandbox aiOverviewMode value", () => {
+    expect(buildAnalyzeRequestBody("Acme", [], "dataforseo_sandbox")).toEqual({
+      brandName: "Acme",
+      aiOverviewMode: "dataforseo_sandbox",
+    });
+  });
+
+  it("includes the explicit dataforseo_live aiOverviewMode value", () => {
+    expect(buildAnalyzeRequestBody("Acme", [], "dataforseo_live")).toEqual({
+      brandName: "Acme",
+      aiOverviewMode: "dataforseo_live",
+    });
+  });
+
   it("includes both urls and aiOverviewMode together", () => {
     expect(
       buildAnalyzeRequestBody("Acme", ["https://acme.example.com"], "dataforseo"),
