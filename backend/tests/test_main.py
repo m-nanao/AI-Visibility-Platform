@@ -756,6 +756,209 @@ def test_analyze_honors_request_ai_overview_mode_override_when_allowed(monkeypat
     assert result.meta.aiOverviewProvider.mode == "off"
 
 
+def test_analyze_ai_overview_mode_dataforseo_sandbox_forces_sandbox_even_when_env_is_live(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    # Deliberately "live" — dataforseo_sandbox must ignore this and still
+    # call the Sandbox host, with no Live gate check at all.
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.delenv("DATAFORSEO_LIVE_API_ENABLED", raising=False)
+    monkeypatch.delenv("DATAFORSEO_LIVE_CONFIRM_TEXT", raising=False)
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "OpenAI is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        assert "sandbox.dataforseo.com" in url
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "dataforseo_sandbox"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.aiOverviewProvider.mode == "dataforseo_sandbox"
+    assert result.meta.aiOverviewProvider.status == "real"
+    assert result.meta.aiOverviewProvider.environment == "sandbox"
+    assert result.aiOverviewComparison[0].platform == "Google AI Mode (DataForSEO Sandbox)"
+
+
+def test_analyze_ai_overview_mode_dataforseo_live_rejected_without_gates_never_calls_httpx(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    # DATAFORSEO_API_ENV left as sandbox (or unset) — dataforseo_live must
+    # be rejected because DATAFORSEO_API_ENV isn't "live", regardless of
+    # what other gates might be set.
+    monkeypatch.delenv("DATAFORSEO_API_ENV", raising=False)
+    monkeypatch.delenv("DATAFORSEO_LIVE_API_ENABLED", raising=False)
+    monkeypatch.delenv("DATAFORSEO_LIVE_CONFIRM_TEXT", raising=False)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called when dataforseo_live's gates are unmet")
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fail_if_called)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "dataforseo_live"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.aiOverviewProvider.mode == "dataforseo_live"
+    assert result.meta.aiOverviewProvider.status == "unavailable"
+    assert result.meta.aiOverviewProvider.environment == "unavailable"
+    assert result.aiOverviewComparison == []
+    assert (
+        result.meta.aiOverviewProvider.reason
+        == "DataForSEO Live mode was requested, but DATAFORSEO_API_ENV is not live."
+    )
+
+
+def test_analyze_ai_overview_mode_dataforseo_live_succeeds_when_all_gates_are_satisfied(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", "ALLOW_DATAFORSEO_LIVE_ONCE")
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "markdown": "OpenAI is great."}]}]}],
+    }
+
+    seen_urls = []
+
+    def fake_post(url, **kwargs):
+        seen_urls.append(url)
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "dataforseo_live"}
+    )
+    assert response.status_code == 200
+
+    assert seen_urls == ["https://api.dataforseo.com/v3/serp/google/ai_mode/live/advanced"]
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.aiOverviewProvider.mode == "dataforseo_live"
+    assert result.meta.aiOverviewProvider.status == "real"
+    assert result.meta.aiOverviewProvider.environment == "live"
+    assert result.aiOverviewComparison[0].platform == "Google AI Mode (DataForSEO Live)"
+    # Credentials never leak into the response body.
+    raw_body = response.text
+    assert "super-secret-password" not in raw_body
+    assert "someone@example.com" not in raw_body
+
+
+def test_analyze_chatgpt_openai_combines_with_dataforseo_sandbox_mode(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    monkeypatch.setenv("CHATGPT_PROVIDER_MODE", "off")
+    monkeypatch.setenv("ALLOW_CHATGPT_MODE_OVERRIDE", "true")
+
+    dataforseo_payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "OpenAI is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        if url == chatgpt_client.RESPONSES_API_URL:
+            return httpx.Response(
+                200,
+                json={"output_text": "OpenAI is a well-known AI research company."},
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(200, json=dataforseo_payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "OpenAI", "aiOverviewMode": "dataforseo_sandbox", "chatgptMode": "openai"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.aiOverviewProvider.mode == "dataforseo_sandbox"
+    assert result.meta.chatgptProvider.status == "real"
+
+    platforms = [item.platform for item in result.aiOverviewComparison]
+    assert "Google AI Mode (DataForSEO Sandbox)" in platforms
+    assert "ChatGPT (OpenAI API)" in platforms
+
+
+def test_analyze_chatgpt_openai_combines_with_dataforseo_live_mode(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("ALLOW_AI_OVERVIEW_MODE_OVERRIDE", "true")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
+    monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", "ALLOW_DATAFORSEO_LIVE_ONCE")
+    monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    monkeypatch.setenv("CHATGPT_PROVIDER_MODE", "off")
+    monkeypatch.setenv("ALLOW_CHATGPT_MODE_OVERRIDE", "true")
+
+    dataforseo_payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "markdown": "OpenAI is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        if url == chatgpt_client.RESPONSES_API_URL:
+            return httpx.Response(
+                200,
+                json={"output_text": "OpenAI is a well-known AI research company."},
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(200, json=dataforseo_payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "OpenAI", "aiOverviewMode": "dataforseo_live", "chatgptMode": "openai"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.aiOverviewProvider.mode == "dataforseo_live"
+    assert result.meta.aiOverviewProvider.environment == "live"
+    assert result.meta.chatgptProvider.status == "real"
+
+    platforms = [item.platform for item in result.aiOverviewComparison]
+    assert "Google AI Mode (DataForSEO Live)" in platforms
+    assert "ChatGPT (OpenAI API)" in platforms
+
+    # Credentials never leak into the response body.
+    raw_body = response.text
+    assert "super-secret-password" not in raw_body
+    assert "sk-super-secret-key" not in raw_body
+
+
 def test_analyze_rejects_invalid_ai_overview_mode_value():
     response = client.post(
         "/analyze", json={"brandName": "OpenAI", "aiOverviewMode": "real"}
