@@ -281,23 +281,28 @@ describe("getAiOverviewItemDetailDisplay", () => {
     };
   }
 
-  it("reports no detail/references and an unjudged own-domain status for a plain (e.g. mock) item", () => {
+  it("reports no continuation/references and an unjudged own-domain status for a plain (e.g. mock) item", () => {
     const display = getAiOverviewItemDetailDisplay(baseItem());
 
-    expect(display.hasDetail).toBe(false);
-    expect(display.detailText).toBeUndefined();
+    expect(display.hasContinuation).toBe(false);
+    expect(display.continuationText).toBeUndefined();
     expect(display.references).toEqual([]);
     expect(display.ownDomainStatus).toBe("unjudged");
   });
 
-  it("reports hasDetail=true with the full text when fullSummary is present", () => {
+  it("falls back to the full fullSummary as the continuation when it isn't a clean prefix match of summary", () => {
+    // summary ends in "." while fullSummary's corresponding character is
+    // "," (a plausible real-world divergence from markdown cleanup) —
+    // not a clean prefix, so the simple heuristic falls back to
+    // treating the whole (sufficiently longer) fullSummary as the
+    // continuation rather than silently hiding it.
     const display = getAiOverviewItemDetailDisplay({
       ...baseItem(),
       fullSummary: "Acme is a well-reviewed tool for teams, used by hundreds of companies.",
     });
 
-    expect(display.hasDetail).toBe(true);
-    expect(display.detailText).toBe(
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(
       "Acme is a well-reviewed tool for teams, used by hundreds of companies.",
     );
   });
@@ -372,11 +377,11 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(item.summary).toBe("Acme is a well-reviewed tool for teams.");
 
     // Fields the card renders via getAiOverviewItemDetailDisplay
-    // (fullSummary detail toggle, references with url usable as href,
-    // own-domain note).
+    // (fullSummary continuation toggle, references with url usable as
+    // href, own-domain note).
     const display = getAiOverviewItemDetailDisplay(item);
-    expect(display.hasDetail).toBe(true);
-    expect(display.detailText).toBe(item.fullSummary);
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(item.fullSummary);
     expect(display.references).toEqual([
       { label: "acme.example.com", title: "About Acme", url: "https://acme.example.com/about" },
     ]);
@@ -496,6 +501,158 @@ describe("getAiOverviewItemDetailDisplay", () => {
       video: "動画",
       other: "その他",
     });
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)", () => {
+  function baseItem(): AIOverviewComparisonItem {
+    return {
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a well-reviewed tool for teams.",
+    };
+  }
+
+  it("has no continuation when fullSummary is absent", () => {
+    const display = getAiOverviewItemDetailDisplay(baseItem());
+    expect(display.hasContinuation).toBe(false);
+    expect(display.continuationText).toBeUndefined();
+  });
+
+  it("has no continuation when fullSummary equals summary exactly", () => {
+    const text = "Acme is a well-reviewed tool for teams.";
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: text,
+      fullSummary: text,
+    });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.continuationText).toBeUndefined();
+  });
+
+  it("has no continuation when fullSummary only differs from summary by whitespace/newlines", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: "Acme is a well-reviewed tool for teams.",
+      fullSummary: "Acme is a well-reviewed tool\nfor teams.",
+    });
+
+    expect(display.hasContinuation).toBe(false);
+  });
+
+  it("extracts only the part of fullSummary after summary's shared prefix", () => {
+    const prefix = "Acme is a tool for teams and provides";
+    const rest =
+      " comprehensive support to organizations of all sizes across many different industries and regions worldwide.";
+    const fullSummary = prefix + rest;
+    const summary = `${prefix}…`;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(rest.trim());
+    // The continuation must not repeat summary's own text.
+    expect(display.continuationText).not.toContain(prefix);
+  });
+
+  it("treats a trailing ... (three dots) the same as … when matching summary's prefix", () => {
+    const prefix = "Acme is a tool for teams and provides";
+    const rest = " reliable, well-documented support for organizations of every size across many regions.";
+    const fullSummary = prefix + rest;
+    const summary = `${prefix}...`;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(rest.trim());
+  });
+
+  it("maps a matched prefix across a paragraph break (\\n\\n) back to the correct position in the original fullSummary", () => {
+    // fullSummary keeps a "\n\n" paragraph break (as dataforseo_client.py's
+    // fullSummary does) where summary has it flattened to a single space —
+    // the "\n\n" run must count as exactly one normalized character, or
+    // the cut point drifts and the continuation starts one character early.
+    const prefix = "Acme is a tool for teams.\n\nIt provides";
+    const rest =
+      " comprehensive support to organizations of all sizes across many different industries and regions worldwide.";
+    const fullSummary = prefix + rest;
+    const summary = "Acme is a tool for teams. It provides…";
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(rest.trim());
+  });
+
+  it("uses the full fullSummary as the continuation when summary is absent but fullSummary is long enough", () => {
+    const fullSummary =
+      "Acme is generally recognized as a reliable collaboration tool used by teams across many industries.";
+
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: undefined,
+      fullSummary,
+    });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(fullSummary);
+  });
+
+  it("has no continuation when summary is absent and fullSummary is too short to be worth a toggle", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: undefined,
+      fullSummary: "Acme is a small tool.",
+    });
+
+    expect(display.hasContinuation).toBe(false);
+  });
+
+  it("has no continuation when the remaining continuation is shorter than the minimum length threshold", () => {
+    const prefix = "Acme is a well reviewed and widely used collaboration tool for teams";
+    const fullSummary = `${prefix} today.`; // remaining text is only a few characters
+    const summary = prefix;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.continuationText).toBeUndefined();
+  });
+
+  it("shows a continuation once it reaches the minimum length threshold", () => {
+    const prefix = "Acme is a well reviewed and widely used collaboration tool for teams";
+    const rest = " that has been adopted by many organizations worldwide for its reliability.";
+    const fullSummary = prefix + rest;
+    const summary = prefix;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(rest.trim());
+  });
+
+  it("does not affect references/referenceSummary/ownDomainReferenced display when a continuation is present", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      fullSummary:
+        "Acme is a well-reviewed tool for teams. It has strong customer support and a large user base worldwide.",
+      references: [{ domain: "acme.example.com", category: "official" }],
+      referenceSummary: { total: 1, official: 1, thirdParty: 0, categories: { official: 1 } },
+      ownDomainReferenced: true,
+    });
+
+    expect(display.references).toEqual([
+      { label: "acme.example.com", title: undefined, url: undefined, categoryLabel: "公式" },
+    ]);
+    expect(display.referenceSummary).toEqual({
+      total: 1,
+      official: 1,
+      thirdParty: 0,
+      categoryCounts: [{ label: "公式", count: 1 }],
+    });
+    expect(display.ownDomainStatus).toBe("included");
   });
 });
 

@@ -88,13 +88,13 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
         </p>
       </div>
 
-      {detail.hasDetail && (
+      {detail.hasContinuation && (
         <details className="mt-3">
           <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400">
-            詳細を見る
+            続きを見る
           </summary>
           <p className="mt-1 max-w-full whitespace-pre-wrap break-words leading-relaxed text-xs text-zinc-600 dark:text-zinc-400">
-            {detail.detailText}
+            {detail.continuationText}
           </p>
         </details>
       )}

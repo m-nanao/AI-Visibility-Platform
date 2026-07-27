@@ -279,9 +279,14 @@ export interface AiOverviewReferenceSummaryDisplay {
 export type OwnDomainReferenceStatus = "included" | "not_included" | "unjudged";
 
 export interface AiOverviewItemDetailDisplay {
-  // Whether a "詳細を見る" toggle should be offered at all.
-  hasDetail: boolean;
-  detailText?: string;
+  // Whether a "続きを見る" toggle should be offered at all — true only
+  // when fullSummary has a genuinely new continuation beyond what
+  // summary already shows (see buildContinuationText below). False for
+  // plain mock/older-backend items (no fullSummary), for a fullSummary
+  // that's essentially the same text as summary, and for a fullSummary
+  // whose remaining continuation is too short to be worth a toggle.
+  hasContinuation: boolean;
+  continuationText?: string;
   // Already capped at MAX_DISPLAYED_REFERENCES and ready to render as-is.
   references: AIOverviewReferenceDisplay[];
   // Undefined when the item has no references to summarize (mock data,
@@ -293,6 +298,112 @@ export interface AiOverviewItemDetailDisplay {
   ownDomainStatus: OwnDomainReferenceStatus;
 }
 
+// Below this length, a "続きを見る" toggle would reveal only a sliver of
+// text — not worth the extra click. Applies both to a continuation
+// sliced out of fullSummary and to a fullSummary shown in full (no
+// summary to compare against).
+const MIN_CONTINUATION_LENGTH = 30;
+
+// Collapses all whitespace runs (including newlines) to a single space
+// and trims, so paragraph-break differences between summary (always
+// single-line, see backend/services/dataforseo_client.py's
+// _clean_markdown / chatgpt_client.py's _summarize) and fullSummary
+// (keeps line breaks) don't defeat a prefix comparison.
+function normalizeForComparison(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// summary is truncated with a trailing "…" (or, defensively, "...")
+// when the source text was cut off — see _SUMMARY_MAX_CHARS in both
+// dataforseo_client.py and chatgpt_client.py. Stripped before prefix
+// comparison since fullSummary's corresponding text has no such marker
+// at that position (it keeps going).
+function stripTrailingEllipsis(text: string): string {
+  return text.replace(/\s*(\.{3,}|…)\s*$/u, "");
+}
+
+// Maps a length in the whitespace-collapsed ("normalized") form of
+// `original` back to a character index in `original` itself, so a
+// prefix match found on normalized text can be used to slice the
+// original (newline-preserving) text at the right place. Each run of
+// whitespace in `original` counts as exactly one normalized character,
+// matching normalizeForComparison's `\s+` -> " " collapsing.
+function mapNormalizedLengthToOriginalIndex(original: string, targetNormalizedLength: number): number {
+  let normalizedIndex = 0;
+  let i = 0;
+  while (i < original.length && normalizedIndex < targetNormalizedLength) {
+    if (/\s/.test(original[i])) {
+      normalizedIndex += 1;
+      while (i < original.length && /\s/.test(original[i])) i += 1;
+    } else {
+      normalizedIndex += 1;
+      i += 1;
+    }
+  }
+  return i;
+}
+
+interface ContinuationResult {
+  hasContinuation: boolean;
+  continuationText?: string;
+}
+
+const NO_CONTINUATION: ContinuationResult = { hasContinuation: false };
+
+/**
+ * Builds the "続きを見る" continuation text from an item's summary and
+ * fullSummary — both built by the backend from the same source text
+ * (see dataforseo_client.py's _gather_summary_source_parts /
+ * chatgpt_client.py's _summarize), so fullSummary normally starts with
+ * summary's text and the goal here is to show only what comes after
+ * that shared prefix, not the whole fullSummary again.
+ *
+ * This is a deliberately simple heuristic (whitespace/ellipsis-
+ * tolerant prefix match), not a general text-diff algorithm:
+ * - no fullSummary → no continuation.
+ * - no summary → fullSummary itself is the continuation (if long enough).
+ * - normalized fullSummary/summary are equal → no continuation (nothing new).
+ * - normalized fullSummary starts with normalized summary → the
+ *   remainder (mapped back into the original, newline-preserving
+ *   fullSummary) is the continuation.
+ * - otherwise (summary isn't a clean prefix, e.g. a markdown-cleanup
+ *   edge case) → fall back to showing fullSummary in full, unless it's
+ *   barely longer than summary, in which case treat them as "the same".
+ * In every case, a continuation shorter than MIN_CONTINUATION_LENGTH
+ * is suppressed rather than shown.
+ */
+function buildContinuationText(
+  summary: string | undefined,
+  fullSummary: string | undefined,
+): ContinuationResult {
+  if (!fullSummary) return NO_CONTINUATION;
+
+  const trimmedFull = fullSummary.trim();
+  if (!trimmedFull) return NO_CONTINUATION;
+
+  if (!summary) {
+    if (trimmedFull.length < MIN_CONTINUATION_LENGTH) return NO_CONTINUATION;
+    return { hasContinuation: true, continuationText: fullSummary };
+  }
+
+  const normalizedFull = normalizeForComparison(trimmedFull);
+  const normalizedSummary = stripTrailingEllipsis(normalizeForComparison(summary));
+
+  if (normalizedFull === normalizedSummary) return NO_CONTINUATION;
+
+  if (normalizedSummary.length > 0 && normalizedFull.startsWith(normalizedSummary)) {
+    const cutIndex = mapNormalizedLengthToOriginalIndex(trimmedFull, normalizedSummary.length);
+    const continuation = trimmedFull.slice(cutIndex).trim();
+    if (continuation.length < MIN_CONTINUATION_LENGTH) return NO_CONTINUATION;
+    return { hasContinuation: true, continuationText: continuation };
+  }
+
+  if (normalizedFull.length - normalizedSummary.length < MIN_CONTINUATION_LENGTH) {
+    return NO_CONTINUATION;
+  }
+  return { hasContinuation: true, continuationText: fullSummary };
+}
+
 export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", string> = {
   included: "自社公式サイトがAI Overviewの参照元に含まれています",
   not_included: "自社公式サイトはAI Overviewの参照元に確認できません",
@@ -300,15 +411,17 @@ export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", strin
 
 /**
  * Reduces one AIOverviewComparisonItem's optional detail fields
- * (fullSummary/references/referenceSummary/ownDomainReferenced — only
- * ever populated by the DataForSEO provider, see
- * backend/services/ai_overview_provider.py) to exactly what
- * AIOverviewComparisonSection needs to render, so the component itself
- * stays presentation-only. Every field on the input item is optional —
- * an item with none of them (mock data, or an older backend response)
- * yields hasDetail=false, references=[], referenceSummary=undefined,
- * ownDomainStatus="unjudged", which the section renders as "no change"
- * from the pre-existing summary-only display.
+ * (fullSummary/references/referenceSummary/ownDomainReferenced —
+ * populated by the DataForSEO provider with all four, or by the
+ * ChatGPT/OpenAI provider with fullSummary only; see
+ * backend/services/ai_overview_provider.py and chatgpt_provider.py) to
+ * exactly what AIOverviewComparisonSection needs to render, so the
+ * component itself stays presentation-only. Every field on the input
+ * item is optional — an item with none of them (mock data, or an older
+ * backend response) yields hasContinuation=false, references=[],
+ * referenceSummary=undefined, ownDomainStatus="unjudged", which the
+ * section renders as "no change" from the pre-existing summary-only
+ * display.
  */
 export function getAiOverviewItemDetailDisplay(
   item: AIOverviewComparisonItem,
@@ -338,9 +451,11 @@ export function getAiOverviewItemDetailDisplay(
   if (item.ownDomainReferenced === true) ownDomainStatus = "included";
   else if (item.ownDomainReferenced === false) ownDomainStatus = "not_included";
 
+  const { hasContinuation, continuationText } = buildContinuationText(item.summary, item.fullSummary);
+
   return {
-    hasDetail: Boolean(item.fullSummary),
-    detailText: item.fullSummary,
+    hasContinuation,
+    continuationText,
     references,
     referenceSummary,
     ownDomainStatus,
