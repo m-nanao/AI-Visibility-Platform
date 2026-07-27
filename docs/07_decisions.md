@@ -667,4 +667,47 @@ DataForSEO本接続（`aiOverviewComparison`の`dataforseo`モードを実際の
 - テスト（`test_dataforseo_settings.py`/`test_dataforseo_client.py`/`test_ai_overview_provider.py`/`test_main.py`/`meta-label.test.ts`/`route.test.ts`）はすべて`httpx.post`をmonkeypatchで差し替え、実際のDataForSEO API（Sandbox・Live共通）へは一切接続していない。
 - 複数キーワード送信、DataForSEO Standard方式（`task_post`/`task_get`）、DB保存、課金管理、UI上のLive実行ボタン、常時のLive運用・自動スケジュール実行は今回も対象外。
 
+## 2026-07-23 — ChatGPT相当モデルの1問観測を、DataForSEOと同じ2段階ゲート設計で追加する
+
+**決定**
+
+依頼者への現状提出に間に合わせるため、AI Overview比較セクションに、OpenAI APIを使ったChatGPT相当モデルの1問観測を追加した。ただし**ChatGPTアプリ画面そのものの内部認識を再現するものではない**——OpenAI APIのモデルへ「このブランドは一般的にどう認識されるか」を1問だけ質問し、その回答を観測結果として表示するだけであり、Web検索・参照元付き回答は使わない。
+
+安全設計は既存のDataForSEO AI Overview provider modeと意図的に同じ形にした。
+
+1. `CHATGPT_PROVIDER_MODE`環境変数（デフォルト`off`）——運用者が明示的に設定しない限り観測しない。
+2. `ALLOW_CHATGPT_MODE_OVERRIDE`環境変数（デフォルト`false`）——`true`のときのみ、リクエストボディの`chatgptMode`が採用される。
+
+この2段階に加え、`mode == "openai"`でも`OPENAI_API_KEY`設定済み・`CHATGPT_REQUEST_LIMIT_PER_ANALYZE=1`（デフォルト）がすべて揃わない限りOpenAI APIへは一切接続しない（`services/chatgpt_provider.py`の`build_chatgpt_observation()`）。
+
+また、`aiOverviewMode`が`"mock"`の場合はChatGPT観測を常にスキップするようにした（`chatgptMode`の値やゲートの充足状況に関わらず）。これは、`mock`モードの固定`aiOverviewComparison`フィクスチャに既に「ChatGPT」という名前のダミーカードが含まれており、そこへ実データのChatGPTカードを追加すると重複して紛らわしくなるため。`aiOverviewMode`が`"dataforseo"`または`"off"`の場合のみ、ChatGPT観測が候補になる。
+
+OpenAI API接続は`services/chatgpt_client.py`が`httpx`による直接のREST呼び出し（`POST https://api.openai.com/v1/responses`）で行い、`openai` SDKは追加していない。
+
+**理由**
+
+- 明日の提出に、Common Crawl本格連携や複数AIモデル比較の完成は間に合わないため、まず1つの追加AIモデル観測（ChatGPT相当）だけを最小スコープで実装する判断をした。
+- DataForSEO Live APIと同様、費用が発生し得る外部API呼び出しを「誤って有効化されない」設計にする必要があった。既にDataForSEOで検証済みの2段階ゲート（環境変数のデフォルトoff + 明示的なoverride許可フラグ）をそのまま踏襲することで、新しいリスクパターンを持ち込まずに済むと判断した。
+- `openai` SDKを追加すると`requirements.txt`の変更（新規外部ライブラリ追加）が必要になり、今回のタスクスコープ外だった。OpenAI Responses APIは単純なJSON POSTで呼び出せるため、既存の`httpx`（DataForSEOクライアントで実績あり）で十分と判断した。
+- `aiOverviewMode=="mock"`時にChatGPT観測をスキップする設計は、既存のmockフィクスチャ（4件固定、うち1件が「ChatGPT」という名前）との重複を避けるための最小限の分岐。mockフィクスチャ自体を変更する（ChatGPTカードを削除する等）よりも、呼び出し側の分岐で対処する方が既存の`build_mock_ai_overview_comparison()`への影響がなく安全だった。
+- `AIOverviewComparisonItem`型を再利用し新しい型を作らなかったのは、`references`/`referenceSummary`/`ownDomainReferenced`がすべて`None`固定で十分表現できるため。これによりフロント側（`AIOverviewComparisonSection.tsx`/`meta-label.ts`）の変更が一切不要になった（既存のreferences空表示・rank null表示のロジックがそのまま使える）。
+- `meta.chatgptProvider`を`meta.aiOverviewProvider`と完全に独立させたのは、両プロバイダが互いの成否を知らなくてよい設計にするため（DataForSEO成功時にChatGPT観測がない、あるいはその逆も両方あり得る）。
+
+**影響**
+
+- 新規: `backend/services/chatgpt_settings.py`（`OPENAI_API_KEY`/`CHATGPT_MODEL`/`CHATGPT_MAX_OUTPUT_TOKENS`/`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`を読み取る。`ChatGptCredentials`/`ChatGptSettings`、実値はAPIキーのみ短命に保持）。
+- 新規: `backend/services/chatgpt_client.py`（`fetch_chatgpt_observation()`、`httpx`でOpenAI Responses APIへ直接POST、ゲート判定ロジックは持たない）。
+- 新規: `backend/services/chatgpt_provider.py`（`resolve_chatgpt_mode()`/`build_chatgpt_observation()`、`CHATGPT_PROVIDER_MODE`/`ALLOW_CHATGPT_MODE_OVERRIDE`を読み取る）。
+- `backend/models.py`: `ChatGptProviderMode`/`ChatGptStatus`/`ChatGptEnvironment`/`ChatGptProviderInfo`型、`AnalyzeRequest.chatgptMode`（任意）、`AnalysisMeta.chatgptProvider`（任意）フィールドを追加。
+- `backend/main.py`: `aiOverviewComparison`計算後・`improvements`計算後に、`aiOverviewMode`に応じてChatGPT観測を呼ぶかどうか分岐し、成功時は`aiOverviewComparison`へカードを追加する処理を追加。
+- `app/lib/types.ts`/`app/lib/analysis-result-schema.ts`: `ChatGptProviderMode`/`ChatGptStatus`/`ChatGptEnvironment`/`ChatGptProviderInfo`型、`AnalysisMeta.chatgptProvider`（任意）を追加。既存の`AIOverviewComparisonItem`/`AIOverviewProviderInfo`は変更していない。
+- `app/lib/analysis-request.ts`: `isChatGptModeSelectorEnabled()`を新設、`buildAnalyzeRequestBody()`に`chatgptMode`引数を追加。
+- `app/api/analyze/route.ts`: `chatgptMode`のバリデーション・パススルーを追加（`aiOverviewMode`と同じパターン）。
+- `app/components/BrandInputForm.tsx`/`app/page.tsx`: `NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR=true`時のみ表示される検証用selectを追加。
+- `backend/services/dataforseo_settings.py`/`dataforseo_client.py`/`ai_overview_provider.py`は変更していない。DataForSEO Live手動確認用ゲート・呼び出し回数（1 analyzeあたり最大1リクエスト）にも影響しない。
+- テスト（`test_chatgpt_settings.py`/`test_chatgpt_client.py`/`test_chatgpt_provider.py`/`test_main.py`/`analysis-request.test.ts`/`route.test.ts`）はすべて`httpx.post`をmonkeypatchで差し替え、実際のOpenAI/DataForSEO APIへは一切接続していない。
+- 複数質問・複数ブランド同時処理、Web検索ツール利用、参照元付き回答、Claude/Gemini連携、DB保存、課金管理、UIからのAPIキー入力機能は対象外。
+
+**状態**: 確定（デフォルトoff・1 analyzeあたり最大1回の検証用途として実装。常時運用・他モデルへの拡張は別タスクとして今後検討する）
+
 **状態**: 確定（手動での1回限りの確認用ゲートとして実装。常時のLive運用は別タスクとして今後検討する）
