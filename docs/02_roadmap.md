@@ -28,11 +28,22 @@
 ## Phase 3-1 — 実データ収集基盤
 - DataForSEO APIと連携し、検索結果・AI Overviewでの掲載状況を取得
 
-## Phase 3-2 — 実データ収集基盤
-- Common Crawl から対象ブランド名に関するWebページ（記事・比較サイト・レビューサイト等）を抽出するバッチ処理を設計
-- 収集した生データを保存する仕組み（一旦はファイル or オブジェクトストレージ、後にPostgreSQL）
+## Phase 3-2 — 実データ収集基盤（Common Crawl連携）
 
-目安: 3〜4週間（データソースの契約・API調査を含む）
+最小MVPの設計を[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)としてまとめた（2026-07-28）。ブランド名の全文検索ではなく、**domain指定でのCommon Crawl Index検索から始める**方針。実装（Index検索クライアント・WARC取得・`Document[]`統合・`/analyze`統合・UI連携）はこれから段階的に着手する。
+
+- **Current（現状）**: Common Crawl MVP設計ドキュメント作成（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）
+- **Next（次のステップ、優先順）**:
+  - Common Crawl Index検索クライアント（設定モジュール + サービス層 + ユニットテストのみ）
+  - WARC取得・HTML抽出（初期はstubまたは最大1件から）
+  - `Document[]`統合（既存のDocument Pipelineへ合流、`sourceType: "common_crawl"`）
+  - `/analyze`でのCommon Crawl mode統合
+  - UI mode selector追加（既存の検証用selectorと同じパターン）
+- **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合
+
+目安: 3〜4週間（データソースの契約・API調査を含む）。ただしCommon Crawl自体は認証不要の公開データセットのため、契約は不要。
+
+詳細な設計（最小MVPの範囲・Provider設計・環境変数案・失敗時の扱い・安全制限）は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)を参照。
 
 ## Phase 4 — Python分析API
 
@@ -68,7 +79,7 @@
 | 0 | フロントエンドMVP（ダミー表示） | 完了 |
 | 1 | APIルート雛形（固定JSON） | 完了 |
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
-| 3 | Common Crawl / DataForSEO連携 | 未着手 |
+| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common CrawlはMVP設計ドキュメント作成済み（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）、実装は未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
 | 5 | PostgreSQL永続化 | 未着手 |
 | 6 | プロダクション化 | 未着手 |
