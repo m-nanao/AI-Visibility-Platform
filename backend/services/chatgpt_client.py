@@ -55,8 +55,9 @@ _SUMMARY_MAX_CHARS = 200
 _FULL_SUMMARY_MAX_CHARS = 2500
 
 _SYSTEM_PROMPT = (
-    "You are observing how an AI assistant describes brands. Answer in "
-    "Japanese. Do not browse the web. If you are uncertain, say so briefly."
+    "あなたは、AIがブランドをどのように説明するかを観測するための評価用アシスタントです。"
+    "Web検索は行わず、一般的な知識に基づいて日本語で回答してください。"
+    "不確かな点は断定しすぎず、簡潔に述べてください。"
 )
 
 
@@ -76,11 +77,28 @@ class ChatGptObservationResult:
     full_summary: str | None = None
 
 
-def _build_request_body(brand_name: str, model: str, max_output_tokens: int) -> dict:
-    user_prompt = (
-        "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを"
-        f"日本語で簡潔に説明してください。ブランド名: {brand_name}"
-    )
+_USER_PROMPT_TEMPLATE = (
+    "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを"
+    "日本語で説明してください。\n"
+    "\n"
+    "ブランド名: {brand_name}\n"
+    "\n"
+    "回答は以下の観点を含め、全体で3〜5文程度にしてください。\n"
+    "- 何を提供しているか\n"
+    "- 主な利用者または用途\n"
+    "- 代表的な特徴や強み\n"
+    "\n"
+    "注意:\n"
+    "- 箇条書きではなく自然文で回答してください\n"
+    "- 参照元やURLは挙げないでください\n"
+    "- 分からない場合は「一般的には十分な情報を確認できません」と述べてください"
+)
+
+
+def _build_request_body(
+    brand_name: str, model: str, max_output_tokens: int, temperature: float
+) -> dict:
+    user_prompt = _USER_PROMPT_TEMPLATE.format(brand_name=brand_name)
     return {
         "model": model,
         "input": [
@@ -88,6 +106,10 @@ def _build_request_body(brand_name: str, model: str, max_output_tokens: int) -> 
             {"role": "user", "content": user_prompt},
         ],
         "max_output_tokens": max_output_tokens,
+        # Low by design — see chatgpt_settings.py's DEFAULT_TEMPERATURE —
+        # so the same brand name produces a similarly-shaped answer
+        # across /analyze calls, for demo/verification stability.
+        "temperature": temperature,
         # Never persist this one-off observation request on OpenAI's
         # side — this project doesn't do its own DB storage either
         # (see docs/07_decisions.md).
@@ -159,6 +181,7 @@ def fetch_chatgpt_observation(
     *,
     model: str,
     max_output_tokens: int,
+    temperature: float,
 ) -> ChatGptObservationResult:
     """Asks the given OpenAI model one non-browsing question about
     `brand_name` via the Responses API. Issues exactly one HTTP request
@@ -169,7 +192,7 @@ def fetch_chatgpt_observation(
     *allowed* — see the module docstring: that gating lives entirely in
     services/chatgpt_provider.py.
     """
-    body = _build_request_body(brand_name, model, max_output_tokens)
+    body = _build_request_body(brand_name, model, max_output_tokens, temperature)
 
     try:
         response = httpx.post(

@@ -29,6 +29,14 @@ DEFAULT_MAX_OUTPUT_TOKENS = 700
 MIN_MAX_OUTPUT_TOKENS = 100
 MAX_MAX_OUTPUT_TOKENS = 1500
 
+# Low by design: this observation is meant to be a stable, repeatable
+# demo/verification data point, not a creative or varied answer. A
+# lower temperature keeps the same brand name producing a similarly-
+# shaped answer across /analyze calls (see docs/07_decisions.md).
+DEFAULT_TEMPERATURE = 0.2
+MIN_TEMPERATURE = 0.0
+MAX_TEMPERATURE = 1.0
+
 # Default and only value that lets services/chatgpt_provider.py actually
 # call OpenAI — a single ChatGPT observation per /analyze request is
 # the whole scope of this feature (see docs/07_decisions.md). A
@@ -76,6 +84,7 @@ class ChatGptSettings:
     model: str
     max_output_tokens: int
     request_limit_per_analyze: int
+    temperature: float
 
     def __repr__(self) -> str:
         return (
@@ -83,7 +92,8 @@ class ChatGptSettings:
             f"is_configured={self.is_configured}, "
             f"model={self.model!r}, "
             f"max_output_tokens={self.max_output_tokens}, "
-            f"request_limit_per_analyze={self.request_limit_per_analyze})"
+            f"request_limit_per_analyze={self.request_limit_per_analyze}, "
+            f"temperature={self.temperature})"
         )
 
 
@@ -132,6 +142,31 @@ def _resolve_request_limit() -> int:
         return DEFAULT_REQUEST_LIMIT_PER_ANALYZE
 
 
+def _resolve_temperature() -> float:
+    raw = os.environ.get("CHATGPT_TEMPERATURE", str(DEFAULT_TEMPERATURE)).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "CHATGPT_TEMPERATURE=%r is not a number; falling back to %s",
+            raw,
+            DEFAULT_TEMPERATURE,
+        )
+        return DEFAULT_TEMPERATURE
+
+    if value < MIN_TEMPERATURE or value > MAX_TEMPERATURE:
+        logger.warning(
+            "CHATGPT_TEMPERATURE=%s is outside the allowed range [%s, %s]; falling back to %s",
+            value,
+            MIN_TEMPERATURE,
+            MAX_TEMPERATURE,
+            DEFAULT_TEMPERATURE,
+        )
+        return DEFAULT_TEMPERATURE
+
+    return value
+
+
 def get_chatgpt_settings() -> ChatGptSettings:
     """Reads CHATGPT_*/OPENAI_API_KEY env vars fresh on every call
     (mirrors services/dataforseo_settings.py's get_dataforseo_settings()),
@@ -143,4 +178,5 @@ def get_chatgpt_settings() -> ChatGptSettings:
         model=_resolve_model(),
         max_output_tokens=_resolve_max_output_tokens(),
         request_limit_per_analyze=_resolve_request_limit(),
+        temperature=_resolve_temperature(),
     )

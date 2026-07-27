@@ -142,6 +142,7 @@ def build_chatgpt_observation(
         brand_name,
         model=settings.model,
         max_output_tokens=settings.max_output_tokens,
+        temperature=settings.temperature,
     )
     if not result.success:
         return None, "unavailable", result.reason, "unavailable"
