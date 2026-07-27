@@ -495,3 +495,305 @@ def test_fetch_sends_exactly_one_request_for_live_too(monkeypatch):
     fetch_ai_overview_serp(_CREDENTIALS, "Acme", api_env="live")
 
     assert calls["count"] == 1
+
+
+# --- fullSummary / references -----------------------------------------
+
+
+def test_fetch_builds_full_summary_from_item_markdown(monkeypatch):
+    payload = _success_payload(
+        [{"type": "ai_overview", "rank_absolute": 1, "markdown": "Acme is a well-reviewed tool for teams."}]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert result.full_summary == "Acme is a well-reviewed tool for teams."
+
+
+def test_full_summary_strips_markdown_images(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "markdown": "Acme ![logo](https://example.com/logo.png) is a tool.",
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert "https://example.com/logo.png" not in result.full_summary
+    assert "Acme" in result.full_summary
+    assert "is a tool." in result.full_summary
+
+
+def test_full_summary_flattens_markdown_links_to_display_text(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "markdown": "Acme is featured on [TechCrunch](https://techcrunch.com/acme).",
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert "TechCrunch" in result.full_summary
+    assert "https://techcrunch.com/acme" not in result.full_summary
+
+
+def test_full_summary_is_none_when_no_readable_text(monkeypatch):
+    payload = _success_payload([{"type": "ai_overview", "rank_absolute": 1}])
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert result.full_summary is None
+
+
+def test_full_summary_is_truncated_far_beyond_the_short_summary_cap(monkeypatch):
+    long_text = "Acme " + ("word " * 1000)
+    payload = _success_payload([{"type": "ai_overview", "rank_absolute": 1, "markdown": long_text}])
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.full_summary) <= dataforseo_client._FULL_SUMMARY_MAX_CHARS + 1
+    assert result.full_summary.endswith("…")
+    assert len(result.full_summary) > len(result.summary)
+
+
+def test_fetch_extracts_references_from_item_references(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "markdown": "Acme summary.",
+                "references": [
+                    {
+                        "type": "ai_overview_reference",
+                        "source": "web",
+                        "domain": "acme.example.com",
+                        "url": "https://acme.example.com/about",
+                        "title": "About Acme",
+                        "text": "Acme is a company.",
+                        "position": "left",
+                    }
+                ],
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 1
+    reference = result.references[0]
+    assert reference.domain == "acme.example.com"
+    assert reference.url == "https://acme.example.com/about"
+    assert reference.title == "About Acme"
+    assert reference.text == "Acme is a company."
+    assert reference.source == "web"
+    assert reference.position == "left"
+
+
+def test_fetch_extracts_references_from_nested_items_references(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "items": [
+                    {
+                        "text": "Acme helps teams collaborate.",
+                        "references": [{"domain": "acme.example.com", "title": "Acme"}],
+                    }
+                ],
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 1
+    assert result.references[0].domain == "acme.example.com"
+
+
+def test_fetch_extracts_references_from_nested_items_links(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "items": [
+                    {
+                        "text": "Acme helps teams collaborate.",
+                        "links": [
+                            {
+                                "type": "link_element",
+                                "title": "Acme Docs",
+                                "description": "Official docs",
+                                "url": "https://acme.example.com/docs",
+                                "domain": "acme.example.com",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 1
+    reference = result.references[0]
+    assert reference.url == "https://acme.example.com/docs"
+    assert reference.text == "Official docs"
+
+
+def test_fetch_extracts_references_from_item_links(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "markdown": "Acme summary.",
+                "links": [{"title": "Acme", "url": "https://acme.example.com", "domain": "acme.example.com"}],
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 1
+    assert result.references[0].url == "https://acme.example.com"
+
+
+def test_fetch_deduplicates_references_with_the_same_url(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "markdown": "Acme summary.",
+                "references": [
+                    {"domain": "acme.example.com", "url": "https://acme.example.com", "title": "Acme"},
+                    {"domain": "acme.example.com", "url": "https://acme.example.com", "title": "Acme (duplicate)"},
+                ],
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 1
+    assert result.references[0].title == "Acme"
+
+
+def test_fetch_deduplicates_references_without_url_by_domain_and_title(monkeypatch):
+    payload = _success_payload(
+        [
+            {
+                "type": "ai_overview",
+                "rank_absolute": 1,
+                "markdown": "Acme summary.",
+                "references": [
+                    {"domain": "acme.example.com", "title": "Acme"},
+                    {"domain": "acme.example.com", "title": "Acme"},
+                    {"domain": "acme.example.com", "title": "Acme (different title)"},
+                ],
+            }
+        ]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 2
+
+
+def test_fetch_caps_references_at_ten(monkeypatch):
+    references = [
+        {"domain": f"example{i}.com", "url": f"https://example{i}.com", "title": f"Example {i}"}
+        for i in range(15)
+    ]
+    payload = _success_payload(
+        [{"type": "ai_overview", "rank_absolute": 1, "markdown": "Acme summary.", "references": references}]
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert len(result.references) == 10
+
+
+def test_fetch_returns_no_references_when_none_are_present(monkeypatch):
+    payload = _success_payload([{"type": "ai_overview", "rank_absolute": 1, "markdown": "Acme summary."}])
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    result = fetch_ai_overview_serp(_CREDENTIALS, "Acme")
+
+    assert result.references == ()

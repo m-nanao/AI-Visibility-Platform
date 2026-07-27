@@ -392,6 +392,128 @@ def test_dataforseo_mode_reason_never_includes_credential_values_when_live_gates
     assert "super-secret-password" not in reason
 
 
+# --- fullSummary / references / ownDomainReferenced ------------------------
+
+
+def _payload_with_reference(domain: str) -> dict:
+    return {
+        "status_code": 20000,
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "items": [
+                            {
+                                "type": "ai_overview",
+                                "rank_absolute": 1,
+                                "markdown": "Acme is a well-reviewed tool for teams.",
+                                "references": [
+                                    {"domain": domain, "url": f"https://{domain}/about", "title": "About"}
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+    }
+
+
+def test_dataforseo_mode_sandbox_success_includes_full_summary_and_references(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = _payload_with_reference("acme.example.com")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, status, _, environment = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert status == "real"
+    assert environment == "sandbox"
+    assert items[0].fullSummary == "Acme is a well-reviewed tool for teams."
+    assert len(items[0].references) == 1
+    assert items[0].references[0].domain == "acme.example.com"
+
+
+def test_dataforseo_mode_own_domain_referenced_is_none_without_input_urls(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = _payload_with_reference("acme.example.com")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, _, _, _ = build_ai_overview_comparison("Acme", "dataforseo", None)
+
+    assert items[0].ownDomainReferenced is None
+
+
+def test_dataforseo_mode_own_domain_referenced_true_when_input_url_domain_matches_a_reference(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = _payload_with_reference("acme.example.com")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, _, _, _ = build_ai_overview_comparison(
+        "Acme", "dataforseo", ["https://acme.example.com/pricing"]
+    )
+
+    assert items[0].ownDomainReferenced is True
+
+
+def test_dataforseo_mode_own_domain_referenced_matches_ignoring_www_prefix(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = _payload_with_reference("www.acme.example.com")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, _, _, _ = build_ai_overview_comparison(
+        "Acme", "dataforseo", ["https://acme.example.com/pricing"]
+    )
+
+    assert items[0].ownDomainReferenced is True
+
+
+def test_dataforseo_mode_own_domain_referenced_false_when_input_url_domain_does_not_match(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = _payload_with_reference("acme.example.com")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, _, _, _ = build_ai_overview_comparison(
+        "Acme", "dataforseo", ["https://unrelated.example.org/"]
+    )
+
+    assert items[0].ownDomainReferenced is False
+
+
 def test_dataforseo_mode_reason_never_includes_credential_values_on_live_success(monkeypatch):
     _clear_dataforseo_env(monkeypatch)
     _set_all_live_gates(monkeypatch)
