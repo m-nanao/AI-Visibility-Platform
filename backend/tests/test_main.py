@@ -15,7 +15,7 @@ from models import (
     MAX_URLS,
     AnalysisResult,
 )
-from services import dataforseo_client
+from services import chatgpt_client, dataforseo_client
 from services.sample_documents import SAMPLE_DOCUMENT_TEMPLATES
 from services.web_fetcher import UrlFetchResult as FetcherResult
 
@@ -557,6 +557,150 @@ def test_analyze_mock_ai_overview_response_omits_detail_fields(monkeypatch):
 
     # Existing mock response still validates against the full model.
     AnalysisResult.model_validate(body)
+
+
+# --- ChatGPT-equivalent observation (services/chatgpt_provider.py) ---------
+
+
+def _clear_chatgpt_env(monkeypatch):
+    for name in (
+        "OPENAI_API_KEY",
+        "CHATGPT_PROVIDER_MODE",
+        "ALLOW_CHATGPT_MODE_OVERRIDE",
+        "CHATGPT_MODEL",
+        "CHATGPT_MAX_OUTPUT_TOKENS",
+        "CHATGPT_REQUEST_LIMIT_PER_ANALYZE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_analyze_default_chatgpt_mode_is_off_and_never_calls_openai(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called when chatgptMode is off by default")
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fail_if_called)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.chatgptProvider is not None
+    assert result.meta.chatgptProvider.mode == "off"
+    assert result.meta.chatgptProvider.status == "off"
+    assert not any(item.platform.startswith("ChatGPT (") for item in result.aiOverviewComparison)
+
+
+def test_analyze_chatgpt_mode_openai_adds_a_card_when_ai_overview_mode_is_dataforseo(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    monkeypatch.setenv("CHATGPT_PROVIDER_MODE", "off")
+    monkeypatch.setenv("ALLOW_CHATGPT_MODE_OVERRIDE", "true")
+
+    dataforseo_payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "OpenAI is great."}]}]}],
+    }
+
+    # dataforseo_client and chatgpt_client both `import httpx` and call
+    # `httpx.post(...)` directly, so they share the exact same `httpx`
+    # module object — monkeypatching `post` on one patches it for both
+    # call sites. One dispatching fake_post (by URL) is required instead
+    # of two separate monkeypatch.setattr calls, which would just
+    # overwrite each other.
+    def fake_post(url, **kwargs):
+        if url == chatgpt_client.RESPONSES_API_URL:
+            return httpx.Response(
+                200,
+                json={"output_text": "OpenAI is a well-known AI research company."},
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(200, json=dataforseo_payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "chatgptMode": "openai"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.chatgptProvider is not None
+    assert result.meta.chatgptProvider.mode == "openai"
+    assert result.meta.chatgptProvider.status == "real"
+    assert result.meta.chatgptProvider.environment == "api"
+
+    platforms = [item.platform for item in result.aiOverviewComparison]
+    assert "Google AI Mode (DataForSEO Sandbox)" in platforms
+    assert "ChatGPT (OpenAI API)" in platforms
+
+    chatgpt_item = next(item for item in result.aiOverviewComparison if item.platform == "ChatGPT (OpenAI API)")
+    assert chatgpt_item.mentioned is True
+    assert chatgpt_item.rank is None
+    assert chatgpt_item.references is None
+    assert chatgpt_item.ownDomainReferenced is None
+
+    # Credentials never leak into the response body.
+    body_text = response.text
+    assert "sk-super-secret-key" not in body_text
+    assert "super-secret-password" not in body_text
+
+
+def test_analyze_chatgpt_mode_openai_is_skipped_when_ai_overview_mode_is_mock(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    monkeypatch.setenv("ALLOW_CHATGPT_MODE_OVERRIDE", "true")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called while aiOverviewMode is mock")
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fail_if_called)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "chatgptMode": "openai"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.chatgptProvider is not None
+    assert result.meta.chatgptProvider.status == "off"
+    # Existing fixed mock aiOverviewComparison (4 items, including its
+    # own mock "ChatGPT" card) is unaffected — no second one is added.
+    chatgpt_items = [item for item in result.aiOverviewComparison if item.platform == "ChatGPT"]
+    assert len(chatgpt_items) == 1
+    assert not any(item.platform == "ChatGPT (OpenAI API)" for item in result.aiOverviewComparison)
+
+
+def test_analyze_chatgpt_mode_request_override_ignored_without_allow_flag(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "off")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    # ALLOW_CHATGPT_MODE_OVERRIDE deliberately left unset (false by default).
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without ALLOW_CHATGPT_MODE_OVERRIDE=true")
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fail_if_called)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "chatgptMode": "openai"}
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.chatgptProvider is not None
+    assert result.meta.chatgptProvider.mode == "off"
+    assert result.meta.chatgptProvider.status == "off"
 
 
 def test_analyze_ai_overview_mode_dataforseo_sandbox_failure_does_not_break_analyze(monkeypatch):
