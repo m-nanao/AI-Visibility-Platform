@@ -53,6 +53,13 @@ updated after manual verification against DataForSEO Sandbox):
   defensive/best-effort about the *item*'s own shape (which does vary
   somewhat by endpoint) — any unexpected shape is treated as "no
   supported item found" rather than raising.
+- `references[]`/`links[]` (both the item's own and any nested
+  `items[]`'s) are extracted into `DataForSEOSerpResult.references` —
+  deduplicated by url (or by domain+title when no url is present) and
+  capped at `_MAX_REFERENCES` entries. This is a bounded, structured
+  subset (title/domain/url/text/source/position — see
+  `DataForSEOSerpReference`), never the raw reference/link dict as
+  DataForSEO returned it.
 
 This client never raises out of `fetch_ai_overview_serp()` — network
 errors, timeouts, non-2xx responses, and unexpected response shapes
@@ -123,6 +130,14 @@ REQUEST_TIMEOUT_SECONDS = 12.0
 _AI_OVERVIEW_ITEM_TYPE_HINTS = ("ai_overview",)
 
 _SUMMARY_MAX_CHARS = 200
+# fullSummary is a detail view, not an excerpt, so it's allowed much
+# more room than _SUMMARY_MAX_CHARS — but still capped well below
+# DataForSEO's own item size so a single item can't blow up the
+# response body.
+_FULL_SUMMARY_MAX_CHARS = 2500
+# Reference lists from DataForSEO can be long; capped to keep the
+# response small and the UI list readable (see AIOverviewComparisonSection.tsx).
+_MAX_REFERENCES = 10
 
 _DATAFORSEO_SUCCESS_STATUS_CODE = 20000
 
@@ -131,6 +146,27 @@ _DATAFORSEO_SUCCESS_STATUS_CODE = 20000
 # common forms rather than showing raw "![alt](url)"/"[text](url)".
 _MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# Collapses 3+ consecutive newlines (i.e. 2+ blank lines) down to a
+# single blank line, for fullSummary's lighter-touch cleanup (unlike
+# the short summary excerpt, fullSummary keeps paragraph breaks).
+_EXCESS_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
+
+
+@dataclass(frozen=True)
+class DataForSEOSerpReference:
+    """One citation/link extracted from a DataForSEO AI Overview-type
+    item's `references[]`/`links[]` (including nested `items[]`'s own).
+    Every field is optional since DataForSEO's `ai_overview_reference`
+    and `link_element` shapes don't carry the same fields (see
+    _reference_from_dict).
+    """
+
+    title: str | None = None
+    domain: str | None = None
+    url: str | None = None
+    text: str | None = None
+    source: str | None = None
+    position: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +183,8 @@ class DataForSEOSerpResult:
     mentioned: bool = False
     rank: int | None = None
     summary: str | None = None
+    full_summary: str | None = None
+    references: tuple[DataForSEOSerpReference, ...] = ()
 
 
 def _build_request_body(
@@ -208,6 +246,19 @@ def _clean_markdown(text: str) -> str:
     return re.sub(r"\s+", " ", without_links).strip()
 
 
+def _clean_markdown_for_full_summary(text: str) -> str:
+    """Like _clean_markdown, but for fullSummary: keeps paragraph breaks
+    (only collapses 2+ blank lines down to one) instead of flattening
+    all whitespace to a single space, so the detail view still reads as
+    paragraphs rather than one long line.
+    """
+    without_images = _MARKDOWN_IMAGE_PATTERN.sub("", text)
+    without_links = _MARKDOWN_LINK_PATTERN.sub(r"\1", without_images)
+    collapsed_blank_lines = _EXCESS_BLANK_LINES_PATTERN.sub("\n\n", without_links)
+    lines = [line.rstrip() for line in collapsed_blank_lines.splitlines()]
+    return "\n".join(lines).strip()
+
+
 def _text_fields(source: object, *field_names: str) -> list[str]:
     """Pulls out the given string-valued fields from `source` if it's a
     dict, ignoring any that are missing or not strings.
@@ -244,11 +295,133 @@ def _collect_mentioned_check_text(item: dict) -> str:
     return " ".join(parts)
 
 
-def _summarize_item(item: dict, brand_name: str) -> tuple[bool, int | None, str]:
-    """Reduces one AI Overview-type item to (mentioned, rank, summary).
-    `summary` is always a short excerpt (<= _SUMMARY_MAX_CHARS), never
-    the item's full/raw content (references are not included — see
-    docs/07_decisions.md for why the reference list isn't surfaced).
+def _gather_summary_source_parts(item: dict) -> list[str]:
+    """Collects the text parts both `summary` and `fullSummary` are
+    built from: the item's own markdown (preferred) or text (fallback —
+    the Organic endpoint's ai_overview item shape uses this), or, if
+    neither is present, every nested `items[]`'s markdown/text.
+    """
+    parts = _text_fields(item, "markdown") or _text_fields(item, "text")
+    if not parts:
+        nested_items = item.get("items")
+        if isinstance(nested_items, list):
+            for nested in nested_items:
+                parts.extend(_text_fields(nested, "markdown", "text"))
+    return parts
+
+
+def _build_full_summary(parts: list[str]) -> str | None:
+    """Builds the fullSummary field from the same source parts as the
+    short summary excerpt, but with lighter cleanup (paragraph breaks
+    kept, see _clean_markdown_for_full_summary) and a much higher
+    length cap (_FULL_SUMMARY_MAX_CHARS). Returns None when there's no
+    readable text at all, so AIOverviewComparisonItem.fullSummary stays
+    unset rather than an empty string.
+    """
+    joined = "\n\n".join(part.strip() for part in parts if part.strip())
+    if not joined:
+        return None
+
+    cleaned = _clean_markdown_for_full_summary(joined)
+    if not cleaned:
+        return None
+
+    if len(cleaned) > _FULL_SUMMARY_MAX_CHARS:
+        return cleaned[:_FULL_SUMMARY_MAX_CHARS].rstrip() + "…"
+    return cleaned
+
+
+def _reference_from_dict(raw: dict) -> DataForSEOSerpReference | None:
+    """Converts one raw `references[]`/`links[]` entry (either
+    DataForSEO's `ai_overview_reference` shape — source/domain/url/
+    title/text/position — or its `link_element` shape —
+    title/description/url/domain) into a DataForSEOSerpReference.
+    Returns None if the entry has no usable field at all.
+    """
+
+    def _string_or_none(value: object) -> str | None:
+        return value if isinstance(value, str) and value.strip() else None
+
+    title = _string_or_none(raw.get("title"))
+    domain = _string_or_none(raw.get("domain"))
+    url = _string_or_none(raw.get("url"))
+    # link_element entries use "description" where ai_overview_reference
+    # entries use "text" — both map to DataForSEOSerpReference.text.
+    text = _string_or_none(raw.get("text")) or _string_or_none(raw.get("description"))
+    source = _string_or_none(raw.get("source"))
+    position = _string_or_none(raw.get("position"))
+
+    if not any([title, domain, url, text]):
+        return None
+
+    return DataForSEOSerpReference(
+        title=title, domain=domain, url=url, text=text, source=source, position=position
+    )
+
+
+def _collect_references(item: dict) -> tuple[DataForSEOSerpReference, ...]:
+    """Gathers references from every shape DataForSEO's AI Overview-type
+    items are known to carry them in, in this priority order:
+    item.references[], nested items[].references[], nested
+    items[].links[], item.links[]. Deduplicates by url (or by
+    domain+title when a reference has no url) and caps the result at
+    _MAX_REFERENCES.
+    """
+    raw_candidates: list[dict] = []
+
+    top_references = item.get("references")
+    if isinstance(top_references, list):
+        raw_candidates.extend(r for r in top_references if isinstance(r, dict))
+
+    nested_items = item.get("items")
+    nested_items = nested_items if isinstance(nested_items, list) else []
+
+    for nested in nested_items:
+        if not isinstance(nested, dict):
+            continue
+        nested_references = nested.get("references")
+        if isinstance(nested_references, list):
+            raw_candidates.extend(r for r in nested_references if isinstance(r, dict))
+
+    for nested in nested_items:
+        if not isinstance(nested, dict):
+            continue
+        nested_links = nested.get("links")
+        if isinstance(nested_links, list):
+            raw_candidates.extend(r for r in nested_links if isinstance(r, dict))
+
+    top_links = item.get("links")
+    if isinstance(top_links, list):
+        raw_candidates.extend(r for r in top_links if isinstance(r, dict))
+
+    references: list[DataForSEOSerpReference] = []
+    seen_keys: set[str] = set()
+    for raw in raw_candidates:
+        reference = _reference_from_dict(raw)
+        if reference is None:
+            continue
+
+        dedup_key = reference.url or f"domain:{reference.domain}|title:{reference.title}"
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+
+        references.append(reference)
+        if len(references) >= _MAX_REFERENCES:
+            break
+
+    return tuple(references)
+
+
+def _summarize_item(
+    item: dict, brand_name: str
+) -> tuple[bool, int | None, str, str | None, tuple[DataForSEOSerpReference, ...]]:
+    """Reduces one AI Overview-type item to (mentioned, rank, summary,
+    full_summary, references). `summary` is always a short excerpt
+    (<= _SUMMARY_MAX_CHARS); `full_summary` is the fuller text (<=
+    _FULL_SUMMARY_MAX_CHARS, may be None if there's no readable text);
+    `references` is a bounded, deduplicated list (see
+    _collect_references) — never the item's raw/full content.
     """
     raw_rank = item.get("rank_absolute")
     if not isinstance(raw_rank, int):
@@ -257,16 +430,7 @@ def _summarize_item(item: dict, brand_name: str) -> tuple[bool, int | None, str]
 
     mentioned = brand_name.lower() in _collect_mentioned_check_text(item).lower()
 
-    # markdown is preferred (the AI Mode endpoint's primary content
-    # field); "text" is the fallback used by the Organic endpoint's
-    # ai_overview item shape.
-    summary_source_parts = _text_fields(item, "markdown") or _text_fields(item, "text")
-    if not summary_source_parts:
-        nested_items = item.get("items")
-        if isinstance(nested_items, list):
-            for nested in nested_items:
-                summary_source_parts.extend(_text_fields(nested, "markdown", "text"))
-
+    summary_source_parts = _gather_summary_source_parts(item)
     joined = _clean_markdown(" ".join(summary_source_parts))
 
     if not joined:
@@ -276,7 +440,10 @@ def _summarize_item(item: dict, brand_name: str) -> tuple[bool, int | None, str]
     else:
         summary = joined
 
-    return mentioned, rank, summary
+    full_summary = _build_full_summary(summary_source_parts)
+    references = _collect_references(item)
+
+    return mentioned, rank, summary, full_summary, references
 
 
 def fetch_ai_overview_serp(
@@ -303,6 +470,11 @@ def fetch_ai_overview_serp(
     services/ai_overview_provider.py, which only ever passes
     `api_env="live"` once `DataForSEOSettings.is_live_allowed_for_manual_check`
     is confirmed `True`.
+
+    On success, the returned result also carries `full_summary` (a
+    longer, still-bounded excerpt — see `_build_full_summary`) and
+    `references` (a deduplicated, capped list — see
+    `_collect_references`), in addition to the existing short `summary`.
     """
     env_label = _ENV_LABELS[api_env]
     endpoint_label = _ENDPOINT_LABELS[endpoint]
@@ -357,11 +529,13 @@ def fetch_ai_overview_serp(
             ),
         )
 
-    mentioned, rank, summary = _summarize_item(item, brand_name)
+    mentioned, rank, summary, full_summary, references = _summarize_item(item, brand_name)
     return DataForSEOSerpResult(
         success=True,
         reason=f"DataForSEO {env_label} {endpoint_label} request succeeded.",
         mentioned=mentioned,
         rank=rank,
         summary=summary,
+        full_summary=full_summary,
+        references=references,
     )

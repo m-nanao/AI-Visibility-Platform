@@ -192,11 +192,48 @@ class ContextAnalysisItem(BaseModel):
     exampleQuote: str
 
 
+class AIOverviewReference(BaseModel):
+    """One citation/link DataForSEO's AI Overview-type item pointed at
+    (see services/dataforseo_client.py's reference extraction). Every
+    field is optional since DataForSEO's own reference/link shapes vary
+    (an `ai_overview_reference` item and a `link_element` item don't
+    carry the same fields) and a partially-populated reference is still
+    worth showing rather than dropped.
+    """
+
+    title: str | None = None
+    domain: str | None = None
+    url: str | None = None
+    text: str | None = None
+    source: str | None = None
+    position: str | None = None
+
+
 class AIOverviewComparisonItem(BaseModel):
     platform: str
     mentioned: bool
     rank: int | None
     summary: str
+    # The following three are optional and only ever populated by the
+    # "dataforseo" provider (see services/ai_overview_provider.py) — the
+    # mock fixture and "off" mode never set them, so existing clients
+    # that don't know about these fields keep working unchanged.
+    #
+    # fullSummary: the AI Overview item's full text (cleaned of markdown
+    # image/link syntax, capped at a few thousand characters — see
+    # services/dataforseo_client.py's _build_full_summary), distinct from
+    # `summary` above which stays a short (~200 char) excerpt.
+    fullSummary: str | None = None
+    # references: up to 10 deduplicated citations DataForSEO's response
+    # pointed at. Never the raw DataForSEO response itself — see
+    # services/dataforseo_client.py's module docstring.
+    references: list[AIOverviewReference] | None = None
+    # ownDomainReferenced: whether one of `references` shares a domain
+    # with one of the request's input `urls` (a simple domain-string
+    # match, not a content check). None when it can't be determined
+    # (e.g. the request had no `urls`, so there is no "own domain" to
+    # compare against) — see services/ai_overview_provider.py.
+    ownDomainReferenced: bool | None = None
 
 
 class ImprovementSuggestion(BaseModel):
