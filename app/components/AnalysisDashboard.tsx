@@ -17,7 +17,13 @@ export default function AnalysisDashboard({
       </div>
       <CooccurrenceRankingSection items={result.cooccurrenceRanking} meta={result.meta} />
       <ContextAnalysisSection items={result.contextAnalysis} />
-      <AIOverviewComparisonSection items={result.aiOverviewComparison} meta={result.meta} />
+      {/* AI Overview比較はfullSummary/referencesで縦に長くなりやすいため、
+          他の短いセクションと同じ1カラム幅ではなくBrandSummarySectionと
+          同様に横幅いっぱい（lg:col-span-2）を使う — 狭い2カラムグリッド内
+          での折り返し・視認性を改善する（style/widen-ai-overview-section）。 */}
+      <div className="lg:col-span-2">
+        <AIOverviewComparisonSection items={result.aiOverviewComparison} meta={result.meta} />
+      </div>
       <ImprovementSuggestionsSection items={result.improvements} />
     </div>
   );
