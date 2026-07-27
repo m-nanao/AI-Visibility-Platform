@@ -39,10 +39,21 @@ export interface UrlFetchResult {
 
 // Which data source aiOverviewComparison is built from — see
 // backend/services/ai_overview_provider.py. "mock" (fixed dev data,
-// default), "off" (section disabled), or "dataforseo" (connects to
-// DataForSEO Sandbox by default, or Live only for a fully-gated manual
-// check — see AiOverviewEnvironment below for which one actually ran).
-export type AiOverviewProviderMode = "mock" | "off" | "dataforseo";
+// default), "off" (section disabled), "dataforseo" (env-driven, kept
+// for backwards compatibility: connects to DataForSEO Sandbox by
+// default, or Live only for a fully-gated manual check),
+// "dataforseo_sandbox" (explicitly forces the Sandbox host regardless
+// of the backend's DATAFORSEO_API_ENV, no Live gate involved), or
+// "dataforseo_live" (explicitly requests Live — still only actually
+// calls the Live host once every one of the backend's five manual-
+// confirmation gates holds; see AiOverviewEnvironment below for which
+// one actually ran).
+export type AiOverviewProviderMode =
+  | "mock"
+  | "off"
+  | "dataforseo"
+  | "dataforseo_sandbox"
+  | "dataforseo_live";
 
 // Which concrete data source actually produced aiOverviewComparison —
 // distinct from AiOverviewProviderMode/SectionStatus because neither

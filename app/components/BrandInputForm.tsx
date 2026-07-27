@@ -9,9 +9,11 @@ import { MAX_URLS, validateUrlsInput } from "../lib/url-validation";
 import type { AiOverviewProviderMode, ChatGptProviderMode } from "../lib/types";
 
 const AI_OVERVIEW_MODE_OPTIONS: { value: AiOverviewProviderMode; label: string }[] = [
-  { value: "mock", label: "mock: 開発用データ" },
-  { value: "off", label: "off: 無効" },
-  { value: "dataforseo", label: "dataforseo: DataForSEO" },
+  { value: "mock", label: "モック" },
+  { value: "off", label: "オフ" },
+  { value: "dataforseo_sandbox", label: "DataForSEO Sandbox" },
+  { value: "dataforseo_live", label: "DataForSEO Live" },
+  { value: "dataforseo", label: "dataforseo: DataForSEO（env依存・非推奨）" },
 ];
 
 const CHATGPT_MODE_OPTIONS: { value: ChatGptProviderMode; label: string }[] = [
@@ -134,11 +136,15 @@ export default function BrandInputForm({
       </div>
 
       {/* Dev/verification-only — see app/lib/analysis-request.ts's
-          isAiOverviewModeSelectorEnabled(). Selecting "dataforseo" here
-          only sends aiOverviewMode in the request body; whether the
-          Python API actually honors it (and, separately, whether it
-          reaches DataForSEO Live) still depends entirely on server-side
-          gates that this UI cannot change. */}
+          isAiOverviewModeSelectorEnabled(). Selecting "dataforseo_live"
+          (or "dataforseo" with the right env) here only sends
+          aiOverviewMode in the request body; whether the Python API
+          actually honors it (and, separately, whether it reaches
+          DataForSEO Live) still depends entirely on server-side gates
+          that this UI cannot change. "dataforseo_sandbox"/"dataforseo_live"
+          are explicit about which host they mean; plain "dataforseo" is
+          kept only for backwards compatibility (its Sandbox-vs-Live
+          choice still depends on the backend's DATAFORSEO_API_ENV). */}
       {showAiOverviewModeSelector && (
         <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
           <label
@@ -166,6 +172,11 @@ export default function BrandInputForm({
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             この設定は検証用です。DataForSEO Live APIは、サーバー側の複数のゲートがすべて揃った場合のみ実行されます。
           </p>
+          {aiOverviewMode === "dataforseo_live" && (
+            <p className="mt-1 text-xs font-medium text-amber-800 dark:text-amber-300">
+              Liveは課金が発生する可能性があります。Render側のLive許可envが揃っている場合のみ実行されます。
+            </p>
+          )}
         </div>
       )}
 
