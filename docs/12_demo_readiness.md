@@ -17,7 +17,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 - ChatGPT (OpenAI API) の1問観測（`chatgpt_provider.py`、AI Overview比較へのカード追加）
 - ChatGPT観測モードselector（検証用UI、`NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR`）
 - AI Overview取得モードselector（検証用UI、`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR`）
-- ChatGPT回答の安定化（`CHATGPT_TEMPERATURE`、構造化プロンプト）
+- ChatGPT回答の安定化（`CHATGPT_TEMPERATURE`、構造化プロンプト。gpt-5系モデルではtemperatureを自動省略しHTTP 400を回避）
 - 短いAI Overview / ChatGPT本文の全文表示、長文のみ「続きを見る」
 - AI Overview取得モードの`dataforseo_sandbox`/`dataforseo_live`明示選択（`DATAFORSEO_API_ENV`の値に依存せずSandbox/Liveを画面から明示的に選べる。Liveは既存の5つの手動確認用ゲートがすべて揃った場合のみ実行）
 
@@ -73,10 +73,10 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 | `OPENAI_API_KEY` | Renderに設定済みの値 | このファイルには書かない。GitHub・フロントエンドには絶対に渡さない |
 | `CHATGPT_PROVIDER_MODE` | `off` | 通常運用のデフォルトはoff。デモ中は画面selectorで一時的に`openai`へ切り替える |
 | `ALLOW_CHATGPT_MODE_OVERRIDE` | `true` | 画面selectorでの上書きを許可 |
-| `CHATGPT_MODEL` | `gpt-4.1-mini` | |
+| `CHATGPT_MODEL` | `gpt-4.1-mini` | デモでの動作確認済みの推奨値。`gpt-5-mini`等のgpt-5系モデルへ変更しても、`CHATGPT_TEMPERATURE`は自動的に省略されるため2026-07-28以降はHTTP 400にならない（`chatgpt_client.py`の`should_send_temperature()`） |
 | `CHATGPT_MAX_OUTPUT_TOKENS` | `700` | |
 | `CHATGPT_REQUEST_LIMIT_PER_ANALYZE` | `1` | |
-| `CHATGPT_TEMPERATURE` | `0.2` | 回答の安定化用（詳細は[backend/README.md](../backend/README.md)「ChatGPT相当モデルの1問観測」参照） |
+| `CHATGPT_TEMPERATURE` | `0.2` | 回答の安定化用。`gpt-4.1`系/`gpt-4o`系では送信されるが、gpt-5系モデルではOpenAI API互換性のため自動的に省略される（詳細は[backend/README.md](../backend/README.md)「ChatGPT相当モデルの1問観測」参照） |
 
 ### 4.2 Vercel（フロントエンド）
 

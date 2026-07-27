@@ -148,6 +148,21 @@ def test_chatgpt_temperature_maximum_boundary_1_0_is_valid(monkeypatch):
     assert get_chatgpt_settings().temperature == 1.0
 
 
+def test_chatgpt_temperature_is_still_resolved_for_gpt5_models(monkeypatch):
+    # get_chatgpt_settings() has no model-specific logic of its own — it
+    # always resolves/validates CHATGPT_TEMPERATURE regardless of which
+    # model is configured. Whether the value is actually sent to OpenAI
+    # is decided per-model by services/chatgpt_client.py's
+    # should_send_temperature() (tested in test_chatgpt_client.py), not
+    # here.
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "0.2")
+    settings = get_chatgpt_settings()
+    assert settings.model == "gpt-5-mini"
+    assert settings.temperature == 0.2
+
+
 def test_chatgpt_settings_repr_never_exposes_the_api_key(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")

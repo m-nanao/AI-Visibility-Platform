@@ -77,6 +77,27 @@ class ChatGptObservationResult:
     full_summary: str | None = None
 
 
+# Model name prefixes that reject a "temperature" field on OpenAI's
+# Responses API (observed: gpt-5-mini + temperature=0.2 returns HTTP
+# 400; gpt-4.1-mini and gpt-4o-mini accept it). Kept as an explicit,
+# extensible tuple rather than a single string check in case a future
+# model family has the same restriction.
+_NO_TEMPERATURE_MODEL_PREFIXES: tuple[str, ...] = ("gpt-5",)
+
+
+def should_send_temperature(model: str) -> bool:
+    """Whether `temperature` is safe to include in the OpenAI Responses
+    API request body for `model`. False for gpt-5* models (see
+    _NO_TEMPERATURE_MODEL_PREFIXES above) — CHATGPT_TEMPERATURE is
+    still read from settings either way, it's simply omitted from the
+    request body for these models so the call doesn't fail with HTTP
+    400. Case-insensitive so "GPT-5-MINI" is treated the same as
+    "gpt-5-mini".
+    """
+    normalized = model.strip().lower()
+    return not normalized.startswith(_NO_TEMPERATURE_MODEL_PREFIXES)
+
+
 _USER_PROMPT_TEMPLATE = (
     "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを"
     "日本語で説明してください。\n"
@@ -99,22 +120,30 @@ def _build_request_body(
     brand_name: str, model: str, max_output_tokens: int, temperature: float
 ) -> dict:
     user_prompt = _USER_PROMPT_TEMPLATE.format(brand_name=brand_name)
-    return {
+    body: dict = {
         "model": model,
         "input": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         "max_output_tokens": max_output_tokens,
-        # Low by design — see chatgpt_settings.py's DEFAULT_TEMPERATURE —
-        # so the same brand name produces a similarly-shaped answer
-        # across /analyze calls, for demo/verification stability.
-        "temperature": temperature,
         # Never persist this one-off observation request on OpenAI's
         # side — this project doesn't do its own DB storage either
         # (see docs/07_decisions.md).
         "store": False,
     }
+
+    # Low by design — see chatgpt_settings.py's DEFAULT_TEMPERATURE — so
+    # the same brand name produces a similarly-shaped answer across
+    # /analyze calls, for demo/verification stability. Omitted entirely
+    # for gpt-5* models, which reject this field with HTTP 400 (see
+    # should_send_temperature above) — logged, not surfaced in `reason`.
+    if should_send_temperature(model):
+        body["temperature"] = temperature
+    else:
+        logger.info("temperature was omitted for gpt-5 model compatibility (model=%s)", model)
+
+    return body
 
 
 def _extract_output_text(payload: object) -> str | None:

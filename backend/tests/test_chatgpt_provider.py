@@ -199,6 +199,11 @@ def test_build_chatgpt_observation_uses_configured_model_and_max_output_tokens(m
 def test_build_chatgpt_observation_uses_configured_temperature(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
     _set_credentials(monkeypatch)
+    # A temperature-supporting model — gpt-5* models omit temperature
+    # from the request entirely (see chatgpt_client.should_send_temperature
+    # and the dedicated gpt-5 tests below), so this test uses a model
+    # where the configured value is actually expected to be forwarded.
+    monkeypatch.setenv("CHATGPT_MODEL", "gpt-4.1-mini")
     monkeypatch.setenv("CHATGPT_TEMPERATURE", "0.7")
 
     seen_bodies = []
@@ -217,6 +222,7 @@ def test_build_chatgpt_observation_uses_configured_temperature(monkeypatch):
 def test_build_chatgpt_observation_uses_default_temperature_when_unset(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
     _set_credentials(monkeypatch)
+    monkeypatch.setenv("CHATGPT_MODEL", "gpt-4.1-mini")
 
     seen_bodies = []
 
@@ -229,6 +235,29 @@ def test_build_chatgpt_observation_uses_default_temperature_when_unset(monkeypat
     build_chatgpt_observation("Acme", "openai")
 
     assert seen_bodies[0]["temperature"] == 0.2
+
+
+def test_build_chatgpt_observation_omits_temperature_for_the_default_gpt5_mini_model(monkeypatch):
+    # CHATGPT_MODEL deliberately left unset here, so this exercises
+    # chatgpt_settings.DEFAULT_MODEL ("gpt-5-mini") end-to-end through
+    # build_chatgpt_observation() — the scenario that originally caused
+    # an HTTP 400 from OpenAI when combined with CHATGPT_TEMPERATURE.
+    _clear_chatgpt_env(monkeypatch)
+    _set_credentials(monkeypatch)
+
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    item, status, _, _ = build_chatgpt_observation("Acme", "openai")
+
+    assert "temperature" not in seen_bodies[0]
+    assert status == "real"
+    assert item is not None
 
 
 def test_build_chatgpt_observation_failure_reports_unavailable_without_crashing(monkeypatch):
