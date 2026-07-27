@@ -235,7 +235,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 ### `improvement_suggestions.py`（Analyzer: 軽量改善提案、通称"improvement-suggestions-lite"）
 
-`improvements`（`ImprovementSuggestion[]`）を固定データから実データ由来にする。AI API・LLM・DataForSEOは使わず、既に計算済みの`cooccurrenceRanking`・`contextAnalysis`・`summary`（`BrandSummary`）に対する**説明可能なルール**だけで提案を組み立てる（Render無料枠でも軽く動くことを優先）。`build_improvement_suggestions(brand_name, summary, cooccurrence_ranking, context_analysis, document_count=None, source_types=None) -> list[ImprovementSuggestion]`を公開する。
+`improvements`（`ImprovementSuggestion[]`）を固定データから実データ由来にする。AI API・LLM・DataForSEOは使わず、既に計算済みの`cooccurrenceRanking`・`contextAnalysis`・`summary`（`BrandSummary`）に対する**説明可能なルール**だけで提案を組み立てる（Render無料枠でも軽く動くことを優先）。`build_improvement_suggestions(brand_name, summary, cooccurrence_ranking, context_analysis, document_count=None, source_types=None, ai_overview_items=None) -> list[ImprovementSuggestion]`を公開する。`ai_overview_items`（2026-07-23追加、任意）は`result.aiOverviewComparison`（`main.py`で`aiOverviewComparison`計算後にそのまま渡す）——この関数自体はDataForSEOを一切呼ばない。
 
 1. **提案カテゴリ**（`contextAnalysis`にカテゴリが存在するかどうかで判定）:
    - `pricing`が存在しない → 「料金・プラン情報の明確化」。共起語に`price`/`pricing`/`cost`/`料金`/`プラン`のいずれかがあれば根拠が一部あるとみなし優先度`medium`、なければ`high`。
@@ -248,6 +248,11 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 3. **件数上限**: 最大`MAX_SUGGESTIONS`（5）件。優先度順（`high`→`medium`→`low`、同優先度内は上記カテゴリの宣言順）に並べ、超過分は切り捨てる。
 4. **根拠**: すべての`description`に、なぜその提案が出たかの理由を自然文で含める（例:「現在の文脈分析・共起語のいずれにも料金・価格に関する言及が確認できないため、」）。
 5. **フォールバック**: 上記のどのルールにも当てはまらない場合（＝主要カテゴリが揃っており、`risk_or_issue`もなく、キーワード量も十分）でも空配列を返さず、「改善提案を作るための十分な文脈がありません」という低優先度の提案を1件返す。
+6. **AI Overview参照元の状態**（2026-07-23追加、`ai_overview_items`の`ownDomainReferenced`/`referenceSummary`を使う。`mock`/`off`/`unavailable`時は`ownDomainReferenced`が設定されないため何も追加しない）:
+   - `ownDomainReferenced === False` → 「AI Overview参照元への公式ページ掲載」（`medium`）。
+   - `ownDomainReferenced === True`かつ`referenceSummary.thirdParty`が3件以上・全体の75%以上 → 「AI Overviewにおける第三者サイト依存への対応」（`low`）。
+   - `ownDomainReferenced === True`（上記の第三者依存条件に当てはまらない場合） → 「AI Overview参照元の公式ページ更新」（`low`）。
+   - 上記3条件は排他的で、最大1件のみ追加する（既存の改善提案と重複しない独立トピックのため、追加の重複排除は行っていない）。
 
 `meta.sections.improvements`も他の3セクションと同じ`cooccurrence_status`を共有するが、`"unavailable"`（全URL取得失敗）の場合は`build_improvement_suggestions()`自体を呼ばず`main.py`側で`improvements: []`にする——同関数は常に最低1件（フォールバック含む）を返す設計のため、そのままでは「計算不能」と「0件だが提案あり」の区別がつかなくなるのを防ぐため。
 
@@ -373,8 +378,22 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 | `rank` | 項目の`rank_absolute`（整数として取得できた場合）、なければ`rank_group`（同様）、いずれもなければ`None` |
 | `summary` | `markdown`を優先し、なければ`text`から作る短い抜粋（最大200文字、超える場合は`…`で省略）。markdownの画像記法・リンク記法は軽く平文化する。**referencesの一覧やレスポンスの生データ全文は含めない** |
 | `fullSummary`（任意） | `summary`と同じ元テキスト（`markdown`優先、なければ`text`、いずれもなければネストされた`items[]`の`markdown`/`text`を連結）から作るより長い抜粋（最大2500文字、超える場合は`…`で省略）。段落区切りは残しつつ、markdownの画像記法・リンク記法は平文化する。読める文章が全くない場合は`None` |
-| `references`（任意） | `item.references[]` → ネストされた`items[].references[]` → ネストされた`items[].links[]` → `item.links[]`の優先順位で収集し、urlが同じもの（urlがなければdomain+title）で重複排除、最大10件に制限したリスト。各要素は`title`/`domain`/`url`/`text`/`source`/`position`（すべて任意）。**DataForSEOレスポンスの生データそのものではない** |
+| `references`（任意） | `item.references[]` → ネストされた`items[].references[]` → ネストされた`items[].links[]` → `item.links[]`の優先順位で収集し、urlが同じもの（urlがなければdomain+title）で重複排除、最大10件に制限したリスト。各要素は`title`/`domain`/`url`/`text`/`source`/`position`/`category`（すべて任意、`category`は2026-07-23追加）。**DataForSEOレスポンスの生データそのものではない** |
+| `references[].category`（任意、2026-07-23追加） | 各参照元のルールベース簡易分類（`"official"`/`"wikipedia"`/`"sns"`/`"ugc"`/`"news"`/`"media"`/`"video"`/`"other"`）。下記「参照元の簡易分類」参照 |
+| `referenceSummary`（任意、2026-07-23追加） | `references`の件数・分類の集計（`{total, official, thirdParty, categories}`）。`references`が空/未設定の場合は`None`。下記「参照元の簡易分類」参照 |
 | `ownDomainReferenced`（任意） | リクエストの`urls`から抽出したドメインが、`references`のいずれかの`domain`（または`url`から抽出したドメイン）と一致するかの単純な文字列比較。`urls`が指定されていない場合（`documents`使用時や開発用サンプル使用時）は`None`（判定不能） |
+
+**参照元の簡易分類（2026-07-23追加、`ai_overview_provider.py`の`_classify_reference_category()`/`_build_reference_summary()`）**: 新たなDataForSEO呼び出しは一切せず、既に取得済みの`references`とリクエストの`urls`だけから、ルールベース（AIによる分類ではない）で各参照元を分類する。
+
+- **判定順序**: まず参照元のdomain（またはurlから抽出したdomain）が、リクエストの`urls`から抽出した自社ドメイン（サブドメインを含む。例: `docs.cybozu.co.jp`は`cybozu.co.jp`の`official`扱い）と一致するかを確認し、一致すれば`"official"`。一致しなければ以下の小さなハードコードされたdomainリストと照合する（`domain`は小文字化・`www.`除去済みで比較、サブドメインも一致とみなす）。
+  - `wikipedia`: `wikipedia.org`
+  - `sns`: `x.com`/`twitter.com`/`facebook.com`/`instagram.com`/`linkedin.com`/`threads.net`
+  - `ugc`: `qiita.com`/`zenn.dev`/`note.com`/`hatena.ne.jp`/`chiebukuro.yahoo.co.jp`/`reddit.com`/`stackoverflow.com`
+  - `video`: `youtube.com`/`youtu.be`
+  - `news`: `nikkei.com`/`asahi.com`/`yomiuri.co.jp`/`mainichi.jp`/`sankei.com`/`nhk.or.jp`/`reuters.com`/`bloomberg.co.jp`
+  - 上記のいずれにも一致しない場合は`"other"`（`"media"`は将来のより正確なメディア判定用に予約したカテゴリ値であり、現時点では何も`"media"`には分類されない——無理に判定せず`"other"`に倒す設計）。
+- **referenceSummary**: `references`の`category`を集計し、`total`（件数）・`official`（`"official"`件数）・`thirdParty`（`total - official`）・`categories`（カテゴリ別件数、0件のカテゴリは`None`）を返す。`references`が空/未設定の場合は`referenceSummary`自体が`None`。
+- **既知の制約**: 厳密な正確さは求めていない（タスク仕様どおり）。ニュース/メディアドメインリストは代表例のみで網羅的ではなく、参照元ページの内容を実際に取得・解析して分類の妥当性を検証することもしない。競合ドメインの分類やスコアリングも対象外。
 
 **失敗時の扱い**: ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外・`ai_overview`タイプの項目が見つからない、のいずれの場合も例外を送出せず`DataForSEOSerpResult(success=False, reason="...")`を返す（Sandbox/Live共通）。`reason`は常に安全（認証情報を含まない）な完全な文で、接続先（"Sandbox"/"Live"）を明記し、`ai_overview`項目が見つからない場合は選択中のエンドポイント名も含める（例:「DataForSEO Sandbox response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」「DataForSEO Live response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」）。`ai_overview_provider.py`はこれをそのまま`aiOverviewComparison`の`"unavailable"`理由として使う。タイムアウトは12秒（`REQUEST_TIMEOUT_SECONDS`、Sandbox/Live共通）。
 
@@ -425,7 +444,9 @@ pytest
 - 同条件で`httpx.post`をmonkeypatchしてネットワークタイムアウトを発生させると、`/analyze`は200のまま`aiOverviewComparison`が`"unavailable"`・`[]`になり、他の`"real"`セクションは影響を受けないこと（Sandbox接続失敗が`/analyze`全体をクラッシュさせないことの回帰防止）
 - `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ`urls`を指定して`httpx.post`をmonkeypatchし、`references`を含む成功レスポンスを返すと、レスポンスの`aiOverviewComparison[0]`に`fullSummary`（本文抜粋）・`references`（`title`/`domain`/`url`等）・`ownDomainReferenced: true`（`urls`のドメインが`references`と一致）が含まれること
 - 同条件で`documents`を使う（`urls`を指定しない）と`ownDomainReferenced`が`null`になること（比較対象の「自社ドメイン」がないため判定不能）
-- `mock`モードのレスポンスでは`aiOverviewComparison[]`の各要素に`fullSummary`/`references`/`ownDomainReferenced`が含まれず（`None`）、`models.AnalysisResult`での再パースが引き続き通ること（既存レスポンス形状の後方互換性）
+- `mock`モードのレスポンスでは`aiOverviewComparison[]`の各要素に`fullSummary`/`references`/`referenceSummary`/`ownDomainReferenced`が含まれず（`None`）、`models.AnalysisResult`での再パースが引き続き通ること（既存レスポンス形状の後方互換性）
+- 自社ドメインと一致する参照元が`category: "official"`になり`referenceSummary.official`に数えられること、そうでない参照元が`thirdParty`に数えられること、`wikipedia.org`/`qiita.com`/`youtube.com`/`x.com`/ニュース系domain等がそれぞれ対応するカテゴリに、未分類のdomainが`"other"`になること（`tests/test_ai_overview_provider.py`の`_classify_reference_category`/`_build_reference_summary`の直接テスト）
+- `ownDomainReferenced === False`で改善提案に「AI Overview参照元への公式ページ掲載」が追加されること、`True`かつ第三者参照が多い（3件以上・75%以上）場合は「AI Overviewにおける第三者サイト依存への対応」に、それ以外の`True`では「AI Overview参照元の公式ページ更新」になること、`ownDomainReferenced`が未判定（mock/off/unavailable由来）の場合は何も追加されないこと（`tests/test_improvement_suggestions.py`）
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、リクエストの`aiOverviewMode`（例:`"off"`）は無視され、環境変数のデフォルトのままになること
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`のとき、リクエストの`aiOverviewMode`が実際に反映されること
 - 不正な`aiOverviewMode`（`AiOverviewProviderMode`以外の値）が400 `{"error": "invalid request body"}`になること
@@ -628,7 +649,8 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.documentCount` / `meta.sourceTypes` | 実際に解析対象となった`Document[]`の件数・`sourceType`一覧（重複なし）。3つの取得元すべてで返る |
 | `meta.chunkCount` | `Document[]`をChunker（`services/document_chunker.py`）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析はこの値を使わないが、`contextAnalysis`はこのチャンクから計算される |
 | `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason, environment}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`、`environment`（任意、2026-07-23追加）は`"mock"`/`"sandbox"`/`"live"`/`"off"`/`"unavailable"`で、`status`だけでは区別できないSandbox成功とLive成功を見分けるために追加した。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない（下記「DataForSEO設定」参照）。画面には`mock`/`sandbox`/`live`/`unavailable`/`off`を区別するバッジ・説明文が表示される。詳細は上記「AI Overview比較のprovider mode」参照 |
-| `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | （いずれも任意、2026-07-23追加）`dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字）、`references`は最大10件に重複排除された引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`、すべて任意）、`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定（`urls`未指定時は`null`＝判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は上記「DataForSEO Sandbox/Live接続」参照 |
+| `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | （いずれも任意、2026-07-23追加）`dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字）、`references`は最大10件に重複排除された引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`/`category`、すべて任意）、`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定（`urls`未指定時は`null`＝判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は上記「DataForSEO Sandbox/Live接続」参照 |
+| `aiOverviewComparison[].references[].category` / `.referenceSummary` | （いずれも任意、2026-07-23追加）参照元のルールベース簡易分類（`official`/`wikipedia`/`sns`/`ugc`/`news`/`media`/`video`/`other`）と、その集計（`{total, official, thirdParty, categories}`）。新たなDataForSEO呼び出しはなく、既存の`references`とリクエストの`urls`だけから算出する。詳細は上記「AI Overview比較のprovider mode」の「参照元の簡易分類」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -645,6 +667,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - Google AI OverviewとGoogle AI Modeが実際に同一のレスポンス構造で表現されるかどうかの、Live本番ホストに対する検証（Sandboxでは確認済みだが、この開発環境からLive本番ホストへはアクセスできず未検証）
 - AI Overview比較のprovider mode切り替えUI（現状はAPI経由（`aiOverviewMode`リクエストフィールド、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`時のみ有効）でのみ切り替え可能。画面上のトグル等はまだない）
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
+- `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
