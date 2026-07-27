@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildAnalyzeRequestBody, isAiOverviewModeSelectorEnabled } from "./analysis-request";
+import {
+  buildAnalyzeRequestBody,
+  isAiOverviewModeSelectorEnabled,
+  isChatGptModeSelectorEnabled,
+} from "./analysis-request";
 
 describe("isAiOverviewModeSelectorEnabled", () => {
   const originalValue = process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR;
@@ -30,6 +34,45 @@ describe("isAiOverviewModeSelectorEnabled", () => {
   it("is enabled only when the env var is exactly \"true\"", () => {
     process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR = "true";
     expect(isAiOverviewModeSelectorEnabled()).toBe(true);
+  });
+});
+
+describe("isChatGptModeSelectorEnabled", () => {
+  const originalValue = process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR;
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR;
+    } else {
+      process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR = originalValue;
+    }
+  });
+
+  it("is disabled when the env var is unset", () => {
+    delete process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR;
+    expect(isChatGptModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is disabled when the env var is \"false\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR = "false";
+    expect(isChatGptModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is disabled for any value other than the exact string \"true\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR = "TRUE";
+    expect(isChatGptModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is enabled only when the env var is exactly \"true\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR = "true";
+    expect(isChatGptModeSelectorEnabled()).toBe(true);
+  });
+
+  it("is independent from the AI Overview mode selector's own flag", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR = "true";
+    delete process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR;
+    expect(isChatGptModeSelectorEnabled()).toBe(true);
+    expect(isAiOverviewModeSelectorEnabled()).toBe(false);
   });
 });
 
@@ -71,6 +114,35 @@ describe("buildAnalyzeRequestBody", () => {
       brandName: "Acme",
       urls: ["https://acme.example.com"],
       aiOverviewMode: "dataforseo",
+    });
+  });
+
+  it("omits chatgptMode when not passed (mode selector not shown)", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    expect(body.chatgptMode).toBeUndefined();
+    expect("chatgptMode" in body).toBe(false);
+  });
+
+  it("includes chatgptMode when passed (mode selector shown and a value selected)", () => {
+    expect(buildAnalyzeRequestBody("Acme", [], undefined, "openai")).toEqual({
+      brandName: "Acme",
+      chatgptMode: "openai",
+    });
+  });
+
+  it("includes off/openai chatgptMode values", () => {
+    expect(buildAnalyzeRequestBody("Acme", [], undefined, "off").chatgptMode).toBe("off");
+    expect(buildAnalyzeRequestBody("Acme", [], undefined, "openai").chatgptMode).toBe("openai");
+  });
+
+  it("includes urls, aiOverviewMode, and chatgptMode together", () => {
+    expect(
+      buildAnalyzeRequestBody("Acme", ["https://acme.example.com"], "dataforseo", "openai"),
+    ).toEqual({
+      brandName: "Acme",
+      urls: ["https://acme.example.com"],
+      aiOverviewMode: "dataforseo",
+      chatgptMode: "openai",
     });
   });
 });
