@@ -33,6 +33,13 @@ MAX_MAX_OUTPUT_TOKENS = 1500
 # demo/verification data point, not a creative or varied answer. A
 # lower temperature keeps the same brand name producing a similarly-
 # shaped answer across /analyze calls (see docs/07_decisions.md).
+#
+# This value is always read and validated here regardless of the
+# configured model — but services/chatgpt_client.py omits it from the
+# actual OpenAI request body for gpt-5* models, which reject a
+# "temperature" field with HTTP 400 (see that module's
+# should_send_temperature()). Settings has no model-specific logic of
+# its own; it just resolves and validates the configured number.
 DEFAULT_TEMPERATURE = 0.2
 MIN_TEMPERATURE = 0.0
 MAX_TEMPERATURE = 1.0
