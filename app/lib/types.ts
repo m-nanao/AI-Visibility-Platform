@@ -66,6 +66,36 @@ export interface AIOverviewProviderInfo {
   environment?: AiOverviewEnvironment;
 }
 
+// Which data source the ChatGPT-equivalent observation card in
+// aiOverviewComparison comes from — see
+// backend/services/chatgpt_provider.py. "off" (default; no OpenAI
+// call, no card added) or "openai" (asks an OpenAI API model one
+// non-browsing question about the brand). Independent of
+// AiOverviewProviderMode: when aiOverviewMode is "mock", the ChatGPT
+// observation is skipped entirely regardless of chatgptMode, to avoid
+// duplicating the mock fixture's own fixed "ChatGPT" card.
+export type ChatGptProviderMode = "off" | "openai";
+
+// Whether the ChatGPT observation card was actually added this
+// request. Distinct from SectionStatus since ChatGPT observation has
+// no "mock" state of its own.
+export type ChatGptStatus = "real" | "off" | "unavailable";
+
+// Mirrors AiOverviewEnvironment's role for the ChatGPT observation.
+export type ChatGptEnvironment = "api" | "off" | "unavailable";
+
+// Reports whether a ChatGPT-equivalent observation card was added to
+// aiOverviewComparison this request, and why. Mirrors
+// backend/models.py's ChatGptProviderInfo — entirely independent of
+// AIOverviewProviderInfo above (a request can have a real DataForSEO
+// result and no ChatGPT card, or vice versa).
+export interface ChatGptProviderInfo {
+  mode: ChatGptProviderMode;
+  status: ChatGptStatus;
+  reason: string;
+  environment?: ChatGptEnvironment;
+}
+
 export interface AnalysisMeta {
   sections: AnalysisSectionStatuses;
   documentsSource: DocumentsSource;
@@ -97,6 +127,9 @@ export interface AnalysisMeta {
   // request. Optional so existing clients/tests that don't know about
   // it aren't broken.
   aiOverviewProvider?: AIOverviewProviderInfo;
+  // Whether a ChatGPT-equivalent observation card was added to
+  // aiOverviewComparison this request. Independent of aiOverviewProvider.
+  chatgptProvider?: ChatGptProviderInfo;
 }
 
 export interface BrandSummary {

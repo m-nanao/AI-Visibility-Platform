@@ -22,6 +22,9 @@ const documentsSourceSchema = z.enum([
 const documentSourceTypeSchema = z.enum(DOCUMENT_SOURCE_TYPES);
 const aiOverviewProviderModeSchema = z.enum(["mock", "off", "dataforseo"]);
 const aiOverviewEnvironmentSchema = z.enum(["mock", "sandbox", "live", "off", "unavailable"]);
+const chatGptProviderModeSchema = z.enum(["off", "openai"]);
+const chatGptStatusSchema = z.enum(["real", "off", "unavailable"]);
+const chatGptEnvironmentSchema = z.enum(["api", "off", "unavailable"]);
 
 const analysisSectionStatusesSchema = z.object({
   summary: sectionStatusSchema,
@@ -53,6 +56,13 @@ const aiOverviewProviderInfoSchema = z.object({
   environment: optionalFromPython(aiOverviewEnvironmentSchema),
 });
 
+const chatGptProviderInfoSchema = z.object({
+  mode: chatGptProviderModeSchema,
+  status: chatGptStatusSchema,
+  reason: z.string(),
+  environment: optionalFromPython(chatGptEnvironmentSchema),
+});
+
 const analysisMetaSchema = z.object({
   sections: analysisSectionStatusesSchema,
   documentsSource: documentsSourceSchema,
@@ -65,6 +75,7 @@ const analysisMetaSchema = z.object({
   sourceTypes: optionalFromPython(z.array(documentSourceTypeSchema)),
   chunkCount: optionalFromPython(z.number()),
   aiOverviewProvider: optionalFromPython(aiOverviewProviderInfoSchema),
+  chatgptProvider: optionalFromPython(chatGptProviderInfoSchema),
 });
 
 const brandSummarySchema = z.object({
