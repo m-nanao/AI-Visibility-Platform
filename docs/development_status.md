@@ -122,5 +122,6 @@
 - 設計判断ログ: [07_decisions.md](./07_decisions.md)
 - 解析エンジンのv1.0アーキテクチャ（Document Pipeline等）: [11_architecture_v1.md](./11_architecture_v1.md)
 - 公開手順: [09_deployment.md](./09_deployment.md)
+- デモ提出用チェックリスト（推奨env・入力例・見せる順番）: [12_demo_readiness.md](./12_demo_readiness.md)
 - AI協調開発フロー（Claude Codeの中断・再開ルールを含む）: [10_ai_development_workflow.md](./10_ai_development_workflow.md)
 - タスク依頼・レビュー・中断/再開時の報告フォーマット: [task_template.md](./task_template.md) / [review_template.md](./review_template.md)
