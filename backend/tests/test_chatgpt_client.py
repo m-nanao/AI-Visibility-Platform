@@ -18,7 +18,7 @@ def test_fetch_posts_to_the_responses_api_url(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert seen_urls == [RESPONSES_API_URL]
 
@@ -32,7 +32,7 @@ def test_fetch_sends_authorization_bearer_header(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert seen_headers == [{"Authorization": "Bearer sk-super-secret-key", "Content-Type": "application/json"}]
 
@@ -46,11 +46,11 @@ def test_fetch_sends_model_input_max_output_tokens_and_store_false(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert len(seen_bodies) == 1
     body = seen_bodies[0]
-    assert body["model"] == "gpt-5-mini"
+    assert body["model"] == "gpt-4.1-mini"
     assert body["max_output_tokens"] == 700
     assert body["temperature"] == 0.2
     assert body["store"] is False
@@ -68,9 +68,155 @@ def test_fetch_sends_the_given_temperature(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.7)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.7)
 
     assert seen_bodies[0]["temperature"] == 0.7
+
+
+# --- should_send_temperature / per-model temperature omission --------------
+
+
+def test_should_send_temperature_is_true_for_gpt41_mini():
+    assert chatgpt_client.should_send_temperature("gpt-4.1-mini") is True
+
+
+def test_should_send_temperature_is_true_for_gpt4o_mini():
+    assert chatgpt_client.should_send_temperature("gpt-4o-mini") is True
+
+
+def test_should_send_temperature_is_false_for_gpt5_mini():
+    assert chatgpt_client.should_send_temperature("gpt-5-mini") is False
+
+
+def test_should_send_temperature_is_false_for_gpt5():
+    assert chatgpt_client.should_send_temperature("gpt-5") is False
+
+
+def test_should_send_temperature_is_case_insensitive():
+    assert chatgpt_client.should_send_temperature("GPT-5-MINI") is False
+    assert chatgpt_client.should_send_temperature("GPT-4.1-MINI") is True
+
+
+def test_fetch_includes_temperature_for_gpt41_mini(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
+
+    assert "temperature" in seen_bodies[0]
+    assert seen_bodies[0]["temperature"] == 0.2
+
+
+def test_fetch_includes_temperature_for_gpt4o_mini(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4o-mini", max_output_tokens=700, temperature=0.2)
+
+    assert "temperature" in seen_bodies[0]
+    assert seen_bodies[0]["temperature"] == 0.2
+
+
+def test_fetch_omits_temperature_for_gpt5_mini(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+
+    assert "temperature" not in seen_bodies[0]
+
+
+def test_fetch_omits_temperature_for_gpt5(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5", max_output_tokens=700, temperature=0.2)
+
+    assert "temperature" not in seen_bodies[0]
+
+
+def test_fetch_omits_temperature_for_gpt5_mini_with_mixed_case(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="GPT-5-MINI", max_output_tokens=700, temperature=0.2)
+
+    assert "temperature" not in seen_bodies[0]
+
+
+def test_fetch_still_sends_model_max_output_tokens_and_store_false_for_gpt5_mini(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+
+    body = seen_bodies[0]
+    assert body["model"] == "gpt-5-mini"
+    assert body["max_output_tokens"] == 700
+    assert body["store"] is False
+    assert body["input"][0]["role"] == "system"
+    assert body["input"][1]["role"] == "user"
+
+
+def test_fetch_gpt5_mini_success_response_still_parses_correctly(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"output_text": "Acme is a well-known tool for teams."},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+
+    assert result.success is True
+    assert result.mentioned is True
+    assert "Acme is a well-known tool for teams." in result.full_summary
+    assert result.reason == "ChatGPT OpenAI API request succeeded."
+
+
+def test_fetch_api_key_never_appears_in_reason_for_gpt5_mini_failure(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(400, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+
+    assert result.success is False
+    assert "400" in result.reason
+    assert "sk-super-secret-key" not in result.reason
 
 
 def test_fetch_system_prompt_forbids_browsing(monkeypatch):
@@ -82,7 +228,7 @@ def test_fetch_system_prompt_forbids_browsing(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     system_content = seen_bodies[0]["input"][0]["content"]
     assert "Web検索は行わず" in system_content
@@ -97,7 +243,7 @@ def test_fetch_user_prompt_asks_for_three_to_five_sentences_and_no_references(mo
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     user_content = seen_bodies[0]["input"][1]["content"]
     assert "3〜5文程度" in user_content
@@ -114,7 +260,7 @@ def test_fetch_sends_exactly_one_request(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert calls["count"] == 1
 
@@ -129,7 +275,7 @@ def test_fetch_extracts_output_text_field_when_present(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is True
     assert "Acme is a well-known tool for teams." in result.full_summary
@@ -151,7 +297,7 @@ def test_fetch_falls_back_to_output_content_text_when_output_text_missing(monkey
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is True
     assert "Acme helps teams collaborate." in result.full_summary
@@ -163,7 +309,7 @@ def test_fetch_returns_unavailable_when_no_readable_text_found(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is False
     assert "no readable text" in result.reason
@@ -177,7 +323,7 @@ def test_fetch_marks_mentioned_true_when_brand_name_is_in_the_text(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.mentioned is True
 
@@ -190,7 +336,7 @@ def test_fetch_marks_mentioned_false_when_brand_name_is_absent(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.mentioned is False
 
@@ -203,7 +349,7 @@ def test_fetch_truncates_summary_to_a_short_excerpt(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is True
     assert len(result.summary) <= 201
@@ -218,7 +364,7 @@ def test_fetch_truncates_full_summary_far_beyond_the_short_summary_cap(monkeypat
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert len(result.full_summary) <= chatgpt_client._FULL_SUMMARY_MAX_CHARS + 1
     assert result.full_summary.endswith("…")
@@ -230,7 +376,7 @@ def test_fetch_success_reason(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.reason == "ChatGPT OpenAI API request succeeded."
 
@@ -241,7 +387,7 @@ def test_fetch_fails_safely_on_network_error(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", raise_timeout)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is False
     assert "network or timeout error" in result.reason
@@ -253,7 +399,7 @@ def test_fetch_fails_safely_on_non_200_response(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is False
     assert "500" in result.reason
@@ -265,7 +411,7 @@ def test_fetch_fails_safely_on_invalid_json(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert result.success is False
 
@@ -276,7 +422,7 @@ def test_password_never_appears_in_the_reason_string_on_any_failure_path(monkeyp
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", raise_timeout)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert "sk-super-secret-key" not in result.reason
 
@@ -287,7 +433,7 @@ def test_api_key_never_appears_in_the_reason_string_on_success(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2)
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     assert "sk-super-secret-key" not in result.reason
     assert "sk-super-secret-key" not in (result.full_summary or "")
