@@ -287,6 +287,13 @@ export interface AiOverviewItemDetailDisplay {
   // whose remaining continuation is too short to be worth a toggle.
   hasContinuation: boolean;
   continuationText?: string;
+  // What to render in place of item.summary directly. Equal to
+  // item.summary as-is when hasContinuation is true (the trailing
+  // "…"/"..." correctly signals more text is available behind the
+  // toggle); with that trailing ellipsis stripped when hasContinuation
+  // is false, so a summary that happens to end in "…" doesn't read as
+  // "truncated" when there's nothing more to show.
+  displaySummary: string;
   // Already capped at MAX_DISPLAYED_REFERENCES and ready to render as-is.
   references: AIOverviewReferenceDisplay[];
   // Undefined when the item has no references to summarize (mock data,
@@ -320,6 +327,15 @@ function normalizeForComparison(text: string): string {
 // at that position (it keeps going).
 function stripTrailingEllipsis(text: string): string {
   return text.replace(/\s*(\.{3,}|…)\s*$/u, "");
+}
+
+// Like stripTrailingEllipsis, but for direct display rather than
+// comparison: also trims the result, so a summary with no continuation
+// to reveal doesn't show a trailing "…"/"..." that promises more text
+// than there is. Only the tail is touched — a mid-sentence ellipsis is
+// left as part of the text.
+function stripTrailingEllipsisForDisplay(text: string): string {
+  return stripTrailingEllipsis(text).trim();
 }
 
 // Maps a length in the whitespace-collapsed ("normalized") form of
@@ -418,7 +434,8 @@ export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", strin
  * exactly what AIOverviewComparisonSection needs to render, so the
  * component itself stays presentation-only. Every field on the input
  * item is optional — an item with none of them (mock data, or an older
- * backend response) yields hasContinuation=false, references=[],
+ * backend response) yields hasContinuation=false, displaySummary equal
+ * to item.summary (minus any trailing "…"/"..."), references=[],
  * referenceSummary=undefined, ownDomainStatus="unjudged", which the
  * section renders as "no change" from the pre-existing summary-only
  * display.
@@ -452,10 +469,15 @@ export function getAiOverviewItemDetailDisplay(
   else if (item.ownDomainReferenced === false) ownDomainStatus = "not_included";
 
   const { hasContinuation, continuationText } = buildContinuationText(item.summary, item.fullSummary);
+  const displaySummary =
+    !hasContinuation && item.summary
+      ? stripTrailingEllipsisForDisplay(item.summary)
+      : item.summary;
 
   return {
     hasContinuation,
     continuationText,
+    displaySummary,
     references,
     referenceSummary,
     ownDomainStatus,

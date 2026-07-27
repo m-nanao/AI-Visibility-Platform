@@ -84,7 +84,7 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
           概要
         </h4>
         <p className="mt-1 max-w-full break-words leading-relaxed text-sm text-zinc-600 dark:text-zinc-400">
-          {item.summary}
+          {detail.displaySummary}
         </p>
       </div>
 
