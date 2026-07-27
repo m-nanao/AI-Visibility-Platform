@@ -93,6 +93,17 @@ const contextAnalysisItemSchema = z.object({
   exampleQuote: z.string(),
 });
 
+const referenceCategorySchema = z.enum([
+  "official",
+  "wikipedia",
+  "sns",
+  "ugc",
+  "news",
+  "media",
+  "video",
+  "other",
+]);
+
 const aiOverviewReferenceSchema = z.object({
   title: optionalFromPython(z.string()),
   domain: optionalFromPython(z.string()),
@@ -100,6 +111,25 @@ const aiOverviewReferenceSchema = z.object({
   text: optionalFromPython(z.string()),
   source: optionalFromPython(z.string()),
   position: optionalFromPython(z.string()),
+  category: optionalFromPython(referenceCategorySchema),
+});
+
+const aiOverviewReferenceCategoryCountsSchema = z.object({
+  official: optionalFromPython(z.number()),
+  wikipedia: optionalFromPython(z.number()),
+  sns: optionalFromPython(z.number()),
+  ugc: optionalFromPython(z.number()),
+  news: optionalFromPython(z.number()),
+  media: optionalFromPython(z.number()),
+  video: optionalFromPython(z.number()),
+  other: optionalFromPython(z.number()),
+});
+
+const aiOverviewReferenceSummarySchema = z.object({
+  total: z.number(),
+  official: z.number(),
+  thirdParty: z.number(),
+  categories: aiOverviewReferenceCategoryCountsSchema,
 });
 
 const aiOverviewComparisonItemSchema = z.object({
@@ -109,6 +139,7 @@ const aiOverviewComparisonItemSchema = z.object({
   summary: z.string(),
   fullSummary: optionalFromPython(z.string()),
   references: optionalFromPython(z.array(aiOverviewReferenceSchema)),
+  referenceSummary: optionalFromPython(aiOverviewReferenceSummarySchema),
   ownDomainReferenced: optionalFromPython(z.boolean()),
 });
 

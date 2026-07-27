@@ -3,6 +3,7 @@ import type {
   AiOverviewEnvironment,
   AnalysisMeta,
   AnalysisSectionStatuses,
+  ReferenceCategory,
 } from "./types";
 
 const SECTION_LABELS: Record<keyof AnalysisSectionStatuses, string> = {
@@ -219,6 +220,33 @@ export function getAiOverviewProviderStatusDisplay(
 // a future/older backend response happens to include extras.
 const MAX_DISPLAYED_REFERENCES = 10;
 
+// Display label per ReferenceCategory — see backend
+// services/ai_overview_provider.py's _classify_reference_category()
+// for how a reference is assigned one of these (rule-based, not exact).
+export const REFERENCE_CATEGORY_LABELS: Record<ReferenceCategory, string> = {
+  official: "公式",
+  wikipedia: "Wikipedia",
+  sns: "SNS",
+  ugc: "UGC・投稿サイト",
+  news: "ニュース",
+  media: "メディア",
+  video: "動画",
+  other: "その他",
+};
+
+// Canonical display order for a reference summary's "主な分類" list —
+// not count-sorted, so the order stays stable across responses.
+const REFERENCE_CATEGORY_DISPLAY_ORDER: ReferenceCategory[] = [
+  "official",
+  "wikipedia",
+  "news",
+  "media",
+  "ugc",
+  "sns",
+  "video",
+  "other",
+];
+
 export interface AIOverviewReferenceDisplay {
   // What to show as the primary label for one reference — the domain
   // when present (the common case), falling back to the url, then the
@@ -228,6 +256,18 @@ export interface AIOverviewReferenceDisplay {
   label: string;
   title?: string;
   url?: string;
+  // Undefined when the backend didn't classify this reference (older
+  // response, or a shape _classify_reference_category couldn't read).
+  categoryLabel?: string;
+}
+
+export interface AiOverviewReferenceSummaryDisplay {
+  total: number;
+  official: number;
+  thirdParty: number;
+  // Display labels for every category with at least one reference, in
+  // REFERENCE_CATEGORY_DISPLAY_ORDER (not count-sorted).
+  presentCategoryLabels: string[];
 }
 
 export type OwnDomainReferenceStatus = "included" | "not_included" | "unjudged";
@@ -238,6 +278,9 @@ export interface AiOverviewItemDetailDisplay {
   detailText?: string;
   // Already capped at MAX_DISPLAYED_REFERENCES and ready to render as-is.
   references: AIOverviewReferenceDisplay[];
+  // Undefined when the item has no references to summarize (mock data,
+  // an older backend response, or a dataforseo item with 0 references).
+  referenceSummary?: AiOverviewReferenceSummaryDisplay;
   // "unjudged" covers both "no input urls were given" and "no
   // references were found" — both mean there's nothing to conclude
   // from, so the UI shows neither a positive nor a negative statement.
@@ -251,12 +294,13 @@ export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", strin
 
 /**
  * Reduces one AIOverviewComparisonItem's optional detail fields
- * (fullSummary/references/ownDomainReferenced — only ever populated by
- * the DataForSEO provider, see backend/services/ai_overview_provider.py)
- * to exactly what AIOverviewComparisonSection needs to render, so the
- * component itself stays presentation-only. Every field on the input
- * item is optional — an item with none of them (mock data, or an older
- * backend response) yields hasDetail=false, references=[],
+ * (fullSummary/references/referenceSummary/ownDomainReferenced — only
+ * ever populated by the DataForSEO provider, see
+ * backend/services/ai_overview_provider.py) to exactly what
+ * AIOverviewComparisonSection needs to render, so the component itself
+ * stays presentation-only. Every field on the input item is optional —
+ * an item with none of them (mock data, or an older backend response)
+ * yields hasDetail=false, references=[], referenceSummary=undefined,
  * ownDomainStatus="unjudged", which the section renders as "no change"
  * from the pre-existing summary-only display.
  */
@@ -269,7 +313,17 @@ export function getAiOverviewItemDetailDisplay(
       label: reference.domain ?? reference.url ?? reference.title ?? "不明な参照元",
       title: reference.title,
       url: reference.url,
+      categoryLabel: reference.category ? REFERENCE_CATEGORY_LABELS[reference.category] : undefined,
     }));
+
+  let referenceSummary: AiOverviewReferenceSummaryDisplay | undefined;
+  if (item.referenceSummary) {
+    const { total, official, thirdParty, categories } = item.referenceSummary;
+    const presentCategoryLabels = REFERENCE_CATEGORY_DISPLAY_ORDER.filter(
+      (category) => (categories[category] ?? 0) > 0,
+    ).map((category) => REFERENCE_CATEGORY_LABELS[category]);
+    referenceSummary = { total, official, thirdParty, presentCategoryLabels };
+  }
 
   let ownDomainStatus: OwnDomainReferenceStatus = "unjudged";
   if (item.ownDomainReferenced === true) ownDomainStatus = "included";
@@ -279,6 +333,7 @@ export function getAiOverviewItemDetailDisplay(
     hasDetail: Boolean(item.fullSummary),
     detailText: item.fullSummary,
     references,
+    referenceSummary,
     ownDomainStatus,
   };
 }

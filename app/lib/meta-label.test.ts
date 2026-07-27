@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  REFERENCE_CATEGORY_LABELS,
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
   getCooccurrenceUnavailableMessage,
@@ -377,6 +378,74 @@ describe("getAiOverviewItemDetailDisplay", () => {
 
     expect(display.references).toEqual([]);
     expect(display.references.length).toBe(0);
+  });
+
+  it("maps each reference's category to its display label", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      references: [
+        { domain: "acme.example.com", category: "official" },
+        { domain: "ja.wikipedia.org", category: "wikipedia" },
+        { domain: "note.com", category: "ugc" },
+      ],
+    });
+
+    expect(display.references.map((r) => r.categoryLabel)).toEqual(["公式", "Wikipedia", "UGC・投稿サイト"]);
+  });
+
+  it("leaves categoryLabel undefined for a reference without a category (older backend response)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      references: [{ domain: "acme.example.com" }],
+    });
+
+    expect(display.references[0].categoryLabel).toBeUndefined();
+  });
+
+  it("returns no referenceSummary when the item has no referenceSummary", () => {
+    const display = getAiOverviewItemDetailDisplay(baseItem());
+    expect(display.referenceSummary).toBeUndefined();
+  });
+
+  it("reports total/official/thirdParty and present category labels from referenceSummary", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      referenceSummary: {
+        total: 5,
+        official: 1,
+        thirdParty: 4,
+        categories: { official: 1, wikipedia: 1, ugc: 2, sns: 0 },
+      },
+    });
+
+    expect(display.referenceSummary).toEqual({
+      total: 5,
+      official: 1,
+      thirdParty: 4,
+      presentCategoryLabels: ["公式", "Wikipedia", "UGC・投稿サイト"],
+    });
+  });
+
+  it("reports an empty presentCategoryLabels when every category count is zero/absent", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      referenceSummary: { total: 0, official: 0, thirdParty: 0, categories: {} },
+    });
+
+    expect(display.referenceSummary?.presentCategoryLabels).toEqual([]);
+  });
+
+  it("REFERENCE_CATEGORY_LABELS covers every ReferenceCategory value with a Japanese label", () => {
+    expect(REFERENCE_CATEGORY_LABELS).toEqual({
+      official: "公式",
+      wikipedia: "Wikipedia",
+      sns: "SNS",
+      ugc: "UGC・投稿サイト",
+      news: "ニュース",
+      media: "メディア",
+      video: "動画",
+      other: "その他",
+    });
   });
 });
 

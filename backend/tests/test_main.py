@@ -493,9 +493,25 @@ def test_analyze_ai_overview_mode_dataforseo_response_includes_full_summary_and_
             "text": None,
             "source": None,
             "position": None,
+            "category": "official",
         }
     ]
     assert item["ownDomainReferenced"] is True
+    assert item["referenceSummary"] == {
+        "total": 1,
+        "official": 1,
+        "thirdParty": 0,
+        "categories": {
+            "official": 1,
+            "wikipedia": None,
+            "sns": None,
+            "ugc": None,
+            "news": None,
+            "media": None,
+            "video": None,
+            "other": None,
+        },
+    }
 
     result = AnalysisResult.model_validate(body)
     assert result.aiOverviewComparison[0].ownDomainReferenced is True

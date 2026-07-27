@@ -7,10 +7,16 @@ section (besides aiOverviewComparison) to become real. Deliberately
 simple, in the same spirit as services/context_analysis.py and
 services/brand_summary.py:
 
-- No AI/LLM calls, no external API (no DataForSEO). Every suggestion
-  comes from a small, explainable condition over data already computed
-  by services/cooccurrence.py, services/context_analysis.py, and
-  services/brand_summary.py.
+- No AI/LLM calls, no external API (no DataForSEO) — this module never
+  calls DataForSEO itself. It does read `ai_overview_items`
+  (aiOverviewComparison, computed separately by
+  services/ai_overview_provider.py) for at most one suggestion about
+  AI Overview reference state (_ai_overview_reference_suggestion) —
+  that's a no-op unless aiOverviewComparison already ran in
+  "dataforseo" mode, so it never triggers an extra request on its own.
+  Every other suggestion comes from a small, explainable condition over
+  data already computed by services/cooccurrence.py,
+  services/context_analysis.py, and services/brand_summary.py.
 - Every suggestion states its own reason in `description` (e.g. "料金
   カテゴリの文脈が確認できないため...") so a reader can see why it was
   produced without needing to inspect this module's source.
@@ -20,6 +26,7 @@ services/brand_summary.py:
 """
 
 from models import (
+    AIOverviewComparisonItem,
     BrandSummary,
     ContextAnalysisItem,
     CooccurrenceKeyword,
@@ -140,6 +147,70 @@ def _reliability_suggestion(
     )
 
 
+# Thresholds for _ai_overview_reference_suggestion()'s third-party-heavy
+# case — deliberately conservative (both a minimum count and a minimum
+# ratio) so a single third-party reference among one or two total
+# doesn't trigger it.
+_THIRD_PARTY_HEAVY_MIN_COUNT = 3
+_THIRD_PARTY_HEAVY_MIN_RATIO = 0.75
+
+
+def _ai_overview_reference_suggestion(
+    ai_overview_items: list[AIOverviewComparisonItem] | None,
+) -> ImprovementSuggestion | None:
+    """At most one suggestion derived from the DataForSEO-backed AI
+    Overview item's ownDomainReferenced/referenceSummary (see
+    services/ai_overview_provider.py) — a no-op when aiOverviewComparison
+    is mock/off/unavailable, since those never set ownDomainReferenced.
+
+    Only the first item with a judged (non-None) ownDomainReferenced is
+    considered — in practice there's at most one dataforseo-derived item
+    per response (see build_ai_overview_comparison), so this doesn't
+    need to reconcile multiple items disagreeing with each other.
+    """
+    for item in ai_overview_items or []:
+        if item.ownDomainReferenced is None:
+            continue
+
+        if item.ownDomainReferenced is False:
+            return ImprovementSuggestion(
+                title="AI Overview参照元への公式ページ掲載",
+                description=(
+                    "AI Overviewの参照元に自社サイトが確認できません。公式ページに、ブランド概要・"
+                    "主要サービス・導入事例・料金・比較情報を明確に記載し、AIが引用しやすい構造に"
+                    "整理してください。"
+                ),
+                priority="medium",
+            )
+
+        summary = item.referenceSummary
+        if summary is not None and summary.total > 0:
+            is_third_party_heavy = (
+                summary.thirdParty >= _THIRD_PARTY_HEAVY_MIN_COUNT
+                and summary.thirdParty / summary.total >= _THIRD_PARTY_HEAVY_MIN_RATIO
+            )
+            if is_third_party_heavy:
+                return ImprovementSuggestion(
+                    title="AI Overviewにおける第三者サイト依存への対応",
+                    description=(
+                        "AI Overviewでは第三者サイトの参照比率が高い可能性があります。公式情報と"
+                        "第三者記事の説明にズレがないか確認してください。"
+                    ),
+                    priority="low",
+                )
+
+        return ImprovementSuggestion(
+            title="AI Overview参照元の公式ページ更新",
+            description=(
+                "AI Overviewの参照元に自社サイトが含まれています。現在引用されている公式ページの"
+                "内容を定期的に更新し、サービス概要・強み・比較情報をより明確にしてください。"
+            ),
+            priority="low",
+        )
+
+    return None
+
+
 def _risk_or_issue_suggestion(present: set[str]) -> ImprovementSuggestion | None:
     if "risk_or_issue" not in present:
         return None
@@ -211,11 +282,15 @@ def build_improvement_suggestions(
     context_analysis: list[ContextAnalysisItem],
     document_count: int | None = None,
     source_types: list[str] | None = None,
+    ai_overview_items: list[AIOverviewComparisonItem] | None = None,
 ) -> list[ImprovementSuggestion]:
     """Builds ImprovementSuggestion[] from cooccurrenceRanking/
     contextAnalysis/summary using simple, rule-based conditions (see
-    module docstring). Not a substitute for a human SEO/LLMO judgment
-    call — this is MVP-grade triage meant to explain *why* each
+    module docstring), plus at most one suggestion derived from
+    `ai_overview_items` (see _ai_overview_reference_suggestion — a
+    no-op unless aiOverviewComparison actually ran in "dataforseo" mode
+    and set ownDomainReferenced). Not a substitute for a human SEO/LLMO
+    judgment call — this is MVP-grade triage meant to explain *why* each
     suggestion was raised, not to prescribe a definitive action plan.
 
     Always returns at least one suggestion (a low-priority fallback if
@@ -235,6 +310,7 @@ def build_improvement_suggestions(
         _reliability_suggestion(present, cooccurrence_ranking),
         _risk_or_issue_suggestion(present),
         _keyword_diversity_suggestion(summary, cooccurrence_ranking, context_analysis),
+        _ai_overview_reference_suggestion(ai_overview_items),
     ]
     suggestions = [item for item in candidates if item is not None]
 
