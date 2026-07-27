@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  OWN_DOMAIN_STATUS_LABELS,
   REFERENCE_CATEGORY_LABELS,
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
@@ -341,6 +342,15 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(display.ownDomainStatus).toBe("unjudged");
   });
 
+  it("OWN_DOMAIN_STATUS_LABELS clearly states 自社公式サイト for both included and not_included", () => {
+    expect(OWN_DOMAIN_STATUS_LABELS.included).toBe(
+      "自社公式サイトがAI Overviewの参照元に含まれています",
+    );
+    expect(OWN_DOMAIN_STATUS_LABELS.not_included).toBe(
+      "自社公式サイトはAI Overviewの参照元に確認できません",
+    );
+  });
+
   it("provides everything the card layout needs to render, for a full DataForSEO item (no RTL in this project — see meta-label.ts's role as the presentation-logic layer for AIOverviewComparisonSection.tsx)", () => {
     const item: AIOverviewComparisonItem = {
       ...baseItem(),
@@ -407,7 +417,7 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(display.referenceSummary).toBeUndefined();
   });
 
-  it("reports total/official/thirdParty and present category labels from referenceSummary", () => {
+  it("reports total/official/thirdParty and category counts from referenceSummary", () => {
     const display = getAiOverviewItemDetailDisplay({
       ...baseItem(),
       referenceSummary: {
@@ -422,17 +432,57 @@ describe("getAiOverviewItemDetailDisplay", () => {
       total: 5,
       official: 1,
       thirdParty: 4,
-      presentCategoryLabels: ["公式", "Wikipedia", "UGC・投稿サイト"],
+      categoryCounts: [
+        { label: "公式", count: 1 },
+        { label: "Wikipedia", count: 1 },
+        { label: "UGC・投稿サイト", count: 2 },
+      ],
     });
   });
 
-  it("reports an empty presentCategoryLabels when every category count is zero/absent", () => {
+  it("excludes categories with a count of 0 from categoryCounts", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      referenceSummary: {
+        total: 2,
+        official: 1,
+        thirdParty: 1,
+        categories: { official: 1, sns: 1, wikipedia: 0, ugc: 0 },
+      },
+    });
+
+    const labels = display.referenceSummary?.categoryCounts.map((c) => c.label);
+    expect(labels).toEqual(["公式", "SNS"]);
+    expect(labels).not.toContain("Wikipedia");
+    expect(labels).not.toContain("UGC・投稿サイト");
+  });
+
+  it("includes every category with at least one reference in categoryCounts", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      referenceSummary: {
+        total: 10,
+        official: 5,
+        thirdParty: 5,
+        categories: { official: 5, wikipedia: 1, sns: 1, other: 3 },
+      },
+    });
+
+    expect(display.referenceSummary?.categoryCounts).toEqual([
+      { label: "公式", count: 5 },
+      { label: "Wikipedia", count: 1 },
+      { label: "SNS", count: 1 },
+      { label: "その他", count: 3 },
+    ]);
+  });
+
+  it("reports an empty categoryCounts when every category count is zero/absent", () => {
     const display = getAiOverviewItemDetailDisplay({
       ...baseItem(),
       referenceSummary: { total: 0, official: 0, thirdParty: 0, categories: {} },
     });
 
-    expect(display.referenceSummary?.presentCategoryLabels).toEqual([]);
+    expect(display.referenceSummary?.categoryCounts).toEqual([]);
   });
 
   it("REFERENCE_CATEGORY_LABELS covers every ReferenceCategory value with a Japanese label", () => {
