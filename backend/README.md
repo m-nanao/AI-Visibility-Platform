@@ -451,25 +451,28 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
   "input": [
     {
       "role": "system",
-      "content": "You are observing how an AI assistant describes brands. Answer in Japanese. Do not browse the web. If you are uncertain, say so briefly."
+      "content": "あなたは、AIがブランドをどのように説明するかを観測するための評価用アシスタントです。Web検索は行わず、一般的な知識に基づいて日本語で回答してください。不確かな点は断定しすぎず、簡潔に述べてください。"
     },
     {
       "role": "user",
-      "content": "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを日本語で簡潔に説明してください。ブランド名: <brand_name>"
+      "content": "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを日本語で説明してください。\n\nブランド名: <brand_name>\n\n回答は以下の観点を含め、全体で3〜5文程度にしてください。\n- 何を提供しているか\n- 主な利用者または用途\n- 代表的な特徴や強み\n\n注意:\n- 箇条書きではなく自然文で回答してください\n- 参照元やURLは挙げないでください\n- 分からない場合は「一般的には十分な情報を確認できません」と述べてください"
     }
   ],
   "max_output_tokens": 700,
+  "temperature": 0.2,
   "store": false
 }
 ```
 
 `store: false`を常に指定し、OpenAI側にもこの1回限りの観測を保存させない（このプロジェクト自体もDB保存はしない）。`Authorization: Bearer <OPENAI_API_KEY>`ヘッダーで認証する。`httpx`による直接のREST呼び出しで、`openai` SDKは使わない（`requirements.txt`にまだ含まれておらず、今回のスコープでは新規ライブラリ追加を避けた）。
 
+**デモ・検証時の回答安定化（`CHATGPT_TEMPERATURE`、2026-07-28追加）**: 同じブランド名でも実行ごとに回答・summary/fullSummaryの長さが変わりすぎる課題を受け、`temperature`をデフォルト`0.2`（低め）に設定し、回答のばらつきを抑えている。加えて、systemプロンプト・userプロンプトを構造化し、「何を提供しているか／主な利用者または用途／代表的な特徴や強み」の3観点を含む3〜5文程度の自然文で回答するよう明示的に指示している（箇条書き禁止、参照元・URLを挙げない指示も明記）。これによりsummary/fullSummaryが極端に短くなりすぎず、デモ時に読みやすい分量に安定しやすくなる。**OpenAI API呼び出し回数（1 analyzeあたり最大1回）・安全ゲート・references取得の対象外扱いはいずれも変更していない**——あくまで同じ1回の呼び出しの中身（temperature・prompt文面）を変えただけ。`CHATGPT_TEMPERATURE`は0.0〜1.0の範囲外・不正値は`0.2`にフォールバックする。
+
 **レスポンス変換**: `response.output_text`（トップレベルの便宜フィールド）があれば優先して使い、なければ`output[].content[].text`をたどって連結する。いずれも得られない場合は`"unavailable"`（`"OpenAI API returned no readable text."`）にフォールバックする。`mentioned`はブランド名が回答テキストに含まれるかの単純な大文字小文字を区別しない判定。`summary`は短い抜粋（最大200文字）、`fullSummary`はより長い抜粋（最大2500文字）。既存の`AIOverviewComparisonItem`型をそのまま使うため、`rank`は`null`固定、`references`/`referenceSummary`/`ownDomainReferenced`はいずれも`None`固定（ChatGPT観測には参照元の概念がないため）。
 
 **1 analyzeあたりの呼び出し回数**: 常に最大1回（複数質問・フォローアップは対象外）。DataForSEOの呼び出し回数・条件には一切影響しない（`services/dataforseo_*.py`は今回変更していない）。
 
-**環境変数一覧**: `OPENAI_API_KEY`（APIキー、空欄可）、`CHATGPT_PROVIDER_MODE`（`off`（デフォルト）/`openai`）、`ALLOW_CHATGPT_MODE_OVERRIDE`（`false`（デフォルト）/`true`）、`CHATGPT_MODEL`（デフォルト`gpt-5-mini`、空文字はフォールバック）、`CHATGPT_MAX_OUTPUT_TOKENS`（デフォルト`700`、範囲は100〜1500・範囲外/不正値はフォールバック）、`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`（デフォルト`1`、不正値のみ`1`へフォールバック——`1`以外の正当な整数値はそのまま読み取られゲート判定で拒否される）。
+**環境変数一覧**: `OPENAI_API_KEY`（APIキー、空欄可）、`CHATGPT_PROVIDER_MODE`（`off`（デフォルト）/`openai`）、`ALLOW_CHATGPT_MODE_OVERRIDE`（`false`（デフォルト）/`true`）、`CHATGPT_MODEL`（デフォルト`gpt-5-mini`、空文字はフォールバック）、`CHATGPT_MAX_OUTPUT_TOKENS`（デフォルト`700`、範囲は100〜1500・範囲外/不正値はフォールバック）、`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`（デフォルト`1`、不正値のみ`1`へフォールバック——`1`以外の正当な整数値はそのまま読み取られゲート判定で拒否される）、`CHATGPT_TEMPERATURE`（デフォルト`0.2`、範囲は0.0〜1.0・範囲外/不正値はフォールバック）。
 
 **開発・検証用UI**: `NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR=true`にすると、分析フォームに「ChatGPT観測モード（検証用）」というoff/openaiの選択UIが表示される（`app/components/BrandInputForm.tsx`）。既存のAI Overview取得モード選択UI（`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR`）と同じ設計で、選択した値はリクエストボディの`chatgptMode`に入るだけの表示制御フラグ——上記の安全ゲートは一切変更しない。
 
@@ -682,13 +685,16 @@ pytest
 - `CHATGPT_MODEL`未設定/空文字では`"gpt-5-mini"`になること、有効な値は上書きされること
 - `CHATGPT_MAX_OUTPUT_TOKENS`未設定/不正値/範囲外（100〜1500外）はデフォルト（700）にフォールバックすること、範囲内の値は上書きされること
 - `CHATGPT_REQUEST_LIMIT_PER_ANALYZE`未設定/不正値はデフォルト（1）にフォールバックすること。ただし`2`のような正当な整数値は**そのまま**読み取られる（`1`へは矯正しない——ゲート判定側の役割であるため）
+- `CHATGPT_TEMPERATURE`未設定ではデフォルト（0.2）になること、`0.0`/`1.0`の境界値は有効な値として読み取られること、範囲外（`-1`・`1.5`）や不正値（数値でない文字列）はデフォルト（0.2）にフォールバックすること
 
 `tests/test_chatgpt_client.py` では `fetch_chatgpt_observation()` を直接テストしている（すべて`httpx.post`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
 - `https://api.openai.com/v1/responses`へリクエストすること
 - `Authorization: Bearer <api_key>`ヘッダーが正しく構築されること
-- リクエストボディに`model`/`input`（system+user）/`max_output_tokens`/`store: false`が正しく含まれること
-- systemプロンプトに"Do not browse the web"が含まれること（Web検索を使わないことの確認）
+- リクエストボディに`model`/`input`（system+user）/`max_output_tokens`/`temperature`/`store: false`が正しく含まれること
+- 指定した`temperature`の値がそのままリクエストボディに反映されること
+- systemプロンプトに「Web検索は行わず」が含まれること（Web検索を使わないことの確認）
+- userプロンプトに「3〜5文程度」「参照元やURLは挙げないでください」が含まれること（回答形式の安定化・参照元非取得の確認）
 - `response.output_text`があれば優先して使うこと、なければ`output[].content[].text`を連結すること
 - 読める文章が全く得られない場合、例外を送出せず`success: false`・「no readable text」を含む`reason`になること
 - ブランド名が回答テキストに含まれるかで`mentioned`が正しく判定されること
@@ -707,7 +713,7 @@ pytest
 - `openai`モードでAPIキー未設定の場合、`httpx.post`が一切呼ばれないまま`item: None`・`status: "unavailable"`・「not configured」を含む`reason`が返ること
 - `openai`モードで`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`が1以外の場合、`httpx.post`が一切呼ばれないまま`reason`が「ChatGPT request limit must be 1.」になること
 - `openai`モードで全ゲートが満たされた場合、`httpx.post`をmonkeypatchした成功レスポンスから`AIOverviewComparisonItem`（`platform: "ChatGPT (OpenAI API)"`・`rank: None`・`references`/`referenceSummary`/`ownDomainReferenced`はいずれも`None`）が返ること
-- 設定した`CHATGPT_MODEL`/`CHATGPT_MAX_OUTPUT_TOKENS`がリクエストボディに反映されること
+- 設定した`CHATGPT_MODEL`/`CHATGPT_MAX_OUTPUT_TOKENS`/`CHATGPT_TEMPERATURE`がリクエストボディに反映されること、`CHATGPT_TEMPERATURE`未設定時はデフォルト（0.2）が使われること
 - 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
 - 失敗時・成功時いずれも`reason`にAPIキーの実値が含まれないこと
 

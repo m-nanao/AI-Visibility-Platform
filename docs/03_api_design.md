@@ -132,6 +132,7 @@
 - **AI Overview比較との結合ルール**: `aiOverviewMode`が`"mock"`の場合、ChatGPT観測は`chatgptMode`の値に関わらず常にスキップされる（`mock`の固定`aiOverviewComparison`フィクスチャに既に「ChatGPT」という名前のダミーカードがあり、重複を避けるため）。`aiOverviewMode`が`"dataforseo"`/`"off"`の場合のみ候補になり、成功時は既存のGoogle AI Mode/AI Overviewカードを置き換えず**追加**する。
 - **1 analyzeあたりの呼び出し回数**: 常に最大1回。DataForSEOの呼び出し回数・条件（`backend/services/dataforseo_*.py`）には一切影響しない。
 - `meta.chatgptProvider`（`{mode, status, reason, environment}`、`meta.aiOverviewProvider`とは独立）で実際に使われたmodeと理由を報告する。`reason`にAPIキーの値そのものが含まれることは絶対にない。
+- **デモ・検証時の回答安定化（`CHATGPT_TEMPERATURE`、2026-07-28追加）**: OpenAI API呼び出しの`temperature`をデフォルト`0.2`（0.0〜1.0、範囲外・不正値は`0.2`にフォールバック）に設定し、同じブランド名に対する回答のばらつきを抑える。合わせてsystem/userプロンプトを構造化し、「何を提供しているか／主な利用者または用途／代表的な特徴や強み」の3観点を含む3〜5文程度の自然文（箇条書き禁止、参照元・URLなし）で回答するよう指示するようにした。**呼び出し回数（1 analyzeあたり最大1回）・安全ゲート・references取得の対象外扱いはいずれも変更していない**。
 
 詳細は[backend/README.md](../backend/README.md)の「ChatGPT相当モデルの1問観測」を参照。
 
