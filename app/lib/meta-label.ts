@@ -1,4 +1,9 @@
-import type { AiOverviewEnvironment, AnalysisMeta, AnalysisSectionStatuses } from "./types";
+import type {
+  AIOverviewComparisonItem,
+  AiOverviewEnvironment,
+  AnalysisMeta,
+  AnalysisSectionStatuses,
+} from "./types";
 
 const SECTION_LABELS: Record<keyof AnalysisSectionStatuses, string> = {
   summary: "サマリー",
@@ -206,4 +211,74 @@ export function getAiOverviewProviderStatusDisplay(
         tone: "neutral",
       };
   }
+}
+
+// Kept in sync with backend/services/dataforseo_client.py's
+// _MAX_REFERENCES — the backend already caps references at this count,
+// but this is enforced again here so the UI never renders more even if
+// a future/older backend response happens to include extras.
+const MAX_DISPLAYED_REFERENCES = 10;
+
+export interface AIOverviewReferenceDisplay {
+  // What to show as the primary label for one reference — the domain
+  // when present (the common case), falling back to the url, then the
+  // title, so a reference with only a partial shape is still shown
+  // rather than dropped (see backend AIOverviewReference — every field
+  // is optional).
+  label: string;
+  title?: string;
+  url?: string;
+}
+
+export type OwnDomainReferenceStatus = "included" | "not_included" | "unjudged";
+
+export interface AiOverviewItemDetailDisplay {
+  // Whether a "詳細を見る" toggle should be offered at all.
+  hasDetail: boolean;
+  detailText?: string;
+  // Already capped at MAX_DISPLAYED_REFERENCES and ready to render as-is.
+  references: AIOverviewReferenceDisplay[];
+  // "unjudged" covers both "no input urls were given" and "no
+  // references were found" — both mean there's nothing to conclude
+  // from, so the UI shows neither a positive nor a negative statement.
+  ownDomainStatus: OwnDomainReferenceStatus;
+}
+
+export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", string> = {
+  included: "自社サイトが参照元に含まれています",
+  not_included: "自社サイトは参照元に確認できません",
+};
+
+/**
+ * Reduces one AIOverviewComparisonItem's optional detail fields
+ * (fullSummary/references/ownDomainReferenced — only ever populated by
+ * the DataForSEO provider, see backend/services/ai_overview_provider.py)
+ * to exactly what AIOverviewComparisonSection needs to render, so the
+ * component itself stays presentation-only. Every field on the input
+ * item is optional — an item with none of them (mock data, or an older
+ * backend response) yields hasDetail=false, references=[],
+ * ownDomainStatus="unjudged", which the section renders as "no change"
+ * from the pre-existing summary-only display.
+ */
+export function getAiOverviewItemDetailDisplay(
+  item: AIOverviewComparisonItem,
+): AiOverviewItemDetailDisplay {
+  const references = (item.references ?? [])
+    .slice(0, MAX_DISPLAYED_REFERENCES)
+    .map((reference) => ({
+      label: reference.domain ?? reference.url ?? reference.title ?? "不明な参照元",
+      title: reference.title,
+      url: reference.url,
+    }));
+
+  let ownDomainStatus: OwnDomainReferenceStatus = "unjudged";
+  if (item.ownDomainReferenced === true) ownDomainStatus = "included";
+  else if (item.ownDomainReferenced === false) ownDomainStatus = "not_included";
+
+  return {
+    hasDetail: Boolean(item.fullSummary),
+    detailText: item.fullSummary,
+    references,
+    ownDomainStatus,
+  };
 }

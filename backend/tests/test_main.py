@@ -444,6 +444,105 @@ def test_analyze_ai_overview_mode_dataforseo_uses_ai_mode_endpoint_by_default(mo
     assert "openai.com" not in result.aiOverviewComparison[0].summary
 
 
+def test_analyze_ai_overview_mode_dataforseo_response_includes_full_summary_and_references(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "items": [
+                            {
+                                "type": "ai_overview",
+                                "rank_absolute": 1,
+                                "markdown": "OpenAI is a well-known AI lab.",
+                                "references": [
+                                    {"domain": "openai.com", "url": "https://openai.com/about", "title": "About"}
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "urls": ["https://openai.com/pricing"]}
+    )
+    assert response.status_code == 200
+
+    body = response.json()
+    item = body["aiOverviewComparison"][0]
+    assert item["fullSummary"] == "OpenAI is a well-known AI lab."
+    assert item["references"] == [
+        {
+            "title": "About",
+            "domain": "openai.com",
+            "url": "https://openai.com/about",
+            "text": None,
+            "source": None,
+            "position": None,
+        }
+    ]
+    assert item["ownDomainReferenced"] is True
+
+    result = AnalysisResult.model_validate(body)
+    assert result.aiOverviewComparison[0].ownDomainReferenced is True
+
+
+def test_analyze_ai_overview_mode_dataforseo_own_domain_referenced_is_null_without_urls(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "markdown": "OpenAI."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    # documents (not urls) means there's no "own domain" to compare against.
+    response = client.post(
+        "/analyze", json={"brandName": "OpenAI", "documents": ["OpenAI builds ChatGPT."]}
+    )
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["aiOverviewComparison"][0]["ownDomainReferenced"] is None
+
+
+def test_analyze_mock_ai_overview_response_omits_detail_fields(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    body = response.json()
+    for item in body["aiOverviewComparison"]:
+        assert item.get("fullSummary") is None
+        assert item.get("references") is None
+        assert item.get("ownDomainReferenced") is None
+
+    # Existing mock response still validates against the full model.
+    AnalysisResult.model_validate(body)
+
+
 def test_analyze_ai_overview_mode_dataforseo_sandbox_failure_does_not_break_analyze(monkeypatch):
     monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
     monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")

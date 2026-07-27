@@ -125,11 +125,41 @@ export interface ContextAnalysisItem {
   exampleQuote: string;
 }
 
+// One citation/link a DataForSEO AI Overview-type item pointed at (see
+// backend/services/dataforseo_client.py's reference extraction).
+// Every field is optional since DataForSEO's reference/link shapes
+// vary and a partially-populated reference is still worth showing.
+export interface AIOverviewReference {
+  title?: string;
+  domain?: string;
+  url?: string;
+  text?: string;
+  source?: string;
+  position?: string;
+}
+
 export interface AIOverviewComparisonItem {
   platform: string;
   mentioned: boolean;
   rank: number | null;
   summary: string;
+  // The following three are optional and only ever populated by the
+  // "dataforseo" provider (see backend/services/ai_overview_provider.py)
+  // — the mock fixture and "off" mode never set them, so existing
+  // clients/tests that don't know about these fields keep working.
+  //
+  // fullSummary: the AI Overview item's full text (cleaned of markdown
+  // image/link syntax, capped at a few thousand characters), distinct
+  // from `summary` above which stays a short (~200 char) excerpt.
+  fullSummary?: string;
+  // references: up to 10 deduplicated citations DataForSEO's response
+  // pointed at. Never the raw DataForSEO response itself.
+  references?: AIOverviewReference[];
+  // ownDomainReferenced: whether one of `references` shares a domain
+  // with one of the request's input `urls` (a simple domain-string
+  // match, not a content check). Undefined when it can't be determined
+  // (e.g. the request had no `urls`).
+  ownDomainReferenced?: boolean;
 }
 
 export interface ImprovementSuggestion {

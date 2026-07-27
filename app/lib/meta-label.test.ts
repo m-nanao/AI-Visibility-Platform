@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
   getCooccurrenceUnavailableMessage,
   getSectionStatusSummary,
   getUrlFetchSummary,
 } from "./meta-label";
 import { buildDummyAnalysis } from "./dummy-data";
-import type { AnalysisMeta } from "./types";
+import type { AIOverviewComparisonItem, AnalysisMeta } from "./types";
 
 function baseMeta(): AnalysisMeta {
   return buildDummyAnalysis("OpenAI").meta;
@@ -265,6 +266,78 @@ describe("getAiOverviewProviderStatusDisplay", () => {
 
     const display = getAiOverviewProviderStatusDisplay(meta);
     expect(display?.label).toBe("DataForSEO Sandbox");
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay", () => {
+  function baseItem(): AIOverviewComparisonItem {
+    return {
+      platform: "Google AI Mode (DataForSEO Sandbox)",
+      mentioned: true,
+      rank: 1,
+      summary: "Acme is a well-reviewed tool for teams.",
+    };
+  }
+
+  it("reports no detail/references and an unjudged own-domain status for a plain (e.g. mock) item", () => {
+    const display = getAiOverviewItemDetailDisplay(baseItem());
+
+    expect(display.hasDetail).toBe(false);
+    expect(display.detailText).toBeUndefined();
+    expect(display.references).toEqual([]);
+    expect(display.ownDomainStatus).toBe("unjudged");
+  });
+
+  it("reports hasDetail=true with the full text when fullSummary is present", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      fullSummary: "Acme is a well-reviewed tool for teams, used by hundreds of companies.",
+    });
+
+    expect(display.hasDetail).toBe(true);
+    expect(display.detailText).toBe(
+      "Acme is a well-reviewed tool for teams, used by hundreds of companies.",
+    );
+  });
+
+  it("maps references to a display label, preferring domain over url over title", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      references: [
+        { domain: "acme.example.com", url: "https://acme.example.com/about", title: "About Acme" },
+        { url: "https://only-url.example.com" },
+        { title: "Only A Title" },
+      ],
+    });
+
+    expect(display.references).toEqual([
+      { label: "acme.example.com", title: "About Acme", url: "https://acme.example.com/about" },
+      { label: "https://only-url.example.com", title: undefined, url: "https://only-url.example.com" },
+      { label: "Only A Title", title: "Only A Title", url: undefined },
+    ]);
+  });
+
+  it("caps references at 10 even if the backend response somehow included more", () => {
+    const references = Array.from({ length: 15 }, (_, i) => ({ domain: `example${i}.com` }));
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), references });
+
+    expect(display.references).toHaveLength(10);
+  });
+
+  it("reports ownDomainStatus=included when ownDomainReferenced is true", () => {
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), ownDomainReferenced: true });
+    expect(display.ownDomainStatus).toBe("included");
+  });
+
+  it("reports ownDomainStatus=not_included when ownDomainReferenced is false", () => {
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), ownDomainReferenced: false });
+    expect(display.ownDomainStatus).toBe("not_included");
+  });
+
+  it("reports ownDomainStatus=unjudged when ownDomainReferenced is undefined", () => {
+    const display = getAiOverviewItemDetailDisplay(baseItem());
+    expect(display.ownDomainStatus).toBe("unjudged");
   });
 });
 

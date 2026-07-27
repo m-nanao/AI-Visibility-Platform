@@ -93,11 +93,23 @@ const contextAnalysisItemSchema = z.object({
   exampleQuote: z.string(),
 });
 
+const aiOverviewReferenceSchema = z.object({
+  title: optionalFromPython(z.string()),
+  domain: optionalFromPython(z.string()),
+  url: optionalFromPython(z.string()),
+  text: optionalFromPython(z.string()),
+  source: optionalFromPython(z.string()),
+  position: optionalFromPython(z.string()),
+});
+
 const aiOverviewComparisonItemSchema = z.object({
   platform: z.string(),
   mentioned: z.boolean(),
   rank: z.number().nullable(),
   summary: z.string(),
+  fullSummary: optionalFromPython(z.string()),
+  references: optionalFromPython(z.array(aiOverviewReferenceSchema)),
+  ownDomainReferenced: optionalFromPython(z.boolean()),
 });
 
 const improvementSuggestionSchema = z.object({

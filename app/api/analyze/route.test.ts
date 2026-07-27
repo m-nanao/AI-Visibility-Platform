@@ -446,6 +446,75 @@ describe("POST /api/analyze", () => {
     expect(data.meta.aiOverviewProvider.environment).toBe("live");
   });
 
+  it("passes through aiOverviewComparison's fullSummary/references/ownDomainReferenced from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Google AI Mode (DataForSEO Sandbox)",
+          mentioned: true,
+          rank: 1,
+          summary: "OpenAI is a well-known AI lab.",
+          fullSummary: "OpenAI is a well-known AI lab that builds ChatGPT and other AI products.",
+          references: [
+            { title: "About OpenAI", domain: "openai.com", url: "https://openai.com/about" },
+          ],
+          ownDomainReferenced: true,
+        },
+      ],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "real" },
+        aiOverviewProvider: {
+          mode: "dataforseo",
+          status: "real",
+          reason: "DataForSEO Sandbox AI Mode request succeeded.",
+          environment: "sandbox",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", urls: ["https://openai.com/pricing"] }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    const item = data.aiOverviewComparison[0];
+    expect(item.fullSummary).toBe(
+      "OpenAI is a well-known AI lab that builds ChatGPT and other AI products.",
+    );
+    expect(item.references).toEqual([
+      { title: "About OpenAI", domain: "openai.com", url: "https://openai.com/about" },
+    ]);
+    expect(item.ownDomainReferenced).toBe(true);
+  });
+
+  it("accepts an aiOverviewComparison item without fullSummary/references/ownDomainReferenced (existing mock shape)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({}),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.aiOverviewComparison.length).toBeGreaterThan(0);
+    for (const item of data.aiOverviewComparison) {
+      expect(item.fullSummary).toBeUndefined();
+      expect(item.references).toBeUndefined();
+      expect(item.ownDomainReferenced).toBeUndefined();
+    }
+  });
+
   it("falls back to dummy data when the Python API response fails schema validation", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(

@@ -364,7 +364,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 ]
 ```
 
-**リクエスト/レスポンス変換**（既存の`AIOverviewComparisonItem`型は変更していない）:
+**リクエスト/レスポンス変換**（`AIOverviewComparisonItem`は2026-07-23に`fullSummary`/`references`/`ownDomainReferenced`を任意フィールドとして追加した——`platform`/`mentioned`/`rank`/`summary`は変更していない）:
 
 | フィールド | 内容 |
 | --- | --- |
@@ -372,6 +372,9 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 | `mentioned` | レスポンス中の`ai_overview`項目の`markdown`/`text`、ネストされた`items[]`の`markdown`/`text`、および`references[]`の`title`/`text`/`domain`を連結した文字列に`brand_name`が含まれるか（大文字小文字を区別しない） |
 | `rank` | 項目の`rank_absolute`（整数として取得できた場合）、なければ`rank_group`（同様）、いずれもなければ`None` |
 | `summary` | `markdown`を優先し、なければ`text`から作る短い抜粋（最大200文字、超える場合は`…`で省略）。markdownの画像記法・リンク記法は軽く平文化する。**referencesの一覧やレスポンスの生データ全文は含めない** |
+| `fullSummary`（任意） | `summary`と同じ元テキスト（`markdown`優先、なければ`text`、いずれもなければネストされた`items[]`の`markdown`/`text`を連結）から作るより長い抜粋（最大2500文字、超える場合は`…`で省略）。段落区切りは残しつつ、markdownの画像記法・リンク記法は平文化する。読める文章が全くない場合は`None` |
+| `references`（任意） | `item.references[]` → ネストされた`items[].references[]` → ネストされた`items[].links[]` → `item.links[]`の優先順位で収集し、urlが同じもの（urlがなければdomain+title）で重複排除、最大10件に制限したリスト。各要素は`title`/`domain`/`url`/`text`/`source`/`position`（すべて任意）。**DataForSEOレスポンスの生データそのものではない** |
+| `ownDomainReferenced`（任意） | リクエストの`urls`から抽出したドメインが、`references`のいずれかの`domain`（または`url`から抽出したドメイン）と一致するかの単純な文字列比較。`urls`が指定されていない場合（`documents`使用時や開発用サンプル使用時）は`None`（判定不能） |
 
 **失敗時の扱い**: ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON・レスポンス内`status_code`が想定外・`ai_overview`タイプの項目が見つからない、のいずれの場合も例外を送出せず`DataForSEOSerpResult(success=False, reason="...")`を返す（Sandbox/Live共通）。`reason`は常に安全（認証情報を含まない）な完全な文で、接続先（"Sandbox"/"Live"）を明記し、`ai_overview`項目が見つからない場合は選択中のエンドポイント名も含める（例:「DataForSEO Sandbox response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」「DataForSEO Live response received, but no ai_overview item was found. endpoint=google_ai_mode_live_advanced」）。`ai_overview_provider.py`はこれをそのまま`aiOverviewComparison`の`"unavailable"`理由として使う。タイムアウトは12秒（`REQUEST_TIMEOUT_SECONDS`、Sandbox/Live共通）。
 
@@ -420,6 +423,9 @@ pytest
 - `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ`DATAFORSEO_API_ENV=sandbox`・認証情報設定済みで、`httpx.post`をmonkeypatchしてAI Overview相当の項目を含む成功レスポンスを返すと、`aiOverviewComparison`が`"real"`・1件・`mentioned: true`になり、他の`"real"`セクション（`summary`/`cooccurrenceRanking`/`contextAnalysis`/`improvements`）には影響しないこと
 - デフォルト設定（`DATAFORSEO_SERP_ENDPOINT`未設定）の場合、実際にリクエストされるURLが`/v3/serp/google/ai_mode/live/advanced`で終わること。手動検証で確認した`item_types: ["ai_overview"]`・`markdown`・`references`を含むレスポンス形状をmonkeypatchで再現し、`rank`（`rank_group`由来）・`platform`（`"Google AI Mode (DataForSEO Sandbox)"`）・`mentioned`が正しく変換されること、`summary`に`references`のドメイン名が含まれないこと
 - 同条件で`httpx.post`をmonkeypatchしてネットワークタイムアウトを発生させると、`/analyze`は200のまま`aiOverviewComparison`が`"unavailable"`・`[]`になり、他の`"real"`セクションは影響を受けないこと（Sandbox接続失敗が`/analyze`全体をクラッシュさせないことの回帰防止）
+- `AI_OVERVIEW_PROVIDER_MODE=dataforseo`かつ`urls`を指定して`httpx.post`をmonkeypatchし、`references`を含む成功レスポンスを返すと、レスポンスの`aiOverviewComparison[0]`に`fullSummary`（本文抜粋）・`references`（`title`/`domain`/`url`等）・`ownDomainReferenced: true`（`urls`のドメインが`references`と一致）が含まれること
+- 同条件で`documents`を使う（`urls`を指定しない）と`ownDomainReferenced`が`null`になること（比較対象の「自社ドメイン」がないため判定不能）
+- `mock`モードのレスポンスでは`aiOverviewComparison[]`の各要素に`fullSummary`/`references`/`ownDomainReferenced`が含まれず（`None`）、`models.AnalysisResult`での再パースが引き続き通ること（既存レスポンス形状の後方互換性）
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE`未設定時、リクエストの`aiOverviewMode`（例:`"off"`）は無視され、環境変数のデフォルトのままになること
 - `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`のとき、リクエストの`aiOverviewMode`が実際に反映されること
 - 不正な`aiOverviewMode`（`AiOverviewProviderMode`以外の値）が400 `{"error": "invalid request body"}`になること
@@ -622,6 +628,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.documentCount` / `meta.sourceTypes` | 実際に解析対象となった`Document[]`の件数・`sourceType`一覧（重複なし）。3つの取得元すべてで返る |
 | `meta.chunkCount` | `Document[]`をChunker（`services/document_chunker.py`）で分割した際のチャンク総数。`DocumentChunk[]`自体・チャンク本文は返さない。共起解析はこの値を使わないが、`contextAnalysis`はこのチャンクから計算される |
 | `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason, environment}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`、`environment`（任意、2026-07-23追加）は`"mock"`/`"sandbox"`/`"live"`/`"off"`/`"unavailable"`で、`status`だけでは区別できないSandbox成功とLive成功を見分けるために追加した。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない（下記「DataForSEO設定」参照）。画面には`mock`/`sandbox`/`live`/`unavailable`/`off`を区別するバッジ・説明文が表示される。詳細は上記「AI Overview比較のprovider mode」参照 |
+| `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | （いずれも任意、2026-07-23追加）`dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字）、`references`は最大10件に重複排除された引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`、すべて任意）、`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定（`urls`未指定時は`null`＝判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は上記「DataForSEO Sandbox/Live接続」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -637,6 +644,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - 複数キーワードでのDataForSEOリクエスト（MVPでは`brand_name`単体・1リクエストのみ、Sandbox/Live共通）
 - Google AI OverviewとGoogle AI Modeが実際に同一のレスポンス構造で表現されるかどうかの、Live本番ホストに対する検証（Sandboxでは確認済みだが、この開発環境からLive本番ホストへはアクセスできず未検証）
 - AI Overview比較のprovider mode切り替えUI（現状はAPI経由（`aiOverviewMode`リクエストフィールド、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`時のみ有効）でのみ切り替え可能。画面上のトグル等はまだない）
+- `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
 - Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）

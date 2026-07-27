@@ -48,13 +48,29 @@ Three modes:
   safe, credential-free `reason` explaining why. `/analyze` itself
   never fails because of this — a DataForSEO problem only ever affects
   this one section.
+
+On a "dataforseo" success, AIOverviewComparisonItem also carries
+`fullSummary` (a longer, still-bounded excerpt), `references` (up to 10
+deduplicated citations), and `ownDomainReferenced` (whether any
+reference's domain matches one of the request's own input `urls` — a
+simple domain-string comparison, None when the request had no `urls` to
+compare against). None of this changes the gating above — it only
+enriches an already-successful DataForSEO response; see
+_call_dataforseo_serp and _determine_own_domain_referenced.
 """
 
 import logging
 import os
+from urllib.parse import urlparse
 
-from models import AIOverviewComparisonItem, AiOverviewEnvironment, AiOverviewProviderMode, SectionStatus
-from services.dataforseo_client import fetch_ai_overview_serp
+from models import (
+    AIOverviewComparisonItem,
+    AIOverviewReference,
+    AiOverviewEnvironment,
+    AiOverviewProviderMode,
+    SectionStatus,
+)
+from services.dataforseo_client import DataForSEOSerpReference, fetch_ai_overview_serp
 from services.dataforseo_settings import (
     DataForSEOApiEnv,
     DataForSEOSettings,
@@ -167,8 +183,81 @@ def _live_gate_rejection_reason(settings: DataForSEOSettings) -> str:
     return "DataForSEO Live API request limit must be 1."
 
 
+def _extract_domain(url: str) -> str | None:
+    """Best-effort hostname extraction, lowercased and with a leading
+    "www." stripped so "https://www.example.com/x" and
+    "https://example.com" compare equal. Returns None for anything that
+    doesn't parse to a usable netloc (e.g. a bare keyword, not a URL).
+    """
+    try:
+        netloc = urlparse(url).netloc
+    except ValueError:
+        return None
+    # Strip userinfo ("user:pass@") and port, in case either is present.
+    netloc = netloc.rsplit("@", 1)[-1].split(":", 1)[0].lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc or None
+
+
+def _own_domains(input_urls: list[str] | None) -> set[str]:
+    """The set of domains behind the request's own input `urls` — the
+    candidate "own domain(s)" ownDomainReferenced checks references
+    against. Empty when there were no input urls (e.g. the request used
+    `documents` or the development sample instead), which is exactly
+    when ownDomainReferenced can't be determined at all (see
+    _determine_own_domain_referenced).
+    """
+    if not input_urls:
+        return set()
+    domains = {domain for url in input_urls if (domain := _extract_domain(url))}
+    return domains
+
+
+def _reference_domain(reference: DataForSEOSerpReference) -> str | None:
+    if reference.domain:
+        domain = reference.domain.lower()
+        return domain[4:] if domain.startswith("www.") else domain
+    if reference.url:
+        return _extract_domain(reference.url)
+    return None
+
+
+def _determine_own_domain_referenced(
+    own_domains: set[str], references: tuple[DataForSEOSerpReference, ...]
+) -> bool | None:
+    """Whether any of `references` shares a domain with `own_domains` —
+    a simple domain-string match, not a content/ownership check. None
+    when there's nothing to compare against (no input urls), which the
+    frontend renders as "unjudged" rather than a false negative.
+    """
+    if not own_domains:
+        return None
+    return any(_reference_domain(reference) in own_domains for reference in references)
+
+
+def _to_model_references(
+    references: tuple[DataForSEOSerpReference, ...],
+) -> list[AIOverviewReference]:
+    return [
+        AIOverviewReference(
+            title=reference.title,
+            domain=reference.domain,
+            url=reference.url,
+            text=reference.text,
+            source=reference.source,
+            position=reference.position,
+        )
+        for reference in references
+    ]
+
+
 def _call_dataforseo_serp(
-    brand_name: str, settings: DataForSEOSettings, *, api_env: DataForSEOApiEnv
+    brand_name: str,
+    settings: DataForSEOSettings,
+    *,
+    api_env: DataForSEOApiEnv,
+    input_urls: list[str] | None = None,
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
     """Shared by both the Sandbox and (gate-confirmed) Live paths —
     the only difference between them is which host `api_env` selects
@@ -199,19 +288,26 @@ def _call_dataforseo_serp(
     if not result.success:
         return [], "unavailable", result.reason, "unavailable"
 
+    own_domain_referenced = _determine_own_domain_referenced(
+        _own_domains(input_urls), result.references
+    )
+
     items = [
         AIOverviewComparisonItem(
             platform=_ENVIRONMENT_PLATFORM_LABELS[api_env],
             mentioned=result.mentioned,
             rank=result.rank,
             summary=result.summary or "",
+            fullSummary=result.full_summary,
+            references=_to_model_references(result.references) or None,
+            ownDomainReferenced=own_domain_referenced,
         )
     ]
     return items, "real", result.reason, api_env
 
 
 def _run_dataforseo_mode(
-    brand_name: str, settings: DataForSEOSettings
+    brand_name: str, settings: DataForSEOSettings, input_urls: list[str] | None = None
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
     """Implements the "dataforseo" mode's full decision tree. Never
     includes settings.login or the password itself (which isn't even
@@ -228,6 +324,10 @@ def _run_dataforseo_mode(
     services/dataforseo_client.py's module docstring for why the
     client itself has no gating logic of its own — this function is
     the one and only place that decision is made).
+
+    `input_urls` (the request's `urls`, if any) is only used to decide
+    AIOverviewComparisonItem.ownDomainReferenced — it never affects
+    which environment/gates are checked above.
     """
     if not settings.is_configured:
         return (
@@ -240,15 +340,15 @@ def _run_dataforseo_mode(
     if settings.is_live_env:
         if not settings.is_live_allowed_for_manual_check:
             return ([], "unavailable", _live_gate_rejection_reason(settings), "unavailable")
-        return _call_dataforseo_serp(brand_name, settings, api_env="live")
+        return _call_dataforseo_serp(brand_name, settings, api_env="live", input_urls=input_urls)
 
     # settings.is_sandbox_env and credentials are configured — the
     # default, always-safe path.
-    return _call_dataforseo_serp(brand_name, settings, api_env="sandbox")
+    return _call_dataforseo_serp(brand_name, settings, api_env="sandbox", input_urls=input_urls)
 
 
 def build_ai_overview_comparison(
-    brand_name: str, mode: AiOverviewProviderMode
+    brand_name: str, mode: AiOverviewProviderMode, input_urls: list[str] | None = None
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
     """Returns (items, section status, human-readable reason,
     environment) for the given mode. "mock"/"off" never call an
@@ -260,6 +360,12 @@ def build_ai_overview_comparison(
     Sandbox success from a Live success (both report "real") — see
     models.AiOverviewEnvironment and app/lib/meta-label.ts's
     getAiOverviewProviderStatusDisplay() for how the UI uses it.
+
+    `input_urls` is the request's own `urls` field (None when the
+    request used `documents`/the development sample instead) — passed
+    through only to determine ownDomainReferenced on a dataforseo
+    success; it has no effect on "mock"/"off" or on which DataForSEO
+    gates are checked.
     """
     if mode == "off":
         return (
@@ -270,7 +376,7 @@ def build_ai_overview_comparison(
         )
 
     if mode == "dataforseo":
-        return _run_dataforseo_mode(brand_name, get_dataforseo_settings())
+        return _run_dataforseo_mode(brand_name, get_dataforseo_settings(), input_urls)
 
     # mode == "mock" — also the effective fallback for any unrecognized
     # value, since resolve_ai_overview_mode()/_default_mode_from_env()

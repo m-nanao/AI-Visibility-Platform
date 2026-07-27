@@ -1,5 +1,9 @@
 import Card from "../Card";
-import { getAiOverviewProviderStatusDisplay } from "../../lib/meta-label";
+import {
+  OWN_DOMAIN_STATUS_LABELS,
+  getAiOverviewItemDetailDisplay,
+  getAiOverviewProviderStatusDisplay,
+} from "../../lib/meta-label";
 import type { AIOverviewComparisonItem, AnalysisMeta } from "../../lib/types";
 
 export default function AIOverviewComparisonSection({
@@ -72,7 +76,7 @@ export default function AIOverviewComparisonSection({
                   {item.rank ? `${item.rank}位` : "—"}
                 </td>
                 <td className="py-2.5 text-zinc-600 dark:text-zinc-400">
-                  {item.summary}
+                  <AIOverviewItemDetail item={item} />
                 </td>
               </tr>
             ))}
@@ -80,5 +84,60 @@ export default function AIOverviewComparisonSection({
         </table>
       </div>
     </Card>
+  );
+}
+
+// Only ever has extra content for the DataForSEO provider (mock items
+// never set fullSummary/references/ownDomainReferenced) — for every
+// other item this renders identically to the old summary-only cell.
+function AIOverviewItemDetail({ item }: { item: AIOverviewComparisonItem }) {
+  const detail = getAiOverviewItemDetailDisplay(item);
+
+  return (
+    <div>
+      <p>{item.summary}</p>
+
+      {detail.hasDetail && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400">
+            詳細を見る
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-600 dark:text-zinc-400">
+            {detail.detailText}
+          </p>
+        </details>
+      )}
+
+      {detail.references.length > 0 && (
+        <div className="mt-2">
+          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">参照元</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-zinc-600 dark:text-zinc-400">
+            {detail.references.map((reference, index) => (
+              <li key={`${reference.url ?? reference.label}-${index}`}>
+                {reference.url ? (
+                  <a
+                    href={reference.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                  >
+                    {reference.label}
+                  </a>
+                ) : (
+                  reference.label
+                )}
+                {reference.title && ` — ${reference.title}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {detail.ownDomainStatus !== "unjudged" && (
+        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+          {OWN_DOMAIN_STATUS_LABELS[detail.ownDomainStatus]}
+        </p>
+      )}
+    </div>
   );
 }
