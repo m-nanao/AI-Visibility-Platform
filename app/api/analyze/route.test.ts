@@ -353,6 +353,36 @@ describe("POST /api/analyze", () => {
     expect(forwardedBody.aiOverviewMode).toBe("off");
   });
 
+  it("forwards the explicit dataforseo_sandbox aiOverviewMode to the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo_sandbox" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.aiOverviewMode).toBe("dataforseo_sandbox");
+  });
+
+  it("forwards the explicit dataforseo_live aiOverviewMode to the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo_live" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.aiOverviewMode).toBe("dataforseo_live");
+  });
+
   it("drops an invalid aiOverviewMode instead of forwarding it", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = buildDummyAnalysis("OpenAI");
@@ -488,6 +518,37 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(200);
+    expect(data.meta.aiOverviewProvider.environment).toBe("live");
+  });
+
+  it("accepts the explicit dataforseo_sandbox/dataforseo_live aiOverviewProvider.mode values from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Google AI Mode (DataForSEO Live)", mentioned: true, rank: 1, summary: "OpenAI is..." },
+      ],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "real" },
+        aiOverviewProvider: {
+          mode: "dataforseo_live",
+          status: "real",
+          reason: "DataForSEO Live AI Mode request succeeded.",
+          environment: "live",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo_live" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.aiOverviewProvider.mode).toBe("dataforseo_live");
     expect(data.meta.aiOverviewProvider.environment).toBe("live");
   });
 
