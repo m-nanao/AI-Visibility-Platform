@@ -303,10 +303,38 @@ def analyze(payload: AnalyzeRequest):
     )
     logger.info("brand summary complete: visibilityScore=%d", result.summary.visibilityScore)
 
+    # aiOverviewComparison: swappable provider (see
+    # services/ai_overview_provider.py), independent of the
+    # Document[]/cooccurrence_status pipeline above — its mode comes
+    # from AI_OVERVIEW_PROVIDER_MODE (env, default "mock"), optionally
+    # overridden per-request only when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
+    # payload.urls is passed through only so a DataForSEO success can set
+    # AIOverviewComparisonItem.ownDomainReferenced (comparing reference
+    # domains against the request's own input urls) — it has no effect
+    # on which provider/environment runs. Computed before improvements
+    # below so build_improvement_suggestions() can look at
+    # ownDomainReferenced/referenceSummary for a lightweight suggestion.
+    ai_overview_mode = resolve_ai_overview_mode(payload.aiOverviewMode)
+    (
+        result.aiOverviewComparison,
+        ai_overview_status,
+        ai_overview_reason,
+        ai_overview_environment,
+    ) = build_ai_overview_comparison(brand_name, ai_overview_mode, payload.urls)
+    logger.info(
+        "ai overview comparison complete: mode=%s status=%s",
+        ai_overview_mode,
+        ai_overview_status,
+    )
+
     # improvements: lightweight, rule-based (no AI/LLM/DataForSEO calls —
     # see services/improvement_suggestions.py), built from the
     # cooccurrenceRanking/contextAnalysis/summary already computed
-    # above. Shares cooccurrence_status with the other three sections
+    # above, plus result.aiOverviewComparison (for at most one
+    # suggestion about AI Overview reference state — see
+    # services/improvement_suggestions.py's _ai_overview_reference_suggestion;
+    # a no-op unless aiOverviewComparison actually ran in "dataforseo"
+    # mode). Shares cooccurrence_status with the other three sections
     # for the same reason they do. Unlike those, build_improvement_suggestions()
     # always returns at least one (fallback) suggestion for genuinely
     # empty input, so when the status is "unavailable" (every url
@@ -323,30 +351,9 @@ def analyze(payload: AnalyzeRequest):
             result.contextAnalysis,
             document_count=document_count,
             source_types=source_types,
+            ai_overview_items=result.aiOverviewComparison,
         )
     logger.info("improvement suggestions complete: %d suggestion(s)", len(result.improvements))
-
-    # aiOverviewComparison: swappable provider (see
-    # services/ai_overview_provider.py), independent of the
-    # Document[]/cooccurrence_status pipeline above — its mode comes
-    # from AI_OVERVIEW_PROVIDER_MODE (env, default "mock"), optionally
-    # overridden per-request only when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
-    # payload.urls is passed through only so a DataForSEO success can set
-    # AIOverviewComparisonItem.ownDomainReferenced (comparing reference
-    # domains against the request's own input urls) — it has no effect
-    # on which provider/environment runs.
-    ai_overview_mode = resolve_ai_overview_mode(payload.aiOverviewMode)
-    (
-        result.aiOverviewComparison,
-        ai_overview_status,
-        ai_overview_reason,
-        ai_overview_environment,
-    ) = build_ai_overview_comparison(brand_name, ai_overview_mode, payload.urls)
-    logger.info(
-        "ai overview comparison complete: mode=%s status=%s",
-        ai_overview_mode,
-        ai_overview_status,
-    )
 
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(

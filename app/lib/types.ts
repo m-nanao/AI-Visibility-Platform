@@ -125,6 +125,24 @@ export interface ContextAnalysisItem {
   exampleQuote: string;
 }
 
+// Simple, rule-based classification of one AIOverviewReference — see
+// backend/services/ai_overview_provider.py's _classify_reference_category().
+// "official" means the reference's domain matches (or is a subdomain
+// of) one of the request's own input `urls`; the rest are matched
+// against small hardcoded domain lists (Wikipedia/SNS/UGC/video/news).
+// "media" is reserved for a future, more accurate media/blog heuristic
+// — nothing is classified as "media" yet, it falls back to "other".
+// Deliberately not a precise or exhaustive taxonomy.
+export type ReferenceCategory =
+  | "official"
+  | "wikipedia"
+  | "sns"
+  | "ugc"
+  | "news"
+  | "media"
+  | "video"
+  | "other";
+
 // One citation/link a DataForSEO AI Overview-type item pointed at (see
 // backend/services/dataforseo_client.py's reference extraction).
 // Every field is optional since DataForSEO's reference/link shapes
@@ -136,6 +154,32 @@ export interface AIOverviewReference {
   text?: string;
   source?: string;
   position?: string;
+  category?: ReferenceCategory;
+}
+
+// How many of an item's `references` fell into each category (see
+// ReferenceCategory) — only ever present alongside `references` itself
+// (see AIOverviewReferenceSummary below).
+export interface AIOverviewReferenceCategoryCounts {
+  official?: number;
+  wikipedia?: number;
+  sns?: number;
+  ugc?: number;
+  news?: number;
+  media?: number;
+  video?: number;
+  other?: number;
+}
+
+// A quick "how many references, and of what kind" rollup of one item's
+// `references` — see backend/services/ai_overview_provider.py's
+// _build_reference_summary(). `official`/`thirdParty` always add up to
+// `total`; `categories` breaks `total` down further.
+export interface AIOverviewReferenceSummary {
+  total: number;
+  official: number;
+  thirdParty: number;
+  categories: AIOverviewReferenceCategoryCounts;
 }
 
 export interface AIOverviewComparisonItem {
@@ -155,6 +199,10 @@ export interface AIOverviewComparisonItem {
   // references: up to 10 deduplicated citations DataForSEO's response
   // pointed at. Never the raw DataForSEO response itself.
   references?: AIOverviewReference[];
+  // referenceSummary: a total/official/thirdParty/categories rollup of
+  // `references`. Undefined when `references` is undefined/empty —
+  // there's nothing to summarize.
+  referenceSummary?: AIOverviewReferenceSummary;
   // ownDomainReferenced: whether one of `references` shares a domain
   // with one of the request's input `urls` (a simple domain-string
   // match, not a content check). Undefined when it can't be determined

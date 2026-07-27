@@ -57,6 +57,18 @@ AiOverviewProviderMode = Literal["mock", "off", "dataforseo"]
 # services/ai_overview_provider.py's build_ai_overview_comparison().
 AiOverviewEnvironment = Literal["mock", "sandbox", "live", "off", "unavailable"]
 
+# Simple, rule-based classification of one AIOverviewReference — see
+# services/ai_overview_provider.py's _classify_reference_category().
+# "official" means the reference's domain matches (or is a subdomain
+# of) one of the request's own input `urls`; the rest are matched
+# against small hardcoded domain lists (Wikipedia/SNS/UGC/video/news).
+# "media" is reserved for a future, more accurate media/blog heuristic
+# — nothing is classified as "media" yet, it falls back to "other".
+# Deliberately not a precise or exhaustive taxonomy.
+ReferenceCategory = Literal[
+    "official", "wikipedia", "sns", "ugc", "news", "media", "video", "other"
+]
+
 MAX_BRAND_NAME_LENGTH = 200
 
 # documents[] input limits (requirement: count / per-item / total).
@@ -207,6 +219,42 @@ class AIOverviewReference(BaseModel):
     text: str | None = None
     source: str | None = None
     position: str | None = None
+    # category: simple rule-based classification (see ReferenceCategory
+    # above and services/ai_overview_provider.py). Optional so a client
+    # that doesn't know about it keeps working — added after references
+    # itself, so this must stay backward-compatible on its own.
+    category: ReferenceCategory | None = None
+
+
+class AIOverviewReferenceCategoryCounts(BaseModel):
+    """How many of an item's `references` fell into each category (see
+    ReferenceCategory) — only ever built alongside `references` itself
+    (see AIOverviewReferenceSummary), never sent on its own.
+    """
+
+    official: int | None = None
+    wikipedia: int | None = None
+    sns: int | None = None
+    ugc: int | None = None
+    news: int | None = None
+    media: int | None = None
+    video: int | None = None
+    other: int | None = None
+
+
+class AIOverviewReferenceSummary(BaseModel):
+    """A quick "how many references, and of what kind" rollup of one
+    item's `references` — see services/ai_overview_provider.py's
+    _build_reference_summary(). `official`/`thirdParty` always add up
+    to `total`; `categories` breaks `total` down further (every
+    reference falls into exactly one category, so `categories`' values
+    also sum to `total`).
+    """
+
+    total: int
+    official: int
+    thirdParty: int
+    categories: AIOverviewReferenceCategoryCounts
 
 
 class AIOverviewComparisonItem(BaseModel):
@@ -228,6 +276,10 @@ class AIOverviewComparisonItem(BaseModel):
     # pointed at. Never the raw DataForSEO response itself — see
     # services/dataforseo_client.py's module docstring.
     references: list[AIOverviewReference] | None = None
+    # referenceSummary: a total/official/thirdParty/categories rollup of
+    # `references` (see AIOverviewReferenceSummary above). None when
+    # `references` is None/empty — there's nothing to summarize.
+    referenceSummary: AIOverviewReferenceSummary | None = None
     # ownDomainReferenced: whether one of `references` shares a domain
     # with one of the request's input `urls` (a simple domain-string
     # match, not a content check). None when it can't be determined

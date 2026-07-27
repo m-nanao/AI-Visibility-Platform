@@ -57,6 +57,16 @@ simple domain-string comparison, None when the request had no `urls` to
 compare against). None of this changes the gating above — it only
 enriches an already-successful DataForSEO response; see
 _call_dataforseo_serp and _determine_own_domain_referenced.
+
+Each reference also gets a simple, rule-based `category` (see
+models.ReferenceCategory and _classify_reference_category below) —
+"official" for an own-domain match, otherwise matched against small
+hardcoded domain lists (Wikipedia/SNS/UGC/video/news) or "other".
+`referenceSummary` (see _build_reference_summary) rolls those
+categories up into a total/official/thirdParty/categories count. Both
+are derived entirely from data this module already has (references +
+the request's own input `urls`) — no new DataForSEO request, no
+external classification service.
 """
 
 import logging
@@ -66,8 +76,11 @@ from urllib.parse import urlparse
 from models import (
     AIOverviewComparisonItem,
     AIOverviewReference,
+    AIOverviewReferenceCategoryCounts,
+    AIOverviewReferenceSummary,
     AiOverviewEnvironment,
     AiOverviewProviderMode,
+    ReferenceCategory,
     SectionStatus,
 )
 from services.dataforseo_client import DataForSEOSerpReference, fetch_ai_overview_serp
@@ -236,8 +249,85 @@ def _determine_own_domain_referenced(
     return any(_reference_domain(reference) in own_domains for reference in references)
 
 
+# Simple, hardcoded domain lists for _classify_reference_category()'s
+# rule-based (not AI-driven) classification — deliberately small and
+# non-exhaustive (see docs/07_decisions.md and ReferenceCategory's own
+# docstring in models.py). "media" has no domain list of its own yet:
+# anything not matched below (and not an official/own-domain match)
+# falls back to "other" rather than being guessed at.
+_WIKIPEDIA_DOMAINS = ("wikipedia.org",)
+_SNS_DOMAINS = ("x.com", "twitter.com", "facebook.com", "instagram.com", "linkedin.com", "threads.net")
+_UGC_DOMAINS = (
+    "qiita.com",
+    "zenn.dev",
+    "note.com",
+    "hatena.ne.jp",
+    "chiebukuro.yahoo.co.jp",
+    "reddit.com",
+    "stackoverflow.com",
+)
+_VIDEO_DOMAINS = ("youtube.com", "youtu.be")
+_NEWS_DOMAINS = (
+    "nikkei.com",
+    "asahi.com",
+    "yomiuri.co.jp",
+    "mainichi.jp",
+    "sankei.com",
+    "nhk.or.jp",
+    "reuters.com",
+    "bloomberg.co.jp",
+)
+
+# Checked in this order — "official" (an own-domain match) is decided
+# separately, before this list is even consulted (see
+# _classify_reference_category), so it can never be shadowed by one of
+# these.
+_CATEGORY_DOMAIN_HINTS: tuple[tuple[ReferenceCategory, tuple[str, ...]], ...] = (
+    ("wikipedia", _WIKIPEDIA_DOMAINS),
+    ("sns", _SNS_DOMAINS),
+    ("ugc", _UGC_DOMAINS),
+    ("video", _VIDEO_DOMAINS),
+    ("news", _NEWS_DOMAINS),
+)
+
+
+def _domain_matches(domain: str, known_domain: str) -> bool:
+    """True if `domain` is exactly `known_domain`, or a subdomain of it
+    (e.g. "ja.wikipedia.org" matches "wikipedia.org", "docs.cybozu.co.jp"
+    matches "cybozu.co.jp"). Both sides are expected to already be
+    lowercased with any "www." stripped (see _reference_domain).
+    """
+    return domain == known_domain or domain.endswith("." + known_domain)
+
+
+def _classify_reference_category(
+    reference: DataForSEOSerpReference, own_domains: set[str]
+) -> ReferenceCategory:
+    """Rule-based (not AI-driven) classification from the reference's
+    own domain alone — see models.ReferenceCategory for the full
+    rationale. Checked in order: an own-domain (subdomain-inclusive)
+    match is "official" first, before any of the hardcoded
+    Wikipedia/SNS/UGC/video/news domain lists are even consulted, so a
+    brand's own domain can never be miscategorized as one of those.
+    Anything left over (including anything that would need a "media"
+    judgment call) is "other".
+    """
+    domain = _reference_domain(reference)
+    if domain is None:
+        return "other"
+
+    if any(_domain_matches(domain, own_domain) for own_domain in own_domains):
+        return "official"
+
+    for category, known_domains in _CATEGORY_DOMAIN_HINTS:
+        if any(_domain_matches(domain, known_domain) for known_domain in known_domains):
+            return category
+
+    return "other"
+
+
 def _to_model_references(
-    references: tuple[DataForSEOSerpReference, ...],
+    references: tuple[DataForSEOSerpReference, ...], own_domains: set[str]
 ) -> list[AIOverviewReference]:
     return [
         AIOverviewReference(
@@ -247,9 +337,39 @@ def _to_model_references(
             text=reference.text,
             source=reference.source,
             position=reference.position,
+            category=_classify_reference_category(reference, own_domains),
         )
         for reference in references
     ]
+
+
+def _build_reference_summary(
+    references: list[AIOverviewReference] | None,
+) -> AIOverviewReferenceSummary | None:
+    """Rolls up `references`' categories into a total/official/
+    thirdParty/categories summary (see AIOverviewReferenceSummary).
+    None when there are no references at all — there's nothing to
+    summarize, so the frontend can treat "no summary" the same way it
+    already treats "no references".
+    """
+    if not references:
+        return None
+
+    counts: dict[str, int] = {}
+    official_count = 0
+    for reference in references:
+        category = reference.category or "other"
+        counts[category] = counts.get(category, 0) + 1
+        if category == "official":
+            official_count += 1
+
+    total = len(references)
+    return AIOverviewReferenceSummary(
+        total=total,
+        official=official_count,
+        thirdParty=total - official_count,
+        categories=AIOverviewReferenceCategoryCounts(**counts),
+    )
 
 
 def _call_dataforseo_serp(
@@ -288,9 +408,9 @@ def _call_dataforseo_serp(
     if not result.success:
         return [], "unavailable", result.reason, "unavailable"
 
-    own_domain_referenced = _determine_own_domain_referenced(
-        _own_domains(input_urls), result.references
-    )
+    own_domains = _own_domains(input_urls)
+    own_domain_referenced = _determine_own_domain_referenced(own_domains, result.references)
+    model_references = _to_model_references(result.references, own_domains) or None
 
     items = [
         AIOverviewComparisonItem(
@@ -299,7 +419,8 @@ def _call_dataforseo_serp(
             rank=result.rank,
             summary=result.summary or "",
             fullSummary=result.full_summary,
-            references=_to_model_references(result.references) or None,
+            references=model_references,
+            referenceSummary=_build_reference_summary(model_references),
             ownDomainReferenced=own_domain_referenced,
         )
     ]
