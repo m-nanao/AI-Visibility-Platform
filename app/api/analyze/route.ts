@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
-import type { AiOverviewProviderMode, AnalysisResult } from "../../lib/types";
+import type { AiOverviewProviderMode, AnalysisResult, ChatGptProviderMode } from "../../lib/types";
 
 const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = ["mock", "off", "dataforseo"];
+const CHATGPT_MODES: readonly ChatGptProviderMode[] = ["off", "openai"];
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
 
@@ -38,6 +39,7 @@ async function fetchFromPythonApi(
   documents?: string[],
   urls?: string[],
   aiOverviewMode?: AiOverviewProviderMode,
+  chatgptMode?: ChatGptProviderMode,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable" };
@@ -53,6 +55,7 @@ async function fetchFromPythonApi(
     documents?: string[];
     urls?: string[];
     aiOverviewMode?: AiOverviewProviderMode;
+    chatgptMode?: ChatGptProviderMode;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
@@ -61,6 +64,11 @@ async function fetchFromPythonApi(
   // own AI_OVERVIEW_PROVIDER_MODE default. Next.js does not gate this
   // itself — it's a pure passthrough field, not yet exposed in the UI.
   if (aiOverviewMode) requestBody.aiOverviewMode = aiOverviewMode;
+  // Same passthrough pattern as aiOverviewMode above — the Python API
+  // decides whether to actually honor it (ALLOW_CHATGPT_MODE_OVERRIDE),
+  // and even then only calls OpenAI when aiOverviewMode isn't "mock"
+  // (see backend/main.py). Next.js does not gate this itself.
+  if (chatgptMode) requestBody.chatgptMode = chatgptMode;
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
@@ -158,8 +166,20 @@ export async function POST(request: Request) {
   const aiOverviewMode = AI_OVERVIEW_MODES.includes(body?.aiOverviewMode)
     ? (body.aiOverviewMode as AiOverviewProviderMode)
     : undefined;
+  // Same pattern as aiOverviewMode above, for the ChatGPT-equivalent
+  // observation (see backend/services/chatgpt_provider.py). An invalid
+  // value is dropped rather than rejected with 400.
+  const chatgptMode = CHATGPT_MODES.includes(body?.chatgptMode)
+    ? (body.chatgptMode as ChatGptProviderMode)
+    : undefined;
 
-  const outcome = await fetchFromPythonApi(trimmedBrandName, documents, urls, aiOverviewMode);
+  const outcome = await fetchFromPythonApi(
+    trimmedBrandName,
+    documents,
+    urls,
+    aiOverviewMode,
+    chatgptMode,
+  );
 
   if (outcome.kind === "success") {
     return NextResponse.json(outcome.data);

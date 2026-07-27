@@ -13,11 +13,12 @@
   "brandName": "OpenAI",
   "documents": ["OpenAIは料金プランが分かりやすいと評判です。"],
   "urls": ["https://example.com/article-about-openai"],
-  "aiOverviewMode": "mock"
+  "aiOverviewMode": "mock",
+  "chatgptMode": "off"
 }
 ```
 
-`documents` / `urls` はどちらも任意。両方省略した場合は開発用サンプル文章を使う。両方指定した場合は `documents` が優先され、`urls` は無視される（詳細は2.2章）。`aiOverviewMode`（`"mock" | "off" | "dataforseo"`）も任意で、`aiOverviewComparison`セクションのprovider modeをこのリクエスト単位で上書きする。ただしPython API側で`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`が設定されている場合のみ反映され、それ以外は無視される（詳細は下記「AI Overview比較のprovider mode」参照）。
+`documents` / `urls` はどちらも任意。両方省略した場合は開発用サンプル文章を使う。両方指定した場合は `documents` が優先され、`urls` は無視される（詳細は2.2章）。`aiOverviewMode`（`"mock" | "off" | "dataforseo"`）も任意で、`aiOverviewComparison`セクションのprovider modeをこのリクエスト単位で上書きする。ただしPython API側で`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`が設定されている場合のみ反映され、それ以外は無視される（詳細は下記「AI Overview比較のprovider mode」参照）。`chatgptMode`（`"off" | "openai"`、2026-07-23追加）も任意で、`aiOverviewComparison`に追加するChatGPT相当モデルの1問観測（OpenAI API）のprovider modeをこのリクエスト単位で上書きする。ただしPython API側で`ALLOW_CHATGPT_MODE_OVERRIDE=true`が設定されている場合のみ反映され、さらに`aiOverviewMode`が`"mock"`の場合は`chatgptMode`の値に関わらず常にスキップされる（詳細は下記「ChatGPT相当モデルの1問観測」参照）。
 
 **Response（200 OK・`AnalysisResult` 形状）**
 
@@ -81,6 +82,7 @@
 | `meta.aiOverviewProvider` | `{ mode: "mock" \| "off" \| "dataforseo"; status: SectionStatus; reason: string; environment?: "mock" \| "sandbox" \| "live" \| "off" \| "unavailable" }`（任意） | `aiOverviewComparison`を生成したprovider modeとその理由。`environment`（2026-07-23追加、任意）は`status`だけでは区別できないSandbox成功とLive成功を見分けるためのフィールド。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない。画面には`environment`に応じたバッジ・説明文が表示される。詳細は下記「AI Overview比較のprovider mode」「DataForSEO認証情報・実行安全ルール」参照 |
 | `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | `{ fullSummary?: string; references?: AIOverviewReference[]; ownDomainReferenced?: boolean }`（いずれも任意、2026-07-23追加） | `dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字、`summary`より詳細）。`references`は引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`/`category`、すべて任意）を重複排除・最大10件に制限したもの。`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定で、`urls`未指定時は`null`（判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は下記「DataForSEO認証情報・実行安全ルール」参照 |
 | `aiOverviewComparison[].references[].category` / `.referenceSummary` | `AIOverviewReference["category"]?: "official" \| "wikipedia" \| "sns" \| "ugc" \| "news" \| "media" \| "video" \| "other"`、`AIOverviewComparisonItem["referenceSummary"]?: { total: number; official: number; thirdParty: number; categories: Record<string, number \| undefined> }`（いずれも任意、2026-07-23追加） | 参照元のルールベース簡易分類とその集計。新たなDataForSEO呼び出しは一切せず、既存の`references`とリクエストの`urls`だけから算出する。分類は自社ドメイン一致（サブドメイン含む）を`"official"`、それ以外は小さなハードコードdomainリスト（Wikipedia/SNS/UGC/動画/ニュース）との照合で、いずれにも一致しなければ`"other"`（`"media"`は値として予約されているが現時点では未使用）。`referenceSummary`は`references`が空/未設定なら`null`。詳細は下記「DataForSEO認証情報・実行安全ルール」参照 |
+| `meta.chatgptProvider` | `{ mode: "off" \| "openai"; status: "real" \| "off" \| "unavailable"; reason: string; environment?: "api" \| "off" \| "unavailable" }`（任意、2026-07-23追加） | ChatGPT相当モデルの1問観測（OpenAI API）が`aiOverviewComparison`にカードを追加したかどうかとその理由。`meta.aiOverviewProvider`とは完全に独立。`reason`にAPIキーの値そのものは絶対に含まれない。詳細は下記「ChatGPT相当モデルの1問観測」参照 |
 
 **`"unavailable"` と `"real"`(0件) の違い**: `cooccurrenceRanking`/`contextAnalysis` が空配列 `[]` になるケースは2通りある。(1) `documents: []` を明示的に渡した、または実際に解析した結果0件だった場合は `"real"`（計算は実行され、結果がたまたま0件だった）。(2) `urls` に渡したURLが1件も取得できなかった場合は `"unavailable"`（計算に必要な文章が1件も得られなかった）。この区別により、UIやAPI利用者は「正常に分析して0件だった」のか「取得に失敗して分析自体ができなかった」のかを判別できる（[07_decisions.md](./07_decisions.md) 参照）。
 
@@ -121,6 +123,17 @@
 - **参照元の簡易分類（2026-07-23追加、`references[].category`/`referenceSummary`）**: 新たなDataForSEO呼び出しは一切せず、既存の`references`とリクエストの`urls`だけからルールベース（AIによる分類ではない）で分類する。自社ドメイン一致（サブドメイン含む）を`"official"`、Wikipedia/SNS/UGC/動画/ニュース系の小さなハードコードdomainリストとの照合をそれぞれ対応するカテゴリ、いずれにも一致しなければ`"other"`とする。`referenceSummary`（`{total, official, thirdParty, categories}`）は`references`の分類結果を集計したもので、`references`が空/未設定なら`null`。厳密なメディア分類・スコアリング・参照元ページの内容取得は対象外。改善提案（`improvements`）にも、`ownDomainReferenced`/`referenceSummary`から導かれる提案を最大1件追加する（既存のcooccurrence/context由来の提案とは独立したルール。詳細は[backend/README.md](../backend/README.md)「Improvement Suggestions（改善提案）」参照）。
 
 詳細は[backend/README.md](../backend/README.md)の「DataForSEO設定（`dataforseo_settings.py`）」「DataForSEO Sandbox/Live接続（`dataforseo_client.py`）」、運用方針の経緯は[07_decisions.md](./07_decisions.md)を参照。
+
+### ChatGPT相当モデルの1問観測（2026-07-23追加）
+
+`aiOverviewComparison`に、Google AI Mode/AI Overview（DataForSEO）とは**独立した**もう1件のカード（`platform: "ChatGPT (OpenAI API)"`）を追加できる（`backend/services/chatgpt_settings.py`/`chatgpt_client.py`/`chatgpt_provider.py`）。**ChatGPTアプリ画面そのものの内部認識を再現するものではなく**、OpenAI APIのモデルへ「このブランドは一般的にどう認識されるか」を1問だけ質問した結果（Web検索なし、参照元なし）。
+
+- **安全ゲート（DataForSEOのAI Overview provider modeと同じ2段階設計）**: (1) `CHATGPT_PROVIDER_MODE`環境変数（デフォルト`off`）、(2) `ALLOW_CHATGPT_MODE_OVERRIDE`環境変数（デフォルト`false`、`true`のときのみリクエストの`chatgptMode`が採用される）。加えて`mode == "openai"`でも`OPENAI_API_KEY`設定済み・`CHATGPT_REQUEST_LIMIT_PER_ANALYZE=1`（デフォルト）がすべて揃わない限りOpenAI APIへは一切接続しない。
+- **AI Overview比較との結合ルール**: `aiOverviewMode`が`"mock"`の場合、ChatGPT観測は`chatgptMode`の値に関わらず常にスキップされる（`mock`の固定`aiOverviewComparison`フィクスチャに既に「ChatGPT」という名前のダミーカードがあり、重複を避けるため）。`aiOverviewMode`が`"dataforseo"`/`"off"`の場合のみ候補になり、成功時は既存のGoogle AI Mode/AI Overviewカードを置き換えず**追加**する。
+- **1 analyzeあたりの呼び出し回数**: 常に最大1回。DataForSEOの呼び出し回数・条件（`backend/services/dataforseo_*.py`）には一切影響しない。
+- `meta.chatgptProvider`（`{mode, status, reason, environment}`、`meta.aiOverviewProvider`とは独立）で実際に使われたmodeと理由を報告する。`reason`にAPIキーの値そのものが含まれることは絶対にない。
+
+詳細は[backend/README.md](../backend/README.md)の「ChatGPT相当モデルの1問観測」を参照。
 
 ### `Document` / `DocumentChunk`（内部処理単位、v1.0アーキテクチャ）
 

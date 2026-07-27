@@ -383,6 +383,51 @@ describe("POST /api/analyze", () => {
     expect(forwardedBody.aiOverviewMode).toBeUndefined();
   });
 
+  it("forwards a valid chatgptMode to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", chatgptMode: "openai" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.chatgptMode).toBe("openai");
+  });
+
+  it("drops an invalid chatgptMode instead of forwarding it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", chatgptMode: "chatgpt" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.chatgptMode).toBeUndefined();
+  });
+
+  it("omits chatgptMode from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.chatgptMode).toBeUndefined();
+  });
+
   it("accepts an unavailable aiOverviewComparison with aiOverviewProvider metadata from the Python API", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = {
@@ -444,6 +489,67 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.aiOverviewProvider.environment).toBe("live");
+  });
+
+  it("passes through meta.chatgptProvider and an extra ChatGPT card from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Google AI Mode (DataForSEO Sandbox)", mentioned: true, rank: 1, summary: "OpenAI is..." },
+        { platform: "ChatGPT (OpenAI API)", mentioned: true, rank: null, summary: "OpenAI is a well-known AI lab." },
+      ],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "real" },
+        aiOverviewProvider: {
+          mode: "dataforseo",
+          status: "real",
+          reason: "DataForSEO Sandbox AI Mode request succeeded.",
+          environment: "sandbox",
+        },
+        chatgptProvider: {
+          mode: "openai",
+          status: "real",
+          reason: "ChatGPT OpenAI API request succeeded.",
+          environment: "api",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo", chatgptMode: "openai" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.chatgptProvider).toEqual({
+      mode: "openai",
+      status: "real",
+      reason: "ChatGPT OpenAI API request succeeded.",
+      environment: "api",
+    });
+    const platforms = data.aiOverviewComparison.map((item: { platform: string }) => item.platform);
+    expect(platforms).toContain("ChatGPT (OpenAI API)");
+  });
+
+  it("accepts a response without meta.chatgptProvider (existing/older backend shape)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({}),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.chatgptProvider).toBeUndefined();
   });
 
   it("passes through aiOverviewComparison's fullSummary/references/ownDomainReferenced from the Python API", async () => {

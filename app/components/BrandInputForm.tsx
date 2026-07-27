@@ -1,14 +1,22 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { isAiOverviewModeSelectorEnabled } from "../lib/analysis-request";
+import {
+  isAiOverviewModeSelectorEnabled,
+  isChatGptModeSelectorEnabled,
+} from "../lib/analysis-request";
 import { MAX_URLS, validateUrlsInput } from "../lib/url-validation";
-import type { AiOverviewProviderMode } from "../lib/types";
+import type { AiOverviewProviderMode, ChatGptProviderMode } from "../lib/types";
 
 const AI_OVERVIEW_MODE_OPTIONS: { value: AiOverviewProviderMode; label: string }[] = [
   { value: "mock", label: "mock: 開発用データ" },
   { value: "off", label: "off: 無効" },
   { value: "dataforseo", label: "dataforseo: DataForSEO" },
+];
+
+const CHATGPT_MODE_OPTIONS: { value: ChatGptProviderMode; label: string }[] = [
+  { value: "off", label: "off: 無効" },
+  { value: "openai", label: "openai: OpenAI API" },
 ];
 
 export default function BrandInputForm({
@@ -20,6 +28,7 @@ export default function BrandInputForm({
     brandName: string,
     urls: string[],
     aiOverviewMode?: AiOverviewProviderMode,
+    chatgptMode?: ChatGptProviderMode,
   ) => void;
   isLoading: boolean;
   initialValue?: string;
@@ -28,7 +37,9 @@ export default function BrandInputForm({
   const [urlsInput, setUrlsInput] = useState("");
   const [urlErrors, setUrlErrors] = useState<string[]>([]);
   const [aiOverviewMode, setAiOverviewMode] = useState<AiOverviewProviderMode>("mock");
+  const [chatgptMode, setChatgptMode] = useState<ChatGptProviderMode>("off");
   const showAiOverviewModeSelector = isAiOverviewModeSelectorEnabled();
+  const showChatGptModeSelector = isChatGptModeSelectorEnabled();
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -46,14 +57,16 @@ export default function BrandInputForm({
     }
 
     setUrlErrors([]);
-    // aiOverviewMode is only ever passed when the dev/verification-only
-    // selector is actually shown — otherwise this behaves exactly as
-    // before (no third argument), so a normal submission's request body
-    // is unaffected by this selector's existence.
+    // aiOverviewMode/chatgptMode are only ever passed when their
+    // respective dev/verification-only selectors are actually shown —
+    // otherwise this behaves exactly as before (undefined), so a
+    // normal submission's request body is unaffected by either
+    // selector's existence.
     onSubmit(
       trimmedBrandName,
       urls,
       showAiOverviewModeSelector ? aiOverviewMode : undefined,
+      showChatGptModeSelector ? chatgptMode : undefined,
     );
   };
 
@@ -152,6 +165,43 @@ export default function BrandInputForm({
           </select>
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             この設定は検証用です。DataForSEO Live APIは、サーバー側の複数のゲートがすべて揃った場合のみ実行されます。
+          </p>
+        </div>
+      )}
+
+      {/* Dev/verification-only — see app/lib/analysis-request.ts's
+          isChatGptModeSelectorEnabled(). Selecting "openai" here only
+          sends chatgptMode in the request body; whether the Python API
+          actually calls OpenAI still depends entirely on server-side
+          gates (ALLOW_CHATGPT_MODE_OVERRIDE, an API key, the request
+          limit) that this UI cannot change — and it's a no-op whenever
+          the AI Overview section itself is "mock". */}
+      {showChatGptModeSelector && (
+        <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+          <label
+            htmlFor="chatgptMode"
+            className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            ChatGPT観測モード（検証用）
+          </label>
+          <select
+            id="chatgptMode"
+            name="chatgptMode"
+            disabled={isLoading}
+            value={chatgptMode}
+            onChange={(event) =>
+              setChatgptMode(event.target.value as ChatGptProviderMode)
+            }
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 sm:w-auto"
+          >
+            {CHATGPT_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+            OpenAI APIを使うには、サーバー側の許可とAPIキー設定が必要です。
           </p>
         </div>
       )}

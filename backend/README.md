@@ -1,6 +1,6 @@
 # Python分析API（バックエンド）
 
-LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）を持ち、デフォルトの`mock`モードでは固定データを返す。`dataforseo`モードではDataForSEO **Sandbox**への接続を実装済み（`services/dataforseo_client.py`、下記「DataForSEO Sandbox/Live接続」参照）。**DataForSEO Live本番APIへの接続も実装済みだが、複数の明示的な手動確認用ゲート（環境変数5つすべて）が揃った場合のみ、1回限りの手動確認としてのみ許可される**——通常運用のデフォルトは常に`mock`のままで、`DATAFORSEO_API_ENV=live`を設定しただけでは接続されない（費用が発生し得るため）。Common Crawl / DBにはまだ接続していない。
+LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`cooccurrenceRanking`（共起語ランキング）・`contextAnalysis`（文脈分析、キーワードベースの軽量版）・`summary`（ブランド認知サマリー、ルールベース・テンプレート生成の軽量版）・`improvements`（改善提案、ルールベースの軽量版）は入力文章から実際に計算する。`aiOverviewComparison`（AI Overview比較）はprovider切り替え基盤（`services/ai_overview_provider.py`、詳細は下記「AI Overview比較のprovider mode」参照）を持ち、デフォルトの`mock`モードでは固定データを返す。`dataforseo`モードではDataForSEO **Sandbox**への接続を実装済み（`services/dataforseo_client.py`、下記「DataForSEO Sandbox/Live接続」参照）。**DataForSEO Live本番APIへの接続も実装済みだが、複数の明示的な手動確認用ゲート（環境変数5つすべて）が揃った場合のみ、1回限りの手動確認としてのみ許可される**——通常運用のデフォルトは常に`mock`のままで、`DATAFORSEO_API_ENV=live`を設定しただけでは接続されない（費用が発生し得るため）。加えて、`aiOverviewComparison`には独立したChatGPT相当モデルの1問観測（OpenAI API、`services/chatgpt_provider.py`、下記「ChatGPT相当モデルの1問観測」参照）を追加できる——デフォルトは無効（`off`）で、明示的な環境変数とリクエスト指定が揃った場合のみOpenAI APIへ1回だけ接続する。Common Crawl / DBにはまだ接続していない。
 
 > **確認用環境として一時公開する場合の注意**: 本番運用を目的とした構成ではありません。認証・レート制限はなく、CORSもNext.js経由の呼び出しのみを前提に未設定です。公開手順は [../docs/09_deployment.md](../docs/09_deployment.md) を参照してください。
 
@@ -23,7 +23,10 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/ai_overview_provider.py` — `aiOverviewComparison`のデータ取得元を`mock`/`off`/`dataforseo`で切り替えるprovider抽象化層。`resolve_ai_overview_mode()`/`build_ai_overview_comparison()`/`build_mock_ai_overview_comparison()`。`dataforseo`モードの分岐（`_run_dataforseo_mode()`）はSandbox接続、およびLive手動確認用ゲート判定を含む。詳細は下記「AI Overview比較のprovider mode」参照
 - `services/dataforseo_settings.py` — DataForSEO認証情報・実行モード（Sandbox/Live）・費用発生防止ルール・Live手動確認用ゲート・Sandbox/Live各APIのベースURLを読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。`get_dataforseo_settings()`/`get_dataforseo_credentials()`/`SANDBOX_BASE_URL`/`LIVE_BASE_URL`。詳細は下記「DataForSEO設定（`dataforseo_settings.py`）」参照
 - `services/dataforseo_client.py` — DataForSEO **SandboxまたはLive**へ実際にHTTP接続しAI Overview相当のSERP項目を取得するクライアント（どちらのホストを使うかは呼び出し元の`ai_overview_provider.py`が決め、このモジュール自体にゲート判定ロジックはない）。`fetch_ai_overview_serp()`。詳細は下記「DataForSEO Sandbox/Live接続（`dataforseo_client.py`）」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
+- `services/chatgpt_settings.py` — OpenAI APIキー・モデル名・max_output_tokens・1 analyzeあたりのリクエスト上限を読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。`get_chatgpt_settings()`/`get_chatgpt_credentials()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
+- `services/chatgpt_client.py` — OpenAI Responses API（`https://api.openai.com/v1/responses`）へ実際にHTTP接続し、ブランドについての1問への回答を取得するクライアント（`httpx`によるREST呼び出し、`openai` SDKは未使用）。`fetch_chatgpt_observation()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
+- `services/chatgpt_provider.py` — `aiOverviewComparison`に追加する、ChatGPT相当モデルの1問観測providerを`off`/`openai`で切り替える抽象化層。`resolve_chatgpt_mode()`/`build_chatgpt_observation()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_chatgpt_settings.py`, `tests/test_chatgpt_client.py`, `tests/test_chatgpt_provider.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO・OpenAI関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -414,6 +417,62 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 これらは [../docs/05_tasks.md](../docs/05_tasks.md) に今後のタスクとして記録している。
 
+### ChatGPT相当モデルの1問観測（`services/chatgpt_settings.py` / `chatgpt_client.py` / `chatgpt_provider.py`）
+
+`aiOverviewComparison`に、Google AI Mode/AI Overview（DataForSEO）とは**完全に独立した**もう1件のカードを追加できる機能。OpenAI APIのモデルに「このブランドは一般的にどう認識されるか」を1問だけ質問し、その回答を`platform: "ChatGPT (OpenAI API)"`として表示する。
+
+**注意（重要）**: これは**ChatGPTアプリ画面そのものの内部認識を再現するものではない**。OpenAI APIのモデルへの単発の質問・回答であり、Web検索は使わない（システムプロンプトで明示的に指示、下記参照）。参照元付きの回答も対象外。
+
+**安全ゲート（誤って実APIを実行しないための2段階、DataForSEOのAI Overview provider modeと同じ設計）**:
+
+1. **`CHATGPT_PROVIDER_MODE`環境変数**（未設定時のデフォルトは`off`。無効な値は警告ログを出しつつ`off`にフォールバック）。
+2. **`ALLOW_CHATGPT_MODE_OVERRIDE`環境変数**（未設定/`false`時はリクエスト単位のoverrideを一切受け付けない）。`true`のときのみ、`POST /analyze`のリクエストボディの`chatgptMode`フィールドが採用される。
+
+この2段階に加え、`mode == "openai"`でも以下が**すべて**揃わない限り、OpenAI APIへは一切接続しない（`services/chatgpt_provider.py`の`build_chatgpt_observation()`）。
+
+- `OPENAI_API_KEY`が設定済み
+- `CHATGPT_REQUEST_LIMIT_PER_ANALYZE`が`1`（デフォルト`1`。`1`以外は不正値へのフォールバックではなく明示的なゲート失敗として扱う——`CHATGPT_REQUEST_LIMIT_PER_ANALYZE=2`と設定すれば実際に`2`として読み取られるが、ゲート判定で拒否される）
+
+1つでも欠けていれば外部APIは呼ばれず、`meta.chatgptProvider.reason`に安全な理由（`login`/`password`同様、APIキーの値そのものは絶対に含まれない）が入る。理由の例:
+
+- 成功: `"ChatGPT OpenAI API request succeeded."`
+- 無効化: `"ChatGPT observation is disabled."`
+- APIキー未設定: `"OpenAI API key is not configured."`
+- リクエスト上限が1以外: `"ChatGPT request limit must be 1."`
+- HTTPエラー: `"OpenAI API request failed with HTTP xxx."`
+
+**AI Overview比較との結合ルール（`main.py`）**: `aiOverviewMode`（AI Overview比較全体のprovider mode）が`"mock"`の場合、ChatGPT観測は**常にスキップ**される（`chatgptMode`の値やゲートの充足状況に関わらず、OpenAI APIは一切呼ばれない）。これは、`mock`モードの固定`aiOverviewComparison`フィクスチャに既に「ChatGPT」という名前のダミーカードが含まれており、そこへ実データのChatGPTカードを追加すると重複して紛らわしくなるため。`aiOverviewMode`が`"dataforseo"`または`"off"`の場合のみ、ChatGPT観測が候補になる。成功した場合、既存のGoogle AI Mode/AI Overviewカードを置き換えず、`aiOverviewComparison`配列へ**追加**する（0件または1件）。
+
+**リクエスト内容**（OpenAI Responses API、`POST https://api.openai.com/v1/responses`）:
+
+```json
+{
+  "model": "gpt-5-mini",
+  "input": [
+    {
+      "role": "system",
+      "content": "You are observing how an AI assistant describes brands. Answer in Japanese. Do not browse the web. If you are uncertain, say so briefly."
+    },
+    {
+      "role": "user",
+      "content": "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを日本語で簡潔に説明してください。ブランド名: <brand_name>"
+    }
+  ],
+  "max_output_tokens": 700,
+  "store": false
+}
+```
+
+`store: false`を常に指定し、OpenAI側にもこの1回限りの観測を保存させない（このプロジェクト自体もDB保存はしない）。`Authorization: Bearer <OPENAI_API_KEY>`ヘッダーで認証する。`httpx`による直接のREST呼び出しで、`openai` SDKは使わない（`requirements.txt`にまだ含まれておらず、今回のスコープでは新規ライブラリ追加を避けた）。
+
+**レスポンス変換**: `response.output_text`（トップレベルの便宜フィールド）があれば優先して使い、なければ`output[].content[].text`をたどって連結する。いずれも得られない場合は`"unavailable"`（`"OpenAI API returned no readable text."`）にフォールバックする。`mentioned`はブランド名が回答テキストに含まれるかの単純な大文字小文字を区別しない判定。`summary`は短い抜粋（最大200文字）、`fullSummary`はより長い抜粋（最大2500文字）。既存の`AIOverviewComparisonItem`型をそのまま使うため、`rank`は`null`固定、`references`/`referenceSummary`/`ownDomainReferenced`はいずれも`None`固定（ChatGPT観測には参照元の概念がないため）。
+
+**1 analyzeあたりの呼び出し回数**: 常に最大1回（複数質問・フォローアップは対象外）。DataForSEOの呼び出し回数・条件には一切影響しない（`services/dataforseo_*.py`は今回変更していない）。
+
+**環境変数一覧**: `OPENAI_API_KEY`（APIキー、空欄可）、`CHATGPT_PROVIDER_MODE`（`off`（デフォルト）/`openai`）、`ALLOW_CHATGPT_MODE_OVERRIDE`（`false`（デフォルト）/`true`）、`CHATGPT_MODEL`（デフォルト`gpt-5-mini`、空文字はフォールバック）、`CHATGPT_MAX_OUTPUT_TOKENS`（デフォルト`700`、範囲は100〜1500・範囲外/不正値はフォールバック）、`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`（デフォルト`1`、不正値のみ`1`へフォールバック——`1`以外の正当な整数値はそのまま読み取られゲート判定で拒否される）。
+
+**開発・検証用UI**: `NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR=true`にすると、分析フォームに「ChatGPT観測モード（検証用）」というoff/openaiの選択UIが表示される（`app/components/BrandInputForm.tsx`）。既存のAI Overview取得モード選択UI（`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR`）と同じ設計で、選択した値はリクエストボディの`chatgptMode`に入るだけの表示制御フラグ——上記の安全ゲートは一切変更しない。
+
 ## テスト
 
 ```bash
@@ -616,6 +675,49 @@ pytest
 - `DATAFORSEO_DEVICE`未設定では`"desktop"`になること、`"mobile"`に設定できること、不正な値は`"desktop"`にフォールバックすること
 - `DATAFORSEO_OS`未設定では`"windows"`になること、`"android"`等の有効な値に設定できること、不正な値は`"windows"`にフォールバックすること
 
+`tests/test_chatgpt_settings.py` では `get_chatgpt_settings()` / `get_chatgpt_credentials()` を直接テストしている。
+
+- APIキー未設定では`is_configured=false`になること、設定されていれば`true`になること
+- `api_key`の実値が`repr()`/`str()`に一切現れないこと（`ChatGptCredentials`/`ChatGptSettings`いずれも）
+- `CHATGPT_MODEL`未設定/空文字では`"gpt-5-mini"`になること、有効な値は上書きされること
+- `CHATGPT_MAX_OUTPUT_TOKENS`未設定/不正値/範囲外（100〜1500外）はデフォルト（700）にフォールバックすること、範囲内の値は上書きされること
+- `CHATGPT_REQUEST_LIMIT_PER_ANALYZE`未設定/不正値はデフォルト（1）にフォールバックすること。ただし`2`のような正当な整数値は**そのまま**読み取られる（`1`へは矯正しない——ゲート判定側の役割であるため）
+
+`tests/test_chatgpt_client.py` では `fetch_chatgpt_observation()` を直接テストしている（すべて`httpx.post`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
+
+- `https://api.openai.com/v1/responses`へリクエストすること
+- `Authorization: Bearer <api_key>`ヘッダーが正しく構築されること
+- リクエストボディに`model`/`input`（system+user）/`max_output_tokens`/`store: false`が正しく含まれること
+- systemプロンプトに"Do not browse the web"が含まれること（Web検索を使わないことの確認）
+- `response.output_text`があれば優先して使うこと、なければ`output[].content[].text`を連結すること
+- 読める文章が全く得られない場合、例外を送出せず`success: false`・「no readable text」を含む`reason`になること
+- ブランド名が回答テキストに含まれるかで`mentioned`が正しく判定されること
+- `summary`（200文字）/`full_summary`（2500文字）がそれぞれ正しく切り詰められること
+- 成功時の`reason`が「ChatGPT OpenAI API request succeeded.」になること
+- ネットワークエラー・タイムアウト・非200レスポンス・不正なJSON、のいずれの場合も例外を送出せず`success: false`になること
+- いずれの失敗パターン・成功パターンでも`reason`/`full_summary`にAPIキーの実値が含まれないこと
+- 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
+
+`tests/test_chatgpt_provider.py` では `resolve_chatgpt_mode()` / `build_chatgpt_observation()` を直接テストしている。
+
+- `CHATGPT_PROVIDER_MODE`/`ALLOW_CHATGPT_MODE_OVERRIDE`未設定時、デフォルトが`"off"`になること
+- `CHATGPT_PROVIDER_MODE`環境変数の値が正しく読み取られること、不正な値は`"off"`にフォールバックすること
+- `ALLOW_CHATGPT_MODE_OVERRIDE`が未設定/`false`の場合、リクエストのoverrideが無視されること、`true`（大文字小文字を区別しない）の場合は反映されること
+- `off`モードでは`httpx.post`が一切呼ばれず、`item: None`・`status: "off"`が返ること
+- `openai`モードでAPIキー未設定の場合、`httpx.post`が一切呼ばれないまま`item: None`・`status: "unavailable"`・「not configured」を含む`reason`が返ること
+- `openai`モードで`CHATGPT_REQUEST_LIMIT_PER_ANALYZE`が1以外の場合、`httpx.post`が一切呼ばれないまま`reason`が「ChatGPT request limit must be 1.」になること
+- `openai`モードで全ゲートが満たされた場合、`httpx.post`をmonkeypatchした成功レスポンスから`AIOverviewComparisonItem`（`platform: "ChatGPT (OpenAI API)"`・`rank: None`・`references`/`referenceSummary`/`ownDomainReferenced`はいずれも`None`）が返ること
+- 設定した`CHATGPT_MODEL`/`CHATGPT_MAX_OUTPUT_TOKENS`がリクエストボディに反映されること
+- 1回の呼び出しで`httpx.post`が正確に1回だけ呼ばれること
+- 失敗時・成功時いずれも`reason`にAPIキーの実値が含まれないこと
+
+`tests/test_main.py`には、`/analyze`統合テストとして以下も含まれる（詳細は上記`test_main.py`の説明欄と合わせて参照）。
+
+- デフォルト（`CHATGPT_PROVIDER_MODE`未設定）では`httpx.post`が一切呼ばれず、`meta.chatgptProvider.status`が`"off"`になること
+- `aiOverviewMode="dataforseo"` + `chatgptMode="openai"` + `ALLOW_CHATGPT_MODE_OVERRIDE=true` + 両方の`httpx.post`をmonkeypatchした成功レスポンスで、`aiOverviewComparison`にGoogle AI Mode/AI Overviewカードと`"ChatGPT (OpenAI API)"`カードの両方が含まれること（認証情報がレスポンス本文に一切含まれないことも確認）
+- `aiOverviewMode="mock"`の場合、`chatgptMode="openai"`を明示しても`httpx.post`は呼ばれず、既存の固定mockデータ（「ChatGPT」という名前の1件を含む）がそのまま返ること（実データのChatGPTカードが重複して追加されないこと）
+- `ALLOW_CHATGPT_MODE_OVERRIDE`が未設定の場合、リクエストの`chatgptMode="openai"`が無視されること
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -653,6 +755,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `meta.aiOverviewProvider` | （任意）`aiOverviewComparison`を生成したprovider mode（`{mode, status, reason, environment}`）。`mode`は`"mock"`/`"off"`/`"dataforseo"`、`environment`（任意、2026-07-23追加）は`"mock"`/`"sandbox"`/`"live"`/`"off"`/`"unavailable"`で、`status`だけでは区別できないSandbox成功とLive成功を見分けるために追加した。`reason`はDataForSEO設定状態を安全に説明するが`login`/`password`の値は含まない（下記「DataForSEO設定」参照）。画面には`mock`/`sandbox`/`live`/`unavailable`/`off`を区別するバッジ・説明文が表示される。詳細は上記「AI Overview比較のprovider mode」参照 |
 | `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | （いずれも任意、2026-07-23追加）`dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字）、`references`は最大10件に重複排除された引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`/`category`、すべて任意）、`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定（`urls`未指定時は`null`＝判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は上記「DataForSEO Sandbox/Live接続」参照 |
 | `aiOverviewComparison[].references[].category` / `.referenceSummary` | （いずれも任意、2026-07-23追加）参照元のルールベース簡易分類（`official`/`wikipedia`/`sns`/`ugc`/`news`/`media`/`video`/`other`）と、その集計（`{total, official, thirdParty, categories}`）。新たなDataForSEO呼び出しはなく、既存の`references`とリクエストの`urls`だけから算出する。詳細は上記「AI Overview比較のprovider mode」の「参照元の簡易分類」参照 |
+| `meta.chatgptProvider` | （任意、2026-07-23追加）ChatGPT相当モデルの1問観測（OpenAI API）が`aiOverviewComparison`にカードを追加したかどうか（`{mode, status, reason, environment}`）。`mode`は`"off"`/`"openai"`、`status`は`"real"`/`"off"`/`"unavailable"`、`environment`は`"api"`/`"off"`/`"unavailable"`。`aiOverviewProvider`とは完全に独立（DataForSEO成功時にChatGPT観測がない、またはその逆もあり得る）。`reason`はOpenAI設定状態を安全に説明するがAPIキーの値は含まない。詳細は上記「ChatGPT相当モデルの1問観測」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
@@ -675,5 +778,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
 - PostgreSQLとの連携
+- ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
+- Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 
 詳細タスクは [../docs/05_tasks.md](../docs/05_tasks.md) のPhase 4を参照。
