@@ -1,4 +1,12 @@
-from models import BrandSummary, ContextAnalysisItem, CooccurrenceKeyword, SentimentBreakdown
+from models import (
+    AIOverviewComparisonItem,
+    AIOverviewReferenceCategoryCounts,
+    AIOverviewReferenceSummary,
+    BrandSummary,
+    ContextAnalysisItem,
+    CooccurrenceKeyword,
+    SentimentBreakdown,
+)
 from services.improvement_suggestions import MAX_SUGGESTIONS, build_improvement_suggestions
 
 
@@ -188,3 +196,121 @@ def test_suggestion_titles_are_unique():
 def test_does_not_raise_with_all_empty_inputs():
     suggestions = build_improvement_suggestions("Acme", _summary(totalMentions=0), [], [])
     assert len(suggestions) >= 1
+
+
+# --- AI Overview reference-state suggestion --------------------------------
+
+
+def _ai_overview_item(
+    own_domain_referenced: bool | None = None,
+    reference_summary: AIOverviewReferenceSummary | None = None,
+) -> AIOverviewComparisonItem:
+    return AIOverviewComparisonItem(
+        platform="Google AI Mode (DataForSEO Sandbox)",
+        mentioned=True,
+        rank=1,
+        summary="Acme is a well-reviewed tool for teams.",
+        ownDomainReferenced=own_domain_referenced,
+        referenceSummary=reference_summary,
+    )
+
+
+def test_own_domain_not_referenced_triggers_official_page_suggestion():
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        ai_overview_items=[_ai_overview_item(own_domain_referenced=False)],
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "AI Overview参照元への公式ページ掲載" in titles
+
+
+def test_own_domain_referenced_triggers_a_different_suggestion():
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        ai_overview_items=[_ai_overview_item(own_domain_referenced=True)],
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "AI Overview参照元の公式ページ更新" in titles
+    assert "AI Overview参照元への公式ページ掲載" not in titles
+
+
+def test_third_party_heavy_references_triggers_third_party_suggestion_instead():
+    reference_summary = AIOverviewReferenceSummary(
+        total=4,
+        official=1,
+        thirdParty=3,
+        categories=AIOverviewReferenceCategoryCounts(official=1, other=3),
+    )
+
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        ai_overview_items=[
+            _ai_overview_item(own_domain_referenced=True, reference_summary=reference_summary)
+        ],
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "AI Overviewにおける第三者サイト依存への対応" in titles
+    assert "AI Overview参照元の公式ページ更新" not in titles
+
+
+def test_third_party_below_threshold_does_not_trigger_third_party_suggestion():
+    reference_summary = AIOverviewReferenceSummary(
+        total=4,
+        official=2,
+        thirdParty=2,
+        categories=AIOverviewReferenceCategoryCounts(official=2, other=2),
+    )
+
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        ai_overview_items=[
+            _ai_overview_item(own_domain_referenced=True, reference_summary=reference_summary)
+        ],
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "AI Overviewにおける第三者サイト依存への対応" not in titles
+    assert "AI Overview参照元の公式ページ更新" in titles
+
+
+def test_no_ai_overview_items_does_not_add_a_suggestion():
+    suggestions = build_improvement_suggestions(
+        "Acme", _summary(), _AMPLE_COOCCURRENCE, _ALL_CATEGORIES_EXCEPT_RISK
+    )
+
+    assert not any("AI Overview" in s.title for s in suggestions)
+
+
+def test_ai_overview_item_without_a_judged_own_domain_does_not_add_a_suggestion():
+    # mock/off items never set ownDomainReferenced (see
+    # services/ai_overview_provider.py) — this must be a no-op for them.
+    mock_item = AIOverviewComparisonItem(
+        platform="Google AI Overview", mentioned=True, rank=2, summary="mock summary"
+    )
+
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        ai_overview_items=[mock_item],
+    )
+
+    assert not any("AI Overview" in s.title for s in suggestions)
+    assert len(suggestions) == 1
+    assert suggestions[0].priority == "low"

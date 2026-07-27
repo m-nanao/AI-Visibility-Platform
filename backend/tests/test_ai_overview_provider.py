@@ -1,7 +1,13 @@
 import httpx
 
 from services import dataforseo_client
-from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
+from services.ai_overview_provider import (
+    _build_reference_summary,
+    _classify_reference_category,
+    build_ai_overview_comparison,
+    resolve_ai_overview_mode,
+)
+from services.dataforseo_client import DataForSEOSerpReference
 
 _LIVE_CONFIRM_TEXT = "ALLOW_DATAFORSEO_LIVE_ONCE"
 
@@ -534,3 +540,165 @@ def test_dataforseo_mode_reason_never_includes_credential_values_on_live_success
     assert environment == "live"
     assert "someone@example.com" not in reason
     assert "super-secret-password" not in reason
+
+
+# --- reference category classification -------------------------------------
+
+
+def _reference(domain: str | None = None, url: str | None = None) -> DataForSEOSerpReference:
+    return DataForSEOSerpReference(domain=domain, url=url)
+
+
+def test_classify_reference_category_own_domain_match_is_official():
+    reference = _reference(domain="cybozu.co.jp")
+    assert _classify_reference_category(reference, {"cybozu.co.jp"}) == "official"
+
+
+def test_classify_reference_category_subdomain_of_own_domain_is_official():
+    reference = _reference(domain="docs.cybozu.co.jp")
+    assert _classify_reference_category(reference, {"cybozu.co.jp"}) == "official"
+
+
+def test_classify_reference_category_wikipedia_subdomain_is_wikipedia():
+    reference = _reference(domain="ja.wikipedia.org")
+    assert _classify_reference_category(reference, set()) == "wikipedia"
+
+
+def test_classify_reference_category_qiita_is_ugc():
+    assert _classify_reference_category(_reference(domain="qiita.com"), set()) == "ugc"
+
+
+def test_classify_reference_category_note_is_ugc():
+    assert _classify_reference_category(_reference(domain="note.com"), set()) == "ugc"
+
+
+def test_classify_reference_category_zenn_is_ugc():
+    assert _classify_reference_category(_reference(domain="zenn.dev"), set()) == "ugc"
+
+
+def test_classify_reference_category_youtube_is_video():
+    assert _classify_reference_category(_reference(domain="youtube.com"), set()) == "video"
+
+
+def test_classify_reference_category_x_com_is_sns():
+    assert _classify_reference_category(_reference(domain="x.com"), set()) == "sns"
+
+
+def test_classify_reference_category_twitter_com_is_sns():
+    assert _classify_reference_category(_reference(domain="twitter.com"), set()) == "sns"
+
+
+def test_classify_reference_category_news_domain_is_news():
+    assert _classify_reference_category(_reference(domain="nikkei.com"), set()) == "news"
+
+
+def test_classify_reference_category_unclassified_domain_is_other():
+    assert _classify_reference_category(_reference(domain="example-blog.example.com"), set()) == "other"
+
+
+def test_classify_reference_category_own_domain_wins_over_hardcoded_lists():
+    # If a brand's own domain happened to be one of the hardcoded
+    # category domains, "official" must still win — an own-domain match
+    # is checked first (see _classify_reference_category's docstring).
+    reference = _reference(domain="x.com")
+    assert _classify_reference_category(reference, {"x.com"}) == "official"
+
+
+def test_classify_reference_category_falls_back_to_url_when_no_domain():
+    reference = _reference(url="https://ja.wikipedia.org/wiki/Acme")
+    assert _classify_reference_category(reference, set()) == "wikipedia"
+
+
+def test_classify_reference_category_is_other_when_neither_domain_nor_url():
+    assert _classify_reference_category(_reference(), set()) == "other"
+
+
+# --- reference summary ------------------------------------------------------
+
+
+def test_build_reference_summary_is_none_for_no_references():
+    assert _build_reference_summary(None) is None
+    assert _build_reference_summary([]) is None
+
+
+def test_build_reference_summary_counts_total_official_and_third_party(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "items": [
+                            {
+                                "type": "ai_overview",
+                                "rank_absolute": 1,
+                                "markdown": "Acme summary.",
+                                "references": [
+                                    {"domain": "acme.example.com"},
+                                    {"domain": "ja.wikipedia.org"},
+                                    {"domain": "x.com"},
+                                    {"domain": "qiita.com"},
+                                    {"domain": "unclassified.example.org"},
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, _, _, _ = build_ai_overview_comparison(
+        "Acme", "dataforseo", ["https://acme.example.com/pricing"]
+    )
+
+    summary = items[0].referenceSummary
+    assert summary is not None
+    assert summary.total == 5
+    assert summary.official == 1
+    assert summary.thirdParty == 4
+    assert summary.categories.official == 1
+    assert summary.categories.wikipedia == 1
+    assert summary.categories.sns == 1
+    assert summary.categories.ugc == 1
+    assert summary.categories.other == 1
+    assert summary.categories.news is None
+    assert summary.categories.video is None
+    assert summary.categories.media is None
+
+    domains_to_categories = {r.domain: r.category for r in items[0].references}
+    assert domains_to_categories["acme.example.com"] == "official"
+    assert domains_to_categories["ja.wikipedia.org"] == "wikipedia"
+    assert domains_to_categories["x.com"] == "sns"
+    assert domains_to_categories["qiita.com"] == "ugc"
+    assert domains_to_categories["unclassified.example.org"] == "other"
+
+
+def test_reference_summary_is_none_when_item_has_no_references(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "markdown": "Acme."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    items, _, _, _ = build_ai_overview_comparison("Acme", "dataforseo")
+
+    assert items[0].references is None
+    assert items[0].referenceSummary is None
