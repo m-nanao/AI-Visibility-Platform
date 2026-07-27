@@ -1,20 +1,34 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { isAiOverviewModeSelectorEnabled } from "../lib/analysis-request";
 import { MAX_URLS, validateUrlsInput } from "../lib/url-validation";
+import type { AiOverviewProviderMode } from "../lib/types";
+
+const AI_OVERVIEW_MODE_OPTIONS: { value: AiOverviewProviderMode; label: string }[] = [
+  { value: "mock", label: "mock: 開発用データ" },
+  { value: "off", label: "off: 無効" },
+  { value: "dataforseo", label: "dataforseo: DataForSEO" },
+];
 
 export default function BrandInputForm({
   onSubmit,
   isLoading,
   initialValue = "",
 }: {
-  onSubmit: (brandName: string, urls: string[]) => void;
+  onSubmit: (
+    brandName: string,
+    urls: string[],
+    aiOverviewMode?: AiOverviewProviderMode,
+  ) => void;
   isLoading: boolean;
   initialValue?: string;
 }) {
   const [brandName, setBrandName] = useState(initialValue);
   const [urlsInput, setUrlsInput] = useState("");
   const [urlErrors, setUrlErrors] = useState<string[]>([]);
+  const [aiOverviewMode, setAiOverviewMode] = useState<AiOverviewProviderMode>("mock");
+  const showAiOverviewModeSelector = isAiOverviewModeSelectorEnabled();
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -32,7 +46,15 @@ export default function BrandInputForm({
     }
 
     setUrlErrors([]);
-    onSubmit(trimmedBrandName, urls);
+    // aiOverviewMode is only ever passed when the dev/verification-only
+    // selector is actually shown — otherwise this behaves exactly as
+    // before (no third argument), so a normal submission's request body
+    // is unaffected by this selector's existence.
+    onSubmit(
+      trimmedBrandName,
+      urls,
+      showAiOverviewModeSelector ? aiOverviewMode : undefined,
+    );
   };
 
   return (
@@ -97,6 +119,42 @@ export default function BrandInputForm({
           </ul>
         )}
       </div>
+
+      {/* Dev/verification-only — see app/lib/analysis-request.ts's
+          isAiOverviewModeSelectorEnabled(). Selecting "dataforseo" here
+          only sends aiOverviewMode in the request body; whether the
+          Python API actually honors it (and, separately, whether it
+          reaches DataForSEO Live) still depends entirely on server-side
+          gates that this UI cannot change. */}
+      {showAiOverviewModeSelector && (
+        <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+          <label
+            htmlFor="aiOverviewMode"
+            className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            AI Overview取得モード（検証用）
+          </label>
+          <select
+            id="aiOverviewMode"
+            name="aiOverviewMode"
+            disabled={isLoading}
+            value={aiOverviewMode}
+            onChange={(event) =>
+              setAiOverviewMode(event.target.value as AiOverviewProviderMode)
+            }
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 sm:w-auto"
+          >
+            {AI_OVERVIEW_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+            この設定は検証用です。DataForSEO Live APIは、サーバー側の複数のゲートがすべて揃った場合のみ実行されます。
+          </p>
+        </div>
+      )}
     </form>
   );
 }
