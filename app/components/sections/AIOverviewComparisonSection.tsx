@@ -104,14 +104,42 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
           <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
             参照元の内訳
           </h4>
-          <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-            参照元: {detail.referenceSummary.total}件（自社 {detail.referenceSummary.official} / 第三者{" "}
-            {detail.referenceSummary.thirdParty}）
-          </p>
-          {detail.referenceSummary.presentCategoryLabels.length > 0 && (
-            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-500">
-              分類: {detail.referenceSummary.presentCategoryLabels.join(", ")}
-            </p>
+
+          <div className="mt-1.5 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="rounded-md border border-zinc-200 px-2 py-1.5 text-center dark:border-zinc-800">
+              <div className="text-[10px] text-zinc-500 dark:text-zinc-400">合計</div>
+              <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                {detail.referenceSummary.total}件
+              </div>
+            </div>
+            <div className="rounded-md border border-zinc-200 px-2 py-1.5 text-center dark:border-zinc-800">
+              <div className="text-[10px] text-zinc-500 dark:text-zinc-400">自社公式</div>
+              <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                {detail.referenceSummary.official}件
+              </div>
+            </div>
+            <div className="rounded-md border border-zinc-200 px-2 py-1.5 text-center dark:border-zinc-800">
+              <div className="text-[10px] text-zinc-500 dark:text-zinc-400">第三者</div>
+              <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                {detail.referenceSummary.thirdParty}件
+              </div>
+            </div>
+          </div>
+
+          {detail.referenceSummary.categoryCounts.length > 0 && (
+            <div className="mt-2">
+              <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">分類</p>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {detail.referenceSummary.categoryCounts.map(({ label, count }) => (
+                  <span
+                    key={label}
+                    className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                  >
+                    {label} {count}
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -167,7 +195,13 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
       )}
 
       {detail.ownDomainStatus !== "unjudged" && (
-        <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+        <p
+          className={`mt-3 rounded-md px-2 py-1.5 text-xs ${
+            detail.ownDomainStatus === "included"
+              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+              : "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400"
+          }`}
+        >
           {OWN_DOMAIN_STATUS_LABELS[detail.ownDomainStatus]}
         </p>
       )}

@@ -261,13 +261,19 @@ export interface AIOverviewReferenceDisplay {
   categoryLabel?: string;
 }
 
+export interface AiOverviewReferenceCategoryCountDisplay {
+  label: string;
+  count: number;
+}
+
 export interface AiOverviewReferenceSummaryDisplay {
   total: number;
   official: number;
   thirdParty: number;
-  // Display labels for every category with at least one reference, in
-  // REFERENCE_CATEGORY_DISPLAY_ORDER (not count-sorted).
-  presentCategoryLabels: string[];
+  // One entry per category with at least one reference, in
+  // REFERENCE_CATEGORY_DISPLAY_ORDER (not count-sorted) — ready to
+  // render as "label count" badges.
+  categoryCounts: AiOverviewReferenceCategoryCountDisplay[];
 }
 
 export type OwnDomainReferenceStatus = "included" | "not_included" | "unjudged";
@@ -288,8 +294,8 @@ export interface AiOverviewItemDetailDisplay {
 }
 
 export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", string> = {
-  included: "自社サイトが参照元に含まれています",
-  not_included: "自社サイトは参照元に確認できません",
+  included: "自社公式サイトがAI Overviewの参照元に含まれています",
+  not_included: "自社公式サイトはAI Overviewの参照元に確認できません",
 };
 
 /**
@@ -319,10 +325,13 @@ export function getAiOverviewItemDetailDisplay(
   let referenceSummary: AiOverviewReferenceSummaryDisplay | undefined;
   if (item.referenceSummary) {
     const { total, official, thirdParty, categories } = item.referenceSummary;
-    const presentCategoryLabels = REFERENCE_CATEGORY_DISPLAY_ORDER.filter(
+    const categoryCounts = REFERENCE_CATEGORY_DISPLAY_ORDER.filter(
       (category) => (categories[category] ?? 0) > 0,
-    ).map((category) => REFERENCE_CATEGORY_LABELS[category]);
-    referenceSummary = { total, official, thirdParty, presentCategoryLabels };
+    ).map((category) => ({
+      label: REFERENCE_CATEGORY_LABELS[category],
+      count: categories[category] ?? 0,
+    }));
+    referenceSummary = { total, official, thirdParty, categoryCounts };
   }
 
   let ownDomainStatus: OwnDomainReferenceStatus = "unjudged";
