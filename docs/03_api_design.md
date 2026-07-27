@@ -92,6 +92,7 @@
 - **デフォルトの決定**: Python API側の環境変数 `AI_OVERVIEW_PROVIDER_MODE`（未設定時は`"mock"`）。
 - **リクエスト単位のoverride**: `POST /analyze`の`aiOverviewMode`フィールド。ただし、Python API側の環境変数 `ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true` が設定されている場合のみ反映される。未設定/`false`の場合、`aiOverviewMode`を渡しても無視され、`AI_OVERVIEW_PROVIDER_MODE`の値のまま動く——リクエストボディだけでは費用が発生し得るmodeを有効化できない安全設計。
 - `aiOverviewMode`に不正な値（`"mock"`/`"off"`/`"dataforseo"`以外）を渡した場合は、他の不正なリクエストと同じ400 `{"error": "invalid request body"}`になる。
+- **開発・検証用のUI選択（2026-07-23追加）**: 従来`aiOverviewMode`はAPI経由（ブラウザConsole等からの手動fetch）でしか指定できなかったが、Next.js側の環境変数`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR=true`を設定すると、分析フォーム（`BrandInputForm.tsx`）に「AI Overview取得モード（検証用）」というmock/off/dataforseoの選択UIが表示され、選択値がそのまま`aiOverviewMode`としてリクエストボディに含まれるようになる。**これはUI表示のみを制御するフラグであり、実際に上書きが適用されるかは引き続きPython API側の`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`が決める**（このフラグだけでDataForSEOやLive APIが実行されることはない）。未設定/`false`（デフォルト）では選択UIは表示されず、`aiOverviewMode`はリクエストボディに含まれない（既存の挙動のまま）。実装は`app/lib/analysis-request.ts`の`isAiOverviewModeSelectorEnabled()`/`buildAnalyzeRequestBody()`を参照。
 
 詳細は[backend/README.md](../backend/README.md)の「AI Overview比較のprovider mode」を参照。
 

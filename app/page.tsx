@@ -3,8 +3,9 @@
 import { useState } from "react";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
+import { buildAnalyzeRequestBody } from "./lib/analysis-request";
 import { getSectionStatusSummary } from "./lib/meta-label";
-import type { AnalysisResult } from "./lib/types";
+import type { AiOverviewProviderMode, AnalysisResult } from "./lib/types";
 
 type Status = "idle" | "loading" | "done" | "error";
 
@@ -17,7 +18,11 @@ export default function Home() {
   // of the generic message — url-based analysis can take much longer.
   const [isUrlAnalysis, setIsUrlAnalysis] = useState(false);
 
-  const handleAnalyze = async (brandName: string, urls: string[]) => {
+  const handleAnalyze = async (
+    brandName: string,
+    urls: string[],
+    aiOverviewMode?: AiOverviewProviderMode,
+  ) => {
     setStatus("loading");
     setError(null);
     setIsUrlAnalysis(urls.length > 0);
@@ -25,9 +30,11 @@ export default function Home() {
       // urls: [] is never sent — omitting the key entirely lets the
       // API fall back to its own default (development sample
       // documents), and keeps `urls: []` reserved as an explicit
-      // "reject this request" signal on the API side.
-      const requestBody: { brandName: string; urls?: string[] } = { brandName };
-      if (urls.length > 0) requestBody.urls = urls;
+      // "reject this request" signal on the API side. aiOverviewMode is
+      // only present when BrandInputForm's dev/verification-only mode
+      // selector is shown (see app/lib/analysis-request.ts) — otherwise
+      // it's undefined and omitted here too, same as before.
+      const requestBody = buildAnalyzeRequestBody(brandName, urls, aiOverviewMode);
 
       const response = await fetch("/api/analyze", {
         method: "POST",
