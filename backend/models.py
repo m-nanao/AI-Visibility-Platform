@@ -69,6 +69,31 @@ ReferenceCategory = Literal[
     "official", "wikipedia", "sns", "ugc", "news", "media", "video", "other"
 ]
 
+# Which data source the ChatGPT-equivalent observation card in
+# aiOverviewComparison comes from. See services/chatgpt_provider.py —
+# "off" (default; no OpenAI call, no card added) or "openai" (asks an
+# OpenAI API model one non-browsing question about the brand). Selected
+# via the CHATGPT_PROVIDER_MODE env var, optionally overridden
+# per-request via AnalyzeRequest.chatgptMode when
+# ALLOW_CHATGPT_MODE_OVERRIDE=true. Unlike AiOverviewProviderMode there
+# is no "mock" value — when aiOverviewMode is "mock", the ChatGPT
+# observation is skipped entirely regardless of chatgptMode, to avoid
+# duplicating the mock fixture's own fixed "ChatGPT" card (see
+# services/chatgpt_provider.py and main.py).
+ChatGptProviderMode = Literal["off", "openai"]
+
+# Whether the ChatGPT observation card was actually added this request.
+# Distinct from SectionStatus (mock/real/unavailable) since ChatGPT
+# observation has no "mock" state of its own — it either succeeds
+# ("real"), is disabled ("off": chatgptMode is "off", or aiOverviewMode
+# is "mock"), or failed/wasn't configured ("unavailable").
+ChatGptStatus = Literal["real", "off", "unavailable"]
+
+# Mirrors AiOverviewEnvironment's role for the ChatGPT observation:
+# "api" when an OpenAI API call actually succeeded, "off"/"unavailable"
+# otherwise. See services/chatgpt_provider.py's build_chatgpt_observation().
+ChatGptEnvironment = Literal["api", "off", "unavailable"]
+
 MAX_BRAND_NAME_LENGTH = 200
 
 # documents[] input limits (requirement: count / per-item / total).
@@ -151,6 +176,20 @@ class AIOverviewProviderInfo(BaseModel):
     environment: AiOverviewEnvironment | None = None
 
 
+class ChatGptProviderInfo(BaseModel):
+    """Reports whether the ChatGPT-equivalent observation card was
+    added to aiOverviewComparison this request, and why — see
+    services/chatgpt_provider.py. Entirely optional/independent of
+    AIOverviewProviderInfo above: a request can have a real DataForSEO
+    result and no ChatGPT card (or vice versa, e.g. aiOverviewMode=off).
+    """
+
+    mode: ChatGptProviderMode
+    status: ChatGptStatus
+    reason: str
+    environment: ChatGptEnvironment | None = None
+
+
 class AnalysisMeta(BaseModel):
     sections: AnalysisSectionStatuses
     documentsSource: DocumentsSource
@@ -174,6 +213,11 @@ class AnalysisMeta(BaseModel):
     # request (see AIOverviewProviderInfo above). Optional so existing
     # clients/tests that don't know about it aren't broken.
     aiOverviewProvider: AIOverviewProviderInfo | None = None
+    # Whether a ChatGPT-equivalent observation card was added to
+    # aiOverviewComparison this request (see ChatGptProviderInfo above).
+    # Independent of aiOverviewProvider — optional so existing
+    # clients/tests that don't know about it aren't broken.
+    chatgptProvider: ChatGptProviderInfo | None = None
 
 
 class SentimentBreakdown(BaseModel):
@@ -321,6 +365,16 @@ class AnalyzeRequest(BaseModel):
     # validation and becomes the same 400 {"error": "invalid request
     # body"} as other malformed request fields.
     aiOverviewMode: AiOverviewProviderMode | None = None
+    # Optional per-request override of the ChatGPT-equivalent
+    # observation mode (see services/chatgpt_provider.py). Only honored
+    # when ALLOW_CHATGPT_MODE_OVERRIDE=true — otherwise main.py ignores
+    # this and uses CHATGPT_PROVIDER_MODE instead, so a request body
+    # alone can never turn on a billable OpenAI API call in an
+    # environment that isn't configured to allow it. An invalid value
+    # (anything outside ChatGptProviderMode) fails Pydantic validation
+    # and becomes the same 400 {"error": "invalid request body"} as
+    # other malformed request fields.
+    chatgptMode: ChatGptProviderMode | None = None
 
 
 class ErrorResponse(BaseModel):

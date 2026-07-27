@@ -42,6 +42,13 @@ via `aiOverviewMode` only when ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true.
 don't have to guess; `meta.aiOverviewProvider` additionally reports
 which mode actually ran and why. See docs/05_tasks.md (Phase 4) for
 what's next (a real DataForSEO Live connection, still unimplemented).
+
+`aiOverviewComparison` may also gain one extra "ChatGPT (OpenAI API)"
+card (see services/chatgpt_provider.py) — an independent, optional
+single OpenAI API call, off by default (`CHATGPT_PROVIDER_MODE=off`),
+skipped whenever `aiOverviewMode` resolves to "mock", and reported via
+`meta.chatgptProvider`. This never replaces the Google AI Mode/AI
+Overview card above; the two providers don't know about each other.
 """
 
 import logging
@@ -63,6 +70,7 @@ from models import (
     AnalysisResult,
     AnalysisSectionStatuses,
     AnalyzeRequest,
+    ChatGptProviderInfo,
     Document,
     DocumentsSource,
     SectionStatus,
@@ -70,6 +78,7 @@ from models import (
 )
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
 from services.brand_summary import build_brand_summary
+from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.context_analysis import analyze_contexts
 from services.improvement_suggestions import build_improvement_suggestions
 from services.cooccurrence import (
@@ -355,6 +364,38 @@ def analyze(payload: AnalyzeRequest):
         )
     logger.info("improvement suggestions complete: %d suggestion(s)", len(result.improvements))
 
+    # ChatGPT-equivalent observation (see services/chatgpt_provider.py):
+    # an independent, optional single OpenAI API call whose result (if
+    # any) is appended as an *extra* card to aiOverviewComparison,
+    # never replacing the Google AI Mode/AI Overview card computed
+    # above. Deliberately skipped whenever aiOverviewMode is "mock" —
+    # build_dummy_analysis()'s fixed aiOverviewComparison fixture
+    # already has its own "ChatGPT" card, so adding a second, real one
+    # here would be a confusing duplicate rather than an enrichment
+    # (see services/chatgpt_provider.py's module docstring).
+    if ai_overview_mode == "mock":
+        chatgpt_mode = "off"
+        chatgpt_item = None
+        chatgpt_status = "off"
+        chatgpt_reason = "ChatGPT observation is disabled while aiOverviewMode is mock."
+        chatgpt_environment = "off"
+    else:
+        chatgpt_mode = resolve_chatgpt_mode(payload.chatgptMode)
+        (
+            chatgpt_item,
+            chatgpt_status,
+            chatgpt_reason,
+            chatgpt_environment,
+        ) = build_chatgpt_observation(brand_name, chatgpt_mode)
+
+    if chatgpt_item is not None:
+        result.aiOverviewComparison = [*result.aiOverviewComparison, chatgpt_item]
+    logger.info(
+        "chatgpt observation complete: mode=%s status=%s",
+        chatgpt_mode,
+        chatgpt_status,
+    )
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary=cooccurrence_status,
@@ -374,6 +415,12 @@ def analyze(payload: AnalyzeRequest):
             status=ai_overview_status,
             reason=ai_overview_reason,
             environment=ai_overview_environment,
+        ),
+        chatgptProvider=ChatGptProviderInfo(
+            mode=chatgpt_mode,
+            status=chatgpt_status,
+            reason=chatgpt_reason,
+            environment=chatgpt_environment,
         ),
     )
     return result
