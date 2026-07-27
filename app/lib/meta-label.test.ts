@@ -339,6 +339,45 @@ describe("getAiOverviewItemDetailDisplay", () => {
     const display = getAiOverviewItemDetailDisplay(baseItem());
     expect(display.ownDomainStatus).toBe("unjudged");
   });
+
+  it("provides everything the card layout needs to render, for a full DataForSEO item (no RTL in this project — see meta-label.ts's role as the presentation-logic layer for AIOverviewComparisonSection.tsx)", () => {
+    const item: AIOverviewComparisonItem = {
+      ...baseItem(),
+      platform: "Google AI Mode (DataForSEO Sandbox)",
+      rank: 2,
+      mentioned: true,
+      summary: "Acme is a well-reviewed tool for teams.",
+      fullSummary: "Acme is a well-reviewed tool for teams, used by hundreds of companies worldwide.",
+      references: [
+        { domain: "acme.example.com", url: "https://acme.example.com/about", title: "About Acme" },
+      ],
+      ownDomainReferenced: true,
+    };
+
+    // Fields the card renders directly (platform/rank/mentioned/summary).
+    expect(item.platform).toBe("Google AI Mode (DataForSEO Sandbox)");
+    expect(item.rank).toBe(2);
+    expect(item.mentioned).toBe(true);
+    expect(item.summary).toBe("Acme is a well-reviewed tool for teams.");
+
+    // Fields the card renders via getAiOverviewItemDetailDisplay
+    // (fullSummary detail toggle, references with url usable as href,
+    // own-domain note).
+    const display = getAiOverviewItemDetailDisplay(item);
+    expect(display.hasDetail).toBe(true);
+    expect(display.detailText).toBe(item.fullSummary);
+    expect(display.references).toEqual([
+      { label: "acme.example.com", title: "About Acme", url: "https://acme.example.com/about" },
+    ]);
+    expect(display.ownDomainStatus).toBe("included");
+  });
+
+  it("returns an empty references array (not undefined) when the item has no references, so the card's references block is safely skipped", () => {
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), rank: null, mentioned: false });
+
+    expect(display.references).toEqual([]);
+    expect(display.references.length).toBe(0);
+  });
 });
 
 describe("getCooccurrenceUnavailableMessage", () => {

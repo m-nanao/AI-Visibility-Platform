@@ -42,102 +42,111 @@ export default function AIOverviewComparisonSection({
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-zinc-200 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-              <th className="py-2 pr-4 font-medium">プラットフォーム</th>
-              <th className="py-2 pr-4 font-medium">掲載</th>
-              <th className="py-2 pr-4 font-medium">順位</th>
-              <th className="py-2 font-medium">概要</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr
-                key={item.platform}
-                className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/60"
-              >
-                <td className="py-2.5 pr-4 font-medium text-zinc-800 dark:text-zinc-200">
-                  {item.platform}
-                </td>
-                <td className="py-2.5 pr-4">
-                  {item.mentioned ? (
-                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
-                      あり
-                    </span>
-                  ) : (
-                    <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                      なし
-                    </span>
-                  )}
-                </td>
-                <td className="py-2.5 pr-4 text-zinc-600 dark:text-zinc-400">
-                  {item.rank ? `${item.rank}位` : "—"}
-                </td>
-                <td className="py-2.5 text-zinc-600 dark:text-zinc-400">
-                  <AIOverviewItemDetail item={item} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* 1-column card layout (not a table) so long summaries/references
+          wrap instead of forcing horizontal scroll — see docs/05_tasks.md. */}
+      <div className="space-y-4">
+        {items.map((item) => (
+          <AIOverviewItemCard key={item.platform} item={item} />
+        ))}
       </div>
     </Card>
   );
 }
 
-// Only ever has extra content for the DataForSEO provider (mock items
-// never set fullSummary/references/ownDomainReferenced) — for every
-// other item this renders identically to the old summary-only cell.
-function AIOverviewItemDetail({ item }: { item: AIOverviewComparisonItem }) {
+function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
   const detail = getAiOverviewItemDetailDisplay(item);
 
   return (
-    <div>
-      <p>{item.summary}</p>
+    <article className="min-w-0 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="break-words font-medium text-zinc-800 dark:text-zinc-200">
+            {item.platform}
+          </h3>
+          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+            順位: {item.rank ? `${item.rank}位` : "—"}
+          </p>
+        </div>
+
+        {item.mentioned ? (
+          <span className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+            掲載: あり
+          </span>
+        ) : (
+          <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+            掲載: なし
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3">
+        <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          概要
+        </h4>
+        <p className="mt-1 max-w-full break-words leading-relaxed text-sm text-zinc-600 dark:text-zinc-400">
+          {item.summary}
+        </p>
+      </div>
 
       {detail.hasDetail && (
-        <details className="mt-2">
+        <details className="mt-3">
           <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400">
             詳細を見る
           </summary>
-          <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-600 dark:text-zinc-400">
+          <p className="mt-1 max-w-full whitespace-pre-wrap break-words leading-relaxed text-xs text-zinc-600 dark:text-zinc-400">
             {detail.detailText}
           </p>
         </details>
       )}
 
       {detail.references.length > 0 && (
-        <div className="mt-2">
-          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">参照元</p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-zinc-600 dark:text-zinc-400">
+        <div className="mt-3 min-w-0">
+          <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+            参照元
+          </h4>
+          <ol className="mt-1.5 space-y-2 text-xs text-zinc-600 dark:text-zinc-400">
             {detail.references.map((reference, index) => (
-              <li key={`${reference.url ?? reference.label}-${index}`}>
-                {reference.url ? (
-                  <a
-                    href={reference.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    {reference.label}
-                  </a>
-                ) : (
-                  reference.label
-                )}
-                {reference.title && ` — ${reference.title}`}
+              <li
+                key={`${reference.url ?? reference.label}-${index}`}
+                className="min-w-0"
+              >
+                <div className="flex min-w-0 gap-1.5">
+                  <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
+                    {index + 1}.
+                  </span>
+                  <div className="min-w-0">
+                    {reference.url ? (
+                      <a
+                        href={reference.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="max-w-full break-words underline"
+                      >
+                        {reference.label}
+                      </a>
+                    ) : (
+                      <span className="max-w-full break-words">
+                        {reference.label}
+                      </span>
+                    )}
+                    {reference.title && reference.title !== reference.label && (
+                      <p className="max-w-full break-words text-zinc-500 dark:text-zinc-500">
+                        {reference.title}
+                      </p>
+                    )}
+                  </div>
+                </div>
               </li>
             ))}
-          </ul>
+          </ol>
         </div>
       )}
 
       {detail.ownDomainStatus !== "unjudged" && (
-        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+        <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
           {OWN_DOMAIN_STATUS_LABELS[detail.ownDomainStatus]}
         </p>
       )}
-    </div>
+    </article>
   );
 }
