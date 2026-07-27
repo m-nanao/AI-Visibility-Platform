@@ -15,6 +15,15 @@ function baseMeta(): AnalysisMeta {
   return buildDummyAnalysis("OpenAI").meta;
 }
 
+// Padding used to push a test fullSummary past meta-label.ts's
+// INLINE_FULL_SUMMARY_MAX_LENGTH (600 chars), so tests that exercise the
+// summary + "続きを見る" continuation-toggle path aren't instead routed
+// through the "short fullSummary shown in full" inline path. ~880 chars
+// on its own, comfortably past 600 even combined with a short prefix.
+const LONG_FILLER =
+  " Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur excepteur sint occaecat cupidatat non proident sunt in culpa qui officia deserunt mollit anim id est laborum." +
+  " Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium totam rem aperiam eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.";
+
 describe("getSectionStatusSummary", () => {
   it("reports all-mock as the dummy-data summary", () => {
     expect(getSectionStatusSummary(baseMeta())).toBe("すべて開発用データ（ダミー）");
@@ -290,21 +299,30 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(display.ownDomainStatus).toBe("unjudged");
   });
 
-  it("falls back to the full fullSummary as the continuation when it isn't a clean prefix match of summary", () => {
+  it("shows a short fullSummary in full, with no continuation toggle, when it isn't a clean prefix match of summary", () => {
     // summary ends in "." while fullSummary's corresponding character is
     // "," (a plausible real-world divergence from markdown cleanup) —
-    // not a clean prefix, so the simple heuristic falls back to
-    // treating the whole (sufficiently longer) fullSummary as the
-    // continuation rather than silently hiding it.
-    const display = getAiOverviewItemDetailDisplay({
-      ...baseItem(),
-      fullSummary: "Acme is a well-reviewed tool for teams, used by hundreds of companies.",
-    });
+    // not a clean prefix, but short enough (<= INLINE_FULL_SUMMARY_MAX_LENGTH)
+    // to be shown in full up front rather than hidden behind a toggle.
+    const fullSummary = "Acme is a well-reviewed tool for teams, used by hundreds of companies.";
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.continuationText).toBeUndefined();
+    expect(display.displaySummary).toBe(fullSummary);
+  });
+
+  it("falls back to the full fullSummary as the continuation when it's long and isn't a clean prefix match of summary", () => {
+    // Same shape as above, but padded past INLINE_FULL_SUMMARY_MAX_LENGTH
+    // so the summary + continuation-toggle path is exercised instead of
+    // the inline-short-fullSummary path.
+    const fullSummary =
+      "Acme is a well-reviewed tool for teams, used by hundreds of companies." + LONG_FILLER;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
 
     expect(display.hasContinuation).toBe(true);
-    expect(display.continuationText).toBe(
-      "Acme is a well-reviewed tool for teams, used by hundreds of companies.",
-    );
+    expect(display.continuationText).toBe(fullSummary);
   });
 
   it("maps references to a display label, preferring domain over url over title", () => {
@@ -377,11 +395,11 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(item.summary).toBe("Acme is a well-reviewed tool for teams.");
 
     // Fields the card renders via getAiOverviewItemDetailDisplay
-    // (fullSummary continuation toggle, references with url usable as
-    // href, own-domain note).
+    // (fullSummary shown in full since it's short, references with url
+    // usable as href, own-domain note).
     const display = getAiOverviewItemDetailDisplay(item);
-    expect(display.hasContinuation).toBe(true);
-    expect(display.continuationText).toBe(item.fullSummary);
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe(item.fullSummary);
     expect(display.references).toEqual([
       { label: "acme.example.com", title: "About Acme", url: "https://acme.example.com/about" },
     ]);
@@ -545,7 +563,8 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
   it("extracts only the part of fullSummary after summary's shared prefix", () => {
     const prefix = "Acme is a tool for teams and provides";
     const rest =
-      " comprehensive support to organizations of all sizes across many different industries and regions worldwide.";
+      " comprehensive support to organizations of all sizes across many different industries and regions worldwide." +
+      LONG_FILLER;
     const fullSummary = prefix + rest;
     const summary = `${prefix}…`;
 
@@ -559,7 +578,8 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
 
   it("treats a trailing ... (three dots) the same as … when matching summary's prefix", () => {
     const prefix = "Acme is a tool for teams and provides";
-    const rest = " reliable, well-documented support for organizations of every size across many regions.";
+    const rest =
+      " reliable, well-documented support for organizations of every size across many regions." + LONG_FILLER;
     const fullSummary = prefix + rest;
     const summary = `${prefix}...`;
 
@@ -576,7 +596,8 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
     // the cut point drifts and the continuation starts one character early.
     const prefix = "Acme is a tool for teams.\n\nIt provides";
     const rest =
-      " comprehensive support to organizations of all sizes across many different industries and regions worldwide.";
+      " comprehensive support to organizations of all sizes across many different industries and regions worldwide." +
+      LONG_FILLER;
     const fullSummary = prefix + rest;
     const summary = "Acme is a tool for teams. It provides…";
 
@@ -588,7 +609,8 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
 
   it("uses the full fullSummary as the continuation when summary is absent but fullSummary is long enough", () => {
     const fullSummary =
-      "Acme is generally recognized as a reliable collaboration tool used by teams across many industries.";
+      "Acme is generally recognized as a reliable collaboration tool used by teams across many industries." +
+      LONG_FILLER;
 
     const display = getAiOverviewItemDetailDisplay({
       ...baseItem(),
@@ -611,7 +633,10 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
   });
 
   it("has no continuation when the remaining continuation is shorter than the minimum length threshold", () => {
-    const prefix = "Acme is a well reviewed and widely used collaboration tool for teams";
+    // Padded past INLINE_FULL_SUMMARY_MAX_LENGTH so this exercises
+    // buildContinuationText's own MIN_CONTINUATION_LENGTH gate, not the
+    // "short fullSummary shown in full" inline path.
+    const prefix = "Acme is a well reviewed and widely used collaboration tool for teams" + LONG_FILLER;
     const fullSummary = `${prefix} today.`; // remaining text is only a few characters
     const summary = prefix;
 
@@ -622,7 +647,7 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
   });
 
   it("shows a continuation once it reaches the minimum length threshold", () => {
-    const prefix = "Acme is a well reviewed and widely used collaboration tool for teams";
+    const prefix = "Acme is a well reviewed and widely used collaboration tool for teams" + LONG_FILLER;
     const rest = " that has been adopted by many organizations worldwide for its reliability.";
     const fullSummary = prefix + rest;
     const summary = prefix;
@@ -668,7 +693,7 @@ describe("getAiOverviewItemDetailDisplay — displaySummary ellipsis handling", 
 
   it("keeps summary's trailing … as-is when there is a continuation", () => {
     const prefix = "Vercelはクラウドサービスを提供するプラットフォームで多くの開発者に利用されています";
-    const rest = "。フロントエンド開発者向けの高速なデプロイとホスティングを強みとしています。";
+    const rest = "。フロントエンド開発者向けの高速なデプロイとホスティングを強みとしています。" + LONG_FILLER;
     const summary = `${prefix}…`;
     const fullSummary = prefix + rest;
 
@@ -680,7 +705,7 @@ describe("getAiOverviewItemDetailDisplay — displaySummary ellipsis handling", 
 
   it("keeps summary's trailing ... as-is when there is a continuation", () => {
     const prefix = "Vercelはクラウドサービスを提供するプラットフォームで多くの開発者に利用されています";
-    const rest = "。フロントエンド開発者向けの高速なデプロイとホスティングを強みとしています。";
+    const rest = "。フロントエンド開発者向けの高速なデプロイとホスティングを強みとしています。" + LONG_FILLER;
     const summary = `${prefix}...`;
     const fullSummary = prefix + rest;
 
@@ -710,17 +735,20 @@ describe("getAiOverviewItemDetailDisplay — displaySummary ellipsis handling", 
     expect(display.displaySummary).toBe("Vercelはクラウドサービスです");
   });
 
-  it("strips a trailing … when fullSummary is only slightly longer than summary (the 201 vs 214 char case)", () => {
-    // Mirrors the real-world case that prompted this task: summary and
-    // fullSummary are close in length, so buildContinuationText suppresses
-    // the "続きを見る" toggle, but summary still ends in "…".
+  it("shows the full fullSummary (not the ellipsis-stripped summary) when fullSummary is only slightly longer than summary (the 201 vs 214 char case)", () => {
+    // Mirrors the real-world case that originally prompted the ellipsis
+    // stripping fix: summary and fullSummary are close in length. Now
+    // that a short fullSummary (<= INLINE_FULL_SUMMARY_MAX_LENGTH) is
+    // shown in full up front, the extra detail in fullSummary ("、少し
+    // 詳しく。") is no longer silently dropped in favor of summary.
     const summary = "Vercelはクラウドサービスです…";
     const fullSummary = "Vercelはクラウドサービスです、少し詳しく。";
 
     const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
 
     expect(display.hasContinuation).toBe(false);
-    expect(display.displaySummary).toBe("Vercelはクラウドサービスです");
+    expect(display.continuationText).toBeUndefined();
+    expect(display.displaySummary).toBe(fullSummary);
   });
 
   it("does not touch a mid-sentence … that isn't at the very end", () => {
@@ -763,6 +791,152 @@ describe("getAiOverviewItemDetailDisplay — displaySummary ellipsis handling", 
       categoryCounts: [{ label: "公式", count: 1 }],
     });
     expect(display.ownDomainStatus).toBe("included");
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — inline short fullSummary (no mid-sentence 続きを見る)", () => {
+  function baseItem(): AIOverviewComparisonItem {
+    return {
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Next....",
+    };
+  }
+
+  it("shows fullSummary in full as displaySummary when it's at or below the inline threshold (600 chars)", () => {
+    const fullSummary =
+      "Next.jsの主要な開発元／メンテナーとしての位置付けでも認識されています。";
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
+
+    expect(display.displaySummary).toBe(fullSummary);
+  });
+
+  it("reports hasContinuation=false for a short fullSummary, even though it differs a lot from summary", () => {
+    const fullSummary =
+      "Next.jsの主要な開発元／メンテナーとしての位置付けでも認識されています。";
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
+
+    expect(display.hasContinuation).toBe(false);
+  });
+
+  it("reports continuationText=undefined for a short fullSummary", () => {
+    const fullSummary =
+      "Next.jsの主要な開発元／メンテナーとしての位置付けでも認識されています。";
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
+
+    expect(display.continuationText).toBeUndefined();
+  });
+
+  it("falls through to the existing summary + continuation-toggle behavior once fullSummary exceeds the inline threshold", () => {
+    const prefix = "Acme is a tool for teams and provides";
+    const rest =
+      " comprehensive support to organizations of all sizes across many different industries and regions worldwide." +
+      LONG_FILLER;
+    const fullSummary = prefix + rest;
+    const summary = `${prefix}…`;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(rest.trim());
+    expect(display.displaySummary).toBe(summary);
+  });
+
+  it("keeps existing summary-only display when fullSummary is absent", () => {
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary: "普通の文章です。" });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.continuationText).toBeUndefined();
+    expect(display.displaySummary).toBe("普通の文章です。");
+  });
+
+  it("keeps stripping summary's trailing 省略記号 when there is no fullSummary at all (existing behavior preserved)", () => {
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary: "普通の文章です…" });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe("普通の文章です");
+  });
+
+  it("shows a long (>600 char) DataForSEO-style fullSummary via the continuation toggle without breaking existing display", () => {
+    const prefix = "Acme is a well-reviewed collaboration tool for teams";
+    const rest =
+      " that has been adopted by many organizations worldwide, offering broad integrations and reliable customer support." +
+      LONG_FILLER;
+    const fullSummary = prefix + rest;
+    const summary = `${prefix}…`;
+
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      platform: "Google AI Mode (DataForSEO Sandbox)",
+      summary,
+      fullSummary,
+      references: [{ domain: "acme.example.com", category: "official" }],
+      referenceSummary: { total: 1, official: 1, thirdParty: 0, categories: { official: 1 } },
+      ownDomainReferenced: true,
+    });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.continuationText).toBe(rest.trim());
+    expect(display.references).toEqual([
+      { label: "acme.example.com", title: undefined, url: undefined, categoryLabel: "公式" },
+    ]);
+    expect(display.referenceSummary).toEqual({
+      total: 1,
+      official: 1,
+      thirdParty: 0,
+      categoryCounts: [{ label: "公式", count: 1 }],
+    });
+    expect(display.ownDomainStatus).toBe("included");
+  });
+
+  it("shows a short DataForSEO-style fullSummary in full without breaking references/referenceSummary/ownDomainReferenced display", () => {
+    const fullSummary = "Acme is a well-reviewed collaboration tool used by many teams.";
+
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      platform: "Google AI Mode (DataForSEO Sandbox)",
+      fullSummary,
+      references: [{ domain: "acme.example.com", category: "official" }],
+      referenceSummary: { total: 1, official: 1, thirdParty: 0, categories: { official: 1 } },
+      ownDomainReferenced: true,
+    });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe(fullSummary);
+    expect(display.references).toEqual([
+      { label: "acme.example.com", title: undefined, url: undefined, categoryLabel: "公式" },
+    ]);
+    expect(display.referenceSummary).toEqual({
+      total: 1,
+      official: 1,
+      thirdParty: 0,
+      categoryCounts: [{ label: "公式", count: 1 }],
+    });
+    expect(display.ownDomainStatus).toBe("included");
+  });
+
+  it("treats a fullSummary exactly at the inline threshold length as short (inclusive boundary)", () => {
+    const fullSummary = "字".repeat(600);
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
+
+    expect(fullSummary.length).toBe(600);
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe(fullSummary);
+  });
+
+  it("treats a fullSummary one character past the inline threshold as long", () => {
+    const fullSummary = "字".repeat(601);
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary: "字".repeat(600), fullSummary });
+
+    expect(fullSummary.length).toBe(601);
+    expect(display.hasContinuation).toBe(false); // remaining continuation is only 1 char — below MIN_CONTINUATION_LENGTH
+    expect(display.continuationText).toBeUndefined();
   });
 });
 

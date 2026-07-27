@@ -311,6 +311,16 @@ export interface AiOverviewItemDetailDisplay {
 // summary to compare against).
 const MIN_CONTINUATION_LENGTH = 30;
 
+// At or below this length, fullSummary is shown in full up front instead
+// of summary + a "続きを見る" toggle — short/medium-length answers (the
+// common case for the ChatGPT observation) read more naturally as one
+// paragraph than as a sentence cut mid-way with the rest hidden behind a
+// toggle. Only fullSummary longer than this falls through to the
+// existing summary + continuation-toggle behavior below. 600 is a rough
+// "still reads as one short paragraph" cutoff, not derived from any
+// particular backend truncation length.
+const INLINE_FULL_SUMMARY_MAX_LENGTH = 600;
+
 // Collapses all whitespace runs (including newlines) to a single space
 // and trims, so paragraph-break differences between summary (always
 // single-line, see backend/services/dataforseo_client.py's
@@ -432,9 +442,18 @@ export const OWN_DOMAIN_STATUS_LABELS: Record<"included" | "not_included", strin
  * ChatGPT/OpenAI provider with fullSummary only; see
  * backend/services/ai_overview_provider.py and chatgpt_provider.py) to
  * exactly what AIOverviewComparisonSection needs to render, so the
- * component itself stays presentation-only. Every field on the input
- * item is optional — an item with none of them (mock data, or an older
- * backend response) yields hasContinuation=false, displaySummary equal
+ * component itself stays presentation-only.
+ *
+ * When fullSummary is short enough to read as one paragraph
+ * (<= INLINE_FULL_SUMMARY_MAX_LENGTH), it's shown in full as
+ * displaySummary with no "続きを見る" toggle at all — this avoids a
+ * short answer reading as a sentence cut off mid-way with the rest
+ * hidden behind a toggle. Only a longer fullSummary falls through to
+ * the summary + continuation-toggle behavior below.
+ *
+ * Every field on the input item is optional — an item with none of
+ * them (mock data, or an older backend response) yields
+ * hasContinuation=false, displaySummary equal
  * to item.summary (minus any trailing "…"/"..."), references=[],
  * referenceSummary=undefined, ownDomainStatus="unjudged", which the
  * section renders as "no change" from the pre-existing summary-only
@@ -468,11 +487,27 @@ export function getAiOverviewItemDetailDisplay(
   if (item.ownDomainReferenced === true) ownDomainStatus = "included";
   else if (item.ownDomainReferenced === false) ownDomainStatus = "not_included";
 
-  const { hasContinuation, continuationText } = buildContinuationText(item.summary, item.fullSummary);
-  const displaySummary =
-    !hasContinuation && item.summary
-      ? stripTrailingEllipsisForDisplay(item.summary)
-      : item.summary;
+  const isShortFullSummary =
+    item.fullSummary !== undefined && item.fullSummary.length <= INLINE_FULL_SUMMARY_MAX_LENGTH;
+
+  let hasContinuation: boolean;
+  let continuationText: string | undefined;
+  let displaySummary: string;
+
+  if (isShortFullSummary) {
+    // Short enough to read naturally as one paragraph — show it in full
+    // right away rather than truncating to summary + a toggle that would
+    // otherwise cut the sentence mid-way (see INLINE_FULL_SUMMARY_MAX_LENGTH).
+    hasContinuation = false;
+    continuationText = undefined;
+    displaySummary = item.fullSummary as string;
+  } else {
+    ({ hasContinuation, continuationText } = buildContinuationText(item.summary, item.fullSummary));
+    displaySummary =
+      !hasContinuation && item.summary
+        ? stripTrailingEllipsisForDisplay(item.summary)
+        : item.summary;
+  }
 
   return {
     hasContinuation,
