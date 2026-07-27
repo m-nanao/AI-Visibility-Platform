@@ -2,6 +2,7 @@ from services.chatgpt_settings import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_REQUEST_LIMIT_PER_ANALYZE,
+    DEFAULT_TEMPERATURE,
     get_chatgpt_credentials,
     get_chatgpt_settings,
 )
@@ -13,6 +14,7 @@ def _clear_chatgpt_env(monkeypatch):
         "CHATGPT_MODEL",
         "CHATGPT_MAX_OUTPUT_TOKENS",
         "CHATGPT_REQUEST_LIMIT_PER_ANALYZE",
+        "CHATGPT_TEMPERATURE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -44,6 +46,7 @@ def test_get_chatgpt_settings_default_is_not_configured(monkeypatch):
     assert settings.model == DEFAULT_MODEL
     assert settings.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS
     assert settings.request_limit_per_analyze == DEFAULT_REQUEST_LIMIT_PER_ANALYZE
+    assert settings.temperature == DEFAULT_TEMPERATURE
 
 
 def test_get_chatgpt_settings_is_configured_when_api_key_set(monkeypatch):
@@ -101,6 +104,48 @@ def test_chatgpt_request_limit_non_integer_falls_back_to_default(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
     monkeypatch.setenv("CHATGPT_REQUEST_LIMIT_PER_ANALYZE", "not-a-number")
     assert get_chatgpt_settings().request_limit_per_analyze == DEFAULT_REQUEST_LIMIT_PER_ANALYZE
+
+
+def test_chatgpt_temperature_default_is_0_2(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    assert get_chatgpt_settings().temperature == 0.2
+    assert DEFAULT_TEMPERATURE == 0.2
+
+
+def test_chatgpt_temperature_env_override(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "0.5")
+    assert get_chatgpt_settings().temperature == 0.5
+
+
+def test_chatgpt_temperature_non_numeric_falls_back_to_default(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "not-a-number")
+    assert get_chatgpt_settings().temperature == DEFAULT_TEMPERATURE
+
+
+def test_chatgpt_temperature_below_minimum_falls_back_to_default(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "-1")
+    assert get_chatgpt_settings().temperature == DEFAULT_TEMPERATURE
+
+
+def test_chatgpt_temperature_above_maximum_falls_back_to_default(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "1.5")
+    assert get_chatgpt_settings().temperature == DEFAULT_TEMPERATURE
+
+
+def test_chatgpt_temperature_minimum_boundary_0_0_is_valid(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "0.0")
+    assert get_chatgpt_settings().temperature == 0.0
+
+
+def test_chatgpt_temperature_maximum_boundary_1_0_is_valid(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "1.0")
+    assert get_chatgpt_settings().temperature == 1.0
 
 
 def test_chatgpt_settings_repr_never_exposes_the_api_key(monkeypatch):

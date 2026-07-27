@@ -16,6 +16,7 @@ def _clear_chatgpt_env(monkeypatch):
         "CHATGPT_MODEL",
         "CHATGPT_MAX_OUTPUT_TOKENS",
         "CHATGPT_REQUEST_LIMIT_PER_ANALYZE",
+        "CHATGPT_TEMPERATURE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -193,6 +194,41 @@ def test_build_chatgpt_observation_uses_configured_model_and_max_output_tokens(m
 
     assert seen_bodies[0]["model"] == "gpt-5"
     assert seen_bodies[0]["max_output_tokens"] == 1000
+
+
+def test_build_chatgpt_observation_uses_configured_temperature(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("CHATGPT_TEMPERATURE", "0.7")
+
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    build_chatgpt_observation("Acme", "openai")
+
+    assert seen_bodies[0]["temperature"] == 0.7
+
+
+def test_build_chatgpt_observation_uses_default_temperature_when_unset(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    _set_credentials(monkeypatch)
+
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    build_chatgpt_observation("Acme", "openai")
+
+    assert seen_bodies[0]["temperature"] == 0.2
 
 
 def test_build_chatgpt_observation_failure_reports_unavailable_without_crashing(monkeypatch):
