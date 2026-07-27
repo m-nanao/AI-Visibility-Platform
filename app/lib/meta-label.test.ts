@@ -656,6 +656,116 @@ describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)
   });
 });
 
+describe("getAiOverviewItemDetailDisplay — displaySummary ellipsis handling", () => {
+  function baseItem(): AIOverviewComparisonItem {
+    return {
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Vercelはクラウドサービスです",
+    };
+  }
+
+  it("keeps summary's trailing … as-is when there is a continuation", () => {
+    const prefix = "Vercelはクラウドサービスを提供するプラットフォームで多くの開発者に利用されています";
+    const rest = "。フロントエンド開発者向けの高速なデプロイとホスティングを強みとしています。";
+    const summary = `${prefix}…`;
+    const fullSummary = prefix + rest;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.displaySummary).toBe(summary);
+  });
+
+  it("keeps summary's trailing ... as-is when there is a continuation", () => {
+    const prefix = "Vercelはクラウドサービスを提供するプラットフォームで多くの開発者に利用されています";
+    const rest = "。フロントエンド開発者向けの高速なデプロイとホスティングを強みとしています。";
+    const summary = `${prefix}...`;
+    const fullSummary = prefix + rest;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.displaySummary).toBe(summary);
+  });
+
+  it("strips a trailing … from summary when there is no continuation (no fullSummary at all)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: "Vercelはクラウドサービスです…",
+    });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe("Vercelはクラウドサービスです");
+  });
+
+  it("strips a trailing ... from summary when there is no continuation", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: "Vercelはクラウドサービスです...",
+    });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe("Vercelはクラウドサービスです");
+  });
+
+  it("strips a trailing … when fullSummary is only slightly longer than summary (the 201 vs 214 char case)", () => {
+    // Mirrors the real-world case that prompted this task: summary and
+    // fullSummary are close in length, so buildContinuationText suppresses
+    // the "続きを見る" toggle, but summary still ends in "…".
+    const summary = "Vercelはクラウドサービスです…";
+    const fullSummary = "Vercelはクラウドサービスです、少し詳しく。";
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe("Vercelはクラウドサービスです");
+  });
+
+  it("does not touch a mid-sentence … that isn't at the very end", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: "Vercelは…とても人気のあるサービスです",
+    });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe("Vercelは…とても人気のあるサービスです");
+  });
+
+  it("leaves a normal sentence-ending summary (no ellipsis) unchanged", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: "Vercelはクラウドサービスです。",
+    });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.displaySummary).toBe("Vercelはクラウドサービスです。");
+  });
+
+  it("does not affect references/referenceSummary/ownDomainReferenced display", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      summary: "Acme is a well-reviewed tool…",
+      references: [{ domain: "acme.example.com", category: "official" }],
+      referenceSummary: { total: 1, official: 1, thirdParty: 0, categories: { official: 1 } },
+      ownDomainReferenced: true,
+    });
+
+    expect(display.displaySummary).toBe("Acme is a well-reviewed tool");
+    expect(display.references).toEqual([
+      { label: "acme.example.com", title: undefined, url: undefined, categoryLabel: "公式" },
+    ]);
+    expect(display.referenceSummary).toEqual({
+      total: 1,
+      official: 1,
+      thirdParty: 0,
+      categoryCounts: [{ label: "公式", count: 1 }],
+    });
+    expect(display.ownDomainStatus).toBe("included");
+  });
+});
+
 describe("getCooccurrenceUnavailableMessage", () => {
   it("returns null when cooccurrenceRanking is mock", () => {
     expect(getCooccurrenceUnavailableMessage(baseMeta())).toBeNull();
