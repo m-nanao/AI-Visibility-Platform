@@ -283,6 +283,8 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 この2段階により、**リクエストボディだけでは`dataforseo`のような費用が発生し得るmodeを有効化できない**——運用者が明示的に環境変数で許可した環境でのみ、リクエスト単位の切り替えが機能する。`aiOverviewMode`に`AiOverviewProviderMode`以外の値（例: `"real"`）を渡した場合は、Pydanticのバリデーションエラーとして既存の`{"error": "invalid request body"}`（400）に統一される（新しいエラー処理コードパスは追加していない）。
 
+**開発・検証用のNext.js側UI選択（2026-07-23追加）**: 上記2段階ゲートとは別に、Next.js側の環境変数`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR=true`を設定すると、分析フォームに「AI Overview取得モード（検証用）」というmock/off/dataforseoの選択UIが表示され、選択値がリクエストボディの`aiOverviewMode`にそのまま入るようになる（`app/lib/analysis-request.ts`、`app/components/BrandInputForm.tsx`）。**このフラグはUI表示のみを制御し、上記のPython API側ゲート（`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`）を一切変更・迂回しない**——このフラグだけでは`dataforseo`は実行されず、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`が別途必要。DataForSEO Live APIはさらに既存の5つの手動確認用ゲートが必要（変更なし）。詳細は[03_api_design.md](../docs/03_api_design.md)参照。
+
 `main.py`の`analyze()`に組み込み、`meta.sections.aiOverviewComparison`に上記のstatusを反映する。加えて`meta.aiOverviewProvider`（`{mode, status, reason, environment}`、`AnalysisMeta`に追加した任意フィールド。`environment`は2026-07-23追加）として、実際に使われたmodeとその理由を返す。画面には`meta.aiOverviewProvider`の内容に応じたバッジ・説明文が表示される（`app/lib/meta-label.ts`の`getAiOverviewProviderStatusDisplay()`）。
 
 旧`services/mock_analysis.py`に直書きされていたAI Overview比較の固定データ（4件）は、`build_mock_ai_overview_comparison(brand_name)`としてこのモジュールへ移設した。`mock_analysis.py`の`build_dummy_analysis()`はこの関数を呼び出すだけになり、固定データの実体は`ai_overview_provider.py`が唯一の所有者になった。
@@ -665,7 +667,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - DataForSEO Standard方式（`task_post`/`task_get`による非同期タスクの永続管理）の実装（今回選んだのは即時レスポンス方式のみ、Sandbox/Live共通）
 - 複数キーワードでのDataForSEOリクエスト（MVPでは`brand_name`単体・1リクエストのみ、Sandbox/Live共通）
 - Google AI OverviewとGoogle AI Modeが実際に同一のレスポンス構造で表現されるかどうかの、Live本番ホストに対する検証（Sandboxでは確認済みだが、この開発環境からLive本番ホストへはアクセスできず未検証）
-- AI Overview比較のprovider mode切り替えUI（現状はAPI経由（`aiOverviewMode`リクエストフィールド、`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`時のみ有効）でのみ切り替え可能。画面上のトグル等はまだない）
+- AI Overview比較のprovider mode切り替えUI（2026-07-23、`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR=true`時のみ表示される開発・検証用selectとして実装済み。通常利用者向けの画面には出ない。実際の切り替えには引き続きサーバー側の`ALLOW_AI_OVERVIEW_MODE_OVERRIDE=true`が必要）
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
