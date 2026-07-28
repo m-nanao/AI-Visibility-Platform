@@ -235,7 +235,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 1. **`totalMentions`**: `Document.text`（Normalizer済み、大文字小文字を区別しない）中の`brand_name`の出現回数を全`Document`にわたって単純合計する。
 2. **`visibilityScore`**: 言及数・Document件数・共起語件数・contextAnalysis件数・sourceTypesの種類数から0〜100の点数を加算式で算出する（`_estimate_visibility_score()`）。**実際の生成AIにおける認知度を測定したものではなく、MVP用の簡易推定値**であることをコード・ドキュメントの両方で明記している。`sourceTypes`が`development_sample`のみ（実際のWebページやユーザー入力の裏付けがない）の場合は55点を上限にキャップする。
 3. **`sentimentBreakdown`**: `contextAnalysis`の各アイテムを、そのカテゴリ（`pricing`/`feature`/...）に応じて`positive`/`neutral`/`negative`のいずれかに振り分ける（`feature`/`use_case`/`support`/`reliability`→positive、`risk_or_issue`→negative、`pricing`/`comparison`/`general`→neutral）。件数を均等に重み付けし、必ず合計100%になるよう百分率化する（`neutral`が端数の受け皿）。`contextAnalysis`が空の場合は`neutral: 100`。文章そのものの感情分析ではなく、あくまでカテゴリ単位の大まかな振り分け。
-4. **`topPlatforms`**: 実測していないChatGPT/Perplexity/Google AI Overviewのような固有プラットフォーム名を実データとして出さないよう、実際に解析した`Document.sourceType`（`web_fetch`→「Webページ」、`user_provided`→「入力テキスト」、`development_sample`→「開発用サンプル」）に置き換えている。フィールド名・UIラベル（「主要プラットフォーム」）は変更していない。
+4. **`topPlatforms`**: 実測していないChatGPT/Perplexity/Google AI Overviewのような固有プラットフォーム名を実データとして出さないよう、実際に解析した`Document.sourceType`（`web_fetch`→「Webページ」、`user_provided`→「入力テキスト」、`development_sample`→「開発用サンプル」、`common_crawl`→「Common Crawl補完」）に置き換えている。`common_crawl`のラベルは元々「Common Crawl（未実装）」だったが、Common Crawl統合が実装され実際にこのsourceTypeを持つDocumentが生成されるようになったため、2026-07-28に「Common Crawl補完」へ修正した（未実装時代の名残の削除。表示名は依頼者確認前の仮のもの、[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）。UIラベルも同日「主要プラットフォーム」から「分析ソース」に変更した（`app/components/sections/BrandSummarySection.tsx`）——Common Crawl/Webページ/ChatGPT等の異質な入力ソースが混在し得るため、「プラットフォーム」より「ソース」の方が実態に合う。
 5. **`summaryText`**: AI生成ではなくテンプレート文字列。`contextAnalysis`上位カテゴリ・`cooccurrenceRanking`上位キーワードを埋め込む。`contextAnalysis`が空の場合は「十分な文脈は取得できませんでした」という専用テンプレートを返す。
 
 `meta.sections.summary`も共起解析・文脈分析と同じ`cooccurrence_status`を共有し、`"unavailable"`（全URL取得失敗時）・`"real"`（それ以外）のいずれかになる。`aiOverviewComparison`は独立したprovider切り替え基盤（`services/ai_overview_provider.py`、下記「AI Overview比較のprovider mode」参照）を持ち、`cooccurrence_status`とは連動しない。
@@ -563,7 +563,7 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 - **文言の定数化**: `BrandInputForm.tsx`の`COMMON_CRAWL_UI_TEXT`にlabel・helper text・warning text・domain入力欄の文言をまとめた——依頼者確認後に文言を変更しやすくするため（[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照、表示名・注意書きはすべて仮のもの）。
 - **frontendでのdomain検証**: 厳しいvalidationはせず、DNSホスト名の最大長（253文字）でのみ切り詰める。実際の正規化・危険な値の拒否はすべてbackend側（`common_crawl_index.py`）に任せる。
 - **送信仕様**（`app/lib/analysis-request.ts`の`buildAnalyzeRequestBody()`）: `commonCrawlMode`はselectorが非表示、または`"off"`が選択されている場合はリクエストボディから省略する（`aiOverviewMode`/`chatgptMode`と同じ「省略時はデフォルト扱い」パターン——backend側もcommonCrawlMode省略を`"off"`と同じに扱うため、挙動としては完全に等価）。`commonCrawlDomain`は空文字・空白のみの場合は送らない（trimして送る）。
-- **状態表示**（`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`、「2. 共起語ランキング」カードに表示）: `meta.commonCrawlProvider`の`status`に応じて「Common Crawl補完: オフ」/「Common Crawl補完: 取得済み（N件）」（成功時は`domain`/`crawlIndex`を括弧内に追加表示）/「Common Crawl補完: 未取得（理由: ...）」の1〜2行のみを表示する。**WARC metadata（filename/offset/length等）・HTML本文・WARC生バイト列はいずれも表示しない**（`CommonCrawlProviderInfo`自体にそのためのフィールドが存在しない）。
+- **状態表示**（`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`、「2. 共起語ランキング」カードに表示）: `meta.commonCrawlProvider`の`status`に応じて「Common Crawl補完: オフ」/「Common Crawl補完: 取得済み（N件）」/「Common Crawl補完: 未取得（理由: ...）」を表示する。成功時（`status="real"`）のみ、2行目に「対象ドメイン: {domain} / Index: {crawlIndex}」を追加表示する（2026-07-28、読みやすさのため1行の括弧書きから2行に分離）。**WARC metadata（filename/offset/length等）・HTML本文・WARC生バイト列はいずれも表示しない**（`CommonCrawlProviderInfo`自体にそのためのフィールドが存在しない）。
 
 ## テスト
 
@@ -701,6 +701,9 @@ pytest
 - `contextAnalysis`が空の場合に`neutral: 100`になること
 - `cooccurrenceRanking`の上位語が`summaryText`に反映されること
 - `sourceType`が`development_sample`/`web_fetch`いずれの場合も、実測していないChatGPT/Perplexity/Google AI Overview/Copilotを`topPlatforms`に含めないこと
+- `sourceType`が`common_crawl`のDocumentがある場合、`topPlatforms`に「Common Crawl補完」が含まれること、「未実装」という文字列がいずれのラベルにも含まれないこと（2026-07-28、`style/common-crawl-source-labels`）
+- `web_fetch`と`common_crawl`のDocumentが両方ある場合、`topPlatforms`に「Webページ」「Common Crawl補完」の両方が含まれること
+- `common_crawl`のDocumentが1件も無い場合、`topPlatforms`に「Common Crawl補完」が含まれないこと（Common Crawlがoff/未取得の場合と同じ状態）
 - `sourceTypes`が`development_sample`のみの場合、`visibilityScore`が55以下にキャップされること
 - `visibilityScore`が常に0〜100の範囲に収まること
 - すべての入力が空でも例外にならないこと
@@ -834,7 +837,7 @@ pytest
 - `commonCrawlMode`未指定・`commonCrawlMode="off"`のいずれも、`COMMON_CRAWL_ENABLED=true`でも`httpx.get`が一切呼ばれず`meta.commonCrawlProvider.status`が`"off"`になること
 - 不正な`commonCrawlMode`値は400 `{"error": "invalid request body"}`になること
 - `COMMON_CRAWL_ENABLED=false`の場合、`commonCrawlMode="domain"`を指定しても`httpx.get`が呼ばれず`status="off"`になること
-- `commonCrawlMode="domain"` + `COMMON_CRAWL_ENABLED=true`で、Index検索→WARC fetch→Document化が実際に呼ばれ、`meta.commonCrawlProvider`に`status="real"`・`domain`・`crawlIndex`・`candidateCount`・`documentCount`が正しく入ること。追加されたDocumentが`meta.sourceTypes`に`"common_crawl"`として反映されること
+- `commonCrawlMode="domain"` + `COMMON_CRAWL_ENABLED=true`で、Index検索→WARC fetch→Document化が実際に呼ばれ、`meta.commonCrawlProvider`に`status="real"`・`domain`・`crawlIndex`・`candidateCount`・`documentCount`が正しく入ること。追加されたDocumentが`meta.sourceTypes`に`"common_crawl"`として反映されること。`summary.topPlatforms`に「Common Crawl補完」が含まれ、「未実装」という文字列がいずれのラベルにも含まれないこと（2026-07-28、`style/common-crawl-source-labels`）
 - `commonCrawlDomain`未指定時、`urls[0]`のホスト名へフォールバックしてIndex検索が行われること（実際に送られた`url`クエリパラメータで確認）
 - `commonCrawlDomain`も`urls`も指定がない場合、`httpx.get`を一切呼ばずに`status="unavailable"`になること
 - Index検索が0件の場合・WARC fetchが失敗した場合・Document変換が失敗した場合（非HTML content-type等）、いずれも`/analyze`全体は200で成功し、`meta.commonCrawlProvider.status="unavailable"`・`documentCount=0`になること（既存の`cooccurrenceRanking`等は通常通り計算されること）
