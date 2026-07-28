@@ -65,6 +65,8 @@ Common Crawl由来データ（`Document.sourceType: "common_crawl"`）は、以�
 
 ## 7. 依頼者確認が必要な点
 
+**2026-07-28、この7章と[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」に分散していた確認候補を、現在の仮文言・変更候補・推奨表現とあわせて[15_requester_review_items.md](./15_requester_review_items.md)に集約した。以後はそちらを一次情報とし、この7章は経緯の記録として残す。**
+
 - 「AI学習データ推定」という表現を改善提案の文言でも使ってよいか（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」で既に保留中の論点と同一）
 - Common Crawlをどの程度強く「売り」にするか（補助的な位置づけにとどめるか、積極的にアピールする機能として見せるか）
 - 改善提案でCommon Crawl由来データをどこまで根拠にするか（1件の軽い提案にとどめるか、他の提案の優先度判定にも影響させるか）
@@ -78,3 +80,4 @@ Common Crawl由来データ（`Document.sourceType: "common_crawl"`）は、以�
 - フェーズ別ロードマップ: [02_roadmap.md](./02_roadmap.md)
 - 今後のタスク一覧: [05_tasks.md](./05_tasks.md)
 - 現状サマリー: [development_status.md](./development_status.md)
+- Common Crawl関連 依頼者確認用メモ（表示名・説明文・改善提案文言）: [15_requester_review_items.md](./15_requester_review_items.md)

@@ -139,5 +139,6 @@
 - 公開手順: [09_deployment.md](./09_deployment.md)
 - デモ提出用チェックリスト（推奨env・入力例・見せる順番）: [12_demo_readiness.md](./12_demo_readiness.md)
 - Common Crawl最小連携の設計（MVP）: [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)
+- Common Crawl関連 依頼者確認用メモ（表示名・説明文・改善提案文言）: [15_requester_review_items.md](./15_requester_review_items.md)
 - AI協調開発フロー（Claude Codeの中断・再開ルールを含む）: [10_ai_development_workflow.md](./10_ai_development_workflow.md)
 - タスク依頼・レビュー・中断/再開時の報告フォーマット: [task_template.md](./task_template.md) / [review_template.md](./review_template.md)

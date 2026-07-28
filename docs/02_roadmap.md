@@ -45,9 +45,10 @@
   - 分析ソース内訳表示（`style/analysis-source-breakdown`、2026-07-28。入力URLとCommon Crawl補完の件数を「Webページ N件 / Common Crawl補完 N件」のように「共起語ランキング」カードへ軽く表示。`app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay()`が既存の`meta.urlFetchResults`/`meta.commonCrawlProvider`のみから算出するfrontend専用実装で、backend側の変更は無し。表示名「Common Crawl補完」は依頼者確認前の仮のもの）
   - 改善提案反映方針docs（`docs/common-crawl-improvement-policy`、2026-07-28。Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどう使うかの方針を[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)として整理。「AIが必ず学習している」等の断定を避け「AIが参照・学習し得るWeb情報環境の推定」と表現する方針、使ってよい観点・避けるべき表現・最小実装案（仮文言）・依頼者確認が必要な点を明文化。**コード変更は含まない**）
   - Common Crawl statusの改善提案への軽い反映（`feature/common-crawl-improvement-suggestion`、2026-07-28。`meta.commonCrawlProvider.status`に応じて改善提案を最大1件追加——`"off"`では追加しない、`"real"`では「Common Crawl補完で確認できる文脈の一貫性を高める」、`"unavailable"`では「クロールされやすい重要ページを整備する」。断定表現は避け、`reason`全文・HTML/WARC本文はいずれも提案本文に含めない。[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)の最小実装案どおり、文言は依頼者確認前の仮のもの）
+  - 依頼者確認用メモ（`docs/requester-review-items-common-crawl`、2026-07-28。表示名・説明文・「AI学習データ推定」表現・改善提案文言について、現在の仮文言・変更候補・推奨表現/避けたい表現・確認後に変更するファイル候補を[15_requester_review_items.md](./15_requester_review_items.md)として1ファイルに集約。**コード変更は含まない**）
 - **Next（次のステップ、優先順）**:
-  - 表示名・説明文の依頼者確認（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
-  - status表示洗練（依頼者確認後、UI selectorのデフォルト表示化とあわせて見せ方を検討）
+  - 依頼者確認後の文言調整（[15_requester_review_items.md](./15_requester_review_items.md)の確認項目をもとに、表示名・説明文・改善提案文言を確定させる）
+  - Common Crawl status表示洗練（依頼者確認後、UI selectorのデフォルト表示化とあわせて見せ方を検討）
   - Common Crawl結果の改善提案への重み付け検討（他の改善提案ルールとの優先度バランス、複数件それぞれの内容を個別反映するか等）
 - **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合
 
