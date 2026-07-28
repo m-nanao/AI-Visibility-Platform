@@ -1655,6 +1655,12 @@ def test_analyze_common_crawl_combines_with_dataforseo_and_chatgpt(monkeypatch):
     assert result.meta.aiOverviewProvider.mode == "dataforseo"
     assert result.meta.chatgptProvider.status == "real"
 
+    # Common Crawl's improvement suggestion coexists with DataForSEO/ChatGPT
+    # without either interfering with the other (see
+    # feature/common-crawl-improvement-suggestion).
+    titles = {s.title for s in result.improvements}
+    assert "Common Crawl補完で確認できる文脈の一貫性を高める" in titles
+
     # Credentials never leak into the response body.
     raw_body = response.text
     assert "super-secret-password" not in raw_body
@@ -1880,3 +1886,141 @@ def test_analyze_common_crawl_multi_document_reason_never_contains_html_or_warc_
     assert "WARC/1.0" not in provider.reason
     raw_body = response.text
     assert "WARC/1.0" not in raw_body
+
+
+# --- Common Crawl status reflected in improvement suggestions ---------------
+# Added 2026-07-28 (feature/common-crawl-improvement-suggestion) — see
+# docs/14_common_crawl_improvement_policy.md for the policy this follows.
+
+_COMMON_CRAWL_CONTEXT_SUGGESTION_TITLE = "Common Crawl補完で確認できる文脈の一貫性を高める"
+_COMMON_CRAWL_CRAWLABILITY_SUGGESTION_TITLE = "クロールされやすい重要ページを整備する"
+
+
+def test_analyze_improvements_excludes_common_crawl_suggestion_when_off(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Common Crawl should not be called when commonCrawlMode is off")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fail_if_called)
+
+    response = client.post("/analyze", json={"brandName": "Cybozu"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.status == "off"
+    titles = {s.title for s in result.improvements}
+    assert _COMMON_CRAWL_CONTEXT_SUGGESTION_TITLE not in titles
+    assert _COMMON_CRAWL_CRAWLABILITY_SUGGESTION_TITLE not in titles
+
+
+def test_analyze_improvements_excludes_common_crawl_suggestion_when_enabled_false(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_ENABLED", "false")
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.status == "off"
+    titles = {s.title for s in result.improvements}
+    assert _COMMON_CRAWL_CONTEXT_SUGGESTION_TITLE not in titles
+    assert _COMMON_CRAWL_CRAWLABILITY_SUGGESTION_TITLE not in titles
+
+
+def test_analyze_improvements_includes_context_suggestion_when_common_crawl_real(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _fake_common_crawl_get_success)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.status == "real"
+    titles = {s.title for s in result.improvements}
+    assert _COMMON_CRAWL_CONTEXT_SUGGESTION_TITLE in titles
+
+
+def test_analyze_improvements_includes_crawlability_suggestion_when_common_crawl_unavailable(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.status == "unavailable"
+    titles = {s.title for s in result.improvements}
+    assert _COMMON_CRAWL_CRAWLABILITY_SUGGESTION_TITLE in titles
+
+
+def test_analyze_common_crawl_improvement_suggestion_avoids_assertive_claims(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _fake_common_crawl_get_success)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    matching = next(
+        s for s in result.improvements if s.title == _COMMON_CRAWL_CONTEXT_SUGGESTION_TITLE
+    )
+    text = matching.title + matching.description
+    for phrase in ("必ず学習", "必ず改善", "ランキング要因", "必ず不利"):
+        assert phrase not in text
+
+
+def test_analyze_common_crawl_improvement_suggestion_never_includes_the_raw_reason(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    matching = next(
+        s for s in result.improvements if s.title == _COMMON_CRAWL_CRAWLABILITY_SUGGESTION_TITLE
+    )
+    assert provider.reason not in matching.description
+
+
+def test_analyze_common_crawl_improvement_suggestion_never_includes_html_or_warc_body(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _fake_common_crawl_get_success)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    matching = next(
+        s for s in result.improvements if s.title == _COMMON_CRAWL_CONTEXT_SUGGESTION_TITLE
+    )
+    assert "<html" not in matching.description
+    assert "WARC/1.0" not in matching.description

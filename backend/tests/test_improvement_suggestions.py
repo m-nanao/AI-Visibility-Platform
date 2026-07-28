@@ -3,6 +3,7 @@ from models import (
     AIOverviewReferenceCategoryCounts,
     AIOverviewReferenceSummary,
     BrandSummary,
+    CommonCrawlProviderInfo,
     ContextAnalysisItem,
     CooccurrenceKeyword,
     SentimentBreakdown,
@@ -314,3 +315,155 @@ def test_ai_overview_item_without_a_judged_own_domain_does_not_add_a_suggestion(
     assert not any("AI Overview" in s.title for s in suggestions)
     assert len(suggestions) == 1
     assert suggestions[0].priority == "low"
+
+
+# --- Common Crawl status suggestion ----------------------------------------
+# Added 2026-07-28 (feature/common-crawl-improvement-suggestion) — see
+# docs/14_common_crawl_improvement_policy.md for the policy this
+# follows (framing, allowed/avoided phrasing, tentative wording).
+
+
+def _common_crawl_provider(status: str, **overrides) -> CommonCrawlProviderInfo:
+    defaults = dict(
+        mode="domain",
+        status=status,
+        reason="some internal reason string not meant for end users",
+        domain="example.com",
+        crawlIndex="CC-MAIN-2026-25",
+        candidateCount=5,
+        documentCount=3 if status == "real" else 0,
+    )
+    defaults.update(overrides)
+    return CommonCrawlProviderInfo(**defaults)
+
+
+_ASSERTIVE_PHRASES = ["必ず学習", "必ず改善", "ランキング要因", "必ず不利"]
+
+
+def test_common_crawl_off_does_not_add_a_suggestion():
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        common_crawl_provider=_common_crawl_provider("off"),
+    )
+
+    assert not any("Common Crawl" in s.title for s in suggestions)
+
+
+def test_common_crawl_not_passed_does_not_add_a_suggestion():
+    # Mirrors the ai_overview_items=None convention: an older caller/test
+    # that doesn't pass common_crawl_provider at all must be a no-op,
+    # not an error.
+    suggestions = build_improvement_suggestions(
+        "Acme", _summary(), _AMPLE_COOCCURRENCE, _ALL_CATEGORIES_EXCEPT_RISK
+    )
+
+    assert not any("Common Crawl" in s.title for s in suggestions)
+
+
+def test_common_crawl_real_triggers_context_consistency_suggestion():
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        common_crawl_provider=_common_crawl_provider("real", documentCount=3),
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "Common Crawl補完で確認できる文脈の一貫性を高める" in titles
+    matching = next(s for s in suggestions if s.title == "Common Crawl補完で確認できる文脈の一貫性を高める")
+    assert matching.priority == "medium"
+
+
+def test_common_crawl_real_with_zero_document_count_still_treated_as_real():
+    # status="real" already means "at least one Document was added" by
+    # construction (see CommonCrawlProviderInfo's docstring) — this
+    # exercises the (currently unreachable in production) edge case of
+    # status="real" with documentCount=0 explicitly, and confirms the
+    # suggestion still follows `status`, not `documentCount`.
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        common_crawl_provider=_common_crawl_provider("real", documentCount=0),
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "Common Crawl補完で確認できる文脈の一貫性を高める" in titles
+
+
+def test_common_crawl_unavailable_triggers_crawlability_suggestion():
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        common_crawl_provider=_common_crawl_provider("unavailable"),
+    )
+
+    titles = {s.title for s in suggestions}
+    assert "クロールされやすい重要ページを整備する" in titles
+    matching = next(s for s in suggestions if s.title == "クロールされやすい重要ページを整備する")
+    assert matching.priority == "low"
+
+
+def test_common_crawl_suggestions_avoid_assertive_claims():
+    for status in ("real", "unavailable"):
+        suggestions = build_improvement_suggestions(
+            "Acme",
+            _summary(),
+            _AMPLE_COOCCURRENCE,
+            _ALL_CATEGORIES_EXCEPT_RISK,
+            common_crawl_provider=_common_crawl_provider(status),
+        )
+        common_crawl_suggestions = [
+            s
+            for s in suggestions
+            if s.title
+            in (
+                "Common Crawl補完で確認できる文脈の一貫性を高める",
+                "クロールされやすい重要ページを整備する",
+            )
+        ]
+        assert len(common_crawl_suggestions) == 1
+        text = common_crawl_suggestions[0].title + common_crawl_suggestions[0].description
+        for phrase in _ASSERTIVE_PHRASES:
+            assert phrase not in text, (status, phrase)
+
+
+def test_common_crawl_suggestion_never_includes_the_raw_reason_text():
+    provider = _common_crawl_provider(
+        "unavailable",
+        reason="Common Crawl found candidates but none could be fetched into a usable document.",
+    )
+
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        common_crawl_provider=provider,
+    )
+
+    matching = next(s for s in suggestions if s.title == "クロールされやすい重要ページを整備する")
+    assert provider.reason not in matching.description
+
+
+def test_common_crawl_suggestion_never_includes_html_or_warc_body():
+    provider = _common_crawl_provider("real", documentCount=3)
+
+    suggestions = build_improvement_suggestions(
+        "Acme",
+        _summary(),
+        _AMPLE_COOCCURRENCE,
+        _ALL_CATEGORIES_EXCEPT_RISK,
+        common_crawl_provider=provider,
+    )
+
+    matching = next(s for s in suggestions if s.title == "Common Crawl補完で確認できる文脈の一貫性を高める")
+    assert "<html" not in matching.description
+    assert "WARC/1.0" not in matching.description

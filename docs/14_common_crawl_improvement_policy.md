@@ -1,10 +1,10 @@
-# 14. Common Crawl由来データを改善提案へ反映する方針（2026-07-28）
+# 14. Common Crawl由来データを改善提案へ反映する方針（2026-07-28、方針策定。2026-07-28、`feature/common-crawl-improvement-suggestion`で最小実装完了）
 
-**このドキュメントは方針整理のみを目的とする。コード変更（`backend/services/improvement_suggestions.py`等）は含まない。** Common Crawl補完は現在、settings・Index API client・WARC fetch/HTML extraction・`Document[]`変換・`/analyze`統合（最大3件取得）・UI selector・分析ソース内訳表示・共起語ランキングのノイズ語除外まで実装済みで（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)参照）、Common Crawl由来Documentは既存Analyzer入力に混ざっているため共起語ランキング・文脈分析・ブランド認知サマリーには一定程度反映されている。一方で「改善提案」（`improvement_suggestions.py`）に対してCommon Crawl由来データをどう扱うかはまだ明確になっていなかったため、実装前にこの方針を整理する。
+**このドキュメントは元々方針整理のみを目的として作成された。** その後`feature/common-crawl-improvement-suggestion`で、下記5章の最小実装案がそのまま実装された（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「16. Common Crawl statusの改善提案への軽い反映」・[backend/README.md](../backend/README.md)「Common Crawl statusの反映」参照）。ただし提案文言はいずれも依頼者確認前の仮のものであり、7章の依頼者確認が必要な点は引き続き未解決である。Common Crawl補完は現在、settings・Index API client・WARC fetch/HTML extraction・`Document[]`変換・`/analyze`統合（最大3件取得）・UI selector・分析ソース内訳表示・共起語ランキングのノイズ語除外まで実装済みで（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)参照）、Common Crawl由来Documentは既存Analyzer入力に混ざっているため共起語ランキング・文脈分析・ブランド認知サマリーには一定程度反映されている。
 
 ## 1. 目的
 
-Common Crawl由来データを改善提案（`improvements`、`backend/services/improvement_suggestions.py`）にどう使うかを定義する。実装そのものは次タスク以降とし、今回は方針の明文化のみを行う。
+Common Crawl由来データを改善提案（`improvements`、`backend/services/improvement_suggestions.py`）にどう使うかを定義する。**2026-07-28時点で、5章の最小実装案は実装済み**（`backend/services/improvement_suggestions.py`の`_common_crawl_suggestion()`）。
 
 ## 2. 前提
 
@@ -35,9 +35,9 @@ Common Crawl由来データ（`Document.sourceType: "common_crawl"`）は、以�
 - 「Common Crawlだけでブランド認知を断定する」（Common Crawlはあくまで補助ソースであり、単独の根拠として強い結論を出さない）
 - 「取得件数が少ない状態で強い結論を出す」（現状は最大3件までしか取得しない設計であり——[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「13. 複数件取得への拡張」参照——サンプル数が少ない前提を踏まえた、控えめな提案にとどめる）
 
-## 5. 最小実装案（次タスク以降、今回は実装しない）
+## 5. 最小実装案（2026-07-28、`feature/common-crawl-improvement-suggestion`で実装済み）
 
-次タスクで実装するなら、`meta.commonCrawlProvider.status`（`"off"`/`"real"`/`"unavailable"`）に応じて、以下のような軽い改善提案を1件追加する案を想定する。
+`meta.commonCrawlProvider.status`（`"off"`/`"real"`/`"unavailable"`）に応じて、以下の軽い改善提案を最大1件追加する。
 
 **Common Crawl補完が取得済み（`status: "real"`）の場合の仮文言案:**
 
@@ -49,17 +49,19 @@ Common Crawl由来データ（`Document.sourceType: "common_crawl"`）は、以�
 
 **注意:**
 
-- 上記はいずれも依頼者確認前の仮文言であり、実装時・依頼者確認後に調整する前提とする。
+- 上記はいずれも依頼者確認前の仮文言であり、依頼者確認後に調整する前提とする（実装済みだが、文言自体はまだ確定していない）。
 - `status: "off"`（Common Crawl機能自体が無効、または`commonCrawlMode`未指定）の場合は、Common Crawl関連の改善提案自体を出さない（既存の`aiOverviewComparison`が`mock`の場合にChatGPT観測カードを追加しないのと同様、機能がオフの状態にまで言及すると却って紛らわしいため）。
-- 優先度（`priority: "high" | "medium" | "low"`）は、既存の他の改善提案（`_pricing_suggestion`等）と比べて控えめな`"low"`〜`"medium"`程度を想定する——Common Crawl由来データはサンプル数が少なく（最大3件）、単独では強い優先度をつける根拠として弱いため。
+- 優先度は実装時に`status: "real"`→`priority: "medium"`、`status: "unavailable"`→`priority: "low"`とした——Common Crawl由来データはサンプル数が少なく（最大3件）、単独では強い優先度をつける根拠として弱いため、他の改善提案（`_pricing_suggestion`等の`"high"`/`"medium"`）と比べて控えめに設定している。
+- 判定は`documentCount`の値を見ず`status`のみに基づく実装とした——`status: "real"`は設計上「少なくとも1件Documentが追加された」ことを常に意味するため（`CommonCrawlProviderInfo`のdocstring参照）、`documentCount`による重複チェックは行っていない。
+- `ImprovementSuggestion`型に元々categoryに相当するフィールドが存在しないため、新規フィールドの追加はせず既存の`title`/`description`/`priority`のみで実装した。
 
-## 6. 実装ステップ（今回は着手しない、次タスク以降の見積り）
+## 6. 実装ステップ
 
-1. ~~本方針docs作成~~（本タスクで完了）
-2. `backend/main.py`から`improvement_suggestions.build_improvement_suggestions()`へ、Common Crawl provider status（`meta.commonCrawlProvider`相当の情報）を渡せるようにする（既存の`source_types`/`document_count`引数と同様の追加引数、または`source_types`に`"common_crawl"`が含まれるかどうかの判定を流用する案を含めて検討）
-3. Common Crawl取得済み/未取得の状態に応じた、5章の仮文言をベースにした軽い改善提案を1件追加する（既存の`_ai_overview_reference_suggestion()`のような「条件を満たさなければ`None`を返す」形の単一関数として実装する想定）
-4. 提案文言を依頼者確認にかけ、確定後に本docs・実装の文言を更新する
-5. 必要であれば、重み付け（Common Crawl由来と入力URL由来の情報の扱いの差）・複数件分析（3件それぞれの内容を個別に反映するか、まとめて1件の提案にするか）・ソース別提案（sourceType単位で提案を分ける）への拡張を検討する
+1. ~~本方針docs作成~~（`docs/common-crawl-improvement-policy`で完了）
+2. ~~`backend/main.py`から`improvement_suggestions.build_improvement_suggestions()`へ、Common Crawl provider status（`meta.commonCrawlProvider`相当の情報）を渡せるようにする~~ → `common_crawl_provider: CommonCrawlProviderInfo | None = None`という新規引数を追加し、`main.py`が計算済みの値をそのまま渡す形で完了（`feature/common-crawl-improvement-suggestion`）
+3. ~~Common Crawl取得済み/未取得の状態に応じた、5章の仮文言をベースにした軽い改善提案を1件追加する~~ → `_common_crawl_suggestion()`として、既存の`_ai_overview_reference_suggestion()`と同じ「条件を満たさなければ`None`を返す」形の単一関数で実装完了
+4. 提案文言を依頼者確認にかけ、確定後に本docs・実装の文言を更新する（**未着手、次のステップ**）
+5. 必要であれば、重み付け（Common Crawl由来と入力URL由来の情報の扱いの差）・複数件分析（3件それぞれの内容を個別に反映するか、まとめて1件の提案にするか）・ソース別提案（sourceType単位で提案を分ける）への拡張を検討する（**未着手、次のステップ**）
 
 ## 7. 依頼者確認が必要な点
 

@@ -255,7 +255,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 ### `improvement_suggestions.py`（Analyzer: 軽量改善提案、通称"improvement-suggestions-lite"）
 
-`improvements`（`ImprovementSuggestion[]`）を固定データから実データ由来にする。AI API・LLM・DataForSEOは使わず、既に計算済みの`cooccurrenceRanking`・`contextAnalysis`・`summary`（`BrandSummary`）に対する**説明可能なルール**だけで提案を組み立てる（Render無料枠でも軽く動くことを優先）。`build_improvement_suggestions(brand_name, summary, cooccurrence_ranking, context_analysis, document_count=None, source_types=None, ai_overview_items=None) -> list[ImprovementSuggestion]`を公開する。`ai_overview_items`（2026-07-23追加、任意）は`result.aiOverviewComparison`（`main.py`で`aiOverviewComparison`計算後にそのまま渡す）——この関数自体はDataForSEOを一切呼ばない。
+`improvements`（`ImprovementSuggestion[]`）を固定データから実データ由来にする。AI API・LLM・DataForSEOは使わず、既に計算済みの`cooccurrenceRanking`・`contextAnalysis`・`summary`（`BrandSummary`）に対する**説明可能なルール**だけで提案を組み立てる（Render無料枠でも軽く動くことを優先）。`build_improvement_suggestions(brand_name, summary, cooccurrence_ranking, context_analysis, document_count=None, source_types=None, ai_overview_items=None, common_crawl_provider=None) -> list[ImprovementSuggestion]`を公開する。`ai_overview_items`（2026-07-23追加、任意）は`result.aiOverviewComparison`（`main.py`で`aiOverviewComparison`計算後にそのまま渡す）、`common_crawl_provider`（2026-07-28追加、任意）は`meta.commonCrawlProvider`相当の`CommonCrawlProviderInfo`（`main.py`で`_build_common_crawl_documents()`の戻り値をそのまま渡す）——この関数自体はDataForSEO・Common Crawlのいずれも呼ばない（すでに計算済みの結果を受け取るだけ）。
 
 1. **提案カテゴリ**（`contextAnalysis`にカテゴリが存在するかどうかで判定）:
    - `pricing`が存在しない → 「料金・プラン情報の明確化」。共起語に`price`/`pricing`/`cost`/`料金`/`プラン`のいずれかがあれば根拠が一部あるとみなし優先度`medium`、なければ`high`。
@@ -273,10 +273,16 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
    - `ownDomainReferenced === True`かつ`referenceSummary.thirdParty`が3件以上・全体の75%以上 → 「AI Overviewにおける第三者サイト依存への対応」（`low`）。
    - `ownDomainReferenced === True`（上記の第三者依存条件に当てはまらない場合） → 「AI Overview参照元の公式ページ更新」（`low`）。
    - 上記3条件は排他的で、最大1件のみ追加する（既存の改善提案と重複しない独立トピックのため、追加の重複排除は行っていない）。
+7. **Common Crawl statusの反映**（2026-07-28追加、`_common_crawl_suggestion(common_crawl_provider)`。`meta.commonCrawlProvider`相当の`status`を使う。`docs/14_common_crawl_improvement_policy.md`の最小実装案どおり）:
+   - `status === "off"`（Common Crawl機能自体が無効、またはリクエストで使っていない）、または`common_crawl_provider`自体が渡されない場合 → 何も追加しない（機能を使っていない状態で提案を出すと不自然なため）。
+   - `status === "real"` → 「Common Crawl補完で確認できる文脈の一貫性を高める」（`medium`）。`documentCount`の値そのものは見ない——`"real"`は設計上「少なくとも1件Documentが追加された」ことを意味するため（`CommonCrawlProviderInfo`のdocstring参照）、`documentCount`による重複チェックはしていない。
+   - `status === "unavailable"` → 「クロールされやすい重要ページを整備する」（`low`）。
+   - いずれの文言も「AIが必ず学習している」「AI回答が必ず改善する」「Common Crawl掲載が直接のランキング要因」といった断定表現は避け、`common_crawl_provider.reason`（開発者向けの内部状態説明）の全文をそのまま提案本文に流し込むこともしない——HTML/WARC本文はそもそも`CommonCrawlProviderInfo`にフィールドが存在しないため含まれようがない。
+   - 文言はいずれも依頼者確認前の仮のもの（`docs/14_common_crawl_improvement_policy.md`「7. 依頼者確認が必要な点」参照）。
 
 `meta.sections.improvements`も他の3セクションと同じ`cooccurrence_status`を共有するが、`"unavailable"`（全URL取得失敗）の場合は`build_improvement_suggestions()`自体を呼ばず`main.py`側で`improvements: []`にする——同関数は常に最低1件（フォールバック含む）を返す設計のため、そのままでは「計算不能」と「0件だが提案あり」の区別がつかなくなるのを防ぐため。
 
-既存の`ImprovementSuggestion`型（`title`/`description`/`priority`）をそのまま使うため、APIレスポンス形式・Zodスキーマ・フロントUIの変更は不要だった。提案はMVP用の簡易トリアージであり、最終的なSEO/LLMO施策の採否判断には人間の確認が必要（コード・ドキュメント双方に明記）。
+既存の`ImprovementSuggestion`型（`title`/`description`/`priority`）をそのまま使うため、APIレスポンス形式・Zodスキーマ・フロントUIの変更は不要だった（Common Crawl statusの反映もこの型のまま実装しており、category相当の新フィールドは追加していない）。提案はMVP用の簡易トリアージであり、最終的なSEO/LLMO施策の採否判断には人間の確認が必要（コード・ドキュメント双方に明記）。
 
 ### AI Overview比較のprovider mode（`ai_overview_provider.py`）
 
@@ -750,6 +756,11 @@ pytest
 - 主要カテゴリがすべて揃っている等、どのルールにも当てはまらない場合でも空配列にならず、低優先度のフォールバック提案が1件返ること
 - 各提案の`title`が重複しないこと（フロント側で`item.title`をReactの`key`に使うため）
 - すべての入力が空でも例外にならないこと
+- `common_crawl_provider.status === "off"`の場合、または`common_crawl_provider`自体を渡さない場合、Common Crawl関連の提案が追加されないこと（2026-07-28、`feature/common-crawl-improvement-suggestion`）
+- `status === "real"`の場合、「Common Crawl補完で確認できる文脈の一貫性を高める」提案が`medium`優先度で追加されること。`documentCount=0`でも`status === "real"`である限り同じ提案になること（`documentCount`ではなく`status`のみで判定していることの確認）
+- `status === "unavailable"`の場合、「クロールされやすい重要ページを整備する」提案が`low`優先度で追加されること
+- Common Crawl関連の提案文言に「必ず学習」「必ず改善」「ランキング要因」「必ず不利」等の断定表現が含まれないこと
+- `common_crawl_provider.reason`の全文が提案本文にそのまま含まれないこと、HTML/WARC本文も含まれないこと
 
 `tests/test_ai_overview_provider.py` では `resolve_ai_overview_mode()` / `build_ai_overview_comparison()` を直接テストしている。
 
@@ -882,6 +893,16 @@ pytest
 - 5件の候補すべてが失敗した場合も`/analyze`全体は200で成功し、`documentCount=0`・既存の`cooccurrenceRanking`等は通常通り計算されること
 - 複数候補が成功した場合でも`meta.commonCrawlProvider.reason`にHTML本文・WARC本文が含まれないこと（レスポンス全体にも`"WARC/1.0"`が含まれないこと）
 
+さらに、Common Crawl statusの改善提案への反映（2026-07-28、`feature/common-crawl-improvement-suggestion`）に伴い以下のテストも追加した。
+
+- `commonCrawlMode`未指定（`status="off"`）、および`COMMON_CRAWL_ENABLED=false`（`commonCrawlMode="domain"`指定でも`status="off"`）のいずれも、`improvements`にCommon Crawl関連の提案が含まれないこと
+- `commonCrawlMode="domain"`が実際に成功（`status="real"`）した場合、`improvements`に「Common Crawl補完で確認できる文脈の一貫性を高める」提案が含まれること
+- Index検索が0件で`status="unavailable"`になった場合、`improvements`に「クロールされやすい重要ページを整備する」提案が含まれること
+- いずれの提案文にも断定表現（「必ず学習」「必ず改善」「ランキング要因」「必ず不利」）が含まれないこと
+- `status="unavailable"`時の提案本文に`meta.commonCrawlProvider.reason`の全文がそのまま含まれないこと
+- `status="real"`時の提案本文にHTML本文・WARC本文（`"<html"`/`"WARC/1.0"`）が含まれないこと
+- 既存の`aiOverviewMode="dataforseo"` + `chatgptMode="openai"` + `commonCrawlMode="domain"`併用テストに、Common Crawl提案が正しく含まれ他の2つのproviderと共存できることの確認を追加
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -989,7 +1010,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
-- Common Crawlの依頼者向け表示確定・改善提案への反映方針（Index API検索・WARCレコード取得・HTML抽出・`Document[]`変換・`/analyze`統合（最大3件、最大5候補試行）・検証用UI selectorまで実装済み、2026-07-28。表示名「Common Crawl補完」・説明文・注意書きの文言はすべて依頼者確認前の仮のもの、Common Crawl結果一覧UI・WARC metadata詳細表示は未実装。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
+- Common Crawlの依頼者向け表示確定（Index API検索・WARCレコード取得・HTML抽出・`Document[]`変換・`/analyze`統合（最大3件、最大5候補試行）・検証用UI selector・改善提案への軽い反映（`status`に応じた1件、方針は[../docs/14_common_crawl_improvement_policy.md](../docs/14_common_crawl_improvement_policy.md)参照）まで実装済み、2026-07-28。表示名「Common Crawl補完」・説明文・注意書き・改善提案文言はすべて依頼者確認前の仮のもの、Common Crawl結果一覧UI・WARC metadata詳細表示・改善提案での重み付けは未実装。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
