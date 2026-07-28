@@ -539,6 +539,7 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 | `COMMON_CRAWL_MAX_RESULTS` | `5` | 1回のdomain検索で取得するURL候補の上限。1〜10の範囲外・不正値は5にフォールバック |
 | `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。**許可範囲は3〜30秒**で、範囲外・不正値（`60`など）は10にフォールバックする（警告ログを出力）。timeoutを伸ばしても`httpx.RemoteProtocolError`のような即時切断系エラーには効かないため、そちらは下記のretry・query fallbackで補う。**Render環境では30を推奨**（許可範囲内の最大値） |
 | `COMMON_CRAWL_USER_AGENT` | `AI-Visibility-Platform-MVP` | Common Crawlへのリクエストに使うUser-Agent。空文字・200文字超はデフォルトにフォールバック |
+| `COMMON_CRAWL_INDEX_BUDGET_SECONDS` | `8` | Index API検索1回（`search_common_crawl_domain()`のdomain検索、および`_fetch_latest_index()`のcollinfo.json取得それぞれ独立に）にかけてよい総実行時間の上限秒数。**許可範囲は3〜20秒**で、範囲外・不正値は8にフォールバックする（警告ログを出力）。詳細は下記「fail-fast budget」参照 |
 
 **`common_crawl_index.py`**: `resolve_common_crawl_index(settings) -> CommonCrawlIndexResolution`と`search_common_crawl_domain(domain, settings) -> CommonCrawlIndexResult`を公開する。**このモジュール自体は`COMMON_CRAWL_ENABLED`を一切参照せず、呼ばれれば常に実際にHTTPリクエストを行う**——DataForSEOの`dataforseo_client.py`・ChatGPTの`chatgpt_client.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲しており、`COMMON_CRAWL_ENABLED`によるON/OFF制御は呼び出し側（`backend/main.py`の`_build_common_crawl_documents()`）の責務とする。
 
@@ -588,6 +589,15 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
   - **transport/retry/query-fallbackとの関係**: `default`/`no-env`/`urllib`いずれのtransportでも同じ5variant順を使う。既存のretry（最大3回）・query-variant fallback（0件以外の失敗）・transport fallbackのロジックは変更しておらず、そのまま5variantに対して動作する。
   - **成功時の挙動**: `exact-domain-unfiltered`で成功した場合、既存の`_parse_candidates()`でそのまま処理し通常どおり`candidates`を返す。wildcard付きqueryは一切呼ばれない。
   - **今回変更していないもの**: candidate parsing・画面表示用reason・取得件数・UI・DataForSEO/ChatGPT関連コード・新規package/requirements。
+- **fail-fast budget**（2026-07-29追加、`fix/common-crawl-index-fail-fast-budget`）: exact-domain query variant追加後もRenderログでexact-domain-unfilteredまで到達しつつ`RemoteProtocolError`/`RemoteDisconnected`で失敗し続ける事象が報告された。手動確認でもCommon Crawl Index API自体が不安定（同じqueryが504になったり成功したりする）ことが分かっており、現状の最悪ケースは3 transport × 5 variant × 3 attempt = 最大45リクエストになり得る。Common Crawl補完はMVPでは補助データであり、通常の分析結果を止めてよい理由にはならないため、Index API検索全体に同期処理用のfail-fast budgetを追加した。**同期MVPの方針**: Common Crawlは外部APIとして不安定なため、同期分析ではこのbudgetでfail-fastし、通常分析結果を返す。将来的には非同期job化・DB保存・scheduled crawlへ移すことを検討する（下記「今後」参照）。
+  - **budget設定**（`COMMON_CRAWL_INDEX_BUDGET_SECONDS`）: デフォルト8秒、許可範囲3〜20秒（範囲外・不正値はデフォルトにフォールバック、上記の環境変数表参照）。
+  - **適用範囲**: `search_common_crawl_domain()`のdomain検索（retry・query-variant fallback・transport fallbackすべてを含む一連の検索）と、`_fetch_latest_index()`のcollinfo.json取得（`COMMON_CRAWL_INDEX=latest`時のみ）それぞれに、独立した`settings.index_budget_seconds`秒のbudgetを適用する（`_new_deadline()`で都度`time.monotonic() + index_budget_seconds`を計算——2つの操作でbudgetを共有しない。現状`COMMON_CRAWL_INDEX`はCC-MAIN-2026-25固定で検証中のため、Renderでは実質domain検索側のbudgetのみが効く）。
+  - **budget確認タイミング**: 各HTTPリクエスト開始前・retry sleep前・query variant fallback前（0件によるfallback含む）・transport fallback前、それぞれでbudgetの残りを確認する。残りが`_MIN_REQUEST_BUDGET_SECONDS`（1秒）を下回っていたら、以降のretry/variant/transportをすべて中断し、即座に`status="unavailable"`（collinfo.jsonは`success=False`）を返す——**budget超過時の`reason`は従来のnetwork/timeout系文言のまま**（画面表示用の日本語reason分類への影響は一切ない）。
+  - **effective timeout**: 各HTTPリクエストのtimeoutは`min(settings.timeout_seconds, remaining_budget_seconds)`（残りbudgetがtimeout設定より短ければそちらを使う）。残りbudgetが1秒未満の場合はHTTPリクエスト自体を発行しない。
+  - **ログ**: request開始ログ（INFO）に`budget_seconds=%s remaining_budget_seconds=%.3f`を追加（既存の`timeout=%s`は`settings.timeout_seconds`のまま変更していない——実際に使うeffective timeoutとは別の表示）。budget超過時は`Common Crawl Index API budget exhausted index=... domain=... transport_mode=... query_variant=... elapsed_seconds=... budget_seconds=...`（WARNING、collinfo.jsonは`Common Crawl collinfo.json budget exhausted transport_mode=... elapsed_seconds=... budget_seconds=...`）と`Common Crawl Index API search stopped by budget index=... domain=...`（INFO、collinfo.jsonは`Common Crawl collinfo.json search stopped by budget`）を続けて出す。
+  - **既存fallbackとの関係**: exact-domain/wildcard query variant・retry・query-variant fallback・transport fallbackはいずれも削除していない——budgetを超えた時点でそれらの残りを試すのをやめるだけで、budget内であれば従来どおりすべて動作する。
+  - **成功時の挙動**: budget内で成功した場合の`candidate parsing`・返り値の形状は変更していない。
+  - **今回変更していないもの**: フロントエンド・UI表示（`docs/07_decisions.md`/`app/lib/meta-label.ts`が扱う画面表示文言は変わらないため、UI変更は今回のスコープ外）、Common Crawl取得件数、WARC fetch retry、外部プロキシ/API実装、DataForSEO/ChatGPT関連コード、新規package/requirements、Render/Vercel環境変数（`COMMON_CRAWL_INDEX_BUDGET_SECONDS`は未設定でもデフォルト8秒で動作するため、既存のRender環境変数設定を変更する必要はない）。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -1092,6 +1102,20 @@ pytest
 - `no-env`/`urllib`いずれのtransportでも同じexact-domain variantが正しく使われ、`urllib`transportでも`url=cybozu.co.jp`（wildcardエンコードなし）のURLが正しく構築されること
 - exact-domain variant追加後も、既存のretry（1回目失敗・2回目成功）とquery-variant fallbackが従来どおり動作すること（回帰防止）
 - 既存の23件のテスト（domain正規化・query paramsの形状・request startログ・retry全滅時の呼び出し回数/sleep合計・all query/transports failedログ・www variant省略確認・headers確認・transport fallback確認等）は、最初に試されるvariantが`default-filtered`から`exact-domain-unfiltered`に変わったこと、variant数が3→5に増えたことに合わせて期待値を更新した。あわせて`backend/tests/test_main.py`の1テスト（Common Crawl domain解決の統合テスト）も、最初に呼ばれるquery variantの`url`パラメータ形状が変わったことに合わせて更新した。
+
+さらに、fail-fast budget追加（2026-07-29、`fix/common-crawl-index-fail-fast-budget`）に伴い以下のテストを追加した。すべて`common_crawl_index.time.monotonic`を決定的なfake clockに差し替え（テスト内`_FakeClock`、`fake_get`の呼び出しごとに明示的に`.advance(seconds)`する）、実時間・実`time.sleep`に依存しない。
+
+- `COMMON_CRAWL_INDEX_BUDGET_SECONDS`未設定時のデフォルトが8.0秒であること、3/8/20を受け付けること、数値でない値・範囲外（2や21）はデフォルト（8.0）にフォールバックすること（`backend/tests/test_common_crawl_settings.py`）
+- 1attemptごとに4秒budgetを消費するシナリオで、2回目のattempt後にbudgetが1秒未満になった場合、3回目のattempt（同一variant内のretry）を一切行わずに`status="unavailable"`・従来のnetwork/timeout系`reason`になること、retry sleepも2回目までしか呼ばれないこと
+- budgetがすでに1秒未満（`index_budget_seconds=0.5`で直接構築した設定）の場合、`httpx.get`を一切呼ばずに即座に`status="unavailable"`になること
+- 1つ目のquery variantの3回目のattemptでbudgetを使い切った場合、2つ目のquery variantへは進まず、そのvariantの3回のattemptだけで終了すること（query variant fallback前のbudgetチェック）
+- `default`transportの全5variant×3attempt（15回）を使い切った直後にbudgetが尽きた場合、`no-env`/`urllib`transportへは進まず、15回の呼び出しだけで終了すること（transport fallback前のbudgetチェック）
+- `settings.timeout_seconds`（30秒）がbudget（8秒）より大きい場合、実際にhttpxへ渡される`timeout`は残りbudget（8.0）になること（`effective_timeout = min(settings.timeout_seconds, remaining_budget_seconds)`）
+- budget内で`exact-domain-unfiltered`が1回で成功した場合、`status="real"`・candidatesが返り、budgetを消費していないこと（余計なfallbackを呼ばないことの確認）
+- request開始ログに`budget_seconds=8.0`・`remaining_budget_seconds=8.000`が出ること
+- budget超過時に`Common Crawl Index API budget exhausted index=... domain=... ... elapsed_seconds=... budget_seconds=...`（WARNING）と`Common Crawl Index API search stopped by budget index=... domain=...`（INFO）が続けて出ること
+- `_fetch_latest_index()`（`resolve_common_crawl_index()`経由）でも同様に、budget超過後は新しいリクエストを行わず`success=False`になること、transport fallback前のbudgetチェックが効くこと、`Common Crawl collinfo.json budget exhausted`/`Common Crawl collinfo.json search stopped by budget`ログが出ること
+- `settings.index == "latest"`の場合、collinfo.json取得（`_fetch_latest_index()`）とdomain検索（`_search_query_variants()`）がそれぞれ独立した`index_budget_seconds`を持つこと——collinfo.json取得でbudgetの大半（7.9秒）を消費しても、続くdomain検索の1回目のattemptは通常どおり成功すること
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 

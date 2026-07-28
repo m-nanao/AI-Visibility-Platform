@@ -208,6 +208,98 @@ def _next_retry_delay(attempt: int) -> float:
     return _RETRY_DELAYS_SECONDS[attempt - 1]
 
 
+# Fail-fast budget for one Index API search operation (see
+# services/common_crawl_settings.py's `index_budget_seconds`). Common
+# Crawl's Index API has been observed to be unreliable enough in
+# practice (the same query can 504 or succeed on consecutive manual
+# attempts — see the module-level comments above `_TRANSPORT_MODES` and
+# `_QUERY_VARIANT_EXACT_DOMAIN_UNFILTERED`) that retry + query-variant
+# fallback + transport fallback alone could still cost up to
+# `len(_TRANSPORT_MODES) * len(variants) * _MAX_ATTEMPTS` requests
+# (currently up to 45) in the worst case. Since Common Crawl is
+# supplementary data for the synchronous /analyze request — not
+# something the main analysis should ever wait indefinitely on — every
+# loop level that costs wall-clock time (a request, a retry sleep, a
+# query-variant fallback, a transport-mode fallback) checks the
+# remaining budget first and stops immediately, without trying
+# anything else, once it's exhausted. `_fetch_latest_index()`
+# (collinfo.json resolution, only reached when
+# `CommonCrawlSettings.index == "latest"`) gets its own independent
+# budget window rather than sharing one with the domain-query search
+# that follows it in `search_common_crawl_domain()`, since the two are
+# separate Index API operations.
+_MIN_REQUEST_BUDGET_SECONDS = 1.0
+
+
+def _new_deadline(settings: CommonCrawlSettings) -> float:
+    """Absolute `time.monotonic()` deadline `settings.index_budget_seconds`
+    seconds from now, for one Index API search operation.
+    """
+    return time.monotonic() + settings.index_budget_seconds
+
+
+def _remaining_budget_seconds(deadline: float) -> float:
+    """Seconds left before `deadline` — zero or negative once the budget
+    is exhausted.
+    """
+    return deadline - time.monotonic()
+
+
+def _search_budget_exhausted_result(crawl_index: str) -> CommonCrawlIndexResult:
+    return CommonCrawlIndexResult(
+        status="unavailable",
+        reason="Common Crawl Index API request failed due to a network or timeout error.",
+        crawl_index=crawl_index,
+    )
+
+
+def _log_search_budget_exhausted(
+    crawl_index: str,
+    normalized_domain: str,
+    transport_mode: str,
+    query_variant: str,
+    settings: CommonCrawlSettings,
+    deadline: float,
+) -> None:
+    elapsed_seconds = settings.index_budget_seconds - _remaining_budget_seconds(deadline)
+    logger.warning(
+        "Common Crawl Index API budget exhausted index=%s domain=%s transport_mode=%s query_variant=%s elapsed_seconds=%.3f budget_seconds=%s",
+        crawl_index,
+        normalized_domain,
+        transport_mode,
+        query_variant,
+        elapsed_seconds,
+        settings.index_budget_seconds,
+    )
+    logger.info(
+        "Common Crawl Index API search stopped by budget index=%s domain=%s",
+        crawl_index,
+        normalized_domain,
+    )
+
+
+def _collinfo_budget_exhausted_resolution() -> CommonCrawlIndexResolution:
+    return CommonCrawlIndexResolution(
+        success=False,
+        reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
+    )
+
+
+def _log_collinfo_budget_exhausted(
+    transport_mode: str,
+    settings: CommonCrawlSettings,
+    deadline: float,
+) -> None:
+    elapsed_seconds = settings.index_budget_seconds - _remaining_budget_seconds(deadline)
+    logger.warning(
+        "Common Crawl collinfo.json budget exhausted transport_mode=%s elapsed_seconds=%.3f budget_seconds=%s",
+        transport_mode,
+        elapsed_seconds,
+        settings.index_budget_seconds,
+    )
+    logger.info("Common Crawl collinfo.json search stopped by budget")
+
+
 # Query-variant fallback for search_common_crawl_domain(). Added after
 # Render logs showed the standard (filtered) query exhausting all
 # `_MAX_ATTEMPTS` retries with httpx.RemoteProtocolError — i.e. retrying
@@ -463,7 +555,7 @@ def _body_preview(text: str) -> str:
 
 
 def _fetch_collinfo_response(
-    settings: CommonCrawlSettings, headers: dict[str, str], transport_mode: str
+    settings: CommonCrawlSettings, headers: dict[str, str], transport_mode: str, deadline: float
 ) -> tuple[httpx.Response | None, CommonCrawlIndexResolution | None, str | None]:
     """Attempts up to `_MAX_ATTEMPTS` times to fetch collinfo.json under
     one `transport_mode`, retrying a transient transport failure
@@ -471,13 +563,23 @@ def _fetch_collinfo_response(
     (502/503/504), sleeping `_next_retry_delay(attempt)` between
     attempts.
 
+    `deadline` (an absolute `time.monotonic()` value, see
+    `_new_deadline`) bounds the whole `_fetch_latest_index()` operation
+    this attempt is part of — checked before every request (the actual
+    request timeout is `min(settings.timeout_seconds,
+    remaining_budget_seconds)`) and before every retry sleep. Once the
+    remaining budget drops below `_MIN_REQUEST_BUDGET_SECONDS`, this
+    stops immediately (no further retry, no transport-mode fallback)
+    and returns a terminal, budget-exhausted resolution.
+
     Returns exactly one of:
     - `(response, None, None)` on a 200 response — JSON parsing is the
       caller's job.
     - `(None, terminal_resolution, None)` for a failure that should
       **not** trigger a transport-mode fallback (a non-transport
-      `httpx.HTTPError`, or a non-retryable non-200 status) — the
-      caller returns `terminal_resolution` immediately.
+      `httpx.HTTPError`, a non-retryable non-200 status, or budget
+      exhaustion) — the caller returns `terminal_resolution`
+      immediately.
     - `(None, None, last_failure_type)` when every attempt under this
       `transport_mode` was exhausted via a transient transport failure
       or a retryable non-200 — eligible for a transport-mode fallback
@@ -485,8 +587,13 @@ def _fetch_collinfo_response(
     """
     last_error_type: str | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
+        remaining_budget = _remaining_budget_seconds(deadline)
+        if remaining_budget < _MIN_REQUEST_BUDGET_SECONDS:
+            _log_collinfo_budget_exhausted(transport_mode, settings, deadline)
+            return None, _collinfo_budget_exhausted_resolution(), None
+        effective_timeout = min(settings.timeout_seconds, remaining_budget)
         logger.info(
-            "Common Crawl collinfo.json request start url=%s timeout=%s transport_mode=%s attempt=%d/%d user_agent=%s accept=%s connection=%s",
+            "Common Crawl collinfo.json request start url=%s timeout=%s transport_mode=%s attempt=%d/%d user_agent=%s accept=%s connection=%s budget_seconds=%s remaining_budget_seconds=%.3f",
             COLLINFO_URL,
             settings.timeout_seconds,
             transport_mode,
@@ -495,12 +602,14 @@ def _fetch_collinfo_response(
             headers["User-Agent"],
             headers["Accept"],
             headers["Connection"],
+            settings.index_budget_seconds,
+            remaining_budget,
         )
         try:
             response = _http_get(
                 COLLINFO_URL,
                 headers=headers,
-                timeout=settings.timeout_seconds,
+                timeout=effective_timeout,
                 transport_mode=transport_mode,
             )
         except (httpx.TransportError, OSError) as exc:
@@ -524,6 +633,9 @@ def _fetch_collinfo_response(
                 exc,
             )
             if attempt < _MAX_ATTEMPTS:
+                if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                    _log_collinfo_budget_exhausted(transport_mode, settings, deadline)
+                    return None, _collinfo_budget_exhausted_resolution(), None
                 delay = _next_retry_delay(attempt)
                 logger.info(
                     "Common Crawl collinfo.json request retrying transport_mode=%s next_attempt=%d/%d delay=%s",
@@ -573,6 +685,9 @@ def _fetch_collinfo_response(
                 _body_preview(response.text),
             )
             if retryable and attempt < _MAX_ATTEMPTS:
+                if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                    _log_collinfo_budget_exhausted(transport_mode, settings, deadline)
+                    return None, _collinfo_budget_exhausted_resolution(), None
                 delay = _next_retry_delay(attempt)
                 logger.info(
                     "Common Crawl collinfo.json request retrying transport_mode=%s next_attempt=%d/%d delay=%s",
@@ -626,18 +741,27 @@ def _fetch_latest_index(settings: CommonCrawlSettings) -> CommonCrawlIndexResolu
     failure (a non-transport HTTPError, a non-retryable non-200 status,
     or exhausting every transport mode) still returns `success=False`
     with a safe reason instead of raising.
+
+    Bounded by its own `settings.index_budget_seconds` wall-clock
+    budget (see `_new_deadline`), independent of any budget
+    `search_common_crawl_domain()` applies to the domain-query search
+    that follows this when `settings.index == "latest"`.
     """
+    deadline = _new_deadline(settings)
     headers = _request_headers(settings)
     response: httpx.Response | None = None
     last_failure_type: str | None = None
     for transport_index, transport_mode in enumerate(_TRANSPORT_MODES):
-        response, terminal, failure_type = _fetch_collinfo_response(settings, headers, transport_mode)
+        response, terminal, failure_type = _fetch_collinfo_response(settings, headers, transport_mode, deadline)
         if terminal is not None:
             return terminal
         if response is not None:
             break
         last_failure_type = failure_type
         if transport_index < len(_TRANSPORT_MODES) - 1:
+            if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                _log_collinfo_budget_exhausted(transport_mode, settings, deadline)
+                return _collinfo_budget_exhausted_resolution()
             next_mode = _TRANSPORT_MODES[transport_index + 1]
             logger.info(
                 "Common Crawl collinfo.json transport fallback from=%s to=%s reason=%s",
@@ -773,6 +897,7 @@ def _search_query_variants(
     settings: CommonCrawlSettings,
     headers: dict[str, str],
     transport_mode: str,
+    deadline: float,
 ) -> tuple[CommonCrawlIndexResult | None, str | None]:
     """Tries every query variant (see `_build_query_variants`) against
     the Index API under one `transport_mode`, each with its own
@@ -784,16 +909,26 @@ def _search_query_variants(
     only) and a next variant exists — otherwise it's terminal, same as
     every wildcard variant's empty result always has been.
 
+    `deadline` (an absolute `time.monotonic()` value, see
+    `_new_deadline`) bounds the whole `search_common_crawl_domain()`
+    operation this call is part of — checked before every request (the
+    actual request timeout is `min(settings.timeout_seconds,
+    remaining_budget_seconds)`), before every retry sleep, and before
+    falling back to the next query variant. Once the remaining budget
+    drops below `_MIN_REQUEST_BUDGET_SECONDS`, this stops immediately
+    (no further retry, no query-variant fallback, no transport-mode
+    fallback) and returns a terminal, budget-exhausted result.
+
     Returns `(result, None)` for a *terminal* outcome — success, or a
     failure that should not trigger a transport-mode fallback (a
-    non-transport `httpx.HTTPError`, a non-retryable non-200 status, or
-    a successful-but-empty result that isn't eligible for
-    `allow_empty_fallback`) — the caller returns `result` immediately,
-    same as before transport-mode fallback was added. Returns `(None,
-    last_failure_type)` when every query variant's retries were
-    exhausted via a transient transport failure or a retryable non-200
-    status — eligible for a transport-mode fallback (see
-    `search_common_crawl_domain`).
+    non-transport `httpx.HTTPError`, a non-retryable non-200 status,
+    budget exhaustion, or a successful-but-empty result that isn't
+    eligible for `allow_empty_fallback`) — the caller returns `result`
+    immediately, same as before transport-mode fallback was added.
+    Returns `(None, last_failure_type)` when every query variant's
+    retries were exhausted via a transient transport failure or a
+    retryable non-200 status — eligible for a transport-mode fallback
+    (see `search_common_crawl_domain`).
     """
     base_url = f"{COMMON_CRAWL_HOST}/{crawl_index}-index"
     variants = _build_query_variants(normalized_domain, settings.max_results)
@@ -807,6 +942,14 @@ def _search_query_variants(
         variant_skipped_for_empty_result = False
 
         for attempt in range(1, _MAX_ATTEMPTS + 1):
+            remaining_budget = _remaining_budget_seconds(deadline)
+            if remaining_budget < _MIN_REQUEST_BUDGET_SECONDS:
+                _log_search_budget_exhausted(
+                    crawl_index, normalized_domain, transport_mode, variant_name, settings, deadline
+                )
+                return _search_budget_exhausted_result(crawl_index), None
+            effective_timeout = min(settings.timeout_seconds, remaining_budget)
+
             # Logged before each attempt so the actually-effective
             # index/timeout (as resolved from CommonCrawlSettings, not
             # just whatever's in the environment), the transport mode
@@ -816,7 +959,7 @@ def _search_query_variants(
             # (or ruled out) without needing a code change to reproduce
             # it.
             logger.info(
-                "Common Crawl Index API request start index=%s domain=%s transport_mode=%s query_variant=%s url_pattern=%s timeout=%s attempt=%d/%d user_agent=%s accept=%s connection=%s request_url=%s",
+                "Common Crawl Index API request start index=%s domain=%s transport_mode=%s query_variant=%s url_pattern=%s timeout=%s attempt=%d/%d user_agent=%s accept=%s connection=%s budget_seconds=%s remaining_budget_seconds=%.3f request_url=%s",
                 crawl_index,
                 normalized_domain,
                 transport_mode,
@@ -828,6 +971,8 @@ def _search_query_variants(
                 headers["User-Agent"],
                 headers["Accept"],
                 headers["Connection"],
+                settings.index_budget_seconds,
+                remaining_budget,
                 request_url,
             )
 
@@ -836,7 +981,7 @@ def _search_query_variants(
                     base_url,
                     params=params,
                     headers=headers,
-                    timeout=settings.timeout_seconds,
+                    timeout=effective_timeout,
                     transport_mode=transport_mode,
                 )
             except (httpx.TransportError, OSError) as exc:
@@ -865,6 +1010,11 @@ def _search_query_variants(
                     exc,
                 )
                 if attempt < _MAX_ATTEMPTS:
+                    if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                        _log_search_budget_exhausted(
+                            crawl_index, normalized_domain, transport_mode, variant_name, settings, deadline
+                        )
+                        return _search_budget_exhausted_result(crawl_index), None
                     delay = _next_retry_delay(attempt)
                     logger.info(
                         "Common Crawl Index API request retrying index=%s domain=%s transport_mode=%s query_variant=%s next_attempt=%d/%d delay=%s",
@@ -928,6 +1078,11 @@ def _search_query_variants(
                     _body_preview(response.text),
                 )
                 if retryable and attempt < _MAX_ATTEMPTS:
+                    if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                        _log_search_budget_exhausted(
+                            crawl_index, normalized_domain, transport_mode, variant_name, settings, deadline
+                        )
+                        return _search_budget_exhausted_result(crawl_index), None
                     delay = _next_retry_delay(attempt)
                     logger.info(
                         "Common Crawl Index API request retrying index=%s domain=%s transport_mode=%s query_variant=%s next_attempt=%d/%d delay=%s",
@@ -978,6 +1133,11 @@ def _search_query_variants(
                 )
             if not candidates:
                 if allow_empty_fallback and variant_index < len(variants) - 1:
+                    if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                        _log_search_budget_exhausted(
+                            crawl_index, normalized_domain, transport_mode, variant_name, settings, deadline
+                        )
+                        return _search_budget_exhausted_result(crawl_index), None
                     next_variant_name = variants[variant_index + 1][0]
                     logger.info(
                         "Common Crawl Index API query variant returned no candidates; trying next variant index=%s domain=%s transport_mode=%s from=%s to=%s",
@@ -1018,6 +1178,11 @@ def _search_query_variants(
         # retryable non-200 status) were exhausted. Fall back to the next
         # query variant, if any.
         if variant_index < len(variants) - 1:
+            if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                _log_search_budget_exhausted(
+                    crawl_index, normalized_domain, transport_mode, variant_name, settings, deadline
+                )
+                return _search_budget_exhausted_result(crawl_index), None
             next_variant_name = variants[variant_index + 1][0]
             logger.info(
                 "Common Crawl Index API query fallback index=%s domain=%s transport_mode=%s from=%s to=%s reason=%s",
@@ -1075,6 +1240,16 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
     `status="unavailable"` and a safe, credential-free `reason` instead
     of raising (there are no credentials to leak in the first place,
     since Common Crawl is a public, unauthenticated dataset).
+
+    The domain-query search below (retry + query-variant fallback +
+    transport fallback) is bounded by its own `settings.
+    index_budget_seconds` wall-clock budget (see `_new_deadline`),
+    started only after index resolution (`resolve_common_crawl_index`)
+    completes — index resolution has its own independent budget (see
+    `_fetch_latest_index`). Once the budget is exhausted, this stops
+    immediately without trying any remaining retry/query
+    variant/transport and returns `status="unavailable"` with the same
+    network/timeout `reason` as every other transport-exhaustion path.
     """
     normalized_domain = _normalize_domain(domain)
     if normalized_domain is None:
@@ -1089,16 +1264,22 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
 
     crawl_index = resolution.crawl_index or ""
     headers = _request_headers(settings)
+    deadline = _new_deadline(settings)
 
     last_failure_type: str | None = None
     for transport_index, transport_mode in enumerate(_TRANSPORT_MODES):
         result, failure_type = _search_query_variants(
-            crawl_index, normalized_domain, settings, headers, transport_mode
+            crawl_index, normalized_domain, settings, headers, transport_mode, deadline
         )
         if result is not None:
             return result
         last_failure_type = failure_type
         if transport_index < len(_TRANSPORT_MODES) - 1:
+            if _remaining_budget_seconds(deadline) < _MIN_REQUEST_BUDGET_SECONDS:
+                _log_search_budget_exhausted(
+                    crawl_index, normalized_domain, transport_mode, "", settings, deadline
+                )
+                return _search_budget_exhausted_result(crawl_index)
             next_mode = _TRANSPORT_MODES[transport_index + 1]
             logger.info(
                 "Common Crawl Index API transport fallback index=%s domain=%s from=%s to=%s reason=%s",
