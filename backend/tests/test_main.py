@@ -1489,8 +1489,12 @@ def test_analyze_common_crawl_domain_falls_back_to_urls_hostname(monkeypatch):
     result = AnalysisResult.model_validate(response.json())
     assert result.meta.commonCrawlProvider.domain == "cybozu.co.jp"
     assert result.meta.commonCrawlProvider.status == "real"
+    # The first query variant tried is exact-domain-unfiltered
+    # (url=domain, no "/*" wildcard — see
+    # fix/common-crawl-index-exact-domain-query), which succeeds
+    # immediately here since fake_get accepts any params.
     params = dict(captured_search_urls[0])
-    assert params["url"] == "cybozu.co.jp/*"
+    assert params["url"] == "cybozu.co.jp"
 
 
 def test_analyze_common_crawl_domain_undeterminable_is_unavailable(monkeypatch):
