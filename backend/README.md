@@ -563,6 +563,15 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
   - **ログ**: request開始ログに`user_agent=%s accept=%s connection=%s`を追加（raw headers dictの丸ごとログ出力はしない。secretは元々存在しないが、念のため個別のkey=valueペアのみを出す）。
   - **retry/fallbackとの関係**: headersは`search_common_crawl_domain()`内で1回だけ構築し、variant・attemptを問わず同じdictをそのまま使い回す——retry中・query fallback後もheadersは変わらない。
   - **今回変更していないもの**: `trust_env`（`httpx.get()`のデフォルトのまま）、HTTP clientの実装方式、candidate parsing、画面表示用reason、取得件数、UI、DataForSEO/ChatGPT関連コード。`trust_env=False`や別HTTP client方式への切り替えは、今回のheaders追加でも改善しない場合の次の検討候補としてdocsに記載するのみに留めた（実装はしていない）。
+- **`trust_env=False` transport fallback**（2026-07-29追加、`fix/common-crawl-index-trust-env-fallback`）: headers明示後もRenderで**全query variant**が3回ずつRemoteProtocolErrorで失敗し続ける事象が報告された——query形式・timeout・headersのいずれでも解決しないため、Render環境の`httpx`環境依存設定（proxy環境変数等）との相性問題を疑い、`trust_env=False`を使ったtransport fallbackを追加した。
+  - **transport mode**: 内部的に`"default"`（現行のhttpx request、`trust_env`はhttpxデフォルトのまま）と`"no-env"`（`trust_env=False`を明示）の2モードを扱う。公開APIレスポンスに新規フィールドは追加していない（区別はログのみ）。
+  - **実行順**: `transport_mode="default"`で全query variant（`default-filtered`→`default-unfiltered`→`www-unfiltered`、各最大3回retry）を試し、それでも全滅した場合のみ`transport_mode="no-env"`で同じ順序の同じquery variantを再度試す。新規`_http_get()`ヘルパーが`transport_mode`に応じて`trust_env=False`を渡すかどうかだけを切り替え、それ以外（headers・timeout・params）はモード間で完全に同一。
+  - **no-env fallbackする条件**: `default`のtransportで全query variantsが`httpx.TransportError`系（retry含めて）で失敗した場合、または502/503/504がretryしても解消しなかった場合。
+  - **no-env fallbackしない条件**: `400`/`404`等の非retry対象な非200レスポンス、domain不正、index解決失敗、0件（query自体は成功）、`COMMON_CRAWL_ENABLED=false`——いずれも即座に`unavailable`（または該当するterminalな結果）を返し、no-envへは進まない。
+  - **ログ**: request開始ログに`transport_mode=%s`を追加（`query_variant=%s`と併記）。transportを切り替える際に`Common Crawl Index API transport fallback index=... domain=... from=default to=no-env reason=%s`（INFO）を出す。no-envで成功した場合は`request succeeded ... transport_mode=no-env query_variant=%s attempt=N/3 candidates=%d`ログを出す。両transportとも失敗した場合は`Common Crawl Index API all transports failed index=... domain=... transports=2 last_error_type=%s`（WARNING）を出す。
+  - **`_fetch_latest_index()`への適用**: `COMMON_CRAWL_INDEX=latest`時のcollinfo.json取得にも同じtransport fallbackを実装した（同じ`index.commoncrawl.org`ホストへの通信であり、同じ切断問題が起こり得るため）。新規`_fetch_collinfo_response()`が1回のtransport試行の詳細（retry・成否判定）を担い、`_fetch_latest_index()`がtransportのループを担う。
+  - **成功時・失敗時の挙動**: no-envで成功した場合も、既存の`_parse_candidates()`でそのまま処理し通常どおり`candidates`を返す。両transportとも失敗した場合の最終的な`status`/`reason`は**従来と完全に同じ**——画面表示用の日本語reason分類への影響は一切ない。
+  - **今回変更していないもの**: query variant fallback・retryロジック・headers・candidate parsing・画面表示用reason・取得件数・UI・DataForSEO/ChatGPT関連コード。別HTTP client方式・外部プロキシ経由・Render外環境での疎通確認は実装しておらず、次の検討候補としてdocsに記載するのみ。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -1019,6 +1028,21 @@ pytest
 - ログにraw headers dictの丸ごと出力（`{'User-Agent': ...}`のような形）が含まれないこと、`Authorization`/`api_key`/`token`のような語がログに一切出ないこと（そもそもheadersにsecretは無いが、念のための確認）
 - headers追加によって`_parse_candidates()`のcandidate変換結果が変わらないこと（回帰防止）
 - headers追加によって、全variant失敗時の画面表示用`reason`文言が変わらないこと（回帰防止）
+
+さらに、`trust_env=False` transport fallback追加（2026-07-29、`fix/common-crawl-index-trust-env-fallback`）に伴い以下のテストを追加した。
+
+- `default`transportで全query variantが`RemoteProtocolError`/`ReadTimeout`/`503`で失敗し、`no-env`transportで成功した場合、`status="real"`かつ`candidates`が返ること（`trust_env=False`が渡された呼び出し回数の確認込み）
+- `default`/`no-env`とも全query variantが失敗した場合、`status="unavailable"`になり、`reason`が従来と完全に同じ文言のままであること
+- `400`/`404`レスポンス、および成功したが0件の場合は`no-env`へfallbackせず、1回のリクエストだけで終わること
+- request開始ログに`transport_mode=default`が出ること、`no-env`にfallback後は`transport_mode=no-env`が出ること
+- transport切り替え時に`transport fallback ... from=default to=no-env reason=RemoteProtocolError`ログが出ること
+- `no-env`で成功した場合、成功ログに`transport_mode=no-env`が出ること
+- 全transport失敗時に`all transports failed ... transports=2 last_error_type=%s`ログが出ること
+- `transport_mode="no-env"`の呼び出しにのみ`trust_env=False`が実際に渡され、`default`の呼び出しには一切渡らないこと
+- headers（User-Agent/Accept/Connection）がtransport fallback前後で変わらないこと
+- query variant fallback・retryが、transport fallback追加後も従来どおり動作すること（回帰防止）
+- transport fallback追加によって`_parse_candidates()`のcandidate変換結果が変わらないこと（回帰防止）
+- `collinfo.json`取得（`_fetch_latest_index()`）でも同様に、`default`transportが3回失敗し`no-env`transportで成功した場合にindex解決に成功すること、headersが維持されること、全transport失敗時に`all transports failed`ログが出ること、200だが不正なJSONのような非retry対象の失敗ではtransport fallbackが起きないこと
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 

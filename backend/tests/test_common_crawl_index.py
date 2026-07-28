@@ -491,8 +491,11 @@ def test_search_logs_request_start_with_index_domain_timeout_and_url(monkeypatch
 def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, caplog):
     # ConnectError is a retryable httpx.TransportError (see
     # fix/common-crawl-index-retry), so this now exhausts retries on
-    # every query variant (fix/common-crawl-index-query-fallback) — 3
-    # attempts x 3 variants. Sleep is mocked so the test doesn't wait.
+    # every query variant under every transport mode
+    # (fix/common-crawl-index-query-fallback,
+    # fix/common-crawl-index-trust-env-fallback) — 3 attempts x 3
+    # variants x 2 transport modes. Sleep is mocked so the test doesn't
+    # wait.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
 
     def raise_connect_error(url, **kwargs):
@@ -504,10 +507,12 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 9
+    assert len(failure_records) == 18
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Name or service not known" in failure_records[0].message
     assert "query_variant=default-filtered" in failure_records[0].message
+    assert "transport_mode=default" in failure_records[0].message
+    assert "transport_mode=no-env" in failure_records[-1].message
 
 
 def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
@@ -523,7 +528,7 @@ def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 9
+    assert len(failure_records) == 18
     assert "error_type=ReadTimeout" in failure_records[0].message
     assert "error_type=ConnectError" not in failure_records[0].message
 
@@ -604,7 +609,9 @@ def test_fetch_latest_index_logs_request_start_with_url_and_timeout(monkeypatch,
 
 def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog):
     # ConnectError is retryable (fix/common-crawl-index-retry), so this
-    # now runs all 3 attempts — sleep is mocked to avoid a real delay.
+    # now runs all 3 attempts under both transport modes
+    # (fix/common-crawl-index-trust-env-fallback) — sleep is mocked to
+    # avoid a real delay.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
 
     def raise_connect_error(url, **kwargs):
@@ -616,7 +623,7 @@ def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog
         resolve_common_crawl_index(_LATEST_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 3
+    assert len(failure_records) == 6
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Connection refused" in failure_records[0].message
 
@@ -702,12 +709,13 @@ def test_search_retries_on_connect_error_then_succeeds(monkeypatch):
 
 
 def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch):
-    # With query-variant fallback (fix/common-crawl-index-query-fallback),
+    # With query-variant fallback (fix/common-crawl-index-query-fallback)
+    # and transport-mode fallback (fix/common-crawl-index-trust-env-fallback),
     # a persistent RemoteProtocolError exhausts retries on every query
-    # variant in turn (3 variants x 3 attempts = 9 calls) before finally
-    # returning unavailable — see
-    # test_search_all_query_variants_fail_and_log_final_failure for the
-    # dedicated "all variants failed" logging assertions.
+    # variant under every transport mode (3 variants x 3 attempts x 2
+    # transport modes = 18 calls) before finally returning unavailable —
+    # see test_search_all_query_variants_fail_and_log_final_failure for
+    # the dedicated "all variants/transports failed" logging assertions.
     sleep_calls = _patch_sleep(monkeypatch)
     calls = {"count": 0}
 
@@ -723,8 +731,8 @@ def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch)
 
     assert result.status == "unavailable"
     assert "network or timeout" in result.reason
-    assert calls["count"] == 9
-    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0]
+    assert calls["count"] == 18
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0] * 2
 
 
 def test_search_does_not_retry_on_http_400(monkeypatch):
@@ -849,8 +857,9 @@ def test_search_logs_success_message_when_a_retry_succeeds(monkeypatch, caplog):
 
 def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monkeypatch):
     # Each query variant still caps its own retry sleep at 0.5+1.0=1.5s;
-    # with 3 variants (fix/common-crawl-index-query-fallback) a
-    # persistent failure sleeps at most 3x1.5=4.5s in total, never more.
+    # with 3 variants (fix/common-crawl-index-query-fallback) and 2
+    # transport modes (fix/common-crawl-index-trust-env-fallback), a
+    # persistent failure sleeps at most 3x1.5x2=9.0s in total, never more.
     sleep_calls = _patch_sleep(monkeypatch)
 
     def fake_get(url, **kwargs):
@@ -860,7 +869,7 @@ def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monke
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    assert sum(sleep_calls) <= 4.5
+    assert sum(sleep_calls) <= 9.0
     assert all(delay <= 1.0 for delay in sleep_calls)
 
 
@@ -982,6 +991,10 @@ def test_search_falls_back_through_www_variant_when_first_two_fail(monkeypatch):
 
 
 def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplog):
+    # A persistent RemoteProtocolError exhausts every query variant under
+    # both transport modes (fix/common-crawl-index-trust-env-fallback),
+    # so "query fallback"/"all query variants failed" each appear twice
+    # (once per transport mode) before the final "all transports failed".
     _patch_sleep(monkeypatch)
 
     def fake_get(url, **kwargs):
@@ -999,15 +1012,25 @@ def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplo
 
     messages = [r.message for r in caplog.records]
     fallback_records = [m for m in messages if "query fallback" in m]
-    assert len(fallback_records) == 2
+    assert len(fallback_records) == 4
     assert any("from=default-filtered" in m and "to=default-unfiltered" in m for m in fallback_records)
     assert any("from=default-unfiltered" in m and "to=www-unfiltered" in m for m in fallback_records)
     assert all("reason=RemoteProtocolError" in m for m in fallback_records)
 
     final_records = [m for m in messages if "all query variants failed" in m]
-    assert len(final_records) == 1
-    assert "variants=3" in final_records[0]
-    assert "last_error_type=RemoteProtocolError" in final_records[0]
+    assert len(final_records) == 2
+    assert all("variants=3" in m for m in final_records)
+    assert all("last_error_type=RemoteProtocolError" in m for m in final_records)
+
+    transport_fallback_records = [m for m in messages if "transport fallback" in m]
+    assert len(transport_fallback_records) == 1
+    assert "from=default" in transport_fallback_records[0]
+    assert "to=no-env" in transport_fallback_records[0]
+
+    all_transports_records = [m for m in messages if "all transports failed" in m]
+    assert len(all_transports_records) == 1
+    assert "transports=2" in all_transports_records[0]
+    assert "last_error_type=RemoteProtocolError" in all_transports_records[0]
 
 
 def test_search_does_not_fall_back_to_next_query_on_http_400(monkeypatch):
@@ -1119,7 +1142,8 @@ def test_search_www_variant_is_skipped_when_domain_already_has_www(monkeypatch):
 
     # Only 2 variants (default-filtered, default-unfiltered) for a domain
     # that already starts with "www." — no doubled-up "www.www." variant.
-    assert calls["count"] == 6
+    # 2 variants x 3 attempts x 2 transport modes (default, no-env).
+    assert calls["count"] == 12
     assert all(u == "www.cybozu.co.jp/*" for u in seen_urls)
 
 
@@ -1178,6 +1202,8 @@ def test_fetch_latest_index_retries_on_remote_protocol_error_then_succeeds(monke
 
 
 def test_fetch_latest_index_exhausts_retries_and_fails_safely(monkeypatch):
+    # A persistent RemoteProtocolError exhausts both transport modes
+    # (fix/common-crawl-index-trust-env-fallback): 3 attempts x 2 modes.
     sleep_calls = _patch_sleep(monkeypatch)
     calls = {"count": 0}
 
@@ -1191,8 +1217,8 @@ def test_fetch_latest_index_exhausts_retries_and_fails_safely(monkeypatch):
 
     assert resolution.success is False
     assert "network or timeout" in resolution.reason
-    assert calls["count"] == 3
-    assert sleep_calls == [0.5, 1.0]
+    assert calls["count"] == 6
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0]
 
 
 def test_search_logging_does_not_change_success_behavior(monkeypatch, caplog):
@@ -1471,3 +1497,430 @@ def test_search_headers_do_not_change_reason_shown_to_ui(monkeypatch):
 
     assert result.status == "unavailable"
     assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+
+
+# --- transport-mode (trust_env=False) fallback ----------------------------------
+# Added 2026-07-29 (fix/common-crawl-index-trust-env-fallback) — Render logs
+# showed *every* query variant failing with httpx.RemoteProtocolError even with
+# explicit headers in place, so query shape and headers alone don't explain it.
+# These tests lock in that a persistent transport-layer failure under the
+# default transport falls back to a `trust_env=False` ("no-env") retry of the
+# same query variants before finally giving up.
+
+
+def test_search_falls_back_to_no_env_transport_after_default_exhausts_on_remote_protocol_error(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_trust_env = []
+
+    def fake_get(url, **kwargs):
+        seen_trust_env.append(kwargs.get("trust_env", "NOT_SET"))
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # Default transport exhausted all 3 variants (3 attempts each = 9
+    # calls) before the no-env transport succeeded on its first variant.
+    assert seen_trust_env.count("NOT_SET") == 9
+    assert seen_trust_env.count(False) == 1
+
+
+def test_search_falls_back_to_no_env_transport_after_default_exhausts_on_read_timeout(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.ReadTimeout("The read operation timed out", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_falls_back_to_no_env_transport_after_default_exhausts_on_503(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        return httpx.Response(503, text="Service Unavailable", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_all_transports_fail_returns_unavailable_with_unchanged_reason(monkeypatch):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+
+
+def test_search_does_not_fall_back_to_no_env_on_http_400(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(400, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "400" in result.reason
+    # Only the first query variant's first attempt under the default
+    # transport — no retry, no query fallback, no transport fallback.
+    assert calls["count"] == 1
+
+
+def test_search_does_not_fall_back_to_no_env_on_http_404(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert calls["count"] == 1
+
+
+def test_search_does_not_fall_back_to_no_env_on_zero_candidates(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "empty" in result.reason
+    # A successful-but-empty result under the default transport does not
+    # trigger a no-env fallback.
+    assert calls["count"] == 1
+
+
+def test_search_logs_transport_mode_default_in_request_start(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "transport_mode=default" in start_records[0]
+
+
+def test_search_logs_transport_mode_no_env_after_fallback(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    no_env_start_records = [
+        r.message for r in caplog.records if "request start" in r.message and "transport_mode=no-env" in r.message
+    ]
+    assert len(no_env_start_records) == 1
+
+
+def test_search_logs_transport_fallback_message(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    fallback_records = [r.message for r in caplog.records if "transport fallback" in r.message]
+    assert len(fallback_records) == 1
+    assert "from=default" in fallback_records[0]
+    assert "to=no-env" in fallback_records[0]
+    assert "reason=RemoteProtocolError" in fallback_records[0]
+
+
+def test_search_logs_success_with_transport_mode_no_env(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    success_records = [r.message for r in caplog.records if "request succeeded" in r.message]
+    assert len(success_records) == 1
+    assert "transport_mode=no-env" in success_records[0]
+    assert "query_variant=default-filtered" in success_records[0]
+    assert "attempt=1/3" in success_records[0]
+    assert "candidates=1" in success_records[0]
+
+
+def test_search_logs_all_transports_failed_message(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    final_records = [r.message for r in caplog.records if "all transports failed" in r.message]
+    assert len(final_records) == 1
+    assert "transports=2" in final_records[0]
+    assert "last_error_type=RemoteProtocolError" in final_records[0]
+
+
+def test_search_no_env_transport_passes_trust_env_false(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_trust_env = []
+
+    def fake_get(url, **kwargs):
+        seen_trust_env.append(kwargs.get("trust_env", "NOT_SET"))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    # First 9 calls (default transport) never set trust_env; last 9 calls
+    # (no-env transport) always pass trust_env=False.
+    assert seen_trust_env[:9] == ["NOT_SET"] * 9
+    assert seen_trust_env[9:] == [False] * 9
+
+
+def test_search_headers_are_maintained_across_transport_fallback(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    expected_headers = {
+        "User-Agent": "AI-Visibility-Platform-MVP",
+        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+        "Connection": "close",
+    }
+    assert all(h == expected_headers for h in seen_headers)
+
+
+def test_search_query_variant_fallback_still_works_within_a_transport_mode(monkeypatch):
+    # Regression guard: query-variant fallback (within the default
+    # transport) must still work exactly as before transport-mode
+    # fallback was added.
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
+        if has_filter:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_retry_still_works_within_a_transport_mode_and_query_variant(monkeypatch):
+    # Regression guard: retry within a single (transport_mode,
+    # query_variant) pair must still work exactly as before.
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert calls["count"] == 2
+
+
+def test_search_transport_fallback_does_not_affect_candidate_parsing(monkeypatch):
+    # Regression guard: candidate parsing behaves identically regardless
+    # of which transport mode produced the 200 response.
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(
+        url="https://cybozu.co.jp/",
+        timestamp="20260115000000",
+        status="200",
+        mime="text/html",
+        digest="ABC123",
+    )
+
+    def fake_get(url, **kwargs):
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    candidate = result.candidates[0]
+    assert candidate.url == "https://cybozu.co.jp/"
+    assert candidate.timestamp == "20260115000000"
+    assert candidate.status == 200
+    assert candidate.mime == "text/html"
+    assert candidate.digest == "ABC123"
+    assert candidate.source == "common_crawl"
+
+
+# --- transport-mode fallback (collinfo.json / _fetch_latest_index) -------------
+
+
+def test_fetch_latest_index_falls_back_to_no_env_transport_after_default_exhausts(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, json=_collinfo_payload("CC-MAIN-2026-08"), request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is True
+    assert resolution.crawl_index == "CC-MAIN-2026-08"
+    # 3 attempts under default transport, then 1 successful attempt
+    # under no-env.
+    assert calls["count"] == 4
+
+
+def test_fetch_latest_index_headers_are_maintained_across_transport_fallback(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        if kwargs.get("trust_env") is False:
+            return httpx.Response(200, json=_collinfo_payload("CC-MAIN-2026-08"), request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    expected_headers = {
+        "User-Agent": "AI-Visibility-Platform-MVP",
+        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+        "Connection": "close",
+    }
+    assert all(h == expected_headers for h in seen_headers)
+
+
+def test_fetch_latest_index_logs_all_transports_failed(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is False
+    final_records = [r.message for r in caplog.records if "all transports failed" in r.message]
+    assert len(final_records) == 1
+    assert "transports=2" in final_records[0]
+
+
+def test_fetch_latest_index_does_not_fall_back_to_no_env_on_invalid_json(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text="not json", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is False
+    # A 200-but-invalid-JSON response is terminal — never retried, never
+    # transport-fallback-eligible.
+    assert calls["count"] == 1
