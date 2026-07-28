@@ -318,6 +318,15 @@ Common Crawl由来Documentは既存Analyzer入力に混ざっているため、�
 
 詳細は`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`/`classifyCommonCrawlUnavailableReason()`のコメントを参照。
 
+## 18. Common Crawl status表示の英語reason再確認・強化（frontend、2026-07-28追記）
+
+17章のマージ後、実環境で「Common Crawl補完: 未取得（理由: Common Crawl domain could not be determined from commonCrawlDomain or urls.）」という**17章より前の旧表示形式**が見えたという報告を受け、`fix/common-crawl-status-japanese-reasons`で再調査・強化を行った。
+
+- **調査結果**: `getCommonCrawlProviderDisplay()`/`classifyCommonCrawlUnavailableReason()`が実際にbackendから返しうる`reason=`/`reason=f"`文字列11種類すべて（`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`/`backend/main.py`から再度洗い出し）を通しで検証した結果、報告された文字列を含むすべてのケースが現行コードで正しく日本語分類されることを確認した。`app/`配下を`未取得（理由`・`commonCrawlProvider.reason`・報告された英語reason文字列でgrepしても、テストの期待値・入力フィクスチャ以外に該当箇所はなかった。したがって報告された事象は、17章の変更が反映される前の古いデプロイ・ブラウザキャッシュを見ていた可能性が高く、コード側の欠陥は見つからなかった。
+- **強化**: 上記の結論を踏まえつつ、依頼者確認画面としての安全性を優先し、domain未確定系の分類パターンを`could not be determined`/`is empty or not a valid hostname`の完全一致的な表現だけでなく、より広く`commonCrawlDomain or urls`・`domain missing`・`hostname`（部分一致）も拾うように広げた——backend側のreason文言が将来ちょっとした表現変更をしても、フォールバック（「補完データを取得できませんでした」）に落ちてしまわないようにするため。
+- テストは`app/lib/meta-label.test.ts`に8件追加——報告された文字列そのものが表示に含まれないことの専用テスト、backendが返しうる11種類の`reason`文字列すべてで旧形式`未取得（理由`が出ないことを一括確認するテスト、「no candidates」「0 results」「request failed」「fetch failed」「hostname」という単語単体を含む合成reasonでの分類テスト、WARC/HTML/Tracebackのような技術的な文字列が紛れ込んだ未知reasonでも表示に漏れないことを確認するテストを含む。
+- **今回もbackend・改善提案ロジック・DataForSEO/ChatGPT関連コードはいずれも変更していない**。`app/components/sections/CooccurrenceRankingSection.tsx`も、`summary`/`detail`のみを描画する既存実装のままで変更不要だった（`commonCrawlProvider.reason`を直接参照している箇所は無いことを確認済み）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
