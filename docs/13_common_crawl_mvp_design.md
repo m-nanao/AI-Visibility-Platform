@@ -215,6 +215,8 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 
 ## 11. 依頼者確認が必要な点（UI追加後も未確定、2026-07-28追記・更新）
 
+**2026-07-28、この11章と[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)「7. 依頼者確認が必要な点」に分散していた確認候補を、現在の仮文言・変更候補・推奨表現とあわせて[15_requester_review_items.md](./15_requester_review_items.md)に集約した。以後はそちらを一次情報とし、この11章は経緯の記録として残す。**
+
 検証用UI selector（`feature/common-crawl-ui-selector`）まで実装が進み、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`にすれば依頼者向けの表示名・説明文・注意書きが実際に画面へ露出する状態になった。ただし**これらの文言はまだ依頼者確認前の仮のものであり、確定していない**。**今回もこれらの確認待ちで実装を止めず、以下の仮方針で進めている**——selectorをデフォルト表示（Vercelで`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`に設定）する前に、あらためて依頼者へ確認すること。
 
 確認候補:
@@ -309,3 +311,4 @@ Common Crawl由来Documentは既存Analyzer入力に混ざっているため、�
 - 今後のタスク一覧: [05_tasks.md](./05_tasks.md)
 - 現状サマリー: [development_status.md](./development_status.md)
 - Common Crawl由来データの改善提案への反映方針: [14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)
+- Common Crawl関連 依頼者確認用メモ（表示名・説明文・改善提案文言）: [15_requester_review_items.md](./15_requester_review_items.md)
