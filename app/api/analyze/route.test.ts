@@ -458,6 +458,132 @@ describe("POST /api/analyze", () => {
     expect(forwardedBody.chatgptMode).toBeUndefined();
   });
 
+  it("forwards a valid commonCrawlMode and commonCrawlDomain to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("Cybozu");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(
+      makeRequest({
+        brandName: "Cybozu",
+        commonCrawlMode: "domain",
+        commonCrawlDomain: "cybozu.co.jp",
+      }),
+    );
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.commonCrawlMode).toBe("domain");
+    expect(forwardedBody.commonCrawlDomain).toBe("cybozu.co.jp");
+  });
+
+  it("drops an invalid commonCrawlMode instead of forwarding it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("Cybozu");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "Cybozu", commonCrawlMode: "brand_name" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.commonCrawlMode).toBeUndefined();
+  });
+
+  it("drops a non-string commonCrawlDomain instead of forwarding it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("Cybozu");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(
+      makeRequest({ brandName: "Cybozu", commonCrawlMode: "domain", commonCrawlDomain: 123 }),
+    );
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.commonCrawlDomain).toBeUndefined();
+  });
+
+  it("omits commonCrawlMode/commonCrawlDomain from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.commonCrawlMode).toBeUndefined();
+    expect(forwardedBody.commonCrawlDomain).toBeUndefined();
+  });
+
+  it("passes through meta.commonCrawlProvider and an extra Document source from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("Cybozu"),
+      meta: pythonMetaOverride({
+        sourceTypes: ["development_sample", "common_crawl"],
+        commonCrawlProvider: {
+          mode: "domain",
+          status: "real",
+          reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+          domain: "cybozu.co.jp",
+          crawlIndex: "CC-MAIN-2026-08",
+          candidateCount: 1,
+          documentCount: 1,
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "Cybozu", commonCrawlMode: "domain", commonCrawlDomain: "cybozu.co.jp" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.commonCrawlProvider).toEqual({
+      mode: "domain",
+      status: "real",
+      reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+      domain: "cybozu.co.jp",
+      crawlIndex: "CC-MAIN-2026-08",
+      candidateCount: 1,
+      documentCount: 1,
+    });
+    expect(data.meta.sourceTypes).toContain("common_crawl");
+  });
+
+  it("accepts a response without meta.commonCrawlProvider (existing/older backend shape)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({}),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.commonCrawlProvider).toBeUndefined();
+  });
+
   it("accepts an unavailable aiOverviewComparison with aiOverviewProvider metadata from the Python API", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = {
