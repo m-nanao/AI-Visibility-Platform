@@ -381,6 +381,33 @@ WARNING:services.common_crawl_index:Common Crawl Index API request failed index=
 - **今回変更していないもの**: Common Crawl取得件数（3件上限）・fallback index実装（別indexへの切り替え）・UI表示・DataForSEO/ChatGPT関連コード。retry回数・間隔もenv化していない（将来必要になれば検討）。
 - **次の課題**: 今回のretryで解消しない場合（Common Crawl側の長時間の障害等）に備え、fallback indexの要否や、依頼者確認後の表示文言調整を次タスクとして検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 22. Common Crawl Index API query形式fallback追加（backend、2026-07-29追記）
+
+前節（21.）のretry追加後も、Renderで以下のログが確認できた。
+
+```
+Common Crawl Index API request start index=CC-MAIN-2026-25 domain=cybozu.co.jp url_pattern=cybozu.co.jp/* timeout=10.0 attempt=1/3 request_url=https://index.commoncrawl.org/CC-MAIN-2026-25-index?url=cybozu.co.jp%2F%2A&output=json&filter=status%3A200&filter=mime%3Atext%2Fhtml&limit=5
+Common Crawl Index API request failed ... error_type=RemoteProtocolError error=Server disconnected without sending a response.
+...
+Common Crawl Index API request exhausted retries index=CC-MAIN-2026-25 domain=cybozu.co.jp attempts=3 last_error_type=RemoteProtocolError
+```
+
+retry自体は正しく動作しているが、標準query（`filter=status:200`＋`filter=mime:text/html`付き）が3回とも`RemoteProtocolError`で失敗し続けた——つまり同じquery形式を繰り返すだけでは復旧しないケースがあると判明した。現在のquery形式（`url={domain}/*`＋2つのfilter）がCommon Crawl側で不安定な可能性を考慮し、`fix/common-crawl-index-query-fallback`で段階的なquery形式fallbackを追加した。**retry回数を増やすのではなく、query形式そのものを変えて再試行する**アプローチである。
+
+- **query variant**（`_build_query_variants()`、`search_common_crawl_domain()`のみが対象。`_fetch_latest_index()`/collinfo.jsonはfilter等のクエリパラメータを持たないため対象外）:
+  1. `default-filtered` — 現行の標準query（`url={domain}/*`・`output=json`・`filter=status:200`・`filter=mime:text/html`・`limit`）
+  2. `default-unfiltered` — filterを外したquery（`url={domain}/*`・`output=json`・`limit`）
+  3. `www-unfiltered` — domainの先頭に`www.`を付けた上でfilterを外したquery（`url=www.{domain}/*`・`output=json`・`limit`）。domainが既に`www.`で始まる場合はこのvariantを生成しない（`www.www.`という二重prefixを避けるため、その場合はvariantが2つのみになる）
+- **fallback条件**: あるvariantで`httpx.TransportError`（RemoteProtocolError/ConnectError/ConnectTimeout/ReadTimeout等）が既存の最大3回retryをすべて使い切っても解消しない場合、または非200のうち`502`/`503`/`504`がretryしても解消しない場合、次のvariantへfallbackする。
+- **fallbackしない条件**: `400`/`404`等の非retry対象な非200レスポンス（即座に`unavailable`、他のvariantは試さない）。成功したが0件だった場合（query自体は成功しているため、別query形式へ広げるかどうかは「0件時にどこまでqueryを拡張するか」という別課題であり、今回のfallbackの対象外——今回のfallbackは「通信失敗時の代替query」が目的）。domain不正・index解決失敗・`COMMON_CRAWL_ENABLED=false`はいずれもvariantループに入る前の段階で弾かれ、影響を受けない。
+- **variantごとのretry**: 各variantには既存の最大3回retryをそのまま適用する。例えば標準queryが3回とも失敗→filterなしqueryへfallback→filterなしqueryも3回とも失敗→`www.`付きqueryへfallback、という流れで、最悪ケースでは1回のdomain検索が最大9回（3 variant×3 attempt）のHTTPリクエストになり得る。
+- **ログ**: request開始ログに`query_variant=%s`を追加した（例:`... query_variant=default-filtered attempt=1/3 ...`）。variantを切り替える際に`Common Crawl Index API query fallback index=... domain=... from=%s to=%s reason=%s`（INFO、`reason`は直前のvariantの`error_type`または`HTTP{status}`）を出す。fallback後のvariantで成功した場合（またはvariant内でretryが成功した場合）は`request succeeded ... query_variant=%s attempt=N/3 candidates=%d`ログを出す。全variantが失敗した場合は`Common Crawl Index API all query variants failed index=... domain=... variants=%d last_error_type=%s`（WARNING）を出す。
+- **結果の扱い**: fallback queryで取得できたcandidateも既存の`_parse_candidates()`でそのまま処理する。filterなしqueryでは`status`/`mime`が現行queryの条件（`status:200`/`mime:text/html`）を満たさない候補が混じり得るが、`CommonCrawlCandidate`の該当フィールドはいずれも元々Optionalであり、後続のWARC取得・HTML抽出側（`common_crawl_warc.py`）で本文抽出できないものは既存方針どおりskipされる——今回、この後続側の挙動は変更していない。
+- **成功時・失敗時の挙動**: fallback後のvariantで成功した場合も、通常どおり`candidates`を含む`status="real"`の結果を返す。全variantが失敗した場合の最終的な`status="unavailable"`と`reason`は**従来と完全に同じ文言**——画面表示用の日本語reason分類（`app/lib/meta-label.ts`の`classifyCommonCrawlUnavailableReason()`）への影響は一切ない。
+- **timeout設定**: `COMMON_CRAWL_TIMEOUT_SECONDS`の許可範囲は3〜30秒のまま変更していない（`60`等の範囲外値は10秒にフォールバック）。Render環境では許可範囲内の最大値である30を推奨する。
+- **今回変更していないもの**: Common Crawl取得件数（3件上限）・UI・frontend・`common_crawl_warc.py`（WARC fetchのretryは対象外）・`common_crawl_document_provider.py`・DataForSEO/ChatGPT関連コード。0件時の大幅なquery拡張（ブランド名検索への切り替え等）も今回は行っていない。
+- **次の課題**: 0件時（query自体は成功しているが候補が無い場合）に別のquery形式・より広い検索条件を試すべきかどうかは今後の検討事項とする。あわせて、依頼者確認後の表示文言調整、Common Crawl取得件数の段階的拡張検討も引き続き残っている（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

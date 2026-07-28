@@ -486,8 +486,9 @@ def test_search_logs_request_start_with_index_domain_timeout_and_url(monkeypatch
 
 def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, caplog):
     # ConnectError is a retryable httpx.TransportError (see
-    # fix/common-crawl-index-retry), so this now runs all 3 attempts —
-    # sleep is mocked so the test doesn't actually wait.
+    # fix/common-crawl-index-retry), so this now exhausts retries on
+    # every query variant (fix/common-crawl-index-query-fallback) — 3
+    # attempts x 3 variants. Sleep is mocked so the test doesn't wait.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
 
     def raise_connect_error(url, **kwargs):
@@ -499,9 +500,10 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 3
+    assert len(failure_records) == 9
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Name or service not known" in failure_records[0].message
+    assert "query_variant=default-filtered" in failure_records[0].message
 
 
 def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
@@ -517,7 +519,7 @@ def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 3
+    assert len(failure_records) == 9
     assert "error_type=ReadTimeout" in failure_records[0].message
     assert "error_type=ConnectError" not in failure_records[0].message
 
@@ -696,6 +698,12 @@ def test_search_retries_on_connect_error_then_succeeds(monkeypatch):
 
 
 def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch):
+    # With query-variant fallback (fix/common-crawl-index-query-fallback),
+    # a persistent RemoteProtocolError exhausts retries on every query
+    # variant in turn (3 variants x 3 attempts = 9 calls) before finally
+    # returning unavailable — see
+    # test_search_all_query_variants_fail_and_log_final_failure for the
+    # dedicated "all variants failed" logging assertions.
     sleep_calls = _patch_sleep(monkeypatch)
     calls = {"count": 0}
 
@@ -711,8 +719,8 @@ def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch)
 
     assert result.status == "unavailable"
     assert "network or timeout" in result.reason
-    assert calls["count"] == 3
-    assert sleep_calls == [0.5, 1.0]
+    assert calls["count"] == 9
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0]
 
 
 def test_search_does_not_retry_on_http_400(monkeypatch):
@@ -835,7 +843,10 @@ def test_search_logs_success_message_when_a_retry_succeeds(monkeypatch, caplog):
     assert "candidates=1" in success_records[0].message
 
 
-def test_search_retry_never_sleeps_more_than_1_5_seconds_total(monkeypatch):
+def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monkeypatch):
+    # Each query variant still caps its own retry sleep at 0.5+1.0=1.5s;
+    # with 3 variants (fix/common-crawl-index-query-fallback) a
+    # persistent failure sleeps at most 3x1.5=4.5s in total, never more.
     sleep_calls = _patch_sleep(monkeypatch)
 
     def fake_get(url, **kwargs):
@@ -845,7 +856,8 @@ def test_search_retry_never_sleeps_more_than_1_5_seconds_total(monkeypatch):
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    assert sum(sleep_calls) <= 1.5
+    assert sum(sleep_calls) <= 4.5
+    assert all(delay <= 1.0 for delay in sleep_calls)
 
 
 def test_search_retry_does_not_change_reason_shown_to_ui(monkeypatch):
@@ -862,6 +874,280 @@ def test_search_retry_does_not_change_reason_shown_to_ui(monkeypatch):
     # app/lib/meta-label.ts) is unchanged by adding retry — still the same
     # "network or timeout error" reason as before this task.
     assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+
+
+# --- query-variant fallback ----------------------------------------------------
+# Added 2026-07-29 (fix/common-crawl-index-query-fallback) — Render logs showed
+# the standard (filtered) query exhausting all 3 retries with
+# httpx.RemoteProtocolError even after fix/common-crawl-index-retry, meaning
+# retrying the *same* query shape wasn't enough. These tests lock in that a
+# persistent transport failure (or retryable non-200) falls back to a simpler
+# query, and then a "www."-prefixed query, before finally giving up.
+
+
+def test_search_falls_back_to_unfiltered_query_after_remote_protocol_error(monkeypatch):
+    sleep_calls = _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_params = []
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", [])
+        seen_params.append(params)
+        has_filter = any(k == "filter" for k, _ in params)
+        # First query variant (has "filter") always fails; second variant
+        # (no "filter" key at all) succeeds immediately.
+        if has_filter:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+            )
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # First variant (default-filtered) exhausted 3 attempts, then the
+    # second variant (default-unfiltered) succeeded on its first attempt.
+    assert len(seen_params) == 4
+    assert sleep_calls == [0.5, 1.0]
+
+
+def test_search_falls_back_to_unfiltered_query_after_read_timeout(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
+        if has_filter:
+            raise httpx.ReadTimeout("The read operation timed out", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_falls_back_to_unfiltered_query_after_503(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
+        if has_filter:
+            return httpx.Response(503, text="Service Unavailable", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_falls_back_through_www_variant_when_first_two_fail(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://www.cybozu.co.jp/")
+    seen_urls = []
+
+    def fake_get(url, **kwargs):
+        params = dict(kwargs.get("params"))
+        seen_urls.append(params.get("url"))
+        if params.get("url") == "www.cybozu.co.jp/*":
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert "www.cybozu.co.jp/*" in seen_urls
+    # Two prior variants (default-filtered, default-unfiltered) each
+    # exhausted 3 attempts before the www variant was tried.
+    assert seen_urls.count("cybozu.co.jp/*") == 6
+    assert seen_urls.count("www.cybozu.co.jp/*") == 1
+
+
+def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+
+    messages = [r.message for r in caplog.records]
+    fallback_records = [m for m in messages if "query fallback" in m]
+    assert len(fallback_records) == 2
+    assert any("from=default-filtered" in m and "to=default-unfiltered" in m for m in fallback_records)
+    assert any("from=default-unfiltered" in m and "to=www-unfiltered" in m for m in fallback_records)
+    assert all("reason=RemoteProtocolError" in m for m in fallback_records)
+
+    final_records = [m for m in messages if "all query variants failed" in m]
+    assert len(final_records) == 1
+    assert "variants=3" in final_records[0]
+    assert "last_error_type=RemoteProtocolError" in final_records[0]
+
+
+def test_search_does_not_fall_back_to_next_query_on_http_400(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(400, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "400" in result.reason
+    # Only the first query variant's first attempt — no retry, no fallback.
+    assert calls["count"] == 1
+
+
+def test_search_does_not_fall_back_to_next_query_on_http_404(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert calls["count"] == 1
+
+
+def test_search_does_not_fall_back_to_next_query_on_zero_candidates(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "empty" in result.reason
+    # Only the first query variant — a successful-but-empty result does
+    # not fall back to a broader/simpler query in this MVP.
+    assert calls["count"] == 1
+
+
+def test_search_logs_query_variant_in_request_start(monkeypatch, caplog):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "query_variant=default-filtered" in start_records[0]
+
+
+def test_search_logs_query_variant_in_success_message_after_fallback(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
+        if has_filter:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    success_records = [r.message for r in caplog.records if "request succeeded" in r.message]
+    assert len(success_records) == 1
+    assert "query_variant=default-unfiltered" in success_records[0]
+    assert "attempt=1/3" in success_records[0]
+    assert "candidates=1" in success_records[0]
+
+
+def test_search_www_variant_is_skipped_when_domain_already_has_www(monkeypatch):
+    calls = {"count": 0}
+    seen_urls = []
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        params = dict(kwargs.get("params"))
+        seen_urls.append(params.get("url"))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+    _patch_sleep(monkeypatch)
+
+    search_common_crawl_domain("www.cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    # Only 2 variants (default-filtered, default-unfiltered) for a domain
+    # that already starts with "www." — no doubled-up "www.www." variant.
+    assert calls["count"] == 6
+    assert all(u == "www.cybozu.co.jp/*" for u in seen_urls)
+
+
+def test_search_query_fallback_does_not_change_candidate_parsing(monkeypatch):
+    # Regression guard: candidate parsing behaves identically regardless
+    # of which query variant produced the 200 response.
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(
+        url="https://cybozu.co.jp/",
+        timestamp="20260115000000",
+        status="200",
+        mime="text/html",
+        digest="ABC123",
+    )
+
+    def fake_get(url, **kwargs):
+        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
+        if has_filter:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    candidate = result.candidates[0]
+    assert candidate.url == "https://cybozu.co.jp/"
+    assert candidate.timestamp == "20260115000000"
+    assert candidate.status == 200
+    assert candidate.mime == "text/html"
+    assert candidate.digest == "ABC123"
+    assert candidate.source == "common_crawl"
 
 
 # --- retry (collinfo.json / resolve_common_crawl_index) -----------------------
