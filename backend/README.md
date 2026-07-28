@@ -28,8 +28,9 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/chatgpt_provider.py` — `aiOverviewComparison`に追加する、ChatGPT相当モデルの1問観測providerを`off`/`openai`で切り替える抽象化層。`resolve_chatgpt_mode()`/`build_chatgpt_observation()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
 - `services/common_crawl_settings.py` — Common Crawl連携の環境変数（`COMMON_CRAWL_ENABLED`/`COMMON_CRAWL_INDEX`等）を読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。公開データセットのためcredential型はない。`load_common_crawl_settings()`。詳細は下記「Common Crawl最小連携」参照
 - `services/common_crawl_index.py` — Common Crawl Index API（`index.commoncrawl.org`）へ実際にHTTP接続し、domain指定でURL候補を検索・正規化するクライアント（**WARC本文取得・HTML抽出は`common_crawl_warc.py`が担当**、`/analyze`への統合もまだ）。`resolve_common_crawl_index()`/`search_common_crawl_domain()`。詳細は下記「Common Crawl最小連携」参照
-- `services/common_crawl_warc.py` — `CommonCrawlCandidate`1件のWARCレコードをRange requestで取得し、gzip展開してHTML本文を抽出するクライアント（**複数件取得・`Document[]`化・`/analyze`統合は未実装**）。`fetch_common_crawl_warc_record()`。詳細は下記「Common Crawl最小連携」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_chatgpt_settings.py`, `tests/test_chatgpt_client.py`, `tests/test_chatgpt_provider.py`, `tests/test_common_crawl_settings.py`, `tests/test_common_crawl_index.py`, `tests/test_common_crawl_warc.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO・OpenAI・Common Crawl関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
+- `services/common_crawl_warc.py` — `CommonCrawlCandidate`1件のWARCレコードをRange requestで取得し、gzip展開してHTML本文を抽出するクライアント（**複数件取得・`Document[]`化・`/analyze`統合は`common_crawl_document_provider.py`が一部を担当**）。`fetch_common_crawl_warc_record()`。詳細は下記「Common Crawl最小連携」参照
+- `services/common_crawl_document_provider.py` — Common Crawlの`CommonCrawlCandidate` + `CommonCrawlFetchResult`を既存の`Document`型（`sourceType: "common_crawl"`）へ変換するDocument Pipelineの「Provider」段階。既存Cleaner/Normalizerをそのまま再利用（**このモジュール自体はCommon Crawlへ接続しない、`/analyze`統合・UI追加・複数件の一括fetchは未実装**）。`build_common_crawl_document()`/`build_common_crawl_documents()`。詳細は下記「Common Crawl最小連携」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_chatgpt_settings.py`, `tests/test_chatgpt_client.py`, `tests/test_chatgpt_provider.py`, `tests/test_common_crawl_settings.py`, `tests/test_common_crawl_index.py`, `tests/test_common_crawl_warc.py`, `tests/test_common_crawl_document_provider.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO・OpenAI・Common Crawl関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -506,9 +507,9 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 **開発・検証用UI**: `NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR=true`にすると、分析フォームに「ChatGPT観測モード（検証用）」というoff/openaiの選択UIが表示される（`app/components/BrandInputForm.tsx`）。既存のAI Overview取得モード選択UI（`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR`）と同じ設計で、選択した値はリクエストボディの`chatgptMode`に入るだけの表示制御フラグ——上記の安全ゲートは一切変更しない。
 
-### Common Crawl最小連携（`common_crawl_settings.py` / `common_crawl_index.py` / `common_crawl_warc.py`、2026-07-28新設）
+### Common Crawl最小連携（`common_crawl_settings.py` / `common_crawl_index.py` / `common_crawl_warc.py` / `common_crawl_document_provider.py`、2026-07-28新設）
 
-Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）の第一段階としてIndex API検索のクライアントを、第二段階としてWARCレコード取得・HTML抽出のクライアントを実装した。**`Document[]`化・`/analyze`統合・UI追加はまだ行っていない**——これらのモジュールは現時点では`/analyze`のどのコードパスからも呼ばれず、以下の環境変数も`/analyze`の挙動には一切影響しない。
+Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）の第一段階としてIndex API検索のクライアントを、第二段階としてWARCレコード取得・HTML抽出のクライアントを、第三段階として`Document[]`への変換serviceを実装した。**`/analyze`統合・UI追加はまだ行っていない**——これらのモジュールは現時点では`/analyze`のどのコードパスからも呼ばれず、以下の環境変数も`/analyze`の挙動には一切影響しない。
 
 **`common_crawl_settings.py`**: `load_common_crawl_settings() -> CommonCrawlSettings`を公開する。Common Crawl自体は認証不要の公開データセットのため、DataForSEO/ChatGPTのような`*Credentials`型・secret管理は存在しない——`CommonCrawlSettings`の全フィールドはログ出力しても安全。
 
@@ -535,6 +536,13 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 - **HTML抽出**: 展開したバイト列を「空行（`\r\n\r\n`、フォールバックで`\n\n`）」で2回分割し、WARCヘッダーブロック→埋め込まれたHTTPレスポンスヘッダーブロック→HTML bodyの順に取り出す（境界が見つからない場合は`"Common Crawl WARC payload did not contain an HTTP response body."`で`unavailable`）。HTTPヘッダーから`Content-Type`を読み取り、`text/html`/`application/xhtml+xml`以外（`Content-Type`欠落時も含む）は`"Common Crawl WARC content type is not HTML."`で`unavailable`。`charset`が指定されていればそれで、無効・未指定なら`utf-8`でデコードし（`errors="replace"`）、空のHTML bodyは`"Common Crawl WARC HTML body was empty."`で`unavailable`。BeautifulSoup等の新規依存・HTMLクリーニングはここでは行わない（既存Cleanerへの連携は次タスク）。
 - **サイズ制限**: 抽出後のHTMLはモジュール内定数`MAX_HTML_CHARS`（200,000文字）を超えると切り詰める（`unavailable`にはしない。`document_cleaner.MAX_BODY_TEXT_LENGTH`と同じ単純スライスによる切り詰め方式）。件数を増やしすぎないよう、これらの上限は新しい`COMMON_CRAWL_*`環境変数ではなくモジュール内定数として実装した。
 - **返り値**: `CommonCrawlFetchResult(status, reason, url, crawl_index, html, content_type, fetched_bytes)`。成功時のみ`html`/`content_type`/`fetched_bytes`（Rangeで実際に取得した圧縮バイト数）が入る。**生のWARCバイト列・巨大なレスポンス本文は`reason`は元よりどのフィールドにも一切保持しない**。
+
+**`common_crawl_document_provider.py`**: `build_common_crawl_document(candidate, fetch_result) -> CommonCrawlDocumentResult`と、複数件をまとめる`build_common_crawl_documents(pairs) -> CommonCrawlDocumentResult`を公開する。Document Pipeline（[docs/11_architecture_v1.md](../docs/11_architecture_v1.md)「4. Document Pipeline」）の`common_crawl`ソース向けの「Provider」段階にあたり、`services/web_fetcher.py`の`to_documents()`・`services/sample_documents.py`の`build_sample_documents_as_documents()`と同じ役割を果たす。このモジュール自体はCommon Crawlへ一切接続しない（`CommonCrawlCandidate`/`CommonCrawlFetchResult`という、既にfetch済みの結果を受け取って変換するだけ）。**Common Crawl検索→WARC取得→Document化までを自動でつなぐ処理・`/analyze`統合・UI追加・複数件の一括fetchはまだ行っていない**。
+
+- **成否判定**: `fetch_result.status != "real"`は`"Common Crawl fetch result was unavailable."`、`fetch_result.html`が`None`/空文字は`"Common Crawl fetch result did not contain HTML."`で、いずれも即座に`CommonCrawlDocumentResult(status="unavailable")`を返す。
+- **Cleaner/Normalizer連携**: `fetch_result.html`を既存の`document_cleaner.clean_html_to_text()`（変更なし、Common Crawl専用のHTML parserは追加していない）でクリーニングし、続けて既存の`document_normalizer.normalize_text()`（`web_fetch`/`development_sample`と同じ）を通す。クリーニング後のテキストが空の場合は`"Common Crawl cleaned text was empty."`で`unavailable`（scriptタグのみ等、本文が実質空のページを弾く）。
+- **Document生成**: `sourceType: "common_crawl"`・`sourceUrl: candidate.url`（`fetch_result.url`とではなく、常に`candidate.url`を使う）・`domain`は`candidate.url`のホスト名・`title`は`extract_title(fetch_result.html)`・`text`はクリーニング＋正規化後のテキスト。`metadata`には`provider: "common_crawl"`・`crawlIndex`・`warcFilename`・`warcOffset`・`warcLength`・`warcTimestamp`・`mime`・`status`・`digest`（いずれも`candidate`由来）・`fetchedBytes`・`contentType`（`fetch_result`由来）を格納する（camelCaseキーは[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)の`Document.metadata`案に合わせた。`sourceUrl`は`Document`のトップレベルフィールドで既に持っているため、metadataには重複格納しない）。**HTML本文全体・WARC生バイト列はmetadataは元よりどこにも保持しない**。
+- **複数件wrapper**: `build_common_crawl_documents()`は各ペアを独立に変換し、1件の失敗が他の成功を巻き込まない（`web_fetcher.py`の複数URL処理と同じ方針）。1件でも成功すれば`status="real"`、全件失敗（または入力が空）なら`status="unavailable"`。
 
 ## テスト
 
@@ -847,6 +855,18 @@ pytest
 - 成功時、`CommonCrawlFetchResult`の`url`/`crawl_index`/`content_type`/`html`/`fetched_bytes`に期待通りの値が入ること。生のWARCバイト列自体はどのフィールドにも保持されないこと
 - `backend/main.py`のソースコードに`common_crawl_warc`/`fetch_common_crawl_warc_record`への参照が一切ないこと（`/analyze`へまだ統合されていないことの回帰防止）
 
+`tests/test_common_crawl_document_provider.py` では `build_common_crawl_document()` / `build_common_crawl_documents()` を直接テストしている（外部接続は行わない、`CommonCrawlCandidate`/`CommonCrawlFetchResult`を直接組み立ててテストする）。
+
+- realな`CommonCrawlFetchResult`と`CommonCrawlCandidate`から`Document`を1件作れること
+- `Document.sourceType`が`"common_crawl"`になること、`sourceUrl`が`fetch_result.url`ではなく`candidate.url`になること（両者が不一致の場合も`candidate.url`を優先）
+- `metadata`に`crawlIndex`/`warcFilename`/`warcOffset`/`warcLength`/`warcTimestamp`/`mime`/`status`/`digest`（いずれも`candidate`由来）・`fetchedBytes`/`contentType`（`fetch_result`由来）・`provider: "common_crawl"`が正しく入ること
+- HTML本文が既存`document_cleaner.clean_html_to_text()`→`document_normalizer.normalize_text()`を経て`Document.text`になること、`<script>`等のタグ・スクリプト内容が残らないこと
+- `fetch_result.status != "real"`の場合、`fetch_result.html`が`None`/空文字の場合、クリーニング後のテキストが空（scriptタグのみ等）の場合、いずれも`status="unavailable"`になること
+- 失敗時・成功時いずれも`reason`にHTML本文・WARC本文・巨大なテキストが含まれないこと（`reason`は常に短い説明文であること）、`Document`・`metadata`のどのフィールドにも生バイト列（`bytes`/`bytearray`）が含まれないこと、`metadata`に`login`/`password`等それらしいキーが一切ないこと
+- 複数件をまとめる`build_common_crawl_documents()`が、一部失敗しても成功分だけを`Document[]`として返すこと（1件の失敗が他を巻き込まない）、全件失敗・空入力はいずれも`status="unavailable"`になること
+- 既存の`sample_documents.build_sample_documents_as_documents()`・`web_fetcher.to_documents()`が本モジュール追加後も変わらず動作すること（リグレッション確認）
+- `backend/main.py`のソースコードに`common_crawl_document_provider`/`build_common_crawl_document`への参照が一切ないこと（`/analyze`へまだ統合されていないことの回帰防止）
+
 ## Next.js側との連携
 
 Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/route.ts)）は、環境変数 `PYTHON_ANALYSIS_API_URL` にこのサービスのベースURL（例: `http://localhost:8000`）を設定すると、このAPIを呼び出すようになる。`documents`/`urls` もそのままこのAPIへ中継される。タイムアウトは25秒（`urls`指定時のURL取得時間を見込んだ値。詳細は[../docs/07_decisions.md](../docs/07_decisions.md)）。
@@ -895,7 +915,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
-- Common Crawlの`Document[]`化・`/analyze`統合（`common_crawl_settings.py`/`common_crawl_index.py`/`common_crawl_warc.py`でIndex API検索・WARCレコード取得（最大1件）・HTML抽出までは実装済み、2026-07-28。`CommonCrawlCandidate`/抽出HTML→`Document[]`変換・既存Cleaner連携・複数件のWARC取得・`/analyze`統合・UI追加はまだ。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
+- Common Crawlの`/analyze`統合・UI追加（`common_crawl_settings.py`/`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`でIndex API検索・WARCレコード取得（最大1件）・HTML抽出・`Document[]`変換までは実装済み、2026-07-28。Common Crawl検索→WARC取得→Document化までを自動でつなぐ処理・複数件の一括取得・`/analyze`統合・UI追加はまだ。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
