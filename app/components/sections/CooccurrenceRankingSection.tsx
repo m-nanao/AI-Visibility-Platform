@@ -36,10 +36,10 @@ export default function CooccurrenceRankingSection({
           依頼者確認前の仮のもの — docs/13_common_crawl_mvp_design.md
           「11. 依頼者確認が必要な点」参照。 */}
       {commonCrawlProvider && (
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          {commonCrawlProvider.summary}
-          {commonCrawlProvider.detail && ` （${commonCrawlProvider.detail}）`}
-        </p>
+        <div className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          <p>{commonCrawlProvider.summary}</p>
+          {commonCrawlProvider.detail && <p>{commonCrawlProvider.detail}</p>}
+        </div>
       )}
 
       {unavailableMessage ? (

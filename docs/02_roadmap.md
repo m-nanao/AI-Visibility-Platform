@@ -39,6 +39,7 @@
   - `CommonCrawlCandidate` → `Document[]` conversion service（`backend/services/common_crawl_document_provider.py`。`sourceType: "common_crawl"`、既存Cleaner/Normalizer連携済み）
   - `/analyze` integration（`commonCrawlMode`/`commonCrawlDomain`リクエストフィールド、`backend/main.py`が検索→WARC取得（最大3候補まで試行）→Document化までをオーケストレーションし、最大1件のCommon Crawl補完Documentを追加。`meta.commonCrawlProvider`で状態を報告。`COMMON_CRAWL_ENABLED=false`時は実行しない）
   - UI mode selector（`app/components/BrandInputForm.tsx`の「Common Crawl補完（検証用）」off/domain selector＋任意のドメイン入力欄。`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`時のみ表示、デフォルト非表示。`meta.commonCrawlProvider`の状態を共起語ランキングカードに軽く表示）
+  - 表示文言の整理（`style/common-crawl-source-labels`、2026-07-28。ブランド認知サマリーに残っていた「Common Crawl（未実装）」を「Common Crawl補完」へ修正、見出しを「主要プラットフォーム」→「分析ソース」へ変更）
 - **Next（次のステップ、優先順）**:
   - 表示名・説明文の依頼者確認（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
   - status表示洗練（依頼者確認後、UI selectorのデフォルト表示化とあわせて見せ方を検討）

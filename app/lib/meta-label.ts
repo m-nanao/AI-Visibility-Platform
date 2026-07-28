@@ -178,8 +178,8 @@ export function getCommonCrawlProviderDisplay(
 
     case "real": {
       const detailParts = [
-        provider.domain ? `ドメイン: ${provider.domain}` : null,
-        provider.crawlIndex ? `index: ${provider.crawlIndex}` : null,
+        provider.domain ? `対象ドメイン: ${provider.domain}` : null,
+        provider.crawlIndex ? `Index: ${provider.crawlIndex}` : null,
       ].filter((part): part is string => part !== null);
       return {
         summary: `Common Crawl補完: 取得済み（${provider.documentCount ?? 0}件）`,

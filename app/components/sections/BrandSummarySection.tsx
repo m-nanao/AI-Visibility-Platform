@@ -28,7 +28,13 @@ export default function BrandSummarySection({
           </p>
         </div>
         <div className="col-span-2">
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">主要プラットフォーム</p>
+          {/* "主要プラットフォーム" was renamed to "分析ソース" — this
+              lists where the analyzed text came from (Webページ / 入力
+              テキスト / 開発用サンプル / Common Crawl補完 etc., see
+              backend/services/brand_summary.py's _SOURCE_TYPE_LABELS),
+              not AI platforms actually measured (see BrandSummary docs
+              on topPlatforms). */}
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">分析ソース</p>
           <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">
             {summary.topPlatforms.join(" / ")}
           </p>

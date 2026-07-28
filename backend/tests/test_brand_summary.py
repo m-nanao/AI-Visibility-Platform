@@ -143,3 +143,40 @@ def test_visibility_score_is_within_0_to_100_bounds():
 def test_build_brand_summary_does_not_raise_with_all_empty_inputs():
     summary = build_brand_summary("Acme", [], [], [], [])
     assert summary.brandName == "Acme"
+
+
+def test_common_crawl_document_is_labeled_as_supplementary_not_unimplemented():
+    # Common Crawl integration is implemented (see
+    # services/common_crawl_document_provider.py) — once a Document
+    # with this sourceType is actually present (i.e. commonCrawlMode
+    # succeeded), topPlatforms must not still say "未実装" ("not
+    # implemented").
+    documents = [_make_document("Acmeについてのページです。", sourceType="common_crawl")]
+
+    summary = build_brand_summary("Acme", documents, [], [], [])
+
+    assert summary.topPlatforms == ["Common Crawl補完"]
+    assert not any("未実装" in label for label in summary.topPlatforms)
+
+
+def test_web_fetch_and_common_crawl_documents_both_appear_in_top_platforms():
+    documents = [
+        _make_document("Acmeのページです。", sourceType="web_fetch"),
+        _make_document("Acmeの補完ページです。", sourceType="common_crawl"),
+    ]
+
+    summary = build_brand_summary("Acme", documents, [], [], [])
+
+    assert set(summary.topPlatforms) == {"Webページ", "Common Crawl補完"}
+
+
+def test_common_crawl_label_is_absent_when_no_common_crawl_document_exists():
+    # Mirrors "Common Crawl off/unavailable" — no Document with
+    # sourceType="common_crawl" is ever added in that case, so
+    # topPlatforms naturally never mentions Common Crawl either.
+    documents = [_make_document("Acmeについてのページです。", sourceType="web_fetch")]
+
+    summary = build_brand_summary("Acme", documents, [], [], [])
+
+    assert "Common Crawl補完" not in summary.topPlatforms
+    assert summary.topPlatforms == ["Webページ"]

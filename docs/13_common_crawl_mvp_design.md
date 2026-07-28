@@ -198,6 +198,7 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 7. ~~`Document[]`化（`sourceType: "common_crawl"`、既存の`Document`型をそのまま利用）~~ → `backend/services/common_crawl_document_provider.py`として、`CommonCrawlCandidate` + `CommonCrawlFetchResult`のペアを既存`Document`型（`sourceType: "common_crawl"`）へ変換するところまで実装完了（`feature/common-crawl-document-provider`、2026-07-28）。既存Cleaner（`document_cleaner.py`）・Normalizer（`document_normalizer.py`）はそのまま再利用し、変更していない。Common Crawl検索→WARC取得→Document化までを自動でつなぐ処理はまだ未実装（呼び出し側が`CommonCrawlCandidate`/`CommonCrawlFetchResult`を明示的に渡す必要がある）
 8. ~~`/analyze`への統合（6章の案A、既存の2段階ゲートパターンを踏襲）~~ → `backend/main.py`へ`commonCrawlMode`（`"off"`/`"domain"`）・`commonCrawlDomain`リクエストフィールドを追加し、最大1件のCommon Crawl補完Documentを既存Document[]へ追加できるところまで実装完了（`feature/common-crawl-analyze-integration`、2026-07-28）。**ただし`ALLOW_*_OVERRIDE`という2段階ゲートパターンは今回採用しなかった**——`aiOverviewMode`/`chatgptMode`と異なり、Common Crawlはenv駆動のデフォルトmode自体を持たず（リクエストが直接`commonCrawlMode`を指定する）、実行可否は常に`COMMON_CRAWL_ENABLED`という単一のゲートで判定する設計にした（タスクの初期方針として指定された仕様）。失敗時は`/analyze`全体を止めず`meta.commonCrawlProvider`にのみ反映する。UIはまだ未追加
 9. ~~UIにCommon Crawl modeを追加（既存の検証用selectorパターンを踏襲、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`等）~~ → `app/components/BrandInputForm.tsx`に「Common Crawl補完（検証用）」selector（off/domain）と、domain選択時のみ表示される任意のドメイン入力欄を実装完了（`feature/common-crawl-ui-selector`、2026-07-28）。既存のAI Overview/ChatGPT検証用selectorと同じ`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`パターンを踏襲。`meta.commonCrawlProvider`の状態（オフ/取得済み件数/未取得理由）を「共起語ランキング」カードに軽く表示する`getCommonCrawlProviderDisplay()`（`app/lib/meta-label.ts`）も追加。表示名・文言は`BrandInputForm.tsx`の`COMMON_CRAWL_UI_TEXT`に定数化し、依頼者確認前の仮のものとして扱う
+   - **表示文言の追加整理**（`style/common-crawl-source-labels`、2026-07-28）: 実環境での動作確認で、ブランド認知サマリーに「Common Crawl（未実装）」という実装状況と矛盾する表示が残っていたことが判明した（`backend/services/brand_summary.py`の`_SOURCE_TYPE_LABELS`。Common Crawl統合前に用意されていたプレースホルダーラベルが、実装完了後も更新されずに残っていたもの）。「Common Crawl補完」へ修正し、あわせて見出し「主要プラットフォーム」を「分析ソース」へ変更した（Common Crawl/Webページ/入力テキスト等の異質な入力ソースが混在するため）。共起語ランキング側の状態表示（`getCommonCrawlProviderDisplay()`）も、ドメイン/indexの表示を1行の括弧書きから2行に分けて読みやすくした。詳細は[backend/README.md](../backend/README.md)「ブランド認知サマリー」参照
 10. `docs/02_roadmap.md`更新（進捗に応じて、本タスクで先行して現状の設計フェーズ分を反映済み）
 
 各ステップは[10_ai_development_workflow.md](./10_ai_development_workflow.md)の「1タスクの粒度」に従い、原則1タスク1ブランチで分割して進める。
@@ -231,6 +232,8 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 - 説明（helper text）: 「入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。」
 - 注意書き（warning text）: 「Common Crawl由来の情報は、Web上の情報環境を推定するための補助データです。AIの学習内容そのものを保証するものではありません。」
 - Common Crawlは「補助入力ソース」（`urls`/`documents`を補完する位置づけ）として扱い、公式ドメイン配下の過去クロールURL補完として扱う。AIの学習内容そのものとは断定しない
+
+2026-07-28、`style/common-crawl-source-labels`で、ブランド認知サマリーの`topPlatforms`表示にCommon Crawl統合前のプレースホルダーであった「Common Crawl（未実装）」が実装完了後も残っていたことを修正し、UI selectorと同じ「Common Crawl補完」表記に統一した（あわせて見出しを「主要プラットフォーム」→「分析ソース」に変更）。これにより表示名の**表記自体**はUI selector・ブランド認知サマリーの両方で一致したが、これらの表記そのものが依頼者確認前の仮のものである点は変わらない。
 
 なお、`/analyze`統合（2026-07-28、`feature/common-crawl-analyze-integration`）とUI selector追加（2026-07-28、`feature/common-crawl-ui-selector`）自体はこれらの表現確定を待たずに完了している——selectorは`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`が未設定（デフォルトfalse）の間は非表示のままなので、依頼者確認が取れるまでVercelの本番/デモ環境でこのフラグをtrueにしないこと。
 
