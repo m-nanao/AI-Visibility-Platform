@@ -49,10 +49,28 @@ single OpenAI API call, off by default (`CHATGPT_PROVIDER_MODE=off`),
 skipped whenever `aiOverviewMode` resolves to "mock", and reported via
 `meta.chatgptProvider`. This never replaces the Google AI Mode/AI
 Overview card above; the two providers don't know about each other.
+
+The primary Document[] above may also gain one supplementary Document
+from Common Crawl (see services/common_crawl_index.py /
+common_crawl_warc.py / common_crawl_document_provider.py and
+docs/13_common_crawl_mvp_design.md) via `_build_common_crawl_documents()`
+below — off by default (`commonCrawlMode` omitted or "off", and even
+when "domain" is requested, only runs when `COMMON_CRAWL_ENABLED=true`).
+When it runs, a domain (from `commonCrawlDomain`, or else `urls[0]`'s
+hostname) is searched against Common Crawl's Index API, and at most one
+candidate is fetched/converted into a Document, which is appended to
+the primary Document[] before cooccurrence/chunking/analysis — so
+existing Analyzer logic sees it like any other Document, with no
+special-casing. A Common Crawl failure never raises and never affects
+`documentsSource`/the section statuses; it's only reflected in
+`meta.commonCrawlProvider`. No UI exists for this yet — it's reachable
+only by sending `commonCrawlMode`/`commonCrawlDomain` directly in the
+POST body.
 """
 
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -71,6 +89,8 @@ from models import (
     AnalysisSectionStatuses,
     AnalyzeRequest,
     ChatGptProviderInfo,
+    CommonCrawlProviderInfo,
+    CommonCrawlProviderMode,
     Document,
     DocumentsSource,
     SectionStatus,
@@ -79,6 +99,10 @@ from models import (
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
+from services.common_crawl_document_provider import build_common_crawl_document
+from services.common_crawl_index import search_common_crawl_domain
+from services.common_crawl_settings import load_common_crawl_settings
+from services.common_crawl_warc import fetch_common_crawl_warc_record
 from services.context_analysis import analyze_contexts
 from services.improvement_suggestions import build_improvement_suggestions
 from services.cooccurrence import (
@@ -90,6 +114,15 @@ from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
 from services.sample_documents import build_sample_documents_as_documents
 from services.web_fetcher import fetch_url_texts, to_documents as fetch_results_to_documents
+
+# Common Crawl's Index API can return up to settings.max_results
+# candidates, but /analyze only tries this many of them (in order)
+# looking for the first that fetches into a usable Document — kept
+# small and independent of settings.max_results so a single /analyze
+# call never issues an excessive number of WARC fetch requests (see
+# docs/13_common_crawl_mvp_design.md's "件数" policy: at most one
+# Document is added, from at most this many attempts).
+COMMON_CRAWL_MAX_CANDIDATES_TO_TRY = 3
 
 # Without this, INFO-level logs (e.g. the sample-document notice below)
 # are silently dropped: uvicorn's default logging config only sets up
@@ -161,6 +194,117 @@ def _documents_from_strings(texts: list[str]) -> list[Document]:
         )
         for text in texts
     ]
+
+
+def _resolve_common_crawl_domain(
+    requested_domain: str | None, urls: list[str] | None
+) -> str | None:
+    """Picks the domain to search Common Crawl for: the request's
+    explicit `commonCrawlDomain` if given, otherwise the hostname of
+    `urls[0]`. Returns None if neither yields anything usable — the
+    caller reports that as "unavailable" rather than guessing.
+
+    This does not itself reject dangerous/malformed input — whatever
+    string this returns is still passed through
+    services/common_crawl_index.py's `search_common_crawl_domain()`,
+    which normalizes and validates it against a strict hostname
+    allow-list before any HTTP request is made.
+    """
+    if requested_domain and requested_domain.strip():
+        return requested_domain.strip()
+
+    if urls:
+        hostname = urlparse(urls[0]).hostname
+        if hostname:
+            return hostname
+
+    return None
+
+
+def _build_common_crawl_documents(
+    common_crawl_mode: CommonCrawlProviderMode,
+    requested_domain: str | None,
+    urls: list[str] | None,
+) -> tuple[list[Document], CommonCrawlProviderInfo]:
+    """Runs the Common Crawl "補完" (supplementary) flow described in
+    docs/13_common_crawl_mvp_design.md: resolve a domain, search the
+    Index API, then try up to COMMON_CRAWL_MAX_CANDIDATES_TO_TRY
+    candidates (in order) for the first one that fetches and converts
+    into a usable Document.
+
+    Never raises, and never lets a Common Crawl failure affect the rest
+    of /analyze — every failure path (mode is "off", Common Crawl is
+    disabled, the domain can't be determined, the Index search fails or
+    finds nothing, or every candidate fails to fetch/convert) returns an
+    empty Document[] plus a CommonCrawlProviderInfo describing why. At
+    most one Document is ever returned (see docs/13_common_crawl_mvp_design.md's
+    "件数" policy — multi-document Common Crawl integration is a later
+    task), and none of `search_common_crawl_domain()`/
+    `fetch_common_crawl_warc_record()`/`build_common_crawl_document()`
+    themselves do any COMMON_CRAWL_ENABLED gating (see their module
+    docstrings) — that gating happens here, once, before any of them
+    are called.
+    """
+    if common_crawl_mode == "off":
+        return [], CommonCrawlProviderInfo(
+            mode="off",
+            status="off",
+            reason="Common Crawl integration is off.",
+        )
+
+    settings = load_common_crawl_settings()
+    if not settings.enabled:
+        return [], CommonCrawlProviderInfo(
+            mode=common_crawl_mode,
+            status="off",
+            reason="Common Crawl is disabled (COMMON_CRAWL_ENABLED is not true).",
+        )
+
+    domain = _resolve_common_crawl_domain(requested_domain, urls)
+    if domain is None:
+        return [], CommonCrawlProviderInfo(
+            mode=common_crawl_mode,
+            status="unavailable",
+            reason="Common Crawl domain could not be determined from commonCrawlDomain or urls.",
+        )
+
+    index_result = search_common_crawl_domain(domain, settings)
+    if index_result.status != "real":
+        return [], CommonCrawlProviderInfo(
+            mode=common_crawl_mode,
+            status="unavailable",
+            reason=index_result.reason,
+            domain=domain,
+            crawlIndex=index_result.crawl_index,
+        )
+
+    candidate_count = len(index_result.candidates)
+    for candidate in index_result.candidates[:COMMON_CRAWL_MAX_CANDIDATES_TO_TRY]:
+        fetch_result = fetch_common_crawl_warc_record(candidate, settings)
+        if fetch_result.status != "real":
+            continue
+
+        document_result = build_common_crawl_document(candidate, fetch_result)
+        if document_result.status == "real":
+            documents = list(document_result.documents)
+            return documents, CommonCrawlProviderInfo(
+                mode=common_crawl_mode,
+                status="real",
+                reason=f"Common Crawl added {len(documents)} document(s) for {domain}.",
+                domain=domain,
+                crawlIndex=index_result.crawl_index,
+                candidateCount=candidate_count,
+                documentCount=len(documents),
+            )
+
+    return [], CommonCrawlProviderInfo(
+        mode=common_crawl_mode,
+        status="unavailable",
+        reason="Common Crawl found candidates but none could be fetched into a usable document.",
+        domain=domain,
+        crawlIndex=index_result.crawl_index,
+        candidateCount=candidate_count,
+    )
 
 
 @app.post("/analyze", response_model=AnalysisResult)
@@ -267,6 +411,30 @@ def analyze(payload: AnalyzeRequest):
             brand_name,
             len(documents_list),
         )
+
+    # Common Crawl "補完" (supplementary) Document — independent of, and
+    # never affecting the status of, the primary documents/urls/
+    # development_sample source above (see
+    # docs/13_common_crawl_mvp_design.md). Off by default
+    # (commonCrawlMode omitted or "off"); when requested, at most one
+    # extra Document is appended before it's counted/chunked/analyzed
+    # below, so cooccurrenceRanking/contextAnalysis/summary/improvements
+    # all see it exactly like any other Document. A Common Crawl
+    # failure never raises and never changes documents_source/
+    # cooccurrence_status — it's only reflected in
+    # meta.commonCrawlProvider.
+    common_crawl_mode: CommonCrawlProviderMode = payload.commonCrawlMode or "off"
+    common_crawl_documents, common_crawl_provider = _build_common_crawl_documents(
+        common_crawl_mode, payload.commonCrawlDomain, payload.urls
+    )
+    if common_crawl_documents:
+        documents_list = [*documents_list, *common_crawl_documents]
+    logger.info(
+        "common crawl integration complete: mode=%s status=%s documents=%d",
+        common_crawl_mode,
+        common_crawl_provider.status,
+        len(common_crawl_documents),
+    )
 
     logger.info(
         "document count=%d source=%s",
@@ -422,5 +590,6 @@ def analyze(payload: AnalyzeRequest):
             reason=chatgpt_reason,
             environment=chatgpt_environment,
         ),
+        commonCrawlProvider=common_crawl_provider,
     )
     return result

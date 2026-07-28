@@ -101,6 +101,29 @@ ChatGptStatus = Literal["real", "off", "unavailable"]
 # otherwise. See services/chatgpt_provider.py's build_chatgpt_observation().
 ChatGptEnvironment = Literal["api", "off", "unavailable"]
 
+# Whether /analyze should try to add one supplementary Document from
+# Common Crawl (see services/common_crawl_index.py /
+# common_crawl_warc.py / common_crawl_document_provider.py and
+# docs/13_common_crawl_mvp_design.md). "off" (default) does nothing;
+# "domain" searches Common Crawl's Index API for the request's domain
+# (see AnalyzeRequest.commonCrawlDomain below) and tries to fetch/build
+# a Document from the first usable candidate. Unlike
+# AiOverviewProviderMode/ChatGptProviderMode there is no separate
+# ALLOW_*_OVERRIDE env gate — the request field is honored directly,
+# but only ever does anything when COMMON_CRAWL_ENABLED=true (see
+# main.py._build_common_crawl_documents()), so a request body alone
+# still can't turn this on in an environment not configured to allow
+# it.
+CommonCrawlProviderMode = Literal["off", "domain"]
+
+# Whether the Common Crawl "補完" flow actually added a Document this
+# request. "off": commonCrawlMode was "off", or COMMON_CRAWL_ENABLED is
+# not true. "real": a Document was added. "unavailable": commonCrawlMode
+# was "domain" and Common Crawl is enabled, but the domain couldn't be
+# determined, the Index search failed/found nothing, or every candidate
+# failed to fetch/convert into a Document.
+CommonCrawlProviderStatus = Literal["off", "real", "unavailable"]
+
 MAX_BRAND_NAME_LENGTH = 200
 
 # documents[] input limits (requirement: count / per-item / total).
@@ -197,6 +220,29 @@ class ChatGptProviderInfo(BaseModel):
     environment: ChatGptEnvironment | None = None
 
 
+class CommonCrawlProviderInfo(BaseModel):
+    """Reports whether the Common Crawl "補完" flow added a
+    supplementary Document to this request, and why — see
+    main.py._build_common_crawl_documents() and
+    docs/13_common_crawl_mvp_design.md. Entirely independent of
+    aiOverviewProvider/chatgptProvider — a request can succeed/fail on
+    each independently, and this never touches `documentsSource` or the
+    section statuses above (Common Crawl is a supplementary input, not
+    a replacement for the primary documents/urls/development_sample
+    source). At most one Document is ever added this way — `documentCount`
+    is 0 or 1, never more (multi-document Common Crawl integration is a
+    later task).
+    """
+
+    mode: CommonCrawlProviderMode
+    status: CommonCrawlProviderStatus
+    reason: str
+    domain: str | None = None
+    crawlIndex: str | None = None
+    candidateCount: int = 0
+    documentCount: int = 0
+
+
 class AnalysisMeta(BaseModel):
     sections: AnalysisSectionStatuses
     documentsSource: DocumentsSource
@@ -225,6 +271,11 @@ class AnalysisMeta(BaseModel):
     # Independent of aiOverviewProvider — optional so existing
     # clients/tests that don't know about it aren't broken.
     chatgptProvider: ChatGptProviderInfo | None = None
+    # Whether a supplementary Common Crawl Document was added to this
+    # request's Document[] (see CommonCrawlProviderInfo above).
+    # Independent of aiOverviewProvider/chatgptProvider — optional so
+    # existing clients/tests that don't know about it aren't broken.
+    commonCrawlProvider: CommonCrawlProviderInfo | None = None
 
 
 class SentimentBreakdown(BaseModel):
@@ -382,6 +433,23 @@ class AnalyzeRequest(BaseModel):
     # and becomes the same 400 {"error": "invalid request body"} as
     # other malformed request fields.
     chatgptMode: ChatGptProviderMode | None = None
+    # Whether to try adding one supplementary Document from Common
+    # Crawl (see CommonCrawlProviderMode above). Defaults to "off" when
+    # omitted (treated the same as explicit "off" — see main.py). An
+    # invalid value (anything outside CommonCrawlProviderMode) fails
+    # Pydantic validation and becomes the same 400 {"error": "invalid
+    # request body"} as other malformed request fields. Unlike
+    # aiOverviewMode/chatgptMode there is no ALLOW_*_OVERRIDE env gate —
+    # see CommonCrawlProviderMode's docstring for why that's still safe.
+    commonCrawlMode: CommonCrawlProviderMode | None = None
+    # The domain to search Common Crawl for when commonCrawlMode is
+    # "domain" (e.g. "cybozu.co.jp"). If omitted, main.py falls back to
+    # the hostname of `urls[0]` when present; if neither yields a
+    # domain, the Common Crawl step reports "unavailable". Whatever
+    # domain is used is still validated/normalized by
+    # services/common_crawl_index.py before any HTTP request is made —
+    # this field is not trusted as-is.
+    commonCrawlDomain: str | None = None
 
 
 class ErrorResponse(BaseModel):
