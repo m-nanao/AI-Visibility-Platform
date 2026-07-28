@@ -20,6 +20,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 - ChatGPT回答の安定化（`CHATGPT_TEMPERATURE`、構造化プロンプト。gpt-5系モデルではtemperatureを自動省略しHTTP 400を回避）
 - 短いAI Overview / ChatGPT本文の全文表示、長文のみ「続きを見る」
 - AI Overview取得モードの`dataforseo_sandbox`/`dataforseo_live`明示選択（`DATAFORSEO_API_ENV`の値に依存せずSandbox/Liveを画面から明示的に選べる。Liveは既存の5つの手動確認用ゲートがすべて揃った場合のみ実行）
+- ヘッダーバナー文言の更新（`app/lib/staging-banner.ts`、2026-07-28）: 「共起語ランキングのみ実データ計算」「Common Crawl・DataForSEOとの連携はまだ行っていません」という古い文言を削除し、URL解析・Common Crawl補完・DataForSEO連携・ChatGPT観測が実データ/外部APIで検証できる旨と、分析結果が開発中の推定表示を含む旨を明記した
 
 ## 2. 次フェーズ扱い（明日は見せない）
 

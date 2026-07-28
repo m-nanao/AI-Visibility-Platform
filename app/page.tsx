@@ -5,6 +5,7 @@ import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
 import { buildAnalyzeRequestBody } from "./lib/analysis-request";
 import { getSectionStatusSummary } from "./lib/meta-label";
+import { STAGING_BANNER_TEXT } from "./lib/staging-banner";
 import type {
   AiOverviewProviderMode,
   AnalysisResult,
@@ -93,8 +94,7 @@ export default function Home() {
             ブランドがAIサービス上でどのように認知されているかを分析します
           </p>
           <p className="mt-2 inline-block rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            この環境は開発中の依頼者確認用ステージング環境です。機密情報・個人情報・本番データは入力しないでください。共起語ランキングのみ実データ計算、その他のセクションは開発用データです。Common
-            Crawl・DataForSEOとの連携はまだ行っていません。
+            {STAGING_BANNER_TEXT}
           </p>
         </div>
       </header>
