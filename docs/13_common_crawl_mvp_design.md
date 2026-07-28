@@ -359,6 +359,28 @@ WARNING:services.common_crawl_index:Common Crawl Index API request failed (netwo
 - **セキュリティ**: Common Crawl Index APIは公開・認証不要のAPIであり、そもそもAPIキー等のsecretが存在しない。ログに出すのはindex名・URL・domain・url pattern・timeout・例外クラス名/メッセージ・HTTP status codeのみで、HTML本文・WARC本文・raw response全文はいずれも出さない（bodyは200文字までのプレビューに限定）。
 - **次の課題**: 今回の診断ログにより実際の`error_type`が判明した後、必要であればretry実装・fallback index・タイムアウト値の見直しを次タスクとして検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 21. Common Crawl Index API retry追加（backend、2026-07-29追記）
+
+前節（20.）の診断ログ強化後、Renderの実ログで以下の2点が確認できた。
+
+```
+WARNING:services.common_crawl_settings:COMMON_CRAWL_TIMEOUT_SECONDS=60.0 is outside the allowed range [3.0, 30.0]; falling back to 10.0
+WARNING:services.common_crawl_index:Common Crawl Index API request failed index=CC-MAIN-2026-25 domain=cybozu.co.jp error_type=RemoteProtocolError error=Server disconnected without sending a response.
+```
+
+1点目は既存仕様どおりの警告（`COMMON_CRAWL_TIMEOUT_SECONDS`の許可範囲は3〜30秒で、`60`のような範囲外値は10秒にフォールバックする）であり、コード上の欠陥ではない。2点目が実際の障害原因で、`httpx.RemoteProtocolError`（「Server disconnected without sending a response.」）——Common Crawl側または通信経路がレスポンス送信前に接続を切る、タイムアウト経過を待たず即座に発生する種類のエラー——であることが判明した。**`COMMON_CRAWL_TIMEOUT_SECONDS`をいくら伸ばしてもこの種のエラーには一切効果がなく**、これが「timeoutを30秒・60秒に変更しても即座に失敗する」という観測と整合する。従来は1回の失敗で即座に`unavailable`になっていたため、`fix/common-crawl-index-retry`で軽いretryを追加した。
+
+- **retry対象の例外**: `httpx.TransportError`（`RemoteProtocolError`/`ConnectError`/`ConnectTimeout`/`ReadTimeout`/`NetworkError`系/`ProtocolError`系をすべて含むhttpxの例外階層の基底クラス）。これ以外の`httpx.HTTPError`（想定外の種類）はretryしない。
+- **retry対象の非200レスポンス**: `502`/`503`/`504`のみ（一時的な上流/ゲートウェイ問題の可能性が高いため）。`400`/`404`等はretryしない。
+- **retry回数**: 最大3回（初回 + retry 2回）。MVPでは固定（`_MAX_ATTEMPTS = 3`、env化はしていない）。
+- **retry間隔**: 1回目失敗後0.5秒、2回目失敗後1.0秒待機してから再試行（`_RETRY_DELAYS_SECONDS = (0.5, 1.0)`）。テストは`time.sleep`をmonkeypatchで潰しており、実時間で待たされることはない。
+- **ログ**: 各attemptのrequest開始時に`attempt=N/3`を追加、retry時に`request retrying ... next_attempt=N/3 delay=...`、3回とも失敗した場合に`request exhausted retries ... attempts=3 last_error_type=...`、2回目以降で成功した場合に`request succeeded ... attempt=N/3 candidates=...`を出力する。
+- **成功時の挙動**: 2回目・3回目のattemptで成功した場合も、通常どおり`candidates`を含む`status="real"`の結果を返す——retryは内部の再試行だけで、呼び出し側（`main.py`）から見た挙動・戻り値の形は変わらない。
+- **失敗時の挙動**: 3回とも失敗した場合、最終的な`status="unavailable"`と`reason`は**従来と完全に同じ文言**（「Common Crawl Index API request failed due to a network or timeout error.」等）。画面表示用の日本語reason分類（`app/lib/meta-label.ts`の`classifyCommonCrawlUnavailableReason()`）はこの`reason`文字列を分類しているだけなので、retry追加による画面表示の変化は一切ない。
+- **対象範囲**: `search_common_crawl_domain()`（Index API検索）と、`resolve_common_crawl_index()`が使う`_fetch_latest_index()`（collinfo.json取得、`COMMON_CRAWL_INDEX=latest`時のみ発生する追加リクエスト）の両方に同じretryロジックを実装した——どちらも同じ`index.commoncrawl.org`ホストへの`httpx.get()`呼び出しであり、同じ種類の切断エラーが起こり得るため。
+- **今回変更していないもの**: Common Crawl取得件数（3件上限）・fallback index実装（別indexへの切り替え）・UI表示・DataForSEO/ChatGPT関連コード。retry回数・間隔もenv化していない（将来必要になれば検討）。
+- **次の課題**: 今回のretryで解消しない場合（Common Crawl側の長時間の障害等）に備え、fallback indexの要否や、依頼者確認後の表示文言調整を次タスクとして検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

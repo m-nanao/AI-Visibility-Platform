@@ -71,6 +71,10 @@ def test_resolve_latest_index_picks_the_greatest_id_regardless_of_list_order(mon
 
 
 def test_resolve_latest_index_fails_safely_on_network_error(monkeypatch):
+    # ConnectTimeout is retryable (fix/common-crawl-index-retry); sleep is
+    # mocked so this exhausts all 3 attempts without a real delay.
+    monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+
     def raise_timeout(url, **kwargs):
         raise httpx.ConnectTimeout("timeout", request=httpx.Request("GET", url))
 
@@ -381,6 +385,10 @@ def test_search_returns_unavailable_and_empty_reason_safe_on_zero_results(monkey
 
 
 def test_search_fails_safely_on_network_error(monkeypatch):
+    # ConnectTimeout is retryable (fix/common-crawl-index-retry); sleep is
+    # mocked so this exhausts all 3 attempts without a real delay.
+    monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+
     def raise_timeout(url, **kwargs):
         raise httpx.ConnectTimeout("timeout", request=httpx.Request("GET", url))
 
@@ -477,6 +485,11 @@ def test_search_logs_request_start_with_index_domain_timeout_and_url(monkeypatch
 
 
 def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, caplog):
+    # ConnectError is a retryable httpx.TransportError (see
+    # fix/common-crawl-index-retry), so this now runs all 3 attempts —
+    # sleep is mocked so the test doesn't actually wait.
+    monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+
     def raise_connect_error(url, **kwargs):
         raise httpx.ConnectError("[Errno -2] Name or service not known", request=httpx.Request("GET", url))
 
@@ -486,12 +499,15 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 1
+    assert len(failure_records) == 3
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Name or service not known" in failure_records[0].message
 
 
 def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
+    # ReadTimeout is also a retryable httpx.TransportError.
+    monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+
     def raise_read_timeout(url, **kwargs):
         raise httpx.ReadTimeout("The read operation timed out", request=httpx.Request("GET", url))
 
@@ -501,33 +517,37 @@ def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 1
+    assert len(failure_records) == 3
     assert "error_type=ReadTimeout" in failure_records[0].message
     assert "error_type=ConnectError" not in failure_records[0].message
 
 
 def test_search_logs_status_code_and_body_preview_on_non_200(monkeypatch, caplog):
-    def fake_503(url, **kwargs):
-        return httpx.Response(503, text="Service Unavailable", request=httpx.Request("GET", url))
+    # 500 is deliberately not one of the retryable statuses
+    # (502/503/504 — see fix/common-crawl-index-retry), so this stays a
+    # single-attempt scenario, matching this test's original intent of
+    # checking the non-200 log line's shape rather than retry behavior.
+    def fake_500(url, **kwargs):
+        return httpx.Response(500, text="Service Unavailable", request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_503)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_500)
 
     with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     non_200_records = [r for r in caplog.records if "non-200" in r.message]
     assert len(non_200_records) == 1
-    assert "status=503" in non_200_records[0].message
+    assert "status=500" in non_200_records[0].message
     assert "body_preview=Service Unavailable" in non_200_records[0].message
 
 
 def test_search_body_preview_is_truncated_to_200_chars(monkeypatch, caplog):
     huge_body = "x" * 5000
 
-    def fake_503(url, **kwargs):
-        return httpx.Response(503, text=huge_body, request=httpx.Request("GET", url))
+    def fake_500(url, **kwargs):
+        return httpx.Response(500, text=huge_body, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_503)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_500)
 
     with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
@@ -542,10 +562,10 @@ def test_search_body_preview_is_truncated_to_200_chars(monkeypatch, caplog):
 def test_search_logs_never_contain_html_or_warc_body(monkeypatch, caplog):
     body_with_html = "<html><body>should not leak into logs</body></html>" + "WARC/1.0 " * 20
 
-    def fake_503(url, **kwargs):
-        return httpx.Response(503, text=body_with_html, request=httpx.Request("GET", url))
+    def fake_500(url, **kwargs):
+        return httpx.Response(500, text=body_with_html, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_503)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_500)
 
     with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
@@ -577,6 +597,10 @@ def test_fetch_latest_index_logs_request_start_with_url_and_timeout(monkeypatch,
 
 
 def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog):
+    # ConnectError is retryable (fix/common-crawl-index-retry), so this
+    # now runs all 3 attempts — sleep is mocked to avoid a real delay.
+    monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+
     def raise_connect_error(url, **kwargs):
         raise httpx.ConnectError("Connection refused", request=httpx.Request("GET", url))
 
@@ -586,9 +610,299 @@ def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog
         resolve_common_crawl_index(_LATEST_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 1
+    assert len(failure_records) == 3
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Connection refused" in failure_records[0].message
+
+
+
+
+
+# --- retry -------------------------------------------------------------------
+# Added 2026-07-29 (fix/common-crawl-index-retry) — a Render deployment
+# showed httpx.RemoteProtocolError ("Server disconnected without sending a
+# response"), an abrupt-disconnect failure that happens instantly and is
+# unaffected by COMMON_CRAWL_TIMEOUT_SECONDS. These tests lock in that such
+# transient failures are retried (up to 3 attempts total) before falling
+# back to the existing "unavailable" behavior, and that sleeping between
+# retries never actually delays the test suite (time.sleep is mocked).
+
+
+def _patch_sleep(monkeypatch):
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    return sleep_calls
+
+
+def test_search_retries_on_remote_protocol_error_then_succeeds(monkeypatch):
+    sleep_calls = _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+            )
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert calls["count"] == 2
+    assert sleep_calls == [0.5]
+
+
+def test_search_retries_on_read_timeout_then_succeeds(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ReadTimeout("The read operation timed out", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert calls["count"] == 2
+
+
+def test_search_retries_on_connect_error_then_succeeds(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ConnectError("Name or service not known", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert calls["count"] == 2
+
+
+def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch):
+    sleep_calls = _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        raise httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "network or timeout" in result.reason
+    assert calls["count"] == 3
+    assert sleep_calls == [0.5, 1.0]
+
+
+def test_search_does_not_retry_on_http_400(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(400, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "400" in result.reason
+    assert calls["count"] == 1
+
+
+def test_search_does_not_retry_on_http_404(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert calls["count"] == 1
+
+
+def test_search_retries_on_503_then_succeeds(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(503, text="Service Unavailable", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert calls["count"] == 2
+
+
+def test_search_retries_on_502_and_504(monkeypatch):
+    for status in (502, 504):
+        _patch_sleep(monkeypatch)
+        body = _cdxj_line(url="https://cybozu.co.jp/")
+        calls = {"count": 0}
+
+        def fake_get(url, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return httpx.Response(status, text="gateway error", request=httpx.Request("GET", url))
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+        assert result.status == "real"
+        assert calls["count"] == 2
+
+
+def test_search_logs_attempt_retrying_and_exhausted_messages(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    messages = [r.message for r in caplog.records]
+    assert any("attempt=1/3" in m and "request start" in m for m in messages)
+    assert any("attempt=2/3" in m and "request start" in m for m in messages)
+    assert any("attempt=3/3" in m and "request start" in m for m in messages)
+    assert any("request retrying" in m and "next_attempt=2/3" in m and "delay=0.5" in m for m in messages)
+    assert any("request retrying" in m and "next_attempt=3/3" in m and "delay=1.0" in m for m in messages)
+    assert any(
+        "request exhausted retries" in m and "attempts=3" in m and "last_error_type=RemoteProtocolError" in m
+        for m in messages
+    )
+
+
+def test_search_logs_success_message_when_a_retry_succeeds(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    success_records = [r for r in caplog.records if "request succeeded" in r.message and "attempt=" in r.message]
+    assert len(success_records) == 1
+    assert "attempt=2/3" in success_records[0].message
+    assert "candidates=1" in success_records[0].message
+
+
+def test_search_retry_never_sleeps_more_than_1_5_seconds_total(monkeypatch):
+    sleep_calls = _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert sum(sleep_calls) <= 1.5
+
+
+def test_search_retry_does_not_change_reason_shown_to_ui(monkeypatch):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    # The UI-facing reason (classified into Japanese by
+    # app/lib/meta-label.ts) is unchanged by adding retry — still the same
+    # "network or timeout error" reason as before this task.
+    assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+
+
+# --- retry (collinfo.json / resolve_common_crawl_index) -----------------------
+
+
+def test_fetch_latest_index_retries_on_remote_protocol_error_then_succeeds(monkeypatch):
+    sleep_calls = _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, json=_collinfo_payload("CC-MAIN-2026-08"), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is True
+    assert resolution.crawl_index == "CC-MAIN-2026-08"
+    assert calls["count"] == 2
+    assert sleep_calls == [0.5]
+
+
+def test_fetch_latest_index_exhausts_retries_and_fails_safely(monkeypatch):
+    sleep_calls = _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is False
+    assert "network or timeout" in resolution.reason
+    assert calls["count"] == 3
+    assert sleep_calls == [0.5, 1.0]
 
 
 def test_search_logging_does_not_change_success_behavior(monkeypatch, caplog):

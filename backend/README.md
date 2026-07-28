@@ -537,7 +537,7 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 | `COMMON_CRAWL_ENABLED` | `false` | Common Crawl連携全体の大元のスイッチ。このモジュール・`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`自体はこの値でのゲーティングを行わない——`backend/main.py`の`_build_common_crawl_documents()`がこの値を読み、`false`なら`commonCrawlMode="domain"`が指定されても一切接続しない（詳細は下記「`/analyze`統合」参照） |
 | `COMMON_CRAWL_INDEX` | `latest` | `latest`（collinfo.jsonから最新のindexを解決）または`CC-MAIN-YYYY-NN`形式のindex idを明示指定。不正な値は警告ログを出しつつ`latest`にフォールバック。大文字小文字は区別せず、正規化して`CC-MAIN-`は大文字で保持する |
 | `COMMON_CRAWL_MAX_RESULTS` | `5` | 1回のdomain検索で取得するURL候補の上限。1〜10の範囲外・不正値は5にフォールバック |
-| `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。3〜30の範囲外・不正値は10にフォールバック |
+| `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。**許可範囲は3〜30秒**で、範囲外・不正値（`60`など）は10にフォールバックする（警告ログを出力）。timeoutを伸ばしても`httpx.RemoteProtocolError`のような即時切断系エラーには効かないため、そちらは下記のretryで補う |
 | `COMMON_CRAWL_USER_AGENT` | `AI-Visibility-Platform-MVP` | Common Crawlへのリクエストに使うUser-Agent。空文字・200文字超はデフォルトにフォールバック |
 
 **`common_crawl_index.py`**: `resolve_common_crawl_index(settings) -> CommonCrawlIndexResolution`と`search_common_crawl_domain(domain, settings) -> CommonCrawlIndexResult`を公開する。**このモジュール自体は`COMMON_CRAWL_ENABLED`を一切参照せず、呼ばれれば常に実際にHTTPリクエストを行う**——DataForSEOの`dataforseo_client.py`・ChatGPTの`chatgpt_client.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲しており、`COMMON_CRAWL_ENABLED`によるON/OFF制御は呼び出し側（`backend/main.py`の`_build_common_crawl_documents()`）の責務とする。
@@ -546,7 +546,8 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 - **domain検索**（`search_common_crawl_domain()`）: 入力domainを正規化（前後空白除去、`scheme://`除去、path/query/fragment除去、userinfo/port除去、小文字化）した上で、厳格なホスト名の許可リスト正規表現で検証する——ドットを含まない文字列（例:`localhost`）や`javascript:alert(1)`のような危険な入力は、HTTPリクエストを一切送らずに拒否する。正規化後、`https://index.commoncrawl.org/{crawl_index}-index`へ`GET`し、クエリパラメータは`url={domain}/*`・`output=json`・`filter=status:200`・`filter=mime:text/html`・`limit={max_results}`、ヘッダーに`User-Agent`、タイムアウトに`timeout_seconds`を指定する。
 - **レスポンス変換**: Index APIのレスポンス（JSON Lines、1行1JSON）を1行ずつパースし、`url`を持つ行のみ`CommonCrawlCandidate`（`url`/`timestamp`/`status`/`mime`/`digest`/`length`/`offset`/`filename`/`crawl_index`/`source: "common_crawl"`固定）へ変換する。`status`/`length`/`offset`はCommon Crawl側が文字列・整数のどちらで返しても安全に整数変換する。パースできない行・`url`を持たない行はスキップし、`max_results`件に達したら残りの行は処理しない。**HTML本文・WARC本文はいずれも取得・保持しない**（`CommonCrawlCandidate`にそのためのフィールド自体が存在しない）。
 - **失敗時の扱い**: 空domain・不正domain・index解決失敗・ネットワークエラー/タイムアウト・非200レスポンス・0件、いずれも例外を送出せず`CommonCrawlIndexResult(status="unavailable", reason="...")`を返す。`reason`には巨大なレスポンス本文や生JSONを一切含めない（0件・パース不能はまとめて「Common Crawl index result was empty.」という定型文言にする）。`status: Literal["real", "unavailable", "off"]`の`"off"`は将来のprovider層が`COMMON_CRAWL_ENABLED=false`時に使う値として型に含めているだけで、このモジュール自体は返さない。
-- **診断ログ**（2026-07-29追加、`chore/common-crawl-index-diagnostics`）: Render上でCommon Crawl補完が即時失敗する事象を受け、`search_common_crawl_domain()`/`resolve_common_crawl_index()`が使う`_fetch_latest_index()`双方に診断ログを追加した。request開始時（INFO）に`index`・`domain`・`url_pattern`・`timeout`（`CommonCrawlSettings.timeout_seconds`の実効値）・実際のrequest URL（`httpx.URL(url, params=params)`で構築）を出力する。失敗時（WARNING）は従来の固定メッセージに`error_type=%s error=%s`（`exc.__class__.__name__`/`str(exc)`）を追加し、`ReadTimeout`（真のタイムアウト）と`ConnectError`（DNS/接続拒否等、timeout設定と無関係に即座に発生）をRenderログだけで区別できるようにした。非200レスポンス時（WARNING）はstatus codeと`_body_preview()`（最大200文字、超過分は`...`で切り詰め）によるbody previewを追加する。**画面表示用の`reason`分類・取得ロジック・retry・fallback indexはいずれも変更していない**——HTML本文・WARC本文・raw response全文もログに一切出さない（Common Crawl自体が認証不要の公開APIのため、そもそもsecretは存在しない）。
+- **診断ログ**（2026-07-29追加、`chore/common-crawl-index-diagnostics`）: Render上でCommon Crawl補完が即時失敗する事象を受け、`search_common_crawl_domain()`/`resolve_common_crawl_index()`が使う`_fetch_latest_index()`双方に診断ログを追加した。request開始時（INFO）に`index`・`domain`・`url_pattern`・`timeout`（`CommonCrawlSettings.timeout_seconds`の実効値）・実際のrequest URL（`httpx.URL(url, params=params)`で構築）を出力する。失敗時（WARNING）は従来の固定メッセージに`error_type=%s error=%s`（`exc.__class__.__name__`/`str(exc)`）を追加し、`ReadTimeout`（真のタイムアウト）と`ConnectError`（DNS/接続拒否等、timeout設定と無関係に即座に発生）をRenderログだけで区別できるようにした。非200レスポンス時（WARNING）はstatus codeと`_body_preview()`（最大200文字、超過分は`...`で切り詰め）によるbody previewを追加する。
+- **retry**（2026-07-29追加、`fix/common-crawl-index-retry`）: 上記の診断ログにより、Render上の実際の失敗が`httpx.RemoteProtocolError`（「Server disconnected without sending a response.」）——タイムアウト経過を待たず即座に発生し、`COMMON_CRAWL_TIMEOUT_SECONDS`を伸ばしても効果がない切断系エラー——であることが判明したため、`search_common_crawl_domain()`/`_fetch_latest_index()`双方に軽いretryを追加した。最大3回（初回+retry2回）、retry前に`0.5秒`→`1.0秒`だけ`time.sleep()`する（`_MAX_ATTEMPTS`/`_RETRY_DELAYS_SECONDS`はモジュール内定数、env化はしていない）。retry対象は`httpx.TransportError`（`RemoteProtocolError`/`ConnectError`/`ConnectTimeout`/`ReadTimeout`等をすべて含む例外階層）と、非200レスポンスのうち`502`/`503`/`504`のみ（`400`/`404`等はretryしない）。各attemptで`attempt=N/3`付きのrequest startログ、retry時は`request retrying ... next_attempt=N/3 delay=...`ログ、全滅時は`request exhausted retries ... attempts=3 last_error_type=...`ログを出す。2回目以降で成功した場合は`request succeeded ... attempt=N/3 candidates=...`ログを出し、通常どおり`candidates`を返す。**3回とも失敗した場合の最終的な`status`/`reason`（画面表示用の日本語reason分類の元になる文言）は従来と完全に同じ**——retryはログとリトライ挙動だけを変更しており、成功時の候補抽出ロジック・失敗時のreason文言・fallback indexの有無はいずれも変更していない。テストでは`time.sleep`をmonkeypatchで潰しており、retry関連テストが実時間で待たされることはない。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -962,6 +963,18 @@ pytest
 - body previewが5000文字の巨大なレスポンスでも200文字程度に切り詰められること、HTML/WARC本文らしき文字列が混入していてもログ全体の長さが一定に収まること（本文全体が漏れないことの確認）
 - `collinfo.json`取得（`_fetch_latest_index()`、`resolve_common_crawl_index()`経由）でも同様のrequest開始ログ・`error_type`ログが出ること
 - 診断ログの追加が実際の戻り値（`status`/`candidates`/`reason`）に一切影響しないこと（既存の成功時挙動が変わらないことの回帰防止）
+
+さらに、Index API retry追加（2026-07-29、`fix/common-crawl-index-retry`）に伴い以下のテストを追加した（すべて`time.sleep`をmonkeypatchで潰しており、実時間で待たされることはない）。
+
+- `httpx.RemoteProtocolError`/`httpx.ReadTimeout`/`httpx.ConnectError`が1回目に発生し2回目で成功した場合、`candidates`が正しく返ること
+- `httpx.RemoteProtocolError`が3回とも発生した場合、`status="unavailable"`になり従来と同じ`reason`（network/timeout系）になること、`attempts=3`のログが出ること
+- `400`/`404`レスポンスはretryされず1回で`status="unavailable"`になること（`httpx.get`の呼び出し回数を確認）
+- `503`（および余力枠として`502`/`504`）は1回目失敗・2回目成功のケースでretryされ、`candidates`が返ること
+- 各attemptで`attempt=N/3`付きのrequest startログが出ること、retry時に`request retrying ... next_attempt=N/3 delay=0.5`/`delay=1.0`ログが出ること、3回とも失敗した場合に`request exhausted retries ... attempts=3 last_error_type=...`ログが出ること
+- 2回目以降で成功した場合に`request succeeded ... attempt=N/3 candidates=...`ログが出ること
+- retryのために実際に`time.sleep`へ渡された値の合計が1.5秒を超えないこと（sleepはmonkeypatchで潰した上での呼び出し引数の検証）
+- retryの追加によって、画面表示用の`reason`文言（3回失敗時）が変わっていないこと
+- `collinfo.json`取得（`_fetch_latest_index()`）でも同様に、1回目`RemoteProtocolError`→2回目成功でindex解決に成功すること、3回とも失敗した場合は`success=False`になること
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
