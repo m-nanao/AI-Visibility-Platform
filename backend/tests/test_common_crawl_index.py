@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 
@@ -442,3 +443,169 @@ def test_search_reason_never_contains_a_huge_response_body(monkeypatch):
     # treated the same as zero results — the huge body is never echoed
     # back in `reason`.
     assert len(result.reason) < 500
+
+
+# --- diagnostic logging -------------------------------------------------------
+# Added 2026-07-29 (chore/common-crawl-index-diagnostics) — a Render deployment
+# reported an instant (not timeout-length) failure with only a generic
+# "network/timeout error" WARNING in the logs, with no way to tell whether it
+# was a genuine read timeout, DNS/connection/SSL failure, or something else.
+# These tests lock in that Render logs alone can now distinguish those cases.
+
+
+def test_search_logs_request_start_with_index_domain_timeout_and_url(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+    settings = CommonCrawlSettings(
+        enabled=True, index="CC-MAIN-2026-25", max_results=5, timeout_seconds=60.0, user_agent="ua"
+    )
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", settings)
+
+    start_records = [r for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    message = start_records[0].message
+    assert "index=CC-MAIN-2026-25" in message
+    assert "domain=cybozu.co.jp" in message
+    assert "timeout=60.0" in message
+    assert "url_pattern=cybozu.co.jp/*" in message
+    assert "index.commoncrawl.org/CC-MAIN-2026-25-index" in message
+    assert "cybozu.co.jp" in message
+
+
+def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, caplog):
+    def raise_connect_error(url, **kwargs):
+        raise httpx.ConnectError("[Errno -2] Name or service not known", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", raise_connect_error)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    failure_records = [r for r in caplog.records if "request failed" in r.message]
+    assert len(failure_records) == 1
+    assert "error_type=ConnectError" in failure_records[0].message
+    assert "Name or service not known" in failure_records[0].message
+
+
+def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
+    def raise_read_timeout(url, **kwargs):
+        raise httpx.ReadTimeout("The read operation timed out", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", raise_read_timeout)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    failure_records = [r for r in caplog.records if "request failed" in r.message]
+    assert len(failure_records) == 1
+    assert "error_type=ReadTimeout" in failure_records[0].message
+    assert "error_type=ConnectError" not in failure_records[0].message
+
+
+def test_search_logs_status_code_and_body_preview_on_non_200(monkeypatch, caplog):
+    def fake_503(url, **kwargs):
+        return httpx.Response(503, text="Service Unavailable", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_503)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    non_200_records = [r for r in caplog.records if "non-200" in r.message]
+    assert len(non_200_records) == 1
+    assert "status=503" in non_200_records[0].message
+    assert "body_preview=Service Unavailable" in non_200_records[0].message
+
+
+def test_search_body_preview_is_truncated_to_200_chars(monkeypatch, caplog):
+    huge_body = "x" * 5000
+
+    def fake_503(url, **kwargs):
+        return httpx.Response(503, text=huge_body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_503)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    non_200_records = [r for r in caplog.records if "non-200" in r.message]
+    assert len(non_200_records) == 1
+    # Truncated preview (200 chars + "...") is far shorter than the huge body.
+    assert len(non_200_records[0].message) < 400
+    assert huge_body not in non_200_records[0].message
+
+
+def test_search_logs_never_contain_html_or_warc_body(monkeypatch, caplog):
+    body_with_html = "<html><body>should not leak into logs</body></html>" + "WARC/1.0 " * 20
+
+    def fake_503(url, **kwargs):
+        return httpx.Response(503, text=body_with_html, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_503)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    non_200_records = [r for r in caplog.records if "non-200" in r.message]
+    assert len(non_200_records) == 1
+    # The 200-char preview cap means only a prefix of this (deliberately
+    # HTML/WARC-shaped) body could ever leak through, and even that
+    # prefix is a bounded preview, never the full body.
+    assert len(non_200_records[0].message) < 400
+
+
+def test_fetch_latest_index_logs_request_start_with_url_and_timeout(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, json=_collinfo_payload("CC-MAIN-2026-08"), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+    settings = CommonCrawlSettings(
+        enabled=True, index="latest", max_results=5, timeout_seconds=45.0, user_agent="ua"
+    )
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        resolve_common_crawl_index(settings)
+
+    start_records = [r for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "url=https://index.commoncrawl.org/collinfo.json" in start_records[0].message
+    assert "timeout=45.0" in start_records[0].message
+
+
+def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog):
+    def raise_connect_error(url, **kwargs):
+        raise httpx.ConnectError("Connection refused", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", raise_connect_error)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    failure_records = [r for r in caplog.records if "request failed" in r.message]
+    assert len(failure_records) == 1
+    assert "error_type=ConnectError" in failure_records[0].message
+    assert "Connection refused" in failure_records[0].message
+
+
+def test_search_logging_does_not_change_success_behavior(monkeypatch, caplog):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    # Adding diagnostic logging must not affect the actual result.
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert result.candidates[0].url == "https://cybozu.co.jp/"
+    # The reason shown to the UI (and eventually classified into a
+    # Japanese message by app/lib/meta-label.ts) is unchanged.
+    assert "Common Crawl Index API request succeeded" in result.reason

@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 COMMON_CRAWL_HOST = "https://index.commoncrawl.org"
 COLLINFO_URL = f"{COMMON_CRAWL_HOST}/collinfo.json"
 
+# Cap on how much of a non-200 response body ever reaches a log line —
+# enough to eyeball an error page's gist (e.g. "Service Unavailable",
+# a Cloudflare block page's title) without risking a large/binary body
+# ending up in logs. Never the full body, and never used for a 200
+# response (candidate parsing doesn't log the body at all).
+_BODY_PREVIEW_MAX_CHARS = 200
+
 # One label of a DNS hostname: 1-63 chars, alphanumeric/hyphen, not
 # starting or ending with a hyphen. A full hostname is 2+ labels
 # joined by dots — this is what makes "localhost" (no dot) and bare
@@ -181,26 +188,57 @@ def _parse_crawl_index_id(raw: object) -> tuple[int, int] | None:
     return int(year), int(week)
 
 
+def _body_preview(text: str) -> str:
+    """Truncates a response body down to a short, log-safe preview —
+    never the full body (see `_BODY_PREVIEW_MAX_CHARS`). Used only for
+    non-200 responses; a 200 response's body is parsed as candidates
+    and never logged at all.
+    """
+    stripped = text.strip()
+    if len(stripped) > _BODY_PREVIEW_MAX_CHARS:
+        return stripped[:_BODY_PREVIEW_MAX_CHARS] + "..."
+    return stripped
+
+
 def _fetch_latest_index(settings: CommonCrawlSettings) -> CommonCrawlIndexResolution:
     """Fetches collinfo.json and picks the entry with the greatest
     (year, week) — not just the first entry — so this doesn't depend
     on collinfo.json always being sorted a particular way.
     """
+    logger.info(
+        "Common Crawl collinfo.json request start url=%s timeout=%s",
+        COLLINFO_URL,
+        settings.timeout_seconds,
+    )
     try:
         response = httpx.get(
             COLLINFO_URL,
             headers={"User-Agent": settings.user_agent},
             timeout=settings.timeout_seconds,
         )
-    except httpx.HTTPError:
-        logger.warning("Common Crawl collinfo.json request failed (network/timeout error)")
+    except httpx.HTTPError as exc:
+        # error_type distinguishes a genuine read timeout
+        # (httpx.ReadTimeout/ConnectTimeout) from an immediate failure
+        # like DNS resolution/connection refusal (httpx.ConnectError) or
+        # a TLS handshake failure — all of which this same "network or
+        # timeout error" reason previously lumped together with no way
+        # to tell them apart from Render logs alone.
+        logger.warning(
+            "Common Crawl collinfo.json request failed error_type=%s error=%s",
+            exc.__class__.__name__,
+            exc,
+        )
         return CommonCrawlIndexResolution(
             success=False,
             reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
         )
 
     if response.status_code != 200:
-        logger.warning("Common Crawl collinfo.json returned HTTP %d", response.status_code)
+        logger.warning(
+            "Common Crawl collinfo.json returned non-200 status=%d body_preview=%s",
+            response.status_code,
+            _body_preview(response.text),
+        )
         return CommonCrawlIndexResolution(
             success=False,
             reason=f"Common Crawl collinfo.json request failed with HTTP {response.status_code}.",
@@ -342,13 +380,31 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
 
     crawl_index = resolution.crawl_index or ""
     url = f"{COMMON_CRAWL_HOST}/{crawl_index}-index"
+    url_pattern = f"{normalized_domain}/*"
     params = [
-        ("url", f"{normalized_domain}/*"),
+        ("url", url_pattern),
         ("output", "json"),
         ("filter", "status:200"),
         ("filter", "mime:text/html"),
         ("limit", str(settings.max_results)),
     ]
+
+    # Logged before the request so the actually-effective index/timeout
+    # (as resolved from CommonCrawlSettings, not just whatever's in the
+    # environment) and the exact request URL are always on record —
+    # this is what let Render's "request failed (network/timeout
+    # error)" log line be root-caused (or ruled out) without needing a
+    # code change to reproduce it. No secrets here: Common Crawl's Index
+    # API is public and unauthenticated (see module docstring).
+    request_url = str(httpx.URL(url, params=params))
+    logger.info(
+        "Common Crawl Index API request start index=%s domain=%s url_pattern=%s timeout=%s request_url=%s",
+        crawl_index,
+        normalized_domain,
+        url_pattern,
+        settings.timeout_seconds,
+        request_url,
+    )
 
     try:
         response = httpx.get(
@@ -357,8 +413,21 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
             headers={"User-Agent": settings.user_agent},
             timeout=settings.timeout_seconds,
         )
-    except httpx.HTTPError:
-        logger.warning("Common Crawl Index API request failed (network/timeout error)")
+    except httpx.HTTPError as exc:
+        # error_type (e.g. "ReadTimeout" vs "ConnectError") is what
+        # distinguishes a genuine read timeout from an immediate failure
+        # (DNS resolution, connection refusal, TLS handshake) — the
+        # previous single "network/timeout error" log line couldn't
+        # tell these apart, which was the actual blocker when
+        # COMMON_CRAWL_TIMEOUT_SECONDS didn't change the (instant)
+        # failure behavior on Render.
+        logger.warning(
+            "Common Crawl Index API request failed index=%s domain=%s error_type=%s error=%s",
+            crawl_index,
+            normalized_domain,
+            exc.__class__.__name__,
+            exc,
+        )
         return CommonCrawlIndexResult(
             status="unavailable",
             reason="Common Crawl Index API request failed due to a network or timeout error.",
@@ -366,7 +435,13 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
         )
 
     if response.status_code != 200:
-        logger.warning("Common Crawl Index API returned HTTP %d", response.status_code)
+        logger.warning(
+            "Common Crawl Index API returned non-200 index=%s domain=%s status=%d body_preview=%s",
+            crawl_index,
+            normalized_domain,
+            response.status_code,
+            _body_preview(response.text),
+        )
         return CommonCrawlIndexResult(
             status="unavailable",
             reason=f"Common Crawl Index API request failed with HTTP {response.status_code}.",

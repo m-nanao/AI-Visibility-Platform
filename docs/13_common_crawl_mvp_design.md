@@ -342,6 +342,23 @@ Common Crawl由来Documentは既存Analyzer入力に混ざっているため、�
   - 将来は5件/10件への段階的拡張、非同期ジョブ化、DB保存、定期取得へ拡張する想定（[02_roadmap.md](./02_roadmap.md)のLater欄参照）。
 - **Common Crawl service層（`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`）・現在の3件上限・取得候補URL一覧の表示（＝取得候補すべてを見せること）はいずれも今回のスコープ外**。表示するのは実際にDocument化できたURLのみ。
 
+## 20. Common Crawl Index API失敗時の診断ログ強化（backend、2026-07-29追記）
+
+Render上でCommon Crawl補完が失敗する事象が報告された。`COMMON_CRAWL_INDEX`を固定index（例: `CC-MAIN-2026-25`）に、`COMMON_CRAWL_TIMEOUT_SECONDS`を30/60に変更しても失敗が続き、しかも30秒・60秒待たされず一瞬で結果が返る——という挙動から、通常のread timeoutではなくDNS解決失敗・接続拒否・SSL・URL生成ミス等の可能性が疑われた。しかし当時のログは
+
+```
+WARNING:services.common_crawl_index:Common Crawl Index API request failed (network/timeout error)
+```
+
+としか出ておらず、例外種別も接続先URLも分からなかったため、`chore/common-crawl-index-diagnostics`で診断ログのみを強化した。**取得ロジック・retry・fallback index・取得件数・UI表示用reasonの変更は一切行っていない。**
+
+- **request開始時のログ**（`search_common_crawl_domain()`・`_fetch_latest_index()`双方、INFOレベル）: 実際に使われている`index`・`domain`・`url_pattern`（例:`cybozu.co.jp/*`）・`timeout`（`CommonCrawlSettings.timeout_seconds`の実効値、環境変数が反映されているかをログだけで確認できる）・実際のリクエストURL（`httpx.URL(url, params=params)`で構築、クエリパラメータ込み）を出す。
+- **例外ログの詳細化**（WARNINGレベル）: 従来の`"...failed (network/timeout error)"`という1行だけの固定メッセージから、`error_type=%s error=%s`（`exc.__class__.__name__`と`str(exc)`）を追加した。これにより、Renderログだけで`ReadTimeout`（真の読み取りタイムアウト）と`ConnectError`（DNS解決失敗・接続拒否等、timeout設定と無関係に即座に発生する）を区別できるようになった——今回の事象が「timeout設定を変えても即座に失敗する」という報告と整合していたため、この区別が診断の核心。
+- **non-200レスポンスのログ強化**: `status`コードに加え、レスポンスbodyの先頭最大200文字（`_body_preview()`、超過分は`...`で切り詰め）をログに出す。HTML全文・WARC本文・raw response全文はログに出さない。
+- **画面表示（`meta.commonCrawlProvider`のreason分類、`app/lib/meta-label.ts`）は今回変更していない**——「Common Crawl補完: 補完データ未取得」＋「理由: Common Crawl補完の取得処理が完了しませんでした」という日本語表示のまま。今回の変更はRenderログ（開発者向け）のみが対象で、ユーザー向け画面表示には一切影響しない。
+- **セキュリティ**: Common Crawl Index APIは公開・認証不要のAPIであり、そもそもAPIキー等のsecretが存在しない。ログに出すのはindex名・URL・domain・url pattern・timeout・例外クラス名/メッセージ・HTTP status codeのみで、HTML本文・WARC本文・raw response全文はいずれも出さない（bodyは200文字までのプレビューに限定）。
+- **次の課題**: 今回の診断ログにより実際の`error_type`が判明した後、必要であればretry実装・fallback index・タイムアウト値の見直しを次タスクとして検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
