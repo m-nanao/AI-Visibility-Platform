@@ -1,6 +1,6 @@
 # 13. Common Crawl最小連携 設計ドキュメント（MVP）
 
-**このドキュメントは設計のみであり、実装は含まない。** コード変更（`app/`・`backend/`）・Environment Variablesの実追加・Render/Vercel設定変更は今回一切行っていない。実装は本ドキュメントを踏まえて段階的なタスクに分割し、別タスクとして着手する。
+**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に別タスク（`feature/common-crawl-index-client`）で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）まで実装済み。**WARC本文取得（Step 6）・`Document[]`化（Step 7）・`/analyze`統合（Step 8）・UI追加（Step 9）はまだ実装していない**。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
 
 ## 1. 目的
 

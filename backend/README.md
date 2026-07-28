@@ -26,7 +26,9 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/chatgpt_settings.py` — OpenAI APIキー・モデル名・max_output_tokens・1 analyzeあたりのリクエスト上限を読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。`get_chatgpt_settings()`/`get_chatgpt_credentials()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
 - `services/chatgpt_client.py` — OpenAI Responses API（`https://api.openai.com/v1/responses`）へ実際にHTTP接続し、ブランドについての1問への回答を取得するクライアント（`httpx`によるREST呼び出し、`openai` SDKは未使用）。`fetch_chatgpt_observation()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
 - `services/chatgpt_provider.py` — `aiOverviewComparison`に追加する、ChatGPT相当モデルの1問観測providerを`off`/`openai`で切り替える抽象化層。`resolve_chatgpt_mode()`/`build_chatgpt_observation()`。詳細は下記「ChatGPT相当モデルの1問観測」参照
-- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_chatgpt_settings.py`, `tests/test_chatgpt_client.py`, `tests/test_chatgpt_provider.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO・OpenAI関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
+- `services/common_crawl_settings.py` — Common Crawl連携の環境変数（`COMMON_CRAWL_ENABLED`/`COMMON_CRAWL_INDEX`等）を読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。公開データセットのためcredential型はない。`load_common_crawl_settings()`。詳細は下記「Common Crawl最小連携」参照
+- `services/common_crawl_index.py` — Common Crawl Index API（`index.commoncrawl.org`）へ実際にHTTP接続し、domain指定でURL候補を検索・正規化するクライアント（**WARC本文取得・HTML抽出は未実装**、`/analyze`への統合もまだ）。`resolve_common_crawl_index()`/`search_common_crawl_domain()`。詳細は下記「Common Crawl最小連携」参照
+- `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_chatgpt_settings.py`, `tests/test_chatgpt_client.py`, `tests/test_chatgpt_provider.py`, `tests/test_common_crawl_settings.py`, `tests/test_common_crawl_index.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO・OpenAI・Common Crawl関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
 ## セットアップ
@@ -503,6 +505,27 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 **開発・検証用UI**: `NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR=true`にすると、分析フォームに「ChatGPT観測モード（検証用）」というoff/openaiの選択UIが表示される（`app/components/BrandInputForm.tsx`）。既存のAI Overview取得モード選択UI（`NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR`）と同じ設計で、選択した値はリクエストボディの`chatgptMode`に入るだけの表示制御フラグ——上記の安全ゲートは一切変更しない。
 
+### Common Crawl最小連携（`common_crawl_settings.py` / `common_crawl_index.py`、2026-07-28新設）
+
+Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）の第一段階として、Common Crawl **Index API検索のクライアントのみ**を実装した。**WARC本文取得・HTML抽出・`Document[]`化・`/analyze`統合・UI追加はまだ行っていない**——このモジュールは現時点では`/analyze`のどのコードパスからも呼ばれず、以下の環境変数も`/analyze`の挙動には一切影響しない。
+
+**`common_crawl_settings.py`**: `load_common_crawl_settings() -> CommonCrawlSettings`を公開する。Common Crawl自体は認証不要の公開データセットのため、DataForSEO/ChatGPTのような`*Credentials`型・secret管理は存在しない——`CommonCrawlSettings`の全フィールドはログ出力しても安全。
+
+| 環境変数 | デフォルト | 説明 |
+| --- | --- | --- |
+| `COMMON_CRAWL_ENABLED` | `false` | Common Crawl連携全体の大元のスイッチ（将来のproviderレイヤーが参照する想定。このモジュール・クライアント自体はこの値でのゲーティングを行わない——後述） |
+| `COMMON_CRAWL_INDEX` | `latest` | `latest`（collinfo.jsonから最新のindexを解決）または`CC-MAIN-YYYY-NN`形式のindex idを明示指定。不正な値は警告ログを出しつつ`latest`にフォールバック。大文字小文字は区別せず、正規化して`CC-MAIN-`は大文字で保持する |
+| `COMMON_CRAWL_MAX_RESULTS` | `5` | 1回のdomain検索で取得するURL候補の上限。1〜10の範囲外・不正値は5にフォールバック |
+| `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。3〜30の範囲外・不正値は10にフォールバック |
+| `COMMON_CRAWL_USER_AGENT` | `AI-Visibility-Platform-MVP` | Common Crawlへのリクエストに使うUser-Agent。空文字・200文字超はデフォルトにフォールバック |
+
+**`common_crawl_index.py`**: `resolve_common_crawl_index(settings) -> CommonCrawlIndexResolution`と`search_common_crawl_domain(domain, settings) -> CommonCrawlIndexResult`を公開する。**このモジュール自体は`COMMON_CRAWL_ENABLED`を一切参照せず、呼ばれれば常に実際にHTTPリクエストを行う**——DataForSEOの`dataforseo_client.py`・ChatGPTの`chatgpt_client.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲しており、`COMMON_CRAWL_ENABLED`によるON/OFF制御は将来実装するprovider層（`common_crawl_provider.py`相当、今回は未実装）の責務とする。
+
+- **index解決**（`resolve_common_crawl_index()`）: `settings.index`が`"latest"`以外（明示的な`CC-MAIN-YYYY-NN`）ならその値をそのまま使い、`collinfo.json`への追加リクエストは行わない。`"latest"`の場合のみ`https://index.commoncrawl.org/collinfo.json`を取得し、レスポンス内の全エントリの`id`から`(year, week)`が最大のものを選ぶ（配列の並び順を信頼せず、実際に値を比較して最新を決定する）。取得失敗・不正JSON・有効なidが1つもない場合は`success=False`と安全な`reason`を返す。
+- **domain検索**（`search_common_crawl_domain()`）: 入力domainを正規化（前後空白除去、`scheme://`除去、path/query/fragment除去、userinfo/port除去、小文字化）した上で、厳格なホスト名の許可リスト正規表現で検証する——ドットを含まない文字列（例:`localhost`）や`javascript:alert(1)`のような危険な入力は、HTTPリクエストを一切送らずに拒否する。正規化後、`https://index.commoncrawl.org/{crawl_index}-index`へ`GET`し、クエリパラメータは`url={domain}/*`・`output=json`・`filter=status:200`・`filter=mime:text/html`・`limit={max_results}`、ヘッダーに`User-Agent`、タイムアウトに`timeout_seconds`を指定する。
+- **レスポンス変換**: Index APIのレスポンス（JSON Lines、1行1JSON）を1行ずつパースし、`url`を持つ行のみ`CommonCrawlCandidate`（`url`/`timestamp`/`status`/`mime`/`digest`/`length`/`offset`/`filename`/`crawl_index`/`source: "common_crawl"`固定）へ変換する。`status`/`length`/`offset`はCommon Crawl側が文字列・整数のどちらで返しても安全に整数変換する。パースできない行・`url`を持たない行はスキップし、`max_results`件に達したら残りの行は処理しない。**HTML本文・WARC本文はいずれも取得・保持しない**（`CommonCrawlCandidate`にそのためのフィールド自体が存在しない）。
+- **失敗時の扱い**: 空domain・不正domain・index解決失敗・ネットワークエラー/タイムアウト・非200レスポンス・0件、いずれも例外を送出せず`CommonCrawlIndexResult(status="unavailable", reason="...")`を返す。`reason`には巨大なレスポンス本文や生JSONを一切含めない（0件・パース不能はまとめて「Common Crawl index result was empty.」という定型文言にする）。`status: Literal["real", "unavailable", "off"]`の`"off"`は将来のprovider層が`COMMON_CRAWL_ENABLED=false`時に使う値として型に含めているだけで、このモジュール自体は返さない。
+
 ## テスト
 
 ```bash
@@ -775,6 +798,30 @@ pytest
 - `metadata`に`{"purpose": "development_sample"}`が含まれること
 - 各テキストが`normalize_text()`を通ること（`monkeypatch`で呼び出し回数を確認）
 
+`tests/test_common_crawl_settings.py` では `load_common_crawl_settings()` を直接テストしている。
+
+- デフォルトがすべて安全側（`enabled=False`・`index="latest"`・`max_results=5`・`timeout_seconds=10.0`・`user_agent="AI-Visibility-Platform-MVP"`）であること
+- `COMMON_CRAWL_ENABLED`が`true`/`false`を正しく読み取ること、`TRUE`/`1`/`yes`/`on`等の大文字小文字を問わない真値表記を受け付けること、不正な値は`false`にフォールバックすること
+- `COMMON_CRAWL_INDEX`が`latest`（大文字小文字問わず）をデフォルトとして扱うこと、`CC-MAIN-YYYY-NN`形式を受け付け大文字に正規化すること、週番号が欠けている等の不正な値は`latest`にフォールバックすること
+- `COMMON_CRAWL_MAX_RESULTS`が1/5/10を受け付けること、数値でない値・範囲外（0や11）の値はデフォルト（5）にフォールバックすること
+- `COMMON_CRAWL_TIMEOUT_SECONDS`が3/10/30を受け付けること、数値でない値・範囲外（2や31）の値はデフォルト（10.0）にフォールバックすること
+- `COMMON_CRAWL_USER_AGENT`が空文字・200文字超の値でデフォルトにフォールバックすること、有効な値はそのまま使われること
+- `CommonCrawlSettings`のフィールドが`{enabled, index, max_results, timeout_seconds, user_agent}`のみであること（Common Crawlは認証不要のためcredential型・secretフィールドが一切存在しないことの確認）
+
+`tests/test_common_crawl_index.py` では `resolve_common_crawl_index()` / `search_common_crawl_domain()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
+
+- `index="latest"`の場合、`collinfo.json`を取得し`(year, week)`が最大のindex idを解決すること（リストの並び順に依存しないことを、あえて並び順を崩したfixtureで確認）
+- `collinfo.json`の取得失敗（ネットワークエラー・非200・不正なJSON・有効なindex idが1件もない）はいずれも例外を送出せず、解決失敗（`success=False`）になること
+- `index`に`CC-MAIN-YYYY-NN`形式が明示指定されている場合、`collinfo.json`へは一切アクセスせずそのまま使うこと（過度なHTTPアクセスを避ける設計の確認）
+- domainの正規化: `https://example.com/path`のようなフルURLがホスト名`example.com`に正規化されること、大文字も小文字化されること
+- 空のdomain、`javascript:alert(1)`のような危険な文字列、`localhost`のようなドット無し文字列はいずれもエラーとして扱われ、`httpx.get`が一切呼ばれないこと
+- Index APIへのリクエストが期待通りのURL（`https://index.commoncrawl.org/{index}-index`）・クエリパラメータ（`output=json`・`filter=status:200`・`filter=mime:text/html`・`limit`）・`User-Agent`ヘッダー・`timeout`で行われること
+- レスポンス（JSON Lines形式）が`CommonCrawlCandidate`のリストへ正しく変換されること（`status`/`length`/`offset`が数値型・数値文字列型のいずれでもintへ変換されること、`url`が欠けている行はスキップされ後続の有効な行は変換されること、その他の任意フィールド欠落でクラッシュしないこと）
+- 結果が0件の場合は例外を送出せず、空でない安全な`reason`とともに`status="unavailable"`になること
+- HTTPエラー・タイムアウト・404・500のいずれも例外を送出せず`status="unavailable"`になること、index解決自体が失敗した場合はその失敗がそのまま伝播すること
+- HTML本文・WARC本文が`CommonCrawlCandidate`のどのフィールドにも一切含まれないこと、巨大なレスポンス本文が`reason`にそのまま含まれないこと（`reason`は常に短い説明文であること）
+- `limit`（`max_results`）を超える件数のJSON Lines行が返っても、変換後の件数が`max_results`を超えないこと
+
 ## Next.js側との連携
 
 Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/route.ts)）は、環境変数 `PYTHON_ANALYSIS_API_URL` にこのサービスのベースURL（例: `http://localhost:8000`）を設定すると、このAPIを呼び出すようになる。`documents`/`urls` もそのままこのAPIへ中継される。タイムアウトは25秒（`urls`指定時のURL取得時間を見込んだ値。詳細は[../docs/07_decisions.md](../docs/07_decisions.md)）。
@@ -823,7 +870,8 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
-- Common Crawl / DataForSEOからのデータ収集・分析ロジック（`urls` による都度の取得とは別に、収集をバッチ化する）
+- Common Crawlの`Document[]`化・`/analyze`統合（`common_crawl_settings.py`/`common_crawl_index.py`でIndex API検索のクライアントまでは実装済み、2026-07-28。WARC本文取得・HTML抽出・`CommonCrawlCandidate`→`Document[]`変換・`/analyze`統合・UI追加はまだ。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
+- DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
 - PostgreSQLとの連携
