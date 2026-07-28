@@ -1456,6 +1456,10 @@ def test_analyze_common_crawl_domain_mode_searches_fetches_and_adds_a_document(m
     assert provider.candidateCount == 1
     assert provider.documentCount == 1
     assert "common_crawl" in (result.meta.sourceTypes or [])
+    # summary.topPlatforms must reflect the Common Crawl document that
+    # was actually added, and must not say it's unimplemented.
+    assert "Common Crawl補完" in result.summary.topPlatforms
+    assert not any("未実装" in label for label in result.summary.topPlatforms)
 
 
 def test_analyze_common_crawl_domain_falls_back_to_urls_hostname(monkeypatch):

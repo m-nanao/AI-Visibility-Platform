@@ -1058,7 +1058,7 @@ describe("getCommonCrawlProviderDisplay", () => {
 
     const display = getCommonCrawlProviderDisplay(meta);
     expect(display?.summary).toBe("Common Crawl補完: 取得済み（1件）");
-    expect(display?.detail).toBe("ドメイン: cybozu.co.jp / index: CC-MAIN-2026-08");
+    expect(display?.detail).toBe("対象ドメイン: cybozu.co.jp / Index: CC-MAIN-2026-08");
   });
 
   it("omits detail on success when domain/crawlIndex aren't present", () => {
