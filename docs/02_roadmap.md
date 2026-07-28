@@ -48,10 +48,12 @@
   - 依頼者確認用メモ（`docs/requester-review-items-common-crawl`、2026-07-28。表示名・説明文・「AI学習データ推定」表現・改善提案文言について、現在の仮文言・変更候補・推奨表現/避けたい表現・確認後に変更するファイル候補を[15_requester_review_items.md](./15_requester_review_items.md)として1ファイルに集約。**コード変更は含まない**）
   - Common Crawl status表示洗練（`style/common-crawl-status-display`、2026-07-28。共起語ランキングカードのCommon Crawl状態表示を非エンジニア向けに整理——offは「Common Crawl補完: オフ」→「Common Crawl補完: 未使用」、unavailableは`reason`全文を直接表示せず「Common Crawl補完: 補完データ未取得」＋短く分類した理由（例:「理由: 補完対象ページが見つかりませんでした」）に変更。realは既存の2行表示を維持しつつ「Index」ラベルを「クロールIndex」に変更。`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`のみの変更で、backend response schema・`CooccurrenceRankingSection.tsx`はいずれも無変更）
   - Common Crawl status表示の英語reason再確認・強化（`fix/common-crawl-status-japanese-reasons`、2026-07-28。前タスクのマージ後に旧表示形式が見えたとの報告を受け再調査——backendが返しうる`reason`文字列11種類すべてを検証し、現行コードは既に正しく日本語分類していることを確認（コード上の欠陥は見つからず、古いデプロイ・キャッシュを見ていた可能性）。安全のためdomain未確定系の分類パターンをより広い部分一致に強化し、テストを8件追加。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「18. Common Crawl status表示の英語reason再確認・強化」参照）
+  - Common Crawl取得ページ一覧の表示（`feature/common-crawl-analyzed-urls-display`、2026-07-28。実際にDocument化できたページのURL一覧を`meta.commonCrawlProvider.analyzedUrls`として返し、`status="real"`かつ1件以上ある場合のみ「取得ページ」として「共起語ランキング」カードに表示。URLのみでHTML/WARC本文・raw responseは含めない。**3件上限は今回も維持し、全件取得・非同期ジョブ化・DB保存は行っていない**。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「19. Common Crawl取得ページ一覧の表示」参照）
 - **Next（次のステップ、優先順）**:
   - 依頼者確認後の文言調整（[15_requester_review_items.md](./15_requester_review_items.md)の確認項目をもとに、表示名・説明文・改善提案文言を確定させる）
   - Common Crawl結果の改善提案への重み付け検討（他の改善提案ルールとの優先度バランス、複数件それぞれの内容を個別反映するか等）
-- **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合
+  - Common Crawl取得件数の段階的拡張検討（5件/10件への引き上げ、Render環境のメモリ・timeout影響を見ながら段階的に検討）
+- **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合、非同期ジョブキュー化
 
 目安: 3〜4週間（データソースの契約・API調査を含む）。ただしCommon Crawl自体は認証不要の公開データセットのため、契約は不要。
 
@@ -91,7 +93,7 @@
 | 0 | フロントエンドMVP（ダミー表示） | 完了 |
 | 1 | APIルート雛形（固定JSON） | 完了 |
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
-| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（最大3件取得）＋検証用UI selector＋共起語ノイズ対策まで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
+| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（最大3件取得）＋検証用UI selector＋共起語ノイズ対策＋取得ページ一覧表示まで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
 | 5 | PostgreSQL永続化 | 未着手 |
 | 6 | プロダクション化 | 未着手 |

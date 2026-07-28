@@ -2,6 +2,7 @@ import Card from "../Card";
 import { trendStyles } from "../../lib/badge-styles";
 import {
   getAnalysisSourceBreakdownDisplay,
+  getCommonCrawlAnalyzedPagesDisplay,
   getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
   getUrlFetchSummary,
@@ -19,6 +20,7 @@ export default function CooccurrenceRankingSection({
   const sourceBreakdown = getAnalysisSourceBreakdownDisplay(meta);
   const urlFetchSummary = getUrlFetchSummary(meta);
   const commonCrawlProvider = getCommonCrawlProviderDisplay(meta);
+  const commonCrawlAnalyzedPages = getCommonCrawlAnalyzedPagesDisplay(meta);
   const maxCount = items.length > 0 ? Math.max(...items.map((item) => item.count)) : 0;
 
   return (
@@ -47,6 +49,30 @@ export default function CooccurrenceRankingSection({
         <div className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
           <p>{commonCrawlProvider.summary}</p>
           {commonCrawlProvider.detail && <p>{commonCrawlProvider.detail}</p>}
+          {/* URLのみを表示する（HTML/WARC本文・raw responseは
+              meta.commonCrawlProvider自体にそのためのフィールドが
+              存在しないため表示しようがない）。ラベル「取得ページ」は
+              依頼者確認前の仮のもの — docs/15_requester_review_items.md
+              参照。 */}
+          {commonCrawlAnalyzedPages && (
+            <div className="mt-1">
+              <p>{commonCrawlAnalyzedPages.label}:</p>
+              <ul className="list-inside list-disc">
+                {commonCrawlAnalyzedPages.urls.map((url) => (
+                  <li key={url} className="truncate">
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
+                    >
+                      {url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
