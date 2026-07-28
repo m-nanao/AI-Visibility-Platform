@@ -1,6 +1,7 @@
 import Card from "../Card";
 import { trendStyles } from "../../lib/badge-styles";
 import {
+  getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
   getUrlFetchSummary,
 } from "../../lib/meta-label";
@@ -15,6 +16,7 @@ export default function CooccurrenceRankingSection({
 }) {
   const unavailableMessage = getCooccurrenceUnavailableMessage(meta);
   const urlFetchSummary = getUrlFetchSummary(meta);
+  const commonCrawlProvider = getCommonCrawlProviderDisplay(meta);
   const maxCount = items.length > 0 ? Math.max(...items.map((item) => item.count)) : 0;
 
   return (
@@ -25,6 +27,18 @@ export default function CooccurrenceRankingSection({
       {urlFetchSummary && (
         <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
           {urlFetchSummary}
+        </p>
+      )}
+
+      {/* Common Crawl「補完」の状態は、この結果に使われたDocument[]の
+          出典に関する軽い状態表示であり、大きなカードは持たない
+          （詳細なWARC情報・HTML本文は一切表示しない）。表示名・文言は
+          依頼者確認前の仮のもの — docs/13_common_crawl_mvp_design.md
+          「11. 依頼者確認が必要な点」参照。 */}
+      {commonCrawlProvider && (
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          {commonCrawlProvider.summary}
+          {commonCrawlProvider.detail && ` （${commonCrawlProvider.detail}）`}
         </p>
       )}
 

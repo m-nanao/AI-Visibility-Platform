@@ -4,9 +4,14 @@ import { useState, type FormEvent } from "react";
 import {
   isAiOverviewModeSelectorEnabled,
   isChatGptModeSelectorEnabled,
+  isCommonCrawlModeSelectorEnabled,
 } from "../lib/analysis-request";
 import { MAX_URLS, validateUrlsInput } from "../lib/url-validation";
-import type { AiOverviewProviderMode, ChatGptProviderMode } from "../lib/types";
+import type {
+  AiOverviewProviderMode,
+  ChatGptProviderMode,
+  CommonCrawlProviderMode,
+} from "../lib/types";
 
 const AI_OVERVIEW_MODE_OPTIONS: { value: AiOverviewProviderMode; label: string }[] = [
   { value: "mock", label: "モック" },
@@ -21,6 +26,32 @@ const CHATGPT_MODE_OPTIONS: { value: ChatGptProviderMode; label: string }[] = [
   { value: "openai", label: "openai: OpenAI API" },
 ];
 
+// Wording for the Common Crawl補完 selector, centralized so it's easy
+// to update once the client confirms the final display name/wording
+// (see docs/13_common_crawl_mvp_design.md "11. 依頼者確認が必要な点" —
+// these are all provisional as of 2026-07-28).
+export const COMMON_CRAWL_UI_TEXT = {
+  selectorLabel: "Common Crawl補完（検証用）",
+  helperText:
+    "入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。",
+  warningText:
+    "Common Crawl由来の情報は、Web上の情報環境を推定するための補助データです。AIの学習内容そのものを保証するものではありません。",
+  domainLabel: "補完対象ドメイン（任意）",
+  domainPlaceholder: "example.com",
+  domainHelperText: "未入力の場合は、最初に入力したURLのドメインを使用します。",
+} as const;
+
+const COMMON_CRAWL_MODE_OPTIONS: { value: CommonCrawlProviderMode; label: string }[] = [
+  { value: "off", label: "オフ" },
+  { value: "domain", label: "公式ドメインから補完" },
+];
+
+// Frontend deliberately does not validate this beyond a generous length
+// cap (see COMMON_CRAWL_UI_TEXT.domainHelperText and the task's "厳しす
+// ぎるvalidationはしない" policy) — services/common_crawl_index.py
+// normalizes/validates the domain server-side before ever using it.
+const MAX_COMMON_CRAWL_DOMAIN_LENGTH = 253; // max valid DNS hostname length
+
 export default function BrandInputForm({
   onSubmit,
   isLoading,
@@ -31,6 +62,8 @@ export default function BrandInputForm({
     urls: string[],
     aiOverviewMode?: AiOverviewProviderMode,
     chatgptMode?: ChatGptProviderMode,
+    commonCrawlMode?: CommonCrawlProviderMode,
+    commonCrawlDomain?: string,
   ) => void;
   isLoading: boolean;
   initialValue?: string;
@@ -40,8 +73,11 @@ export default function BrandInputForm({
   const [urlErrors, setUrlErrors] = useState<string[]>([]);
   const [aiOverviewMode, setAiOverviewMode] = useState<AiOverviewProviderMode>("mock");
   const [chatgptMode, setChatgptMode] = useState<ChatGptProviderMode>("off");
+  const [commonCrawlMode, setCommonCrawlMode] = useState<CommonCrawlProviderMode>("off");
+  const [commonCrawlDomain, setCommonCrawlDomain] = useState("");
   const showAiOverviewModeSelector = isAiOverviewModeSelectorEnabled();
   const showChatGptModeSelector = isChatGptModeSelectorEnabled();
+  const showCommonCrawlModeSelector = isCommonCrawlModeSelectorEnabled();
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -59,16 +95,24 @@ export default function BrandInputForm({
     }
 
     setUrlErrors([]);
-    // aiOverviewMode/chatgptMode are only ever passed when their
-    // respective dev/verification-only selectors are actually shown —
-    // otherwise this behaves exactly as before (undefined), so a
-    // normal submission's request body is unaffected by either
-    // selector's existence.
+    // aiOverviewMode/chatgptMode/commonCrawlMode are only ever passed
+    // when their respective dev/verification-only selectors are
+    // actually shown — otherwise this behaves exactly as before
+    // (undefined), so a normal submission's request body is unaffected
+    // by any selector's existence. commonCrawlDomain is only passed
+    // when the domain selector is shown and non-blank; an untrimmed
+    // empty value is sent as undefined so the backend's urls[0]
+    // fallback (see backend/main.py) applies exactly as if the field
+    // had never been rendered.
     onSubmit(
       trimmedBrandName,
       urls,
       showAiOverviewModeSelector ? aiOverviewMode : undefined,
       showChatGptModeSelector ? chatgptMode : undefined,
+      showCommonCrawlModeSelector ? commonCrawlMode : undefined,
+      showCommonCrawlModeSelector && commonCrawlDomain.trim()
+        ? commonCrawlDomain.trim()
+        : undefined,
     );
   };
 
@@ -214,6 +258,74 @@ export default function BrandInputForm({
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             OpenAI APIを使うには、サーバー側の許可とAPIキー設定が必要です。
           </p>
+        </div>
+      )}
+
+      {/* Dev/verification-only — see app/lib/analysis-request.ts's
+          isCommonCrawlModeSelectorEnabled(). Selecting "domain" here
+          only sends commonCrawlMode/commonCrawlDomain in the request
+          body; whether the Python API actually contacts Common Crawl
+          still depends entirely on the server-side
+          COMMON_CRAWL_ENABLED gate (see backend/main.py) that this UI
+          cannot change. Display name/wording are provisional pending
+          client confirmation — see
+          docs/13_common_crawl_mvp_design.md「11. 依頼者確認が必要な点」. */}
+      {showCommonCrawlModeSelector && (
+        <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+          <label
+            htmlFor="commonCrawlMode"
+            className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            {COMMON_CRAWL_UI_TEXT.selectorLabel}
+          </label>
+          <select
+            id="commonCrawlMode"
+            name="commonCrawlMode"
+            disabled={isLoading}
+            value={commonCrawlMode}
+            onChange={(event) =>
+              setCommonCrawlMode(event.target.value as CommonCrawlProviderMode)
+            }
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 sm:w-auto"
+          >
+            {COMMON_CRAWL_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+            {COMMON_CRAWL_UI_TEXT.helperText}
+          </p>
+          <p className="mt-1 text-xs font-medium text-amber-800 dark:text-amber-300">
+            {COMMON_CRAWL_UI_TEXT.warningText}
+          </p>
+
+          {commonCrawlMode === "domain" && (
+            <div className="mt-3">
+              <label
+                htmlFor="commonCrawlDomain"
+                className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+              >
+                {COMMON_CRAWL_UI_TEXT.domainLabel}
+              </label>
+              <input
+                id="commonCrawlDomain"
+                name="commonCrawlDomain"
+                type="text"
+                disabled={isLoading}
+                value={commonCrawlDomain}
+                onChange={(event) =>
+                  setCommonCrawlDomain(event.target.value.slice(0, MAX_COMMON_CRAWL_DOMAIN_LENGTH))
+                }
+                placeholder={COMMON_CRAWL_UI_TEXT.domainPlaceholder}
+                className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 sm:w-auto"
+              />
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                {COMMON_CRAWL_UI_TEXT.domainHelperText}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </form>
