@@ -182,16 +182,79 @@ export function getAnalysisSourceBreakdownDisplay(meta: AnalysisMeta): string | 
 
 export interface CommonCrawlProviderDisplay {
   // A single line matching the display examples in the task this was
-  // built for — e.g. "Common Crawl補完: オフ" /
+  // built for — e.g. "Common Crawl補完: 未使用" /
   // "Common Crawl補完: 取得済み（1件）" /
-  // "Common Crawl補完: 未取得（理由: ...）". Never includes HTML/WARC
+  // "Common Crawl補完: 補完データ未取得". Never includes HTML/WARC
   // body text — meta.commonCrawlProvider has no field for either (see
   // backend/models.py's CommonCrawlProviderInfo).
   summary: string;
-  // domain/crawlIndex, shown only on a "real" success — never
-  // WARC-level metadata (filename/offset/length are not part of
-  // CommonCrawlProviderInfo at all).
+  // domain/crawlIndex on a "real" success, or a short, non-technical
+  // reason on an "unavailable" result (see
+  // classifyCommonCrawlUnavailableReason below) — never WARC-level
+  // metadata (filename/offset/length are not part of
+  // CommonCrawlProviderInfo at all) and never the backend's raw
+  // `reason` string verbatim.
   detail?: string;
+}
+
+// Matched in order against meta.commonCrawlProvider.reason (a
+// developer-facing string from backend/services/common_crawl_index.py /
+// common_crawl_warc.py / common_crawl_document_provider.py /
+// backend/main.py — see the grep of every `reason=`/`reason=f"` literal
+// in those files this list was built from) to classify an
+// "unavailable" result into one of a handful of short, non-technical
+// phrases — added 2026-07-28 (style/common-crawl-status-display) so a
+// non-engineer reader isn't shown a raw string like "Common Crawl
+// collinfo.json request failed with HTTP 500." First match wins; order
+// matters because some backend reason strings could otherwise match
+// more than one bucket (e.g. "Common Crawl domain is empty or not a
+// valid hostname." contains "empty", which would otherwise be
+// mistaken for the "0 results" bucket below it).
+const _COMMON_CRAWL_UNAVAILABLE_REASON_RULES: { pattern: RegExp; message: string }[] = [
+  // Domain couldn't be determined/validated — checked first so its use
+  // of the word "empty" doesn't fall through to the no-candidates rule.
+  {
+    pattern: /could not be determined|is empty or not a valid hostname/i,
+    message: "補完対象ドメインを特定できませんでした",
+  },
+  // Common Crawl itself is disabled/off — in practice this reason only
+  // ever accompanies status="off" (handled by its own switch case
+  // below, never reaching this classifier), but matched here too as a
+  // defensive fallback in case that invariant ever changes.
+  {
+    pattern: /disabled|COMMON_CRAWL_ENABLED/i,
+    message: "Common Crawl補完は未使用です",
+  },
+  // Network/timeout/HTTP/parse failures, and "found candidates but
+  // none could be fetched" (matched via "fetch").
+  {
+    pattern: /timeout|network|request failed|failed due to|http \d|not valid json|was not a list|no recognizable crawl index|fetch/i,
+    message: "Common Crawl補完の取得処理が完了しませんでした",
+  },
+  // No candidates/results at all.
+  {
+    pattern: /was empty|no candidates|0 results/i,
+    message: "補完対象ページが見つかりませんでした",
+  },
+];
+
+/**
+ * Reduces a backend `reason` string (meant for developers/logs, not
+ * end users) down to one of a handful of short, non-technical phrases
+ * a non-engineer can understand — never the raw string itself. Falls
+ * back to a generic "取得できませんでした" phrase for any reason that
+ * doesn't match a known pattern (including a missing/blank reason),
+ * so a new backend failure mode never leaks raw text into the UI
+ * before this list is updated to recognize it.
+ */
+function classifyCommonCrawlUnavailableReason(reason: string | undefined): string {
+  const trimmed = reason?.trim();
+  if (trimmed) {
+    for (const rule of _COMMON_CRAWL_UNAVAILABLE_REASON_RULES) {
+      if (rule.pattern.test(trimmed)) return rule.message;
+    }
+  }
+  return "補完データを取得できませんでした";
 }
 
 /**
@@ -212,12 +275,12 @@ export function getCommonCrawlProviderDisplay(
 
   switch (provider.status) {
     case "off":
-      return { summary: "Common Crawl補完: オフ" };
+      return { summary: "Common Crawl補完: 未使用" };
 
     case "real": {
       const detailParts = [
         provider.domain ? `対象ドメイン: ${provider.domain}` : null,
-        provider.crawlIndex ? `Index: ${provider.crawlIndex}` : null,
+        provider.crawlIndex ? `クロールIndex: ${provider.crawlIndex}` : null,
       ].filter((part): part is string => part !== null);
       return {
         summary: `Common Crawl補完: 取得済み（${provider.documentCount ?? 0}件）`,
@@ -228,9 +291,8 @@ export function getCommonCrawlProviderDisplay(
     case "unavailable":
     default:
       return {
-        summary: provider.reason
-          ? `Common Crawl補完: 未取得（理由: ${provider.reason}）`
-          : "Common Crawl補完: 未取得",
+        summary: "Common Crawl補完: 補完データ未取得",
+        detail: `理由: ${classifyCommonCrawlUnavailableReason(provider.reason)}`,
       };
   }
 }

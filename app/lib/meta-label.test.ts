@@ -1133,7 +1133,7 @@ describe("getCommonCrawlProviderDisplay", () => {
     };
 
     expect(getCommonCrawlProviderDisplay(meta)).toEqual({
-      summary: "Common Crawl補完: オフ",
+      summary: "Common Crawl補完: 未使用",
     });
   });
 
@@ -1147,7 +1147,7 @@ describe("getCommonCrawlProviderDisplay", () => {
       },
     };
 
-    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe("Common Crawl補完: オフ");
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe("Common Crawl補完: 未使用");
   });
 
   it("shows a document count and domain/index detail on success", () => {
@@ -1166,7 +1166,7 @@ describe("getCommonCrawlProviderDisplay", () => {
 
     const display = getCommonCrawlProviderDisplay(meta);
     expect(display?.summary).toBe("Common Crawl補完: 取得済み（1件）");
-    expect(display?.detail).toBe("対象ドメイン: cybozu.co.jp / Index: CC-MAIN-2026-08");
+    expect(display?.detail).toBe("対象ドメイン: cybozu.co.jp / クロールIndex: CC-MAIN-2026-08");
   });
 
   it("omits detail on success when domain/crawlIndex aren't present", () => {
@@ -1185,7 +1185,7 @@ describe("getCommonCrawlProviderDisplay", () => {
     expect(display?.detail).toBeUndefined();
   });
 
-  it("shows the reason on an unavailable result", () => {
+  it("shows a short, non-technical reason on an unavailable result instead of the raw backend string", () => {
     const meta: AnalysisMeta = {
       ...baseMeta(),
       commonCrawlProvider: {
@@ -1195,9 +1195,9 @@ describe("getCommonCrawlProviderDisplay", () => {
       },
     };
 
-    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
-      "Common Crawl補完: 未取得（理由: Common Crawl domain could not be determined from commonCrawlDomain or urls.）",
-    );
+    const display = getCommonCrawlProviderDisplay(meta);
+    expect(display?.summary).toBe("Common Crawl補完: 補完データ未取得");
+    expect(display?.detail).toBe("理由: 補完対象ドメインを特定できませんでした");
   });
 
   it("never renders HTML or WARC body text — meta.commonCrawlProvider has no field for either", () => {
@@ -1277,8 +1277,92 @@ describe("getCommonCrawlProviderDisplay", () => {
       },
     };
 
-    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
-      "Common Crawl補完: 未取得（理由: Common Crawl found candidates but none could be fetched into a usable document.）",
+    const display = getCommonCrawlProviderDisplay(meta);
+    expect(display?.summary).toBe("Common Crawl補完: 補完データ未取得");
+    expect(display?.detail).toBe("理由: Common Crawl補完の取得処理が完了しませんでした");
+  });
+
+  // Added 2026-07-28 (style/common-crawl-status-display) — reason
+  // classification tests for each bucket in
+  // classifyCommonCrawlUnavailableReason, using the exact backend
+  // reason strings (see backend/services/common_crawl_index.py /
+  // common_crawl_warc.py / common_crawl_document_provider.py /
+  // backend/main.py's `reason=`/`reason=f"` literals).
+  function unavailableMeta(reason: string): AnalysisMeta {
+    return {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason,
+      },
+    };
+  }
+
+  it("classifies an empty index result as 'no pages found'", () => {
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("Common Crawl index result was empty."),
     );
+    expect(display?.detail).toBe("理由: 補完対象ページが見つかりませんでした");
+  });
+
+  it("classifies a network/timeout failure as 'fetch did not complete'", () => {
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("Common Crawl Index API request failed due to a network or timeout error."),
+    );
+    expect(display?.detail).toBe("理由: Common Crawl補完の取得処理が完了しませんでした");
+  });
+
+  it("classifies an HTTP failure as 'fetch did not complete'", () => {
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("Common Crawl collinfo.json request failed with HTTP 500."),
+    );
+    expect(display?.detail).toBe("理由: Common Crawl補完の取得処理が完了しませんでした");
+  });
+
+  it("classifies an undeterminable domain as 'domain not identified'", () => {
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("Common Crawl domain could not be determined from commonCrawlDomain or urls."),
+    );
+    expect(display?.detail).toBe("理由: 補完対象ドメインを特定できませんでした");
+  });
+
+  it("classifies an invalid hostname as 'domain not identified', not 'no pages found'", () => {
+    // Contains the word "empty" ("is empty or not a valid hostname")
+    // — must not fall through to the no-candidates bucket.
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("Common Crawl domain is empty or not a valid hostname."),
+    );
+    expect(display?.detail).toBe("理由: 補完対象ドメインを特定できませんでした");
+  });
+
+  it("classifies an unrecognized reason as the generic fallback", () => {
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("Some future backend failure mode not yet recognized."),
+    );
+    expect(display?.detail).toBe("理由: 補完データを取得できませんでした");
+  });
+
+  it("classifies a missing/blank reason as the generic fallback without throwing", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason: "",
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.detail).toBe(
+      "理由: 補完データを取得できませんでした",
+    );
+  });
+
+  it("never shows the raw backend reason text verbatim on an unavailable result", () => {
+    const rawReason = "Common Crawl Index API request failed due to a network or timeout error.";
+    const display = getCommonCrawlProviderDisplay(unavailableMeta(rawReason));
+
+    expect(display?.summary).not.toContain(rawReason);
+    expect(display?.detail).not.toContain(rawReason);
   });
 });

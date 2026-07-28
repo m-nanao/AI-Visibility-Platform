@@ -1,6 +1,8 @@
 # 15. Common Crawl関連 依頼者確認用メモ（2026-07-28）
 
-**このドキュメントはメモの整理のみを目的とする。コード変更は含まない。** Common Crawl補完は現在、Index検索・WARC fetch/HTML extraction・`Document[]`変換・`/analyze`統合・UI selector・最大3件取得・分析ソース内訳表示・共起語ランキングへの反映・改善提案への軽い反映まで実装済みだが（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）、表示名・説明文・改善提案文言の強さについては依頼者確認前の仮方針のまま進めている。今後の確認・修正に備えて、依頼者に確認すべき項目をこの1ファイルに整理する。
+**このドキュメントはメモの整理のみを目的とする。コード変更は含まない。** Common Crawl補完は現在、Index検索・WARC fetch/HTML extraction・`Document[]`変換・`/analyze`統合・UI selector・最大3件取得・分析ソース内訳表示・共起語ランキングへの反映・改善提案への軽い反映・Common Crawl status表示の整理まで実装済みだが（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）、表示名・説明文・改善提案文言の強さについては依頼者確認前の仮方針のまま進めている。今後の確認・修正に備えて、依頼者に確認すべき項目をこの1ファイルに整理する。
+
+**2026-07-28追記（`style/common-crawl-status-display`）:** 下記E「未取得時の説明」の推奨方針を先行実装した——`status: "unavailable"`時の表示を「Common Crawl補完: 補完データ未取得」＋分類済みの短い理由に変更し、backendの生の`reason`文字列をそのまま表示しない形にした（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「17. Common Crawl status表示の整理」参照）。ただし表示文言そのものはまだ仮であり、この章の依頼者確認事項は引き続き有効。
 
 ## 1. 目的
 
@@ -91,11 +93,16 @@ Common Crawl関連の表現・説明・改善提案文言について、依頼�
 
 ### E. 未取得時の説明
 
-**確認したいこと:** Common Crawlで取得できなかった場合に、どの程度問題として見せるか。
+**現在（`status: "unavailable"`時、`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`、2026-07-28実装済み）:**
+
+- サマリー: 「Common Crawl補完: 補完データ未取得」
+- 理由（`classifyCommonCrawlUnavailableReason()`がbackendの`reason`を分類）: 「補完対象ページが見つかりませんでした」／「Common Crawl補完の取得処理が完了しませんでした」／「補完対象ドメインを特定できませんでした」／「補完データを取得できませんでした」（該当なしの場合の汎用フォールバック）のいずれか
+
+**確認したいこと:** Common Crawlで取得できなかった場合に、どの程度問題として見せるか（上記の分類文言自体もまだ仮）。
 
 **推奨:**
-- 強いエラー扱いにはしない。
-- 「補完データは未取得」として扱う。
+- 強いエラー扱いにはしない（実装済み。強い警告色・アイコン等は使っていない）。
+- 「補完データは未取得」として扱う（実装済み）。
 - 改善提案は「重要ページ・内部リンク・クロールされやすい構造を整える」程度に留める。
 
 **避けたい表現:**

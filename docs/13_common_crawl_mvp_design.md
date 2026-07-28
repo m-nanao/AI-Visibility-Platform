@@ -301,6 +301,23 @@ Common Crawl由来Documentは既存Analyzer入力に混ざっているため、�
 
 詳細は[backend/README.md](../backend/README.md)「Common Crawl statusの反映」を参照。
 
+## 17. Common Crawl status表示の整理（frontend、2026-07-28追記）
+
+「共起語ランキング」カード付近のCommon Crawl状態表示（`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`）を、依頼者確認画面として非エンジニアにも分かりやすいよう`style/common-crawl-status-display`で整理した。**frontend専用の変更で、backend response schema・Common Crawl取得ロジックはいずれも無変更。**
+
+- `status === "off"`: 「Common Crawl補完: オフ」→「Common Crawl補完: 未使用」。検証用selectorでオフにしている状態を指すため「未使用」の方が自然という判断。
+- `status === "real"`: 「Common Crawl補完: 取得済み（N件）」は維持。詳細行のラベルを「Index: {crawlIndex}」から「クロールIndex: {crawlIndex}」に変更（非エンジニアにも何のIndexかが伝わりやすいように）。大きなUI変更を避けるため、詳細を複数行に分割する案は採用せず、既存どおり「対象ドメイン: X / クロールIndex: Y」という1行のまま。
+- `status === "unavailable"`: `meta.commonCrawlProvider.reason`（開発者向けの内部状態文字列）をそのまま表示していた従来の「Common Crawl補完: 未取得（理由: ...）」をやめ、固定サマリー「Common Crawl補完: 補完データ未取得」＋新規`classifyCommonCrawlUnavailableReason()`が`reason`を分類した短い理由を「理由: {分類結果}」という別行で表示する。
+  - 分類は5パターン: 「補完対象ページが見つかりませんでした」（0件・no candidates系）／「Common Crawl補完の取得処理が完了しませんでした」（timeout・network・HTTPエラー・fetch失敗系）／「補完対象ドメインを特定できませんでした」（domain未確定・不正hostname系）／「Common Crawl補完は未使用です」（disabled系、`status="off"`で別途処理されるため実質到達しない防御的な分岐）／該当なしの場合の汎用フォールバック「補完データを取得できませんでした」。
+  - 分類ルールは、`backend/services/common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`/`backend/main.py`が実際に返しうる`reason=`/`reason=f"`文字列すべてを洗い出した上で作成した正規表現マッチであり、順序に意味がある（例:「Common Crawl domain is empty or not a valid hostname.」は"empty"を含むため、ドメイン系ルールを0件系ルールより先に評価しないと誤分類する）。
+  - `reason`全文が最終的な表示（`summary`/`detail`いずれにも）に含まれることはない。HTML本文・WARC本文・raw responseも従来どおり表示しない（`CommonCrawlProviderInfo`自体にそのためのフィールドが存在しないため）。
+- `app/components/sections/CooccurrenceRankingSection.tsx`は`summary`/`detail`をそのまま描画する既存実装のままで変更不要だった（`detail`が2行目として描画される既存の仕組みをそのまま利用）。
+- `app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay()`（分析ソース内訳表示）は無変更。
+
+テストは`app/lib/meta-label.test.ts`に8件追加（off時の新文言、real時の新ラベル、unavailable時の分類4種＋fallback＋空文字reason、reason全文が含まれないこと）、既存4件を新文言に合わせて更新した。
+
+詳細は`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`/`classifyCommonCrawlUnavailableReason()`のコメントを参照。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
