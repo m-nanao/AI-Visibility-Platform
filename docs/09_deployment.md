@@ -229,10 +229,10 @@ Vercelダッシュボード → Project → Settings → Environment Variables �
 
 ## 6. 確認用環境であることの明示
 
-以下の2箇所に明記済み。
+以下の複数箇所に明記済み。
 
-- **画面**（[app/page.tsx](../app/page.tsx)）: ヘッダー直下に「この環境は開発中の依頼者確認用ステージング環境です。機密情報・個人情報・本番データは入力しないでください。共起語ランキングのみ実データ計算、その他のセクションは開発用データです。Common Crawl・DataForSEOとの連携はまだ行っていません。」というバナーを常時表示。
-- **README**: ルート[README.md](../README.md)、[backend/README.md](../backend/README.md)に同内容を記載。
+- **画面**（[app/page.tsx](../app/page.tsx)）: ヘッダー直下に、[app/lib/staging-banner.ts](../app/lib/staging-banner.ts)の`STAGING_BANNER_TEXT`定数（2026-07-28更新、[05_tasks.md](./05_tasks.md)参照）によるバナーを常時表示。「この環境は開発中の依頼者確認用ステージング環境です。機密情報・個人情報・本番データは入力しないでください。URL解析、Common Crawl補完、DataForSEO連携、ChatGPT観測など一部の機能は実データまたは外部APIを用いて検証できますが、分析結果は開発中の推定表示を含みます。」という内容——旧文言（「共起語ランキングのみ実データ計算」「Common Crawl・DataForSEOとの連携はまだ行っていません」）はいずれも実装の進捗と合わなくなっていたため置き換えた。
+- **README**: ルート[README.md](../README.md)に、画面バナーと同趣旨の要約を記載。
 - **パスコード入力画面**（[app/staging-login/page.tsx](../app/staging-login/page.tsx)）: 「これは誤アクセス防止のための簡易的な仕組みであり、正式な認証ではありません」と明記。
 
 加えて、この環境には以下が**ない**ことに留意する。
