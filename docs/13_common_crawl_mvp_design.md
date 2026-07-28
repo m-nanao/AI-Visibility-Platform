@@ -1,6 +1,6 @@
 # 13. Common Crawl最小連携 設計ドキュメント（MVP）
 
-**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に`feature/common-crawl-index-client`で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）を、`feature/common-crawl-warc-fetch`で9章のStep 6（WARCレコード取得・HTML抽出、最大1件）を、`feature/common-crawl-document-provider`で9章のStep 7（`Document[]`化）を、続く`feature/common-crawl-analyze-integration`で9章のStep 8（`/analyze`統合、UIなし）を実装済み。**UI追加（Step 9）はまだ実装していない**——`commonCrawlMode`/`commonCrawlDomain`はAPI/Consoleから直接POSTすることでのみ試せる。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
+**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に`feature/common-crawl-index-client`で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）を、`feature/common-crawl-warc-fetch`で9章のStep 6（WARCレコード取得・HTML抽出、最大1件）を、`feature/common-crawl-document-provider`で9章のStep 7（`Document[]`化）を、`feature/common-crawl-analyze-integration`で9章のStep 8（`/analyze`統合、UIなし）を、続く`feature/common-crawl-ui-selector`で9章のStep 9（UI selector追加）を実装済み——**これで9章の実装ステップ2〜9すべてが完了した**。ただし表示名・説明文・注意書きの文言はすべて依頼者確認前の仮のものである点に変わりはない（11章参照）。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
 
 ## 1. 目的
 
@@ -197,7 +197,7 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 6. ~~WARC fetchはstub、または最大1件のみの試験導入から始める~~ → `backend/services/common_crawl_warc.py`として最大1件のWARCレコードをRange requestで実際に取得し、gzip展開してHTML本文を抽出するところまで実装完了（`feature/common-crawl-warc-fetch`、2026-07-28）。stub化はせず、実際にWARCストレージ（`data.commoncrawl.org`）へ接続する（複数件の一括取得はまだ未実装）
 7. ~~`Document[]`化（`sourceType: "common_crawl"`、既存の`Document`型をそのまま利用）~~ → `backend/services/common_crawl_document_provider.py`として、`CommonCrawlCandidate` + `CommonCrawlFetchResult`のペアを既存`Document`型（`sourceType: "common_crawl"`）へ変換するところまで実装完了（`feature/common-crawl-document-provider`、2026-07-28）。既存Cleaner（`document_cleaner.py`）・Normalizer（`document_normalizer.py`）はそのまま再利用し、変更していない。Common Crawl検索→WARC取得→Document化までを自動でつなぐ処理はまだ未実装（呼び出し側が`CommonCrawlCandidate`/`CommonCrawlFetchResult`を明示的に渡す必要がある）
 8. ~~`/analyze`への統合（6章の案A、既存の2段階ゲートパターンを踏襲）~~ → `backend/main.py`へ`commonCrawlMode`（`"off"`/`"domain"`）・`commonCrawlDomain`リクエストフィールドを追加し、最大1件のCommon Crawl補完Documentを既存Document[]へ追加できるところまで実装完了（`feature/common-crawl-analyze-integration`、2026-07-28）。**ただし`ALLOW_*_OVERRIDE`という2段階ゲートパターンは今回採用しなかった**——`aiOverviewMode`/`chatgptMode`と異なり、Common Crawlはenv駆動のデフォルトmode自体を持たず（リクエストが直接`commonCrawlMode`を指定する）、実行可否は常に`COMMON_CRAWL_ENABLED`という単一のゲートで判定する設計にした（タスクの初期方針として指定された仕様）。失敗時は`/analyze`全体を止めず`meta.commonCrawlProvider`にのみ反映する。UIはまだ未追加
-9. UIにCommon Crawl modeを追加（既存の検証用selectorパターンを踏襲、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`等）
+9. ~~UIにCommon Crawl modeを追加（既存の検証用selectorパターンを踏襲、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`等）~~ → `app/components/BrandInputForm.tsx`に「Common Crawl補完（検証用）」selector（off/domain）と、domain選択時のみ表示される任意のドメイン入力欄を実装完了（`feature/common-crawl-ui-selector`、2026-07-28）。既存のAI Overview/ChatGPT検証用selectorと同じ`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`パターンを踏襲。`meta.commonCrawlProvider`の状態（オフ/取得済み件数/未取得理由）を「共起語ランキング」カードに軽く表示する`getCommonCrawlProviderDisplay()`（`app/lib/meta-label.ts`）も追加。表示名・文言は`BrandInputForm.tsx`の`COMMON_CRAWL_UI_TEXT`に定数化し、依頼者確認前の仮のものとして扱う
 10. `docs/02_roadmap.md`更新（進捗に応じて、本タスクで先行して現状の設計フェーズ分を反映済み）
 
 各ステップは[10_ai_development_workflow.md](./10_ai_development_workflow.md)の「1タスクの粒度」に従い、原則1タスク1ブランチで分割して進める。
@@ -212,9 +212,9 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 - **Next（次のステップ）**: Common Crawl Index検索クライアント → WARC取得・HTML抽出 → `Document[]`統合 → `/analyze`でのCommon Crawl mode統合 → UI mode selector追加
 - **Later（将来）**: DB永続化、定期クロール、時系列比較、競合比較、複数ソースの重み付け統合
 
-## 11. 依頼者確認が必要な点（UI段階で確認予定、2026-07-28追記・更新）
+## 11. 依頼者確認が必要な点（UI追加後も未確定、2026-07-28追記・更新）
 
-`/analyze`統合（UIなし）まで実装が進み、残る次のステップがUI追加になったため、その段階で依頼者に確認したほうがよい表現・扱いをここに維持しておく。**今回もこれらの確認待ちで実装を止めず、以下の仮方針で進めている**——UI追加タスクに着手する前に、あらためて依頼者へ確認すること。
+検証用UI selector（`feature/common-crawl-ui-selector`）まで実装が進み、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`にすれば依頼者向けの表示名・説明文・注意書きが実際に画面へ露出する状態になった。ただし**これらの文言はまだ依頼者確認前の仮のものであり、確定していない**。**今回もこれらの確認待ちで実装を止めず、以下の仮方針で進めている**——selectorをデフォルト表示（Vercelで`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`に設定）する前に、あらためて依頼者へ確認すること。
 
 確認候補:
 
@@ -223,15 +223,16 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 - 「AI学習データ推定」という表現を使ってよいか（[01_requirements.md](./01_requirements.md)「重要な前提（スコープの境界）」との整合が必要）
 - Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどの程度反映するか
 - UI上で注意書きをどの強さで出すか（例: 常時表示の警告文にするか、詳細を開いたときだけ見せる補足にとどめるか）
+- 複数件取得（現状は最大1件のみ）をどのタイミングで入れるか
 
-現時点の仮方針（依頼者確認が取れるまでの暫定表現）:
+現時点の仮方針（依頼者確認が取れるまでの暫定表現、`app/components/BrandInputForm.tsx`の`COMMON_CRAWL_UI_TEXT`に定数化済み）:
 
-- 表示名: 「Common Crawl補完」
-- 説明: 「公式ドメイン配下の過去クロールURLを補助的に取得する」機能として説明する
-- 注意書き: 「AIの学習内容そのものを保証しない」ことを明記する
+- 表示名（selector label）: 「Common Crawl補完（検証用）」
+- 説明（helper text）: 「入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。」
+- 注意書き（warning text）: 「Common Crawl由来の情報は、Web上の情報環境を推定するための補助データです。AIの学習内容そのものを保証するものではありません。」
 - Common Crawlは「補助入力ソース」（`urls`/`documents`を補完する位置づけ）として扱い、公式ドメイン配下の過去クロールURL補完として扱う。AIの学習内容そのものとは断定しない
 
-なお、`/analyze`統合（2026-07-28、`feature/common-crawl-analyze-integration`）自体はこれらの表現確定を待たずに完了している——`commonCrawlMode`/`commonCrawlDomain`はAPI/Console検証用のリクエストフィールドであり、UIの表示名・説明文とは無関係に動作する。UI追加タスクで初めてこれらの表現が画面上に露出するため、確認が必要なのはそのタスクからで良い。
+なお、`/analyze`統合（2026-07-28、`feature/common-crawl-analyze-integration`）とUI selector追加（2026-07-28、`feature/common-crawl-ui-selector`）自体はこれらの表現確定を待たずに完了している——selectorは`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`が未設定（デフォルトfalse）の間は非表示のままなので、依頼者確認が取れるまでVercelの本番/デモ環境でこのフラグをtrueにしないこと。
 
 ## 関連ドキュメント
 

@@ -4,6 +4,7 @@ import {
   REFERENCE_CATEGORY_LABELS,
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
+  getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
   getSectionStatusSummary,
   getUrlFetchSummary,
@@ -1005,5 +1006,109 @@ describe("getUrlFetchSummary", () => {
     };
 
     expect(getUrlFetchSummary(meta)).toBe("URL取得: 0/1件成功");
+  });
+});
+
+describe("getCommonCrawlProviderDisplay", () => {
+  it("returns null when meta.commonCrawlProvider is absent (older backend / client dummy fallback)", () => {
+    expect(getCommonCrawlProviderDisplay(baseMeta())).toBeNull();
+  });
+
+  it("shows an off summary with no detail", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "off",
+        status: "off",
+        reason: "Common Crawl integration is off.",
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)).toEqual({
+      summary: "Common Crawl補完: オフ",
+    });
+  });
+
+  it("shows an off summary when disabled server-side, even if mode is domain", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "off",
+        reason: "Common Crawl is disabled (COMMON_CRAWL_ENABLED is not true).",
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe("Common Crawl補完: オフ");
+  });
+
+  it("shows a document count and domain/index detail on success", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-08",
+        candidateCount: 3,
+        documentCount: 1,
+      },
+    };
+
+    const display = getCommonCrawlProviderDisplay(meta);
+    expect(display?.summary).toBe("Common Crawl補完: 取得済み（1件）");
+    expect(display?.detail).toBe("ドメイン: cybozu.co.jp / index: CC-MAIN-2026-08");
+  });
+
+  it("omits detail on success when domain/crawlIndex aren't present", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s).",
+        documentCount: 1,
+      },
+    };
+
+    const display = getCommonCrawlProviderDisplay(meta);
+    expect(display?.summary).toBe("Common Crawl補完: 取得済み（1件）");
+    expect(display?.detail).toBeUndefined();
+  });
+
+  it("shows the reason on an unavailable result", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason: "Common Crawl domain could not be determined from commonCrawlDomain or urls.",
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
+      "Common Crawl補完: 未取得（理由: Common Crawl domain could not be determined from commonCrawlDomain or urls.）",
+    );
+  });
+
+  it("never renders HTML or WARC body text — meta.commonCrawlProvider has no field for either", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-08",
+        candidateCount: 1,
+        documentCount: 1,
+      },
+    };
+
+    const display = getCommonCrawlProviderDisplay(meta);
+    const rendered = `${display?.summary ?? ""} ${display?.detail ?? ""}`;
+    expect(rendered).not.toContain("<html");
+    expect(rendered).not.toContain("WARC/1.0");
   });
 });

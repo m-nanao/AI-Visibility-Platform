@@ -142,6 +142,61 @@ export function getUrlFetchSummary(meta: AnalysisMeta): string | null {
   return `URL取得: ${successCount}/${total}件成功`;
 }
 
+export interface CommonCrawlProviderDisplay {
+  // A single line matching the display examples in the task this was
+  // built for — e.g. "Common Crawl補完: オフ" /
+  // "Common Crawl補完: 取得済み（1件）" /
+  // "Common Crawl補完: 未取得（理由: ...）". Never includes HTML/WARC
+  // body text — meta.commonCrawlProvider has no field for either (see
+  // backend/models.py's CommonCrawlProviderInfo).
+  summary: string;
+  // domain/crawlIndex, shown only on a "real" success — never
+  // WARC-level metadata (filename/offset/length are not part of
+  // CommonCrawlProviderInfo at all).
+  detail?: string;
+}
+
+/**
+ * Describes whether the Common Crawl "補完" (supplementary) flow added
+ * a Document this request, for a small status line near the
+ * co-occurrence section (see backend/main.py's
+ * _build_common_crawl_documents() and
+ * docs/13_common_crawl_mvp_design.md). Returns null when
+ * meta.commonCrawlProvider isn't present (e.g. the client-side dummy
+ * fallback in app/lib/dummy-data.ts, or an older backend response that
+ * predates this field).
+ */
+export function getCommonCrawlProviderDisplay(
+  meta: AnalysisMeta,
+): CommonCrawlProviderDisplay | null {
+  const provider = meta.commonCrawlProvider;
+  if (!provider) return null;
+
+  switch (provider.status) {
+    case "off":
+      return { summary: "Common Crawl補完: オフ" };
+
+    case "real": {
+      const detailParts = [
+        provider.domain ? `ドメイン: ${provider.domain}` : null,
+        provider.crawlIndex ? `index: ${provider.crawlIndex}` : null,
+      ].filter((part): part is string => part !== null);
+      return {
+        summary: `Common Crawl補完: 取得済み（${provider.documentCount ?? 0}件）`,
+        detail: detailParts.length > 0 ? detailParts.join(" / ") : undefined,
+      };
+    }
+
+    case "unavailable":
+    default:
+      return {
+        summary: provider.reason
+          ? `Common Crawl補完: 未取得（理由: ${provider.reason}）`
+          : "Common Crawl補完: 未取得",
+      };
+  }
+}
+
 export interface AiOverviewProviderStatusDisplay {
   label: string;
   description: string;
