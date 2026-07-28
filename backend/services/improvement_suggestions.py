@@ -28,6 +28,7 @@ services/brand_summary.py:
 from models import (
     AIOverviewComparisonItem,
     BrandSummary,
+    CommonCrawlProviderInfo,
     ContextAnalysisItem,
     CooccurrenceKeyword,
     ImprovementSuggestion,
@@ -211,6 +212,66 @@ def _ai_overview_reference_suggestion(
     return None
 
 
+def _common_crawl_suggestion(
+    common_crawl_provider: CommonCrawlProviderInfo | None,
+) -> ImprovementSuggestion | None:
+    """At most one suggestion derived from the Common Crawl "補完" flow's
+    outcome (`meta.commonCrawlProvider`, see main.py's
+    _build_common_crawl_documents() and
+    docs/14_common_crawl_improvement_policy.md for the policy this
+    follows). A no-op when Common Crawl is off (the user isn't using
+    this feature, so surfacing a suggestion about it would be
+    confusing) or when `common_crawl_provider` wasn't passed at all
+    (e.g. an older caller/test).
+
+    Gates purely on `status`, not on `documentCount` — `status="real"`
+    already means "at least one Document was added" by construction
+    (see CommonCrawlProviderInfo's docstring), so this doesn't need its
+    own redundant document-count check; a `documentCount` of 0 alongside
+    `status="real"` (which shouldn't happen today) is still treated as
+    "real" here rather than silently falling back to the "unavailable"
+    wording.
+
+    Deliberately avoids any of the overstated claims
+    docs/14_common_crawl_improvement_policy.md's "避けるべき表現" section
+    warns against (no "AIが必ず学習している", no guarantee that an answer
+    will change, no ranking-factor causation claim) — Common Crawl is
+    framed as a supplementary estimate of the Web information
+    environment, never as proof of what any specific LLM actually
+    learned. Never includes `common_crawl_provider.reason` (a
+    developer-facing status string, not meant for direct end-user
+    display) or any HTML/WARC content — CommonCrawlProviderInfo has no
+    field for either anyway.
+    """
+    if common_crawl_provider is None:
+        return None
+
+    if common_crawl_provider.status == "off":
+        return None
+
+    if common_crawl_provider.status == "real":
+        return ImprovementSuggestion(
+            title="Common Crawl補完で確認できる文脈の一貫性を高める",
+            description=(
+                "Common Crawl補完で取得したページにもブランド関連文脈が含まれています。"
+                "公式サイト側では、導入事例・対象顧客・主要機能の説明を一貫して記載すると、"
+                "AIに拾われる文脈を安定させやすくなります。"
+            ),
+            priority="medium",
+        )
+
+    # status == "unavailable"
+    return ImprovementSuggestion(
+        title="クロールされやすい重要ページを整備する",
+        description=(
+            "Common Crawl補完では十分なページを取得できませんでした。"
+            "まずは公式サイト内の重要ページを明確化し、クロールされやすい構造・内部リンクを"
+            "整えることを検討してください。"
+        ),
+        priority="low",
+    )
+
+
 def _risk_or_issue_suggestion(present: set[str]) -> ImprovementSuggestion | None:
     if "risk_or_issue" not in present:
         return None
@@ -283,15 +344,19 @@ def build_improvement_suggestions(
     document_count: int | None = None,
     source_types: list[str] | None = None,
     ai_overview_items: list[AIOverviewComparisonItem] | None = None,
+    common_crawl_provider: CommonCrawlProviderInfo | None = None,
 ) -> list[ImprovementSuggestion]:
     """Builds ImprovementSuggestion[] from cooccurrenceRanking/
     contextAnalysis/summary using simple, rule-based conditions (see
     module docstring), plus at most one suggestion derived from
     `ai_overview_items` (see _ai_overview_reference_suggestion — a
     no-op unless aiOverviewComparison actually ran in "dataforseo" mode
-    and set ownDomainReferenced). Not a substitute for a human SEO/LLMO
-    judgment call — this is MVP-grade triage meant to explain *why* each
-    suggestion was raised, not to prescribe a definitive action plan.
+    and set ownDomainReferenced), and at most one suggestion derived
+    from `common_crawl_provider` (see _common_crawl_suggestion — a
+    no-op when Common Crawl is off or wasn't passed at all). Not a
+    substitute for a human SEO/LLMO judgment call — this is MVP-grade
+    triage meant to explain *why* each suggestion was raised, not to
+    prescribe a definitive action plan.
 
     Always returns at least one suggestion (a low-priority fallback if
     no rule was triggered), so callers don't need to special-case an
@@ -311,6 +376,7 @@ def build_improvement_suggestions(
         _risk_or_issue_suggestion(present),
         _keyword_diversity_suggestion(summary, cooccurrence_ranking, context_analysis),
         _ai_overview_reference_suggestion(ai_overview_items),
+        _common_crawl_suggestion(common_crawl_provider),
     ]
     suggestions = [item for item in candidates if item is not None]
 

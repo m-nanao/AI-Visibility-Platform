@@ -534,7 +534,11 @@ def analyze(payload: AnalyzeRequest):
     # suggestion about AI Overview reference state — see
     # services/improvement_suggestions.py's _ai_overview_reference_suggestion;
     # a no-op unless aiOverviewComparison actually ran in "dataforseo"
-    # mode). Shares cooccurrence_status with the other three sections
+    # mode) and common_crawl_provider (for at most one suggestion about
+    # Common Crawl's fetch outcome — see _common_crawl_suggestion; a
+    # no-op when Common Crawl is off, see
+    # docs/14_common_crawl_improvement_policy.md for the policy this
+    # follows). Shares cooccurrence_status with the other three sections
     # for the same reason they do. Unlike those, build_improvement_suggestions()
     # always returns at least one (fallback) suggestion for genuinely
     # empty input, so when the status is "unavailable" (every url
@@ -552,6 +556,7 @@ def analyze(payload: AnalyzeRequest):
             document_count=document_count,
             source_types=source_types,
             ai_overview_items=result.aiOverviewComparison,
+            common_crawl_provider=common_crawl_provider,
         )
     logger.info("improvement suggestions complete: %d suggestion(s)", len(result.improvements))
 

@@ -222,7 +222,7 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 - UI上の表示名を「Common Crawl補完」でよいか
 - 説明文をどこまで強く表現するか
 - 「AI学習データ推定」という表現を使ってよいか（[01_requirements.md](./01_requirements.md)「重要な前提（スコープの境界）」との整合が必要）
-- Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどの程度反映するか（2026-07-28、`docs/common-crawl-improvement-policy`で方針の**たたき台**を整理した。ただし依頼者確認はまだで、実装も未着手。15章・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）
+- Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどの程度反映するか（2026-07-28、`docs/common-crawl-improvement-policy`で方針の**たたき台**を整理し、続く`feature/common-crawl-improvement-suggestion`で`status`に応じた軽い提案1件の最小実装まで完了した。ただし提案文言はいずれも依頼者確認前の仮のものであり、確認はまだ。15章・16章・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）
 - UI上で注意書きをどの強さで出すか（例: 常時表示の警告文にするか、詳細を開いたときだけ見せる補足にとどめるか）
 - ~~複数件取得（現状は最大1件のみ）をどのタイミングで入れるか~~ → 2026-07-28、`feature/common-crawl-multiple-documents`で最大3件（最大5候補試行）へ拡張済み。13章参照
 
@@ -280,9 +280,24 @@ Common Crawl由来Documentは既存Analyzer入力に混ざっているため、�
 
 - 表現方針: Common Crawlは「Web上の情報環境を補完するソース」「公式ドメイン配下の過去クロールURLを補助的に分析するもの」として扱い、「AIが必ず学習している」とは言わず、「AIが参照・学習し得るWeb情報環境の推定」と表現する（[01_requirements.md](./01_requirements.md)「2. 重要な前提（スコープの境界）」との整合）。
 - 改善提案での使用観点（使ってよい／避けるべき）・最小実装案（仮文言）・実装ステップ・依頼者確認が必要な点は、いずれも[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)に整理した。
-- 11章の確認候補「Common Crawl由来データを改善提案にどの程度反映するか」は、今回の方針docsで**たたき台**ができた状態であり、依頼者確認・実装はまだ次タスク以降である点に変わりはない。
+- 11章の確認候補「Common Crawl由来データを改善提案にどの程度反映するか」は、今回の方針docsで**たたき台**ができた状態であり、実装は続く`feature/common-crawl-improvement-suggestion`タスクで行った（16章参照）。依頼者確認自体はまだである点に変わりはない。
 
 詳細は[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)を参照。
+
+## 16. Common Crawl statusの改善提案への軽い反映（実装、2026-07-28追記）
+
+15章の方針docsに基づき、`feature/common-crawl-improvement-suggestion`で最小実装を行った。`meta.commonCrawlProvider.status`に応じて、改善提案（`improvements`）へ最大1件の提案を追加する。
+
+- `status === "off"`（Common Crawl機能自体が無効、またはリクエストで使っていない）、または情報自体が渡されない場合 → 提案を追加しない（機能を使っていない状態で言及すると却って不自然なため）。
+- `status === "real"` → 「Common Crawl補完で確認できる文脈の一貫性を高める」（優先度`medium`）。判定は`documentCount`の値を見ず`status`のみに基づく——`"real"`は設計上「少なくとも1件Documentが追加された」ことを常に意味するため。
+- `status === "unavailable"` → 「クロールされやすい重要ページを整備する」（優先度`low`）。
+- いずれの文言も、15章・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)「4. 避けるべき表現」の断定表現（「AIが必ず学習している」「AI回答が必ず改善する」「ランキング要因」等）を避けている。`meta.commonCrawlProvider.reason`（開発者向けの内部状態説明）の全文を提案本文にそのまま流し込むこともしない。
+- 実装は`backend/services/improvement_suggestions.py`の`_common_crawl_suggestion()`のみに閉じており、`backend/main.py`は既に計算済みの`common_crawl_provider`を新規引数として渡すだけの変更。Common Crawl service層（`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`）・UI・DataForSEO/ChatGPT関連コードはいずれも無変更。
+- 既存の`ImprovementSuggestion`型（`title`/`description`/`priority`）をそのまま使い、category相当の新フィールドは追加していない。
+
+提案文言はいずれも依頼者確認前の仮のものであり（11章参照）、改善提案での重み付け・複数件それぞれの内容の反映は次タスク以降の課題として残る（[02_roadmap.md](./02_roadmap.md)のNext参照）。
+
+詳細は[backend/README.md](../backend/README.md)「Common Crawl statusの反映」を参照。
 
 ## 関連ドキュメント
 
