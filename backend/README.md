@@ -546,6 +546,7 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 - **domain検索**（`search_common_crawl_domain()`）: 入力domainを正規化（前後空白除去、`scheme://`除去、path/query/fragment除去、userinfo/port除去、小文字化）した上で、厳格なホスト名の許可リスト正規表現で検証する——ドットを含まない文字列（例:`localhost`）や`javascript:alert(1)`のような危険な入力は、HTTPリクエストを一切送らずに拒否する。正規化後、`https://index.commoncrawl.org/{crawl_index}-index`へ`GET`し、クエリパラメータは`url={domain}/*`・`output=json`・`filter=status:200`・`filter=mime:text/html`・`limit={max_results}`、ヘッダーに`User-Agent`、タイムアウトに`timeout_seconds`を指定する。
 - **レスポンス変換**: Index APIのレスポンス（JSON Lines、1行1JSON）を1行ずつパースし、`url`を持つ行のみ`CommonCrawlCandidate`（`url`/`timestamp`/`status`/`mime`/`digest`/`length`/`offset`/`filename`/`crawl_index`/`source: "common_crawl"`固定）へ変換する。`status`/`length`/`offset`はCommon Crawl側が文字列・整数のどちらで返しても安全に整数変換する。パースできない行・`url`を持たない行はスキップし、`max_results`件に達したら残りの行は処理しない。**HTML本文・WARC本文はいずれも取得・保持しない**（`CommonCrawlCandidate`にそのためのフィールド自体が存在しない）。
 - **失敗時の扱い**: 空domain・不正domain・index解決失敗・ネットワークエラー/タイムアウト・非200レスポンス・0件、いずれも例外を送出せず`CommonCrawlIndexResult(status="unavailable", reason="...")`を返す。`reason`には巨大なレスポンス本文や生JSONを一切含めない（0件・パース不能はまとめて「Common Crawl index result was empty.」という定型文言にする）。`status: Literal["real", "unavailable", "off"]`の`"off"`は将来のprovider層が`COMMON_CRAWL_ENABLED=false`時に使う値として型に含めているだけで、このモジュール自体は返さない。
+- **診断ログ**（2026-07-29追加、`chore/common-crawl-index-diagnostics`）: Render上でCommon Crawl補完が即時失敗する事象を受け、`search_common_crawl_domain()`/`resolve_common_crawl_index()`が使う`_fetch_latest_index()`双方に診断ログを追加した。request開始時（INFO）に`index`・`domain`・`url_pattern`・`timeout`（`CommonCrawlSettings.timeout_seconds`の実効値）・実際のrequest URL（`httpx.URL(url, params=params)`で構築）を出力する。失敗時（WARNING）は従来の固定メッセージに`error_type=%s error=%s`（`exc.__class__.__name__`/`str(exc)`）を追加し、`ReadTimeout`（真のタイムアウト）と`ConnectError`（DNS/接続拒否等、timeout設定と無関係に即座に発生）をRenderログだけで区別できるようにした。非200レスポンス時（WARNING）はstatus codeと`_body_preview()`（最大200文字、超過分は`...`で切り詰め）によるbody previewを追加する。**画面表示用の`reason`分類・取得ロジック・retry・fallback indexはいずれも変更していない**——HTML本文・WARC本文・raw response全文もログに一切出さない（Common Crawl自体が認証不要の公開APIのため、そもそもsecretは存在しない）。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -952,6 +953,15 @@ pytest
 - HTTPエラー・タイムアウト・404・500のいずれも例外を送出せず`status="unavailable"`になること、index解決自体が失敗した場合はその失敗がそのまま伝播すること
 - HTML本文・WARC本文が`CommonCrawlCandidate`のどのフィールドにも一切含まれないこと、巨大なレスポンス本文が`reason`にそのまま含まれないこと（`reason`は常に短い説明文であること）
 - `limit`（`max_results`）を超える件数のJSON Lines行が返っても、変換後の件数が`max_results`を超えないこと
+
+さらに、Index API失敗時の診断ログ強化（2026-07-29、`chore/common-crawl-index-diagnostics`）に伴い以下のテストを`pytest`の`caplog`フィクスチャで追加した。
+
+- Index API request開始時（INFO）に`index`・`domain`・`url_pattern`・`timeout`実効値・実際のrequest URLがログに出ること
+- `httpx.ConnectError`発生時に`error_type=ConnectError`と例外メッセージがログに出ること、`httpx.ReadTimeout`発生時は`error_type=ReadTimeout`になり両者が区別できること
+- 非200レスポンス時（WARNING）にstatus codeと`_body_preview()`によるbody previewがログに出ること
+- body previewが5000文字の巨大なレスポンスでも200文字程度に切り詰められること、HTML/WARC本文らしき文字列が混入していてもログ全体の長さが一定に収まること（本文全体が漏れないことの確認）
+- `collinfo.json`取得（`_fetch_latest_index()`、`resolve_common_crawl_index()`経由）でも同様のrequest開始ログ・`error_type`ログが出ること
+- 診断ログの追加が実際の戻り値（`status`/`candidates`/`reason`）に一切影響しないこと（既存の成功時挙動が変わらないことの回帰防止）
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
