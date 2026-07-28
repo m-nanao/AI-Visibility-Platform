@@ -242,6 +242,17 @@ class CommonCrawlProviderInfo(BaseModel):
     crawlIndex: str | None = None
     candidateCount: int = 0
     documentCount: int = 0
+    # The source URL of each Common Crawl Document actually added to
+    # this request's analysis (never a candidate that was found but
+    # failed to fetch/convert) — lets the UI/依頼者 see exactly which
+    # pages were analyzed, for transparency and debugging ahead of any
+    # future increase to COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE. Only
+    # ever populated on a "real" result; "off"/"unavailable" leave this
+    # at its default empty list. De-duplicated (in the unlikely event
+    # the Index API returns more than one capture of the same URL among
+    # the successfully-fetched candidates) — URLs only, never HTML/WARC
+    # body text or any other candidate metadata.
+    analyzedUrls: list[str] = []
 
 
 class AnalysisMeta(BaseModel):

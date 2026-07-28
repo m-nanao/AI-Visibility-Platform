@@ -2024,3 +2024,199 @@ def test_analyze_common_crawl_improvement_suggestion_never_includes_html_or_warc
     )
     assert "<html" not in matching.description
     assert "WARC/1.0" not in matching.description
+
+
+# --- Common Crawl analyzed-page URL list (meta.commonCrawlProvider.analyzedUrls) --
+# Added 2026-07-28 (feature/common-crawl-analyzed-urls-display) — lists the
+# source URL of every Common Crawl Document actually added to the analysis,
+# for transparency/debugging ahead of any future increase to
+# COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE. See docs/13_common_crawl_mvp_design.md.
+
+
+def test_analyze_common_crawl_analyzed_urls_lists_every_document_actually_added(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(3), request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.documentCount == 3
+    assert provider.analyzedUrls == [
+        "https://cybozu.co.jp/page0",
+        "https://cybozu.co.jp/page1",
+        "https://cybozu.co.jp/page2",
+    ]
+    assert len(provider.analyzedUrls) == provider.documentCount
+
+
+def test_analyze_common_crawl_analyzed_urls_excludes_candidates_that_failed_to_fetch(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(2), request=httpx.Request("GET", url))
+        if _warc_fetch_index_from_url(url) == 0:
+            return httpx.Response(500, request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.documentCount == 1
+    assert provider.analyzedUrls == ["https://cybozu.co.jp/page1"]
+    assert "https://cybozu.co.jp/page0" not in provider.analyzedUrls
+
+
+def test_analyze_common_crawl_analyzed_urls_deduplicates_repeated_urls(monkeypatch):
+    # Defensive case: the Index API returns two distinct candidates
+    # (different WARC filenames/captures) for the exact same URL, and
+    # both happen to fetch/convert successfully.
+    duplicate_url = "https://cybozu.co.jp/about"
+    lines = "\n".join(
+        _cdxj_line(
+            url=duplicate_url,
+            filename=f"crawl-data/CC-MAIN-2026-08/segments/x/warc/foo{i}.warc.gz",
+        )
+        for i in range(2)
+    )
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=lines, request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.documentCount == 2
+    assert provider.analyzedUrls == [duplicate_url]
+
+
+def test_analyze_common_crawl_analyzed_urls_empty_when_off(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Common Crawl should not be called when commonCrawlMode is off")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fail_if_called)
+
+    response = client.post("/analyze", json={"brandName": "Cybozu"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.analyzedUrls == []
+
+
+def test_analyze_common_crawl_analyzed_urls_empty_when_unavailable(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.status == "unavailable"
+    assert result.meta.commonCrawlProvider.analyzedUrls == []
+
+
+def test_analyze_common_crawl_analyzed_urls_never_contains_html_or_warc_body(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(3), request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    for url in result.meta.commonCrawlProvider.analyzedUrls:
+        assert "<html" not in url
+        assert "WARC/1.0" not in url
+        assert url.startswith("https://")
+
+
+def test_analyze_common_crawl_combines_with_dataforseo_and_chatgpt_includes_analyzed_urls(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    monkeypatch.setenv("CHATGPT_PROVIDER_MODE", "off")
+    monkeypatch.setenv("ALLOW_CHATGPT_MODE_OVERRIDE", "true")
+
+    _enable_common_crawl(monkeypatch)
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _fake_common_crawl_get_success)
+
+    dataforseo_payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "Cybozu is great."}]}]}],
+    }
+
+    def fake_post(url, **kwargs):
+        if url == chatgpt_client.RESPONSES_API_URL:
+            return httpx.Response(
+                200,
+                json={"output_text": "Cybozu is a well-known teamwork software company."},
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(200, json=dataforseo_payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "Cybozu",
+            "commonCrawlMode": "domain",
+            "commonCrawlDomain": "cybozu.co.jp",
+            "chatgptMode": "openai",
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.commonCrawlProvider.analyzedUrls == ["https://cybozu.co.jp/about"]
+    assert result.meta.aiOverviewProvider.mode == "dataforseo"
+    assert result.meta.chatgptProvider.status == "real"

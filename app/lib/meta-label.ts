@@ -303,6 +303,41 @@ export function getCommonCrawlProviderDisplay(
   }
 }
 
+export interface CommonCrawlAnalyzedPagesDisplay {
+  // Tentative label, pending client confirmation (see
+  // docs/15_requester_review_items.md) — "取得ページ".
+  label: string;
+  // The source URL of each Common Crawl Document actually added this
+  // request (meta.commonCrawlProvider.analyzedUrls, passed through
+  // as-is) — never HTML/WARC body text, since that field doesn't exist
+  // on CommonCrawlProviderInfo in the first place.
+  urls: string[];
+}
+
+/**
+ * Describes the list of Common Crawl-sourced pages actually analyzed
+ * this request, for a small "取得ページ" list near the Common Crawl
+ * status line (see getCommonCrawlProviderDisplay above) — added so a
+ * 依頼者/reader can see exactly which pages were pulled in, ahead of
+ * any future increase to COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE.
+ * Returns null whenever there's nothing to show: `status` isn't
+ * "real" (an "off"/"unavailable" result never added any Document, so
+ * showing an empty page list would be confusing) or `analyzedUrls` is
+ * missing/empty (e.g. an older backend response that predates this
+ * field).
+ */
+export function getCommonCrawlAnalyzedPagesDisplay(
+  meta: AnalysisMeta,
+): CommonCrawlAnalyzedPagesDisplay | null {
+  const provider = meta.commonCrawlProvider;
+  if (!provider || provider.status !== "real") return null;
+
+  const urls = provider.analyzedUrls ?? [];
+  if (urls.length === 0) return null;
+
+  return { label: "取得ページ", urls };
+}
+
 export interface AiOverviewProviderStatusDisplay {
   label: string;
   description: string;

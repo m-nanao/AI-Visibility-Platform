@@ -327,6 +327,21 @@ Common Crawl由来Documentは既存Analyzer入力に混ざっているため、�
 - テストは`app/lib/meta-label.test.ts`に8件追加——報告された文字列そのものが表示に含まれないことの専用テスト、backendが返しうる11種類の`reason`文字列すべてで旧形式`未取得（理由`が出ないことを一括確認するテスト、「no candidates」「0 results」「request failed」「fetch failed」「hostname」という単語単体を含む合成reasonでの分類テスト、WARC/HTML/Tracebackのような技術的な文字列が紛れ込んだ未知reasonでも表示に漏れないことを確認するテストを含む。
 - **今回もbackend・改善提案ロジック・DataForSEO/ChatGPT関連コードはいずれも変更していない**。`app/components/sections/CooccurrenceRankingSection.tsx`も、`summary`/`detail`のみを描画する既存実装のままで変更不要だった（`commonCrawlProvider.reason`を直接参照している箇所は無いことを確認済み）。
 
+## 19. Common Crawl取得ページ一覧の表示（`analyzedUrls`、2026-07-28追記）
+
+`feature/common-crawl-analyzed-urls-display`で、Common Crawlで実際にDocument化できたページのURL一覧を`meta.commonCrawlProvider.analyzedUrls`として返し、画面にも表示できるようにした。依頼者確認・デバッグ・今後の上限拡張に備えた透明性確保が目的。
+
+- **`CommonCrawlProviderInfo.analyzedUrls`**（`backend/models.py`、`list[str] = []`）: `status="real"`の場合のみ、`main.py`の`_build_common_crawl_documents()`が実際にDocument化できた各`Document.sourceUrl`を格納する。取得候補として見つかっただけで未使用（取得失敗）のURLは含めない。Index APIが同一URLの複数キャプチャを返した場合に備え、重複URLは除外する。`status="off"`/`"unavailable"`では常に空配列。
+- **URLのみ**: HTML本文・WARC本文・raw response・WARC metadata（filename/offset/length等）はいずれも含めない。
+- **UI表示**: `app/lib/meta-label.ts`の`getCommonCrawlAnalyzedPagesDisplay()`が、`status="real"`かつ`analyzedUrls`が1件以上ある場合のみ「取得ページ」というラベルとURL一覧を返し、`app/components/sections/CooccurrenceRankingSection.tsx`が各URLを`target="_blank"`/`rel="noreferrer"`付きのリンクとして「2. 共起語ランキング」カードに追加表示する。ラベル「取得ページ」は依頼者確認前の仮のもの（[15_requester_review_items.md](./15_requester_review_items.md)参照）。
+- **3件上限は今回も維持する**。理由は以下のとおりで、次の段階的拡張の前提として今回もdocsに明記する:
+  - MVP段階ではRender環境のメモリ・timeoutリスクを抑えるため。
+  - WARC取得とHTML抽出は重い処理であるため。
+  - 分析結果の説明性を保つため（何件・どのページを分析に使ったかを常に把握できる状態を優先する）。
+  - まずは「取得できる」「分析に混ぜられる」「どのページを使ったか分かる」を優先するため。
+  - 将来は5件/10件への段階的拡張、非同期ジョブ化、DB保存、定期取得へ拡張する想定（[02_roadmap.md](./02_roadmap.md)のLater欄参照）。
+- **Common Crawl service層（`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`）・現在の3件上限・取得候補URL一覧の表示（＝取得候補すべてを見せること）はいずれも今回のスコープ外**。表示するのは実際にDocument化できたURLのみ。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

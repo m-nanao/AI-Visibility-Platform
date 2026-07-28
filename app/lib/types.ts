@@ -147,6 +147,13 @@ export interface CommonCrawlProviderInfo {
   crawlIndex?: string;
   candidateCount?: number;
   documentCount?: number;
+  // The source URL of each Common Crawl Document actually added to this
+  // request's analysis (never a candidate that was found but failed to
+  // fetch/convert) — only ever populated on a "real" result, so the
+  // UI/依頼者 can see exactly which pages were analyzed. De-duplicated,
+  // URLs only — never HTML/WARC body text or any other candidate
+  // metadata.
+  analyzedUrls?: string[];
 }
 
 export interface AnalysisMeta {

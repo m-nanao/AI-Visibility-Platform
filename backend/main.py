@@ -248,8 +248,12 @@ def _build_common_crawl_documents(
     finds nothing, or every candidate fails to fetch/convert) returns an
     empty Document[] plus a CommonCrawlProviderInfo describing why. At
     most COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE Documents are ever
-    returned (see docs/13_common_crawl_mvp_design.md's "件数" policy),
-    and none of `search_common_crawl_domain()`/
+    returned (see docs/13_common_crawl_mvp_design.md's "件数" policy).
+    On a "real" result, `CommonCrawlProviderInfo.analyzedUrls` lists the
+    source URL of every Document actually added (de-duplicated, never
+    including a candidate that failed to fetch/convert) so the UI/依頼者
+    can see exactly which pages were analyzed — never HTML/WARC body
+    text. None of `search_common_crawl_domain()`/
     `fetch_common_crawl_warc_record()`/`build_common_crawl_document()`
     themselves do any COMMON_CRAWL_ENABLED gating (see their module
     docstrings) — that gating happens here, once, before any of them
@@ -310,6 +314,17 @@ def _build_common_crawl_documents(
                 f"Common Crawl completed with partial results "
                 f"({len(documents)} document(s) for {domain})."
             )
+        # De-duplicated in insertion order — see CommonCrawlProviderInfo's
+        # docstring for why (defensive against the Index API returning
+        # more than one capture of the same URL among the candidates
+        # that were successfully fetched/converted).
+        analyzed_urls: list[str] = []
+        seen_urls: set[str] = set()
+        for document in documents:
+            if document.sourceUrl and document.sourceUrl not in seen_urls:
+                seen_urls.add(document.sourceUrl)
+                analyzed_urls.append(document.sourceUrl)
+
         return documents, CommonCrawlProviderInfo(
             mode=common_crawl_mode,
             status="real",
@@ -318,6 +333,7 @@ def _build_common_crawl_documents(
             crawlIndex=index_result.crawl_index,
             candidateCount=candidate_count,
             documentCount=len(documents),
+            analyzedUrls=analyzed_urls,
         )
 
     return [], CommonCrawlProviderInfo(

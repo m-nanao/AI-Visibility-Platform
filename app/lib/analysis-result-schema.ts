@@ -79,6 +79,7 @@ const commonCrawlProviderInfoSchema = z.object({
   crawlIndex: optionalFromPython(z.string()),
   candidateCount: optionalFromPython(z.number()),
   documentCount: optionalFromPython(z.number()),
+  analyzedUrls: optionalFromPython(z.array(z.string())),
 });
 
 const analysisMetaSchema = z.object({

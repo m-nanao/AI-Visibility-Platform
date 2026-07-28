@@ -5,6 +5,7 @@ import {
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
   getAnalysisSourceBreakdownDisplay,
+  getCommonCrawlAnalyzedPagesDisplay,
   getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
   getSectionStatusSummary,
@@ -1449,5 +1450,152 @@ describe("getCommonCrawlProviderDisplay", () => {
     // generic fallback — the point of this test is that no fragment of
     // the raw text leaks through, regardless of which bucket it lands in.
     expect(display?.detail).toBe("理由: 補完データを取得できませんでした");
+  });
+});
+
+// Added 2026-07-28 (feature/common-crawl-analyzed-urls-display) — shows
+// exactly which Common Crawl-sourced pages were pulled into the analysis,
+// for transparency ahead of any future increase to
+// COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE.
+describe("getCommonCrawlAnalyzedPagesDisplay", () => {
+  it("returns null when meta.commonCrawlProvider is absent", () => {
+    expect(getCommonCrawlAnalyzedPagesDisplay(baseMeta())).toBeNull();
+  });
+
+  it("returns the analyzed page URLs on a real success", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 3 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 5,
+        documentCount: 3,
+        analyzedUrls: [
+          "https://cybozu.co.jp/",
+          "https://cybozu.co.jp/company/",
+          "https://cybozu.co.jp/products/",
+        ],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toEqual({
+      label: "取得ページ",
+      urls: [
+        "https://cybozu.co.jp/",
+        "https://cybozu.co.jp/company/",
+        "https://cybozu.co.jp/products/",
+      ],
+    });
+  });
+
+  it("returns null when analyzedUrls is missing (e.g. an older backend response)", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        documentCount: 1,
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toBeNull();
+  });
+
+  it("returns null when analyzedUrls is present but empty", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        documentCount: 1,
+        analyzedUrls: [],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toBeNull();
+  });
+
+  it("returns null when status is off, even if analyzedUrls were somehow present", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "off",
+        status: "off",
+        reason: "Common Crawl integration is off.",
+        analyzedUrls: ["https://cybozu.co.jp/"],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toBeNull();
+  });
+
+  it("returns null when status is unavailable, even if analyzedUrls were somehow present", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason: "Common Crawl index result was empty.",
+        analyzedUrls: ["https://cybozu.co.jp/"],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toBeNull();
+  });
+
+  it("never contains HTML or WARC body text", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 2 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        documentCount: 2,
+        analyzedUrls: ["https://cybozu.co.jp/", "https://cybozu.co.jp/about/"],
+      },
+    };
+
+    const display = getCommonCrawlAnalyzedPagesDisplay(meta);
+    for (const url of display?.urls ?? []) {
+      expect(url).not.toContain("<html");
+      expect(url).not.toContain("WARC/1.0");
+      expect(url.startsWith("https://") || url.startsWith("http://")).toBe(true);
+    }
+  });
+
+  it("does not affect getAnalysisSourceBreakdownDisplay or getCommonCrawlProviderDisplay", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [{ url: "https://cybozu.co.jp/about", success: true }],
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 3 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 5,
+        documentCount: 3,
+        analyzedUrls: [
+          "https://cybozu.co.jp/",
+          "https://cybozu.co.jp/company/",
+          "https://cybozu.co.jp/products/",
+        ],
+      },
+    };
+
+    expect(getAnalysisSourceBreakdownDisplay(meta)).toBe(
+      "Webページ 1件 / Common Crawl補完 3件",
+    );
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
+      "Common Crawl補完: 取得済み（3件）",
+    );
   });
 });

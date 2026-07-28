@@ -1,10 +1,12 @@
 # 15. Common Crawl関連 依頼者確認用メモ（2026-07-28）
 
-**このドキュメントはメモの整理のみを目的とする。コード変更は含まない。** Common Crawl補完は現在、Index検索・WARC fetch/HTML extraction・`Document[]`変換・`/analyze`統合・UI selector・最大3件取得・分析ソース内訳表示・共起語ランキングへの反映・改善提案への軽い反映・Common Crawl status表示の整理まで実装済みだが（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）、表示名・説明文・改善提案文言の強さについては依頼者確認前の仮方針のまま進めている。今後の確認・修正に備えて、依頼者に確認すべき項目をこの1ファイルに整理する。
+**このドキュメントはメモの整理のみを目的とする。コード変更は含まない。** Common Crawl補完は現在、Index検索・WARC fetch/HTML extraction・`Document[]`変換・`/analyze`統合・UI selector・最大3件取得・分析ソース内訳表示・共起語ランキングへの反映・改善提案への軽い反映・Common Crawl status表示の整理・取得ページ一覧の表示まで実装済みだが（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）、表示名・説明文・改善提案文言の強さについては依頼者確認前の仮方針のまま進めている。今後の確認・修正に備えて、依頼者に確認すべき項目をこの1ファイルに整理する。
 
 **2026-07-28追記（`style/common-crawl-status-display`）:** 下記E「未取得時の説明」の推奨方針を先行実装した——`status: "unavailable"`時の表示を「Common Crawl補完: 補完データ未取得」＋分類済みの短い理由に変更し、backendの生の`reason`文字列をそのまま表示しない形にした（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「17. Common Crawl status表示の整理」参照）。ただし表示文言そのものはまだ仮であり、この章の依頼者確認事項は引き続き有効。
 
 **2026-07-28再追記（`fix/common-crawl-status-japanese-reasons`）:** 上記マージ後、実環境で英語`reason`がそのまま見えたという報告を受け再調査した。backendが返しうる`reason`文字列すべてを検証した結果、現行コードは既に正しく日本語分類しており、コード上の欠陥は見つからなかった（古いデプロイ・キャッシュを見ていた可能性が高い）。安全のためdomain未確定系の分類パターンをより広い部分一致に強化し、テストを追加した（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「18. Common Crawl status表示の英語reason再確認・強化」参照）。表示文言自体は変わらず、この章の依頼者確認事項も引き続き有効。
+
+**2026-07-28三度追記（`feature/common-crawl-analyzed-urls-display`）:** Common Crawlで実際に分析に使ったページのURL一覧（`meta.commonCrawlProvider.analyzedUrls`）を表示できるようにした。下記F「取得ページ一覧のラベル」を新設し、確認候補として追加した（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「19. Common Crawl取得ページ一覧の表示」参照）。
 
 ## 1. 目的
 
@@ -112,11 +114,30 @@ Common Crawl関連の表現・説明・改善提案文言について、依頼�
 - クロールされていないため評価が低いです
 - SEO上不利です
 
+### F. 取得ページ一覧のラベル（2026-07-28追加）
+
+**現在:** ラベル「取得ページ」（`app/lib/meta-label.ts`の`getCommonCrawlAnalyzedPagesDisplay()`、`status="real"`かつ実際にDocument化できたページが1件以上ある場合のみ、URL一覧とともに「共起語ランキング」カードへ表示）。
+
+**確認したいこと:**
+- このラベルでよいか。
+- URLをリンク表示（`target="_blank"`/`rel="noreferrer"`）のままでよいか、リンクを外してテキスト表示にするか。
+
+**候補:**
+- 取得ページ（現行）
+- 分析に使用したページ
+- Common Crawl由来ページ
+- 補完分析に使用したページ
+
+**推奨:**
+- 画面上は「取得ページ」。
+- docsでは「分析に使用したCommon Crawl由来ページ」と説明する。
+
 ## 4. 現在の実装で表示される箇所
 
 - Common Crawl補完 selector（`app/components/BrandInputForm.tsx`、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`時のみ）
 - Common Crawl status表示（`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`、「共起語ランキング」カード）
 - 分析ソース内訳（`app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay()`、同カード）
+- 取得ページ一覧（`app/lib/meta-label.ts`の`getCommonCrawlAnalyzedPagesDisplay()`、同カード。2026-07-28追加）
 - 改善提案（`backend/services/improvement_suggestions.py`の`_common_crawl_suggestion()`、「改善提案」カード）
 - [docs/12_demo_readiness.md](./12_demo_readiness.md)
 - [docs/13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)
@@ -125,7 +146,8 @@ Common Crawl関連の表現・説明・改善提案文言について、依頼�
 ## 5. 依頼者確認後に変更する可能性があるファイル
 
 - `app/components/BrandInputForm.tsx`（`COMMON_CRAWL_UI_TEXT`の表示名・説明文・注意書き）
-- `app/lib/meta-label.ts`（`getCommonCrawlProviderDisplay()`の文言）
+- `app/lib/meta-label.ts`（`getCommonCrawlProviderDisplay()`/`getCommonCrawlAnalyzedPagesDisplay()`の文言）
+- `app/components/sections/CooccurrenceRankingSection.tsx`（取得ページ一覧のリンク表示/テキスト表示の切り替え）
 - `backend/services/improvement_suggestions.py`（`_common_crawl_suggestion()`の提案文言）
 - `docs/12_demo_readiness.md`
 - `docs/13_common_crawl_mvp_design.md`
