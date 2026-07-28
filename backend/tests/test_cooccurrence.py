@@ -77,6 +77,21 @@ def test_excludes_particles_and_symbols():
     assert {"料金", "プラン"} <= keywords
 
 
+def test_low_value_filter_applies_in_janome_mode_too():
+    # Added 2026-07-28 (fix/cooccurrence-noise-filter) — is_low_value_cooccurrence_term()
+    # is a shared second-layer filter on top of Janome's own POS
+    # filtering (see _is_janome_candidate_keyword), so noise fragments
+    # never appear here either, even if a dictionary quirk tagged one
+    # as a noun.
+    ranking = compute_cooccurrence_ranking(
+        "OpenAI",
+        ["OpenAIには便利な機能があります。導入すると楽しくなることが多いです。"],
+    )
+    keywords = {kw.keyword for kw in ranking}
+
+    assert not keywords & {"には", "こと", "ことが", "しくなる", "くことが"}
+
+
 def test_counts_accumulate_across_documents():
     ranking = compute_cooccurrence_ranking(
         "OpenAI",

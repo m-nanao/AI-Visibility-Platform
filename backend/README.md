@@ -114,6 +114,19 @@ curl -X POST http://localhost:8000/analyze \
 TOKENIZER_MODE=janome uvicorn main:app --reload --port 8000
 ```
 
+### 共起語ランキングのノイズ語フィルタ（`is_low_value_cooccurrence_term()`、2026-07-28）
+
+Common Crawl補完を有効化した実環境で、共起語ランキングに「には」「くことが」「しくなる」のような意味の薄い機能語断片が上位表示される問題が見つかった。`simple`トークナイザーはひらがな/カタカナ/漢字の文字種境界で単語を区切るため（例:「サイトには」→「サイト」/「には」）、格助詞や活用語尾がそのまま1トークンとして残ってしまうことがある。
+
+これに対し、両トークナイザー共通の第二段フィルタ`is_low_value_cooccurrence_term(term) -> bool`を追加した（`_is_simple_candidate_keyword()`/`_is_janome_candidate_keyword()`の両方から呼ばれる）。
+
+- **STOPWORDS拡張**: 「には」「では」「とも」「から」「まで」「より」「ことが」「ことは」「ことを」「ものが」「ものを」「くこと」「くことが」「しくなる」「する」「いる」「される」「れる」「られる」を既存の`STOPWORDS`に追加。
+- **`NOISE_SUFFIXES`（接尾辞ベースの除外）**: 「ことが」「ことは」「ことを」「こと」「ものが」「ものは」「ものを」「には」「では」「ます」「です」「しくなる」「くなる」のいずれかで終わる語を除外する。ひらがなの連続は文字種境界でしか分割されないため（例:「できることが」は1トークンのまま）、固定のstopwords集合だけでは捕捉できない長い断片にも対応する。
+- **ひらがなのみの短い語を除外**: 4文字以下の完全ひらがな語は除外する（`MAX_HIRAGANA_ONLY_NOISE_LENGTH`）。ブランド名周辺の実質的なキーワードは漢字・カタカナ（外来語）・漢字＋送り仮名の複合語であることが多く、短い完全ひらがな語はほぼ助詞・活用語尾であるという経験則に基づく。「サイト」「デジタル」「自治体」「導入事例」「グループウェア」「クラウド」「業務改善」「チームワーク」のような語は対象外（ひらがなのみではないため）で除外されない。
+- 空文字・空白のみの入力に対しても例外を投げず、低価値（除外対象）として扱う。
+
+Common Crawl由来のDocument（`sourceType: "common_crawl"`）に対する特別な分岐は追加していない——`compute_cooccurrence_ranking_from_documents()`は既存のDocument[]をそのままテキストへ変換して渡すだけで、取得元に関わらず同じフィルタを通る。今回は最小改善であり、将来的には品詞情報を活用した複合語抽出・より精緻な形態素解析ベースのフィルタリングの余地がある（詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）。
+
 ## 入力検証
 
 `POST /analyze` は以下のルールで検証する。エラー時は常に `{"error": "<メッセージ>"}` 形式（400）で返す。
@@ -622,6 +635,7 @@ pytest
 - 同じ語が複数文章に出た場合に正しく加算されること
 - 上位N件でランキングが打ち切られ、件数の降順になっていること
 - `janome.tokenizer` のimport自体がモジュールimport時に走らないこと（起動時メモリ超過対策の回帰防止）
+- `is_low_value_cooccurrence_term()`の第二段フィルタがJanomeモードでも機能し、「には」「こと」「ことが」「しくなる」「くことが」のような断片が辞書の癖でnoun扱いされた場合でも除外されること（2026-07-28）
 
 `tests/test_cooccurrence_simple.py` では、デフォルトの`simple`トークナイザーを直接テストしている。
 
@@ -629,6 +643,9 @@ pytest
 - URL断片（`http`/`www`等）・2文字以下のASCII語・stopwordsが除外されること
 - ブランド名前後のウィンドウ境界でASCII単語が途中で切れず、単語全体が残ること
 - `cooccurrenceRanking` が空にならないこと
+- **`is_low_value_cooccurrence_term()`のテスト（2026-07-28、`fix/cooccurrence-noise-filter`）**: 「には」「くことが」「しくなる」「こと」「ことが」「ことは」「では」が除外されること、「サイト」「デジタル」「自治体」「導入事例」「グループウェア」「クラウド」「業務改善」「チームワーク」は除外されないこと、`NOISE_SUFFIXES`により固定stopwordsに無い長い断片（例:「できることが」「あたらしくなる」）も除外されること、ASCII語（`API`/`Cloud99`）は誤って除外されないこと、空文字・空白のみの入力で例外にならないこと
+- 実際の`_simple_tokenize_candidates()`/`compute_cooccurrence_ranking()`を通しても同様のノイズ語が出ないこと、意味のある語は残ること（メッセージ性の低いHTMLライクなテキストを模した入力でも確認）
+- Common Crawl由来Document（`sourceType: "common_crawl"`）を`compute_cooccurrence_ranking_from_documents()`に渡しても、他のDocumentと全く同じフィルタが適用されること（Common Crawl専用の分岐が無いことの確認）
 
 `tests/test_web_fetcher.py` では `_is_safe_url()` / `fetch_url_texts()` / `to_documents()` を直接テストしている（実際のネットワークアクセスは行わず、DNS解決やHTTPリクエストは `monkeypatch` で差し替えている）。HTML本文抽出そのもののテストは`tests/test_document_cleaner.py`に分離済みで、このファイルは`web_fetcher.py`が自前でHTML解析をせず`document_cleaner.py`へ正しく委譲していることを確認する。
 
