@@ -25,7 +25,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 
 以下は現段階では未実装、または今回のデモ対象外。依頼者から質問が出た場合は「次フェーズで検討」と説明する。
 
-- Common Crawl本格連携（**backend `/analyze`にはAPI/Console検証用の最小統合済み**（2026-07-28、`commonCrawlMode`/`commonCrawlDomain`リクエストフィールド）だが、画面（UI）にはまだ一切表示されない——デモでは触れない。詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
+- Common Crawl本格連携（**backend `/analyze`への統合＋検証用UI selector（「Common Crawl補完（検証用）」）まで実装済み**（2026-07-28）だが、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`はデフォルトfalseのため通常の画面には表示されない。表示名・説明文・注意書きが依頼者確認前の仮のものであるため、**明日のデモではこのフラグをtrueにしない**——デモでは触れない。詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
 - Claude / Gemini / Perplexity等の複数AI実連携
 - 定期取得・自動スケジュール実行
 - DB保存（分析結果は画面をリロードすると消える）
@@ -84,6 +84,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 | --- | --- | --- |
 | `NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR` | `true` | デモ用の検証UIを表示するため一時的にtrueへ |
 | `NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR` | `true` | 同上 |
+| `NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR` | `false` | **明日のデモではfalseのまま**（表示名・説明文が依頼者確認前の仮のものであるため、確認が取れるまで画面に出さない） |
 
 **注意**:
 - Vercel側に`OPENAI_API_KEY`・`DATAFORSEO_LOGIN`・`DATAFORSEO_PASSWORD`等の秘密情報は一切入れない。
