@@ -537,7 +537,7 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 | `COMMON_CRAWL_ENABLED` | `false` | Common Crawl連携全体の大元のスイッチ。このモジュール・`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`自体はこの値でのゲーティングを行わない——`backend/main.py`の`_build_common_crawl_documents()`がこの値を読み、`false`なら`commonCrawlMode="domain"`が指定されても一切接続しない（詳細は下記「`/analyze`統合」参照） |
 | `COMMON_CRAWL_INDEX` | `latest` | `latest`（collinfo.jsonから最新のindexを解決）または`CC-MAIN-YYYY-NN`形式のindex idを明示指定。不正な値は警告ログを出しつつ`latest`にフォールバック。大文字小文字は区別せず、正規化して`CC-MAIN-`は大文字で保持する |
 | `COMMON_CRAWL_MAX_RESULTS` | `5` | 1回のdomain検索で取得するURL候補の上限。1〜10の範囲外・不正値は5にフォールバック |
-| `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。**許可範囲は3〜30秒**で、範囲外・不正値（`60`など）は10にフォールバックする（警告ログを出力）。timeoutを伸ばしても`httpx.RemoteProtocolError`のような即時切断系エラーには効かないため、そちらは下記のretryで補う |
+| `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。**許可範囲は3〜30秒**で、範囲外・不正値（`60`など）は10にフォールバックする（警告ログを出力）。timeoutを伸ばしても`httpx.RemoteProtocolError`のような即時切断系エラーには効かないため、そちらは下記のretry・query fallbackで補う。**Render環境では30を推奨**（許可範囲内の最大値） |
 | `COMMON_CRAWL_USER_AGENT` | `AI-Visibility-Platform-MVP` | Common Crawlへのリクエストに使うUser-Agent。空文字・200文字超はデフォルトにフォールバック |
 
 **`common_crawl_index.py`**: `resolve_common_crawl_index(settings) -> CommonCrawlIndexResolution`と`search_common_crawl_domain(domain, settings) -> CommonCrawlIndexResult`を公開する。**このモジュール自体は`COMMON_CRAWL_ENABLED`を一切参照せず、呼ばれれば常に実際にHTTPリクエストを行う**——DataForSEOの`dataforseo_client.py`・ChatGPTの`chatgpt_client.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲しており、`COMMON_CRAWL_ENABLED`によるON/OFF制御は呼び出し側（`backend/main.py`の`_build_common_crawl_documents()`）の責務とする。
@@ -548,6 +548,14 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 - **失敗時の扱い**: 空domain・不正domain・index解決失敗・ネットワークエラー/タイムアウト・非200レスポンス・0件、いずれも例外を送出せず`CommonCrawlIndexResult(status="unavailable", reason="...")`を返す。`reason`には巨大なレスポンス本文や生JSONを一切含めない（0件・パース不能はまとめて「Common Crawl index result was empty.」という定型文言にする）。`status: Literal["real", "unavailable", "off"]`の`"off"`は将来のprovider層が`COMMON_CRAWL_ENABLED=false`時に使う値として型に含めているだけで、このモジュール自体は返さない。
 - **診断ログ**（2026-07-29追加、`chore/common-crawl-index-diagnostics`）: Render上でCommon Crawl補完が即時失敗する事象を受け、`search_common_crawl_domain()`/`resolve_common_crawl_index()`が使う`_fetch_latest_index()`双方に診断ログを追加した。request開始時（INFO）に`index`・`domain`・`url_pattern`・`timeout`（`CommonCrawlSettings.timeout_seconds`の実効値）・実際のrequest URL（`httpx.URL(url, params=params)`で構築）を出力する。失敗時（WARNING）は従来の固定メッセージに`error_type=%s error=%s`（`exc.__class__.__name__`/`str(exc)`）を追加し、`ReadTimeout`（真のタイムアウト）と`ConnectError`（DNS/接続拒否等、timeout設定と無関係に即座に発生）をRenderログだけで区別できるようにした。非200レスポンス時（WARNING）はstatus codeと`_body_preview()`（最大200文字、超過分は`...`で切り詰め）によるbody previewを追加する。
 - **retry**（2026-07-29追加、`fix/common-crawl-index-retry`）: 上記の診断ログにより、Render上の実際の失敗が`httpx.RemoteProtocolError`（「Server disconnected without sending a response.」）——タイムアウト経過を待たず即座に発生し、`COMMON_CRAWL_TIMEOUT_SECONDS`を伸ばしても効果がない切断系エラー——であることが判明したため、`search_common_crawl_domain()`/`_fetch_latest_index()`双方に軽いretryを追加した。最大3回（初回+retry2回）、retry前に`0.5秒`→`1.0秒`だけ`time.sleep()`する（`_MAX_ATTEMPTS`/`_RETRY_DELAYS_SECONDS`はモジュール内定数、env化はしていない）。retry対象は`httpx.TransportError`（`RemoteProtocolError`/`ConnectError`/`ConnectTimeout`/`ReadTimeout`等をすべて含む例外階層）と、非200レスポンスのうち`502`/`503`/`504`のみ（`400`/`404`等はretryしない）。各attemptで`attempt=N/3`付きのrequest startログ、retry時は`request retrying ... next_attempt=N/3 delay=...`ログ、全滅時は`request exhausted retries ... attempts=3 last_error_type=...`ログを出す。2回目以降で成功した場合は`request succeeded ... attempt=N/3 candidates=...`ログを出し、通常どおり`candidates`を返す。**3回とも失敗した場合の最終的な`status`/`reason`（画面表示用の日本語reason分類の元になる文言）は従来と完全に同じ**——retryはログとリトライ挙動だけを変更しており、成功時の候補抽出ロジック・失敗時のreason文言・fallback indexの有無はいずれも変更していない。テストでは`time.sleep`をmonkeypatchで潰しており、retry関連テストが実時間で待たされることはない。
+- **query形式fallback**（2026-07-29追加、`fix/common-crawl-index-query-fallback`）: retry追加後もRenderで標準query（`filter=status:200`/`filter=mime:text/html`付き）が3回ともRemoteProtocolErrorで失敗し続ける事象が報告された——retryが正しく動作していても、同じquery形式を繰り返すだけでは復旧しないケースがあると判明したため、`search_common_crawl_domain()`に段階的なquery variant fallbackを追加した。**`_fetch_latest_index()`/collinfo.jsonは対象外**（domain検索のquery形式の話であり、collinfo.jsonにはfilter等のクエリがそもそもない）。
+  - **query variant**（`_build_query_variants()`）: (1) `default-filtered`＝現行の標準query（`filter=status:200`＋`filter=mime:text/html`）、(2) `default-unfiltered`＝filterを外したquery、(3) `www-unfiltered`＝domainの先頭に`www.`を付けた上でfilterを外したquery。domainが既に`www.`で始まる場合は(3)を省略（`www.www.`という二重prefixを避けるため、variantは(1)(2)の2つのみになる）。
+  - **variantごとのretry**: 各variantに既存の最大3回retryをそのまま適用する（例: variant Aが3回ともRemoteProtocolError→variant Bへfallback→variant Bも3回とも失敗→variant Cへfallback、という最大9回のHTTPリクエストになり得る）。
+  - **fallbackする条件**: `httpx.TransportError`が3回retryしても失敗、または非200(`502`/`503`/`504`)が3回retryしても失敗。
+  - **fallbackしない条件**: `400`/`404`等の非retry対象な非200レスポンス（即座に`unavailable`、次のvariantへは進まない）、成功したが0件（query自体は成功しているため、別variantへ広げるかは今後の検討事項）。domain不正・index解決失敗は元々variantループに入る前の段階で弾かれる。
+  - **ログ**: request開始ログに`query_variant=%s`を追加。variantを切り替える際に`Common Crawl Index API query fallback index=... domain=... from=%s to=%s reason=%s`（INFO、`reason`は直前のvariantの`error_type`または`HTTP{status}`）を出す。variant内でretryが成功した場合、またはfallback後のvariantで成功した場合は`request succeeded ... query_variant=%s attempt=N/3 candidates=%d`ログを出す。全variantが失敗した場合は`Common Crawl Index API all query variants failed index=... domain=... variants=%d last_error_type=%s`（WARNING）を出す。
+  - **成功時・失敗時の挙動**: fallback後のvariantで成功した場合も、既存の`_parse_candidates()`でそのまま処理し、通常どおり`candidates`を返す（filterなしqueryでは`status`/`mime`が含まれない候補が混じり得るが、既存の型はいずれもOptionalであり、後続のWARC取得・HTML抽出側で本文抽出できないものは既存方針どおりskipされる）。全variantが失敗した場合の最終的な`status`/`reason`は**従来と完全に同じ**（画面表示用の日本語reason分類に影響なし）。
+  - **今回変更していないもの**: Common Crawl取得件数（3件上限）・UI・`common_crawl_warc.py`/`common_crawl_document_provider.py`・DataForSEO/ChatGPT関連コード。0件時に別queryへ広げるかどうかは今回のスコープ外（今後の検討事項としてdocsに記載）。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -972,9 +980,23 @@ pytest
 - `503`（および余力枠として`502`/`504`）は1回目失敗・2回目成功のケースでretryされ、`candidates`が返ること
 - 各attemptで`attempt=N/3`付きのrequest startログが出ること、retry時に`request retrying ... next_attempt=N/3 delay=0.5`/`delay=1.0`ログが出ること、3回とも失敗した場合に`request exhausted retries ... attempts=3 last_error_type=...`ログが出ること
 - 2回目以降で成功した場合に`request succeeded ... attempt=N/3 candidates=...`ログが出ること
-- retryのために実際に`time.sleep`へ渡された値の合計が1.5秒を超えないこと（sleepはmonkeypatchで潰した上での呼び出し引数の検証）
+- retryのために実際に`time.sleep`へ渡された値の合計が1.5秒を超えないこと（sleepはmonkeypatchで潰した上での呼び出し引数の検証。**query fallback追加後は、query variantごとに1.5秒を超えないことを検証する形に更新**——3 variant全体が失敗する最悪ケースでは最大4.5秒になり得る）
 - retryの追加によって、画面表示用の`reason`文言（3回失敗時）が変わっていないこと
 - `collinfo.json`取得（`_fetch_latest_index()`）でも同様に、1回目`RemoteProtocolError`→2回目成功でindex解決に成功すること、3回とも失敗した場合は`success=False`になること
+
+さらに、Index API query形式fallback追加（2026-07-29、`fix/common-crawl-index-query-fallback`）に伴い以下のテストを追加した（すべて`time.sleep`をmonkeypatchで潰しており、実時間で待たされることはない）。
+
+- 標準query（`default-filtered`）が`RemoteProtocolError`/`ReadTimeout`/`503`で3回とも失敗し、filterなしquery（`default-unfiltered`）で成功した場合、`status="real"`かつ`candidates`が返ること
+- 標準query・filterなしqueryが両方3回とも失敗し、`www.`付きqueryで成功した場合も`status="real"`になること（`www.`付きqueryのURLパターンが実際に使われたことを確認）
+- domainが既に`www.`で始まる場合、`www.`付きvariantは生成されず、variantが2つ（`default-filtered`/`default-unfiltered`）のみになること（二重`www.www.`にならないことの確認）
+- 全variant（3つ）とも`RemoteProtocolError`で失敗した場合、`status="unavailable"`になり、最終的な`reason`が従来と完全に同じ文言のままであること
+- `400`/`404`レスポンスでは次のqueryへfallbackせず、1回のリクエストだけで`status="unavailable"`になること（`httpx.get`の呼び出し回数を確認）
+- 標準queryが成功して0件だった場合、次のqueryへfallbackしないこと（呼び出し回数が1回のみであることを確認）
+- request開始ログに`query_variant=%s`が出ること
+- variant切り替え時に`query fallback ... from=%s to=%s reason=%s`ログが出ること（2回のfallbackで2件、`reason`に`RemoteProtocolError`が出ることを確認）
+- 全variant失敗時に`all query variants failed ... variants=3 last_error_type=%s`ログが出ること
+- fallback後に成功した場合、成功ログに`query_variant=%s`（fallback先のvariant名）が出ること
+- query variantが変わっても`_parse_candidates()`によるcandidate変換結果（`url`/`timestamp`/`status`/`mime`/`digest`/`source`）が変わらないこと（回帰防止）
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
