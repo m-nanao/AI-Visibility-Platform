@@ -222,7 +222,7 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 - UI上の表示名を「Common Crawl補完」でよいか
 - 説明文をどこまで強く表現するか
 - 「AI学習データ推定」という表現を使ってよいか（[01_requirements.md](./01_requirements.md)「重要な前提（スコープの境界）」との整合が必要）
-- Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどの程度反映するか
+- Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどの程度反映するか（2026-07-28、`docs/common-crawl-improvement-policy`で方針の**たたき台**を整理した。ただし依頼者確認はまだで、実装も未着手。15章・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)参照）
 - UI上で注意書きをどの強さで出すか（例: 常時表示の警告文にするか、詳細を開いたときだけ見せる補足にとどめるか）
 - ~~複数件取得（現状は最大1件のみ）をどのタイミングで入れるか~~ → 2026-07-28、`feature/common-crawl-multiple-documents`で最大3件（最大5候補試行）へ拡張済み。13章参照
 
@@ -274,6 +274,16 @@ Common Crawl補完が最大3件まで取得できるようになったことで�
 
 実装詳細は`app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay()`のコメント、テストは`app/lib/meta-label.test.ts`を参照（`backend/README.md`は本タスクの対象外のため更新していない——backend側の変更が無いため）。
 
+## 15. 改善提案への反映方針（docsのみ、2026-07-28追記）
+
+Common Crawl由来Documentは既存Analyzer入力に混ざっているため、共起語ランキング・文脈分析・ブランド認知サマリーには一定程度反映されているが、「改善提案」（`improvement_suggestions.py`）に対してCommon Crawl由来データをどう扱うかはまだ明確ではなかった。依頼者確認が必要になりやすい部分のため、`docs/common-crawl-improvement-policy`でまず方針docs（[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)）を作成し、最小実装案を整理した。**今回はdocsのみで、コード変更（`backend/services/improvement_suggestions.py`等）は一切行っていない。**
+
+- 表現方針: Common Crawlは「Web上の情報環境を補完するソース」「公式ドメイン配下の過去クロールURLを補助的に分析するもの」として扱い、「AIが必ず学習している」とは言わず、「AIが参照・学習し得るWeb情報環境の推定」と表現する（[01_requirements.md](./01_requirements.md)「2. 重要な前提（スコープの境界）」との整合）。
+- 改善提案での使用観点（使ってよい／避けるべき）・最小実装案（仮文言）・実装ステップ・依頼者確認が必要な点は、いずれも[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)に整理した。
+- 11章の確認候補「Common Crawl由来データを改善提案にどの程度反映するか」は、今回の方針docsで**たたき台**ができた状態であり、依頼者確認・実装はまだ次タスク以降である点に変わりはない。
+
+詳細は[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)を参照。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
@@ -283,3 +293,4 @@ Common Crawl補完が最大3件まで取得できるようになったことで�
 - フェーズ別ロードマップ: [02_roadmap.md](./02_roadmap.md)
 - 今後のタスク一覧: [05_tasks.md](./05_tasks.md)
 - 現状サマリー: [development_status.md](./development_status.md)
+- Common Crawl由来データの改善提案への反映方針: [14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)
