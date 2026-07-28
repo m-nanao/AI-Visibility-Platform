@@ -107,6 +107,45 @@ export interface ChatGptProviderInfo {
   environment?: ChatGptEnvironment;
 }
 
+// Whether /analyze should try to add one supplementary Document from
+// Common Crawl — see backend/services/common_crawl_index.py /
+// common_crawl_warc.py / common_crawl_document_provider.py and
+// docs/13_common_crawl_mvp_design.md. "off" (default) does nothing;
+// "domain" searches Common Crawl's Index API for a domain (see
+// AnalyzeRequestBody.commonCrawlDomain in analysis-request.ts) and
+// tries to fetch/build a Document from the first usable candidate.
+// Unlike aiOverviewMode/chatgptMode there is no separate
+// ALLOW_*_OVERRIDE backend env gate — the request field is honored
+// directly, but only ever does anything when the backend's
+// COMMON_CRAWL_ENABLED=true, so a request body alone still can't turn
+// this on in an environment not configured to allow it. **No UI exists
+// for this yet** — it's reachable only via a direct POST body (API/
+// console), not from BrandInputForm.tsx.
+export type CommonCrawlProviderMode = "off" | "domain";
+
+// Whether the Common Crawl "補完" (supplementary) flow actually added
+// a Document this request. "off": commonCrawlMode was "off", or the
+// backend's COMMON_CRAWL_ENABLED is not true. "real": a Document was
+// added. "unavailable": commonCrawlMode was "domain" and Common Crawl
+// is enabled, but the domain couldn't be determined, the Index search
+// failed/found nothing, or every candidate failed to fetch/convert.
+export type CommonCrawlProviderStatus = "off" | "real" | "unavailable";
+
+// Reports whether a supplementary Common Crawl Document was added to
+// this request's Document[], and why. Mirrors backend/models.py's
+// CommonCrawlProviderInfo — entirely independent of
+// AIOverviewProviderInfo/ChatGptProviderInfo above. At most one
+// Document is ever added this way (documentCount is 0 or 1).
+export interface CommonCrawlProviderInfo {
+  mode: CommonCrawlProviderMode;
+  status: CommonCrawlProviderStatus;
+  reason: string;
+  domain?: string;
+  crawlIndex?: string;
+  candidateCount?: number;
+  documentCount?: number;
+}
+
 export interface AnalysisMeta {
   sections: AnalysisSectionStatuses;
   documentsSource: DocumentsSource;
@@ -141,6 +180,9 @@ export interface AnalysisMeta {
   // Whether a ChatGPT-equivalent observation card was added to
   // aiOverviewComparison this request. Independent of aiOverviewProvider.
   chatgptProvider?: ChatGptProviderInfo;
+  // Whether a supplementary Common Crawl Document was added to this
+  // request's Document[]. Independent of aiOverviewProvider/chatgptProvider.
+  commonCrawlProvider?: CommonCrawlProviderInfo;
 }
 
 export interface BrandSummary {

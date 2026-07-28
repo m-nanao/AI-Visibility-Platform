@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
-import type { AiOverviewProviderMode, AnalysisResult, ChatGptProviderMode } from "../../lib/types";
+import type {
+  AiOverviewProviderMode,
+  AnalysisResult,
+  ChatGptProviderMode,
+  CommonCrawlProviderMode,
+} from "../../lib/types";
 
 const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = [
   "mock",
@@ -11,6 +16,7 @@ const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = [
   "dataforseo_live",
 ];
 const CHATGPT_MODES: readonly ChatGptProviderMode[] = ["off", "openai"];
+const COMMON_CRAWL_MODES: readonly CommonCrawlProviderMode[] = ["off", "domain"];
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
 
@@ -46,6 +52,8 @@ async function fetchFromPythonApi(
   urls?: string[],
   aiOverviewMode?: AiOverviewProviderMode,
   chatgptMode?: ChatGptProviderMode,
+  commonCrawlMode?: CommonCrawlProviderMode,
+  commonCrawlDomain?: string,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable" };
@@ -62,6 +70,8 @@ async function fetchFromPythonApi(
     urls?: string[];
     aiOverviewMode?: AiOverviewProviderMode;
     chatgptMode?: ChatGptProviderMode;
+    commonCrawlMode?: CommonCrawlProviderMode;
+    commonCrawlDomain?: string;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
@@ -75,6 +85,14 @@ async function fetchFromPythonApi(
   // and even then only calls OpenAI when aiOverviewMode isn't "mock"
   // (see backend/main.py). Next.js does not gate this itself.
   if (chatgptMode) requestBody.chatgptMode = chatgptMode;
+  // Same passthrough pattern again, for the Common Crawl "補完" flow
+  // (see backend/services/common_crawl_index.py /
+  // common_crawl_warc.py / common_crawl_document_provider.py). The
+  // Python API decides whether to actually honor it
+  // (COMMON_CRAWL_ENABLED) — Next.js does not gate this itself, and
+  // there is no UI for it yet (API/console verification only).
+  if (commonCrawlMode) requestBody.commonCrawlMode = commonCrawlMode;
+  if (commonCrawlDomain) requestBody.commonCrawlDomain = commonCrawlDomain;
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
@@ -178,6 +196,22 @@ export async function POST(request: Request) {
   const chatgptMode = CHATGPT_MODES.includes(body?.chatgptMode)
     ? (body.chatgptMode as ChatGptProviderMode)
     : undefined;
+  // Same pattern again, for the Common Crawl "補完" flow (see
+  // backend/services/common_crawl_index.py /
+  // common_crawl_document_provider.py and
+  // docs/13_common_crawl_mvp_design.md). No UI sends these yet — this
+  // is reachable only via a direct POST body (API/console
+  // verification). An invalid mode is dropped rather than rejected
+  // with 400; commonCrawlDomain is forwarded as-is when it's a
+  // non-empty string (the Python API validates/normalizes it before
+  // ever using it in a request).
+  const commonCrawlMode = COMMON_CRAWL_MODES.includes(body?.commonCrawlMode)
+    ? (body.commonCrawlMode as CommonCrawlProviderMode)
+    : undefined;
+  const commonCrawlDomain =
+    typeof body?.commonCrawlDomain === "string" && body.commonCrawlDomain.trim()
+      ? body.commonCrawlDomain.trim()
+      : undefined;
 
   const outcome = await fetchFromPythonApi(
     trimmedBrandName,
@@ -185,6 +219,8 @@ export async function POST(request: Request) {
     urls,
     aiOverviewMode,
     chatgptMode,
+    commonCrawlMode,
+    commonCrawlDomain,
   );
 
   if (outcome.kind === "success") {
