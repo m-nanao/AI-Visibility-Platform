@@ -237,6 +237,14 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 
 なお、`/analyze`統合（2026-07-28、`feature/common-crawl-analyze-integration`）とUI selector追加（2026-07-28、`feature/common-crawl-ui-selector`）自体はこれらの表現確定を待たずに完了している——selectorは`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`が未設定（デフォルトfalse）の間は非表示のままなので、依頼者確認が取れるまでVercelの本番/デモ環境でこのフラグをtrueにしないこと。
 
+## 12. 共起語ランキングのノイズ語対策（2026-07-28追記）
+
+Common Crawl補完を有効化した実環境で、共起語ランキングに「には」「くことが」「しくなる」のような意味の薄い機能語断片が上位表示される問題が見つかった（`fix/cooccurrence-noise-filter`）。これはCommon Crawl固有の不具合ではなく、共起語抽出全体（`backend/services/cooccurrence.py`）が使う、辞書不要の軽量`simple`トークナイザーの既知の制約——ひらがな/カタカナ/漢字の文字種境界でしか単語を区切れないため、格助詞や活用語尾がそのまま1トークンとして残ってしまう——による。ただし、Common Crawl由来のHTMLは既存の開発用サンプル文章よりも文の区切りが乱れやすく、この種のノイズが目立ちやすい面があったため、Common Crawl統合を実際に動かしたことで顕在化した問題という位置づけで記録する。
+
+対応として、両トークナイザー共通の第二段フィルタ`is_low_value_cooccurrence_term()`を`cooccurrence.py`に追加した（STOPWORDS拡張、接尾辞ベースの除外、短い完全ひらがな語の除外）。Common Crawl由来のDocumentに対する特別な分岐は追加していない——共起語抽出モジュールは取得元（`sourceType`）を一切見ないため、Common Crawl/Webページ/入力テキストいずれのDocumentも同じフィルタを通る。詳細は[backend/README.md](../backend/README.md)「共起語ランキングのノイズ語フィルタ」を参照。
+
+**今回は最小改善である**。将来的な改善余地として、品詞情報（Janomeモード）を活用した複合語抽出の強化や、より精緻な形態素解析ベースのノイズ除外が考えられるが、今回はスコープ外とした（大規模なNLP刷新は行わない方針、[10_ai_development_workflow.md](./10_ai_development_workflow.md)「1タスクの粒度」参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
