@@ -4,6 +4,8 @@
 
 **2026-07-28追記（`style/common-crawl-status-display`）:** 下記E「未取得時の説明」の推奨方針を先行実装した——`status: "unavailable"`時の表示を「Common Crawl補完: 補完データ未取得」＋分類済みの短い理由に変更し、backendの生の`reason`文字列をそのまま表示しない形にした（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「17. Common Crawl status表示の整理」参照）。ただし表示文言そのものはまだ仮であり、この章の依頼者確認事項は引き続き有効。
 
+**2026-07-28再追記（`fix/common-crawl-status-japanese-reasons`）:** 上記マージ後、実環境で英語`reason`がそのまま見えたという報告を受け再調査した。backendが返しうる`reason`文字列すべてを検証した結果、現行コードは既に正しく日本語分類しており、コード上の欠陥は見つからなかった（古いデプロイ・キャッシュを見ていた可能性が高い）。安全のためdomain未確定系の分類パターンをより広い部分一致に強化し、テストを追加した（詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「18. Common Crawl status表示の英語reason再確認・強化」参照）。表示文言自体は変わらず、この章の依頼者確認事項も引き続き有効。
+
 ## 1. 目的
 
 Common Crawl関連の表現・説明・改善提案文言について、依頼者確認用のメモを1箇所にまとめる。個別のdocs（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」・[14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md)「7. 依頼者確認が必要な点」）に分散していた確認候補を集約し、現在の仮文言・変更候補・推奨判断をあわせて一覧化する。

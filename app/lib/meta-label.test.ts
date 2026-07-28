@@ -1365,4 +1365,89 @@ describe("getCommonCrawlProviderDisplay", () => {
     expect(display?.summary).not.toContain(rawReason);
     expect(display?.detail).not.toContain(rawReason);
   });
+
+  // Added 2026-07-28 (fix/common-crawl-status-japanese-reasons) — a
+  // real environment reportedly still showed the exact English reason
+  // string below after style/common-crawl-status-display landed. Every
+  // trace of this reason string through the current implementation
+  // classifies correctly (see the "classifies an undeterminable
+  // domain" test above), so this is most likely explained by a stale
+  // deployment/cache at test time rather than a code defect — these
+  // tests lock in the exact reported string, plus every other reason
+  // string the backend can currently produce (grepped from
+  // backend/main.py / common_crawl_index.py / common_crawl_warc.py /
+  // common_crawl_document_provider.py), so a regression would be
+  // caught immediately.
+  it("never shows the exact reported bug-report reason string verbatim", () => {
+    const reportedReason =
+      "Common Crawl domain could not be determined from commonCrawlDomain or urls.";
+    const display = getCommonCrawlProviderDisplay(unavailableMeta(reportedReason));
+
+    expect(display?.summary).not.toContain(reportedReason);
+    expect(display?.detail).not.toContain(reportedReason);
+    expect(display?.summary).not.toContain("could not be determined");
+    expect(display?.detail).not.toContain("could not be determined");
+  });
+
+  it("never renders the old '未取得（理由:' display format for any unavailable reason", () => {
+    const allBackendUnavailableReasons = [
+      "Common Crawl domain is empty or not a valid hostname.",
+      "Common Crawl collinfo.json request failed due to a network or timeout error.",
+      "Common Crawl collinfo.json request failed: response was not valid JSON.",
+      "Common Crawl collinfo.json response was not a list.",
+      "Common Crawl collinfo.json contained no recognizable crawl index id.",
+      "Common Crawl collinfo.json request failed with HTTP 500.",
+      "Common Crawl Index API request failed due to a network or timeout error.",
+      "Common Crawl Index API request failed with HTTP 503.",
+      "Common Crawl index result was empty.",
+      "Common Crawl domain could not be determined from commonCrawlDomain or urls.",
+      "Common Crawl found candidates but none could be fetched into a usable document.",
+    ];
+
+    for (const reason of allBackendUnavailableReasons) {
+      const display = getCommonCrawlProviderDisplay(unavailableMeta(reason));
+      const rendered = `${display?.summary ?? ""} ${display?.detail ?? ""}`;
+      expect(rendered).not.toContain("未取得（理由");
+      expect(rendered).not.toContain(reason);
+    }
+  });
+
+  it("classifies a reason literally containing 'no candidates' as 'no pages found'", () => {
+    const display = getCommonCrawlProviderDisplay(unavailableMeta("Found no candidates to try."));
+    expect(display?.detail).toBe("理由: 補完対象ページが見つかりませんでした");
+  });
+
+  it("classifies a reason literally containing '0 results' as 'no pages found'", () => {
+    const display = getCommonCrawlProviderDisplay(unavailableMeta("Search returned 0 results."));
+    expect(display?.detail).toBe("理由: 補完対象ページが見つかりませんでした");
+  });
+
+  it("classifies a reason literally containing 'request failed' as 'fetch did not complete'", () => {
+    const display = getCommonCrawlProviderDisplay(unavailableMeta("The request failed unexpectedly."));
+    expect(display?.detail).toBe("理由: Common Crawl補完の取得処理が完了しませんでした");
+  });
+
+  it("classifies a reason literally containing 'fetch failed' as 'fetch did not complete'", () => {
+    const display = getCommonCrawlProviderDisplay(unavailableMeta("WARC fetch failed."));
+    expect(display?.detail).toBe("理由: Common Crawl補完の取得処理が完了しませんでした");
+  });
+
+  it("classifies a bare 'hostname' mention as 'domain not identified'", () => {
+    const display = getCommonCrawlProviderDisplay(unavailableMeta("Invalid hostname supplied."));
+    expect(display?.detail).toBe("理由: 補完対象ドメインを特定できませんでした");
+  });
+
+  it("never leaks WARC/HTML/raw-response-shaped text even when present in an unrecognized reason", () => {
+    const display = getCommonCrawlProviderDisplay(
+      unavailableMeta("WARC/1.0 parse error: <html><body>Traceback (most recent call last)</body></html>"),
+    );
+    const rendered = `${display?.summary ?? ""} ${display?.detail ?? ""}`;
+    expect(rendered).not.toContain("WARC/1.0");
+    expect(rendered).not.toContain("<html");
+    expect(rendered).not.toContain("Traceback");
+    // Doesn't match any specific bucket's keywords, so it falls to the
+    // generic fallback — the point of this test is that no fragment of
+    // the raw text leaks through, regardless of which bucket it lands in.
+    expect(display?.detail).toBe("理由: 補完データを取得できませんでした");
+  });
 });

@@ -203,18 +203,24 @@ export interface CommonCrawlProviderDisplay {
 // backend/main.py — see the grep of every `reason=`/`reason=f"` literal
 // in those files this list was built from) to classify an
 // "unavailable" result into one of a handful of short, non-technical
-// phrases — added 2026-07-28 (style/common-crawl-status-display) so a
-// non-engineer reader isn't shown a raw string like "Common Crawl
-// collinfo.json request failed with HTTP 500." First match wins; order
-// matters because some backend reason strings could otherwise match
-// more than one bucket (e.g. "Common Crawl domain is empty or not a
-// valid hostname." contains "empty", which would otherwise be
-// mistaken for the "0 results" bucket below it).
+// phrases — added 2026-07-28 (style/common-crawl-status-display,
+// hardened 2026-07-28 fix/common-crawl-status-japanese-reasons) so a
+// non-engineer reader is never shown a raw English string like "Common
+// Crawl domain could not be determined from commonCrawlDomain or
+// urls." First match wins; order matters because some backend reason
+// strings could otherwise match more than one bucket (e.g. "Common
+// Crawl domain is empty or not a valid hostname." contains "empty",
+// which would otherwise be mistaken for the "0 results" bucket below
+// it). Patterns are intentionally broader than the exact strings the
+// backend happens to emit today (e.g. matching bare "hostname" rather
+// than only the full current sentence), so a minor future wording
+// change in the backend's `reason` text doesn't silently fall through
+// to the generic fallback.
 const _COMMON_CRAWL_UNAVAILABLE_REASON_RULES: { pattern: RegExp; message: string }[] = [
   // Domain couldn't be determined/validated — checked first so its use
   // of the word "empty" doesn't fall through to the no-candidates rule.
   {
-    pattern: /could not be determined|is empty or not a valid hostname/i,
+    pattern: /could not be determined|commoncrawldomain or urls|domain missing|hostname/i,
     message: "補完対象ドメインを特定できませんでした",
   },
   // Common Crawl itself is disabled/off — in practice this reason only
