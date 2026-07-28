@@ -142,6 +142,44 @@ export function getUrlFetchSummary(meta: AnalysisMeta): string | null {
   return `URL取得: ${successCount}/${total}件成功`;
 }
 
+/**
+ * A short "分析ソース内訳" line combining how many Webページ Documents
+ * were fetched via `urls` (meta.urlFetchResults, reusing the same
+ * success-count logic as getUrlFetchSummary above) with how many
+ * Common Crawl補完 Documents were added (meta.commonCrawlProvider,
+ * only when status is "real" — an "off"/"unavailable" Common Crawl
+ * result contributed zero Documents, and its own reason is already
+ * shown separately by getCommonCrawlProviderDisplay, so it's
+ * deliberately not repeated here), e.g. "Webページ 1件 / Common
+ * Crawl補完 3件". Added so a request that combines both sources makes
+ * it obvious at a glance how many Documents came from each, rather
+ * than requiring the reader to mentally combine two separate status
+ * lines (see docs/13_common_crawl_mvp_design.md's "分析ソース内訳").
+ *
+ * Returns null when there's nothing to show (no urlFetchResults and no
+ * successful Common Crawl addition) — e.g. development_sample/
+ * user_provided-only analyses, matching this project's convention of
+ * only showing a status line when there's something worth reporting.
+ * Never reads/renders HTML or WARC body text — meta.commonCrawlProvider
+ * has no field for either.
+ */
+export function getAnalysisSourceBreakdownDisplay(meta: AnalysisMeta): string | null {
+  const parts: string[] = [];
+
+  if (meta.urlFetchResults && meta.urlFetchResults.length > 0) {
+    const successCount = meta.urlFetchResults.filter((r) => r.success).length;
+    parts.push(`Webページ ${successCount}件`);
+  }
+
+  if (meta.commonCrawlProvider && meta.commonCrawlProvider.status === "real") {
+    parts.push(`Common Crawl補完 ${meta.commonCrawlProvider.documentCount ?? 0}件`);
+  }
+
+  if (parts.length === 0) return null;
+
+  return parts.join(" / ");
+}
+
 export interface CommonCrawlProviderDisplay {
   // A single line matching the display examples in the task this was
   // built for — e.g. "Common Crawl補完: オフ" /

@@ -260,6 +260,20 @@ Common Crawl補完を有効化した実環境で、共起語ランキングに�
 
 詳細は[backend/README.md](../backend/README.md)「複数件取得への拡張」を参照。
 
+## 14. 分析ソース内訳表示（2026-07-28追記）
+
+Common Crawl補完が最大3件まで取得できるようになったことで、実画面では「URL取得: 1/1件成功」「Common Crawl補完: 取得済み（3件）」という既存の2つの状態表示を確認できるようになった（13章参照）。ただし、これらは別々の行で表示されており、「分析全体に何件のDocumentが使われたか」がひと目で分かりにくかったため、`style/analysis-source-breakdown`で内訳表示を追加した。
+
+- 新規`app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay(meta) -> string | null`が、既存の`meta.urlFetchResults`（成功件数）と`meta.commonCrawlProvider`（`status === "real"`の場合の`documentCount`）だけから「Webページ 1件 / Common Crawl補完 3件」のような1行の内訳文字列を組み立てる。
+- **backend側の変更は一切伴わない**——既存のresponse schema（`meta.urlFetchResults`/`meta.commonCrawlProvider`）だけで表現できたため、`backend/main.py`/`backend/models.py`はいずれも無変更。
+- Common Crawlが`off`または`unavailable`の場合は内訳にCommon Crawlの項目を含めない（`unavailable`の理由は既存の`getCommonCrawlProviderDisplay()`が引き続き個別に表示するため、ここでは重複させない）。
+- `urlFetchResults`も実際に成功したCommon Crawl取得も無い場合（development_sample/user_provided単体の分析等）は`null`を返し、何も表示しない。
+- `app/components/sections/CooccurrenceRankingSection.tsx`の「2. 共起語ランキング」カードに「分析ソース: {内訳}」という1行を、既存の状態表示行より上に追加した。`app/components/sections/BrandSummarySection.tsx`の既存「分析ソース」欄（`summary.topPlatforms`）は、development_sample等の他sourceTypeを含む既存表示を壊さないよう変更していない。
+- HTML本文・WARC本文・raw responseはいずれも表示しない（`meta.commonCrawlProvider`自体にそのためのフィールドが存在しない）。
+- 表示名「Common Crawl補完」は引き続き依頼者確認前の仮のものである（11章参照）。
+
+実装詳細は`app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay()`のコメント、テストは`app/lib/meta-label.test.ts`を参照（`backend/README.md`は本タスクの対象外のため更新していない——backend側の変更が無いため）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

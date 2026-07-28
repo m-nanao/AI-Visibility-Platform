@@ -42,6 +42,7 @@
   - 表示文言の整理（`style/common-crawl-source-labels`、2026-07-28。ブランド認知サマリーに残っていた「Common Crawl（未実装）」を「Common Crawl補完」へ修正、見出しを「主要プラットフォーム」→「分析ソース」へ変更）
   - 共起語ランキングのノイズ語対策（`fix/cooccurrence-noise-filter`、2026-07-28。Common Crawl由来テキストで目立った「には」「くことが」等の機能語断片を除外する第二段フィルタを追加、[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「12. 共起語ランキングのノイズ語対策」参照）
   - Common Crawl補完 最大3件取得（`feature/common-crawl-multiple-documents`、2026-07-28。最大5候補まで試行し、成功したDocumentを最大3件まで分析入力へ追加。失敗候補はスキップして次候補を試し、全件失敗時も`/analyze`全体は成功する。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「13. 複数件取得への拡張」参照）
+  - 分析ソース内訳表示（`style/analysis-source-breakdown`、2026-07-28。入力URLとCommon Crawl補完の件数を「Webページ N件 / Common Crawl補完 N件」のように「共起語ランキング」カードへ軽く表示。`app/lib/meta-label.ts`の`getAnalysisSourceBreakdownDisplay()`が既存の`meta.urlFetchResults`/`meta.commonCrawlProvider`のみから算出するfrontend専用実装で、backend側の変更は無し。表示名「Common Crawl補完」は依頼者確認前の仮のもの）
 - **Next（次のステップ、優先順）**:
   - 表示名・説明文の依頼者確認（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
   - status表示洗練（依頼者確認後、UI selectorのデフォルト表示化とあわせて見せ方を検討）

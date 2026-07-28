@@ -1,6 +1,7 @@
 import Card from "../Card";
 import { trendStyles } from "../../lib/badge-styles";
 import {
+  getAnalysisSourceBreakdownDisplay,
   getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
   getUrlFetchSummary,
@@ -15,6 +16,7 @@ export default function CooccurrenceRankingSection({
   meta: AnalysisMeta;
 }) {
   const unavailableMessage = getCooccurrenceUnavailableMessage(meta);
+  const sourceBreakdown = getAnalysisSourceBreakdownDisplay(meta);
   const urlFetchSummary = getUrlFetchSummary(meta);
   const commonCrawlProvider = getCommonCrawlProviderDisplay(meta);
   const maxCount = items.length > 0 ? Math.max(...items.map((item) => item.count)) : 0;
@@ -24,6 +26,12 @@ export default function CooccurrenceRankingSection({
       title="2. 共起語ランキング"
       description="ブランド名と一緒に言及されやすいキーワード"
     >
+      {sourceBreakdown && (
+        <p className="mb-1 text-xs text-zinc-500 dark:text-zinc-400">
+          分析ソース: {sourceBreakdown}
+        </p>
+      )}
+
       {urlFetchSummary && (
         <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
           {urlFetchSummary}
