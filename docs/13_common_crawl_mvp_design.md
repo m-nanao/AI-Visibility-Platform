@@ -429,6 +429,31 @@ retry・query fallbackはいずれも実装どおり正しく動作している�
 - **今回変更していないもの**: Common Crawl取得件数（3件上限）・UI・frontend・candidate parsing・画面表示用reason・`trust_env`・HTTP client実装（`httpx`のまま）・DataForSEO/ChatGPT関連コード。
 - **次の課題**: headers追加後、実際にRender環境でRemoteProtocolErrorが解消するかどうかの再検証。改善しない場合は`trust_env=False`または別HTTP client方式を検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 24. Common Crawl Index API trust_env=False fallback追加（backend、2026-07-29追記）
+
+前節（23.）のheaders明示後も、Renderで以下の事象が確認できた。
+
+- `default-filtered`: 3回すべてRemoteProtocolError
+- `default-unfiltered`: 3回すべてRemoteProtocolError
+- `www-unfiltered`: 3回すべてRemoteProtocolError
+
+```
+error_type=RemoteProtocolError error=Server disconnected without sending a response.
+```
+
+retry・query fallback・headers明示のいずれも実装どおり正しく動作しているが、**全てのquery variantで同じRemoteProtocolErrorが発生**し続けており、`COMMON_CRAWL_TIMEOUT_SECONDS`を伸ばしても・User-Agent/Accept/Connection: closeを明示しても解決しない状況だった。query形式・timeout・headersのいずれでもないとなると、残る可能性は`httpx`の環境依存設定（Render環境が設定するproxy環境変数等）や、transport層との相性問題であるため、`fix/common-crawl-index-trust-env-fallback`で`trust_env=False`を使ったfallbackを追加した。
+
+- **transport mode**: 内部的に`_TRANSPORT_MODE_DEFAULT`（`"default"`、現行のhttpx request、`trust_env`はhttpxデフォルトのまま）と`_TRANSPORT_MODE_NO_ENV`（`"no-env"`、`trust_env=False`を明示——Render環境のproxy環境変数等を無視させる）の2つを扱う。**公開APIレスポンス（`meta.commonCrawlProvider`）に新規フィールドは追加していない**——区別はRenderログの`transport_mode=%s`のみで行う。
+- **実行順**: `transport_mode="default"`で既存のquery variant fallback（`default-filtered`→`default-unfiltered`→`www-unfiltered`、各最大3回retry）を最後まで試し、それでも全variantが失敗した場合のみ`transport_mode="no-env"`で**同じ順序の同じquery variants**を再試行する。新規`_http_get()`ヘルパーが、`transport_mode`に応じて`trust_env=False`を渡すかどうかだけを切り替え、それ以外（headers・timeout・params）は両モードで完全に同一にすることで、実装の重複を避けた。
+- **実装構造**: 既存の`search_common_crawl_domain()`のquery variantループを新規`_search_query_variants(crawl_index, normalized_domain, settings, headers, transport_mode)`ヘルパーへ切り出し、`search_common_crawl_domain()`本体はこのヘルパーを外側の`transport_mode`ループ（`_TRANSPORT_MODES = ("default", "no-env")`）から呼び出すだけの構成にした。`_search_query_variants()`は、成功またはtransport fallbackすべきでない終端の失敗（`(result, None)`）と、全query variant失敗によりtransport fallbackすべき状態（`(None, last_failure_type)`）を区別して返す。同様に`_fetch_latest_index()`も、1回のtransport試行を担う新規`_fetch_collinfo_response(settings, headers, transport_mode)`ヘルパーを切り出し、外側の`transport_mode`ループでラップする形にした。
+- **no-env fallbackする条件**: `default`transportで全query variantsが`httpx.TransportError`（retryを尽くしても解消しない）、または502/503/504（retryを尽くしても解消しない）で失敗した場合。
+- **no-env fallbackしない条件**: `400`/`404`等の非retry対象な非200レスポンス、domain不正、index解決失敗、成功したが0件（query自体は成功しているため）、`COMMON_CRAWL_ENABLED=false`——いずれも即座に終端の結果を返し、no-envへは進まない（既存のquery variant fallbackの「fallbackしない条件」と同じ設計方針）。
+- **ログ**: request開始ログに`transport_mode=%s`を追加（`query_variant=%s`と併記、例:`transport_mode=default query_variant=default-filtered attempt=1/3`）。transportを切り替える際に`Common Crawl Index API transport fallback index=... domain=... from=default to=no-env reason=%s`（INFO、`reason`はdefaultの最後の失敗種別）を出す。no-envで成功した場合は成功ログに`transport_mode=no-env`が付く。両transportとも失敗した場合は`Common Crawl Index API all transports failed index=... domain=... transports=2 last_error_type=%s`（WARNING）を出す。
+- **`_fetch_latest_index()`/collinfo.jsonへの適用**: `COMMON_CRAWL_INDEX=latest`使用時のcollinfo.json取得にも同じtransport fallbackを実装した——同じ`index.commoncrawl.org`ホストへの通信であり、同じ切断問題が起こり得るため。現在Renderは`CC-MAIN-2026-25`固定で検証中のため実際に発生する頻度は低いが、`latest`設定時にも同じ耐障害性を持たせるためのもの。
+- **成功時・失敗時の挙動**: no-envで成功した場合も、既存の`_parse_candidates()`でそのまま処理し、通常どおり`candidates`を返す。両transportとも失敗した場合の最終的な`status="unavailable"`と`reason`は**従来と完全に同じ文言**——画面表示用の日本語reason分類（`app/lib/meta-label.ts`の`classifyCommonCrawlUnavailableReason()`）への影響は一切ない。
+- **今回変更していないもの**: query variant fallback・retryロジック・headers（`_request_headers()`は無変更で両transportに使い回す）・candidate parsing・画面表示用reason・取得件数・UI・frontend・DataForSEO/ChatGPT関連コード。別HTTP client方式・外部プロキシ/API経由・Render外環境での疎通確認は実装しておらず、次の検討候補としてここに記録するに留める。
+- **次の課題**: `trust_env=False`fallback追加後、実際にRender環境でRemoteProtocolErrorが解消するかどうかの再検証。改善しない場合は別HTTP client方式の検討、またはRender外環境での疎通確認（Render特有の問題かどうかの切り分け）を行う（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
