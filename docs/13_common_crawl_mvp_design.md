@@ -1,6 +1,6 @@
 # 13. Common Crawl最小連携 設計ドキュメント（MVP）
 
-**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に別タスク（`feature/common-crawl-index-client`）で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）まで実装済み。**WARC本文取得（Step 6）・`Document[]`化（Step 7）・`/analyze`統合（Step 8）・UI追加（Step 9）はまだ実装していない**。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
+**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に`feature/common-crawl-index-client`で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）を、続く`feature/common-crawl-warc-fetch`で9章のStep 6（WARCレコード取得・HTML抽出、最大1件）を実装済み。**`Document[]`化（Step 7）・`/analyze`統合（Step 8）・UI追加（Step 9）はまだ実装していない**。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
 
 ## 1. 目的
 
@@ -194,7 +194,7 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 3. Common Crawl Index clientの追加（`backend/services/common_crawl_client.py`案、既存の`dataforseo_client.py`/`chatgpt_client.py`と同じ構造——ゲート判定は持たず、渡された条件で接続するだけ）
 4. Index検索のみのテスト（`httpx`をmonkeypatchし、実際のCommon Crawlへは接続しない。既存のDataForSEO/ChatGPTテストと同じ方針）
 5. WARCメタデータを`CommonCrawlCandidate`型に正規化（4章参照）
-6. WARC fetchはstub、または最大1件のみの試験導入から始める（一気に複数件のWARC取得を実装しない）
+6. ~~WARC fetchはstub、または最大1件のみの試験導入から始める~~ → `backend/services/common_crawl_warc.py`として最大1件のWARCレコードをRange requestで実際に取得し、gzip展開してHTML本文を抽出するところまで実装完了（`feature/common-crawl-warc-fetch`、2026-07-28）。stub化はせず、実際にWARCストレージ（`data.commoncrawl.org`）へ接続する（複数件の一括取得はまだ未実装）
 7. `Document[]`化（`sourceType: "common_crawl"`、既存の`Document`型をそのまま利用）
 8. `/analyze`への統合（6章の案A、既存の2段階ゲートパターンを踏襲）
 9. UIにCommon Crawl modeを追加（既存の検証用selectorパターンを踏襲、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`等）
