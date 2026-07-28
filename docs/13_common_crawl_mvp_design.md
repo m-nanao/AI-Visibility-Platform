@@ -408,6 +408,27 @@ retry自体は正しく動作しているが、標準query（`filter=status:200`
 - **今回変更していないもの**: Common Crawl取得件数（3件上限）・UI・frontend・`common_crawl_warc.py`（WARC fetchのretryは対象外）・`common_crawl_document_provider.py`・DataForSEO/ChatGPT関連コード。0件時の大幅なquery拡張（ブランド名検索への切り替え等）も今回は行っていない。
 - **次の課題**: 0件時（query自体は成功しているが候補が無い場合）に別のquery形式・より広い検索条件を試すべきかどうかは今後の検討事項とする。あわせて、依頼者確認後の表示文言調整、Common Crawl取得件数の段階的拡張検討も引き続き残っている（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 23. Common Crawl Index API request headers明示（backend、2026-07-29追記）
+
+前節（22.）のquery形式fallback追加後も、Renderで以下の事象が確認できた。
+
+- `default-filtered`: 3回すべてRemoteProtocolError
+- `default-unfiltered`: 3回すべてRemoteProtocolError
+- `www-unfiltered`: 3回すべてRemoteProtocolError
+
+retry・query fallbackはいずれも実装どおり正しく動作しているが、**全てのquery variantで同じRemoteProtocolErrorが発生**しており、timeoutでも0件でもなく、query形式だけの問題では説明できない状況だった。Render環境から`index.commoncrawl.org`へのHTTP通信自体、または`httpx`のデフォルトrequest設定（特にUser-Agent・keep-alive）との相性問題の可能性を考慮し、`fix/common-crawl-index-request-headers`でIndex APIリクエストへの明示的なheaders追加を試みた。
+
+- **`User-Agent`**: 従来、`CommonCrawlSettings.user_agent`はWARC取得（`common_crawl_warc.py`）でのみ使われており、Index APIリクエストはhttpxのデフォルトUser-Agentのままだった。新規`_request_headers(settings)`ヘルパーが、Index APIリクエストにもこの値を明示的に付ける。
+- **`Accept`**: `application/json, text/plain;q=0.9, */*;q=0.8`。Index APIのJSON Linesレスポンスを想定した明示指定（Common Crawl側のcontent negotiationの挙動が不明瞭な場合に備える）。
+- **`Connection: close`**: RemoteProtocolError（「Server disconnected without sending a response.」）がkeep-alive・コネクション再利用まわりの問題である可能性に備え、MVPでは接続を都度明示的に閉じる。
+- **対象範囲**: `search_common_crawl_domain()`（Index API検索、全query variant共通）と`_fetch_latest_index()`（collinfo.json取得）の両方に同じheadersを適用した。
+- **retry/query fallbackとの関係**: `search_common_crawl_domain()`内でheadersを1回だけ構築し、以降のvariant・attemptを問わず同じdictをそのまま使い回す——retry中もquery fallback後もheadersは変わらない。
+- **ログ**: request開始ログに`user_agent=%s accept=%s connection=%s`を追加した。raw headers dictをそのままログに出すことはせず、個別のkey=valueペアのみを出す（そもそもこれらのheadersにsecretは無いが、念のためログ形式を統一した）。
+- **成功時・失敗時の挙動**: headers追加によって、成功時の候補抽出ロジック（`_parse_candidates()`）・全variant失敗時の画面表示用`reason`はいずれも変更していない——headersはリクエストの送り方だけの変更であり、レスポンスの扱いには影響しない。
+- **`trust_env`について**: 今回は`trust_env`を変更していない（httpxのデフォルトのまま）。Renderの環境によってはproxy環境変数（`HTTP_PROXY`/`HTTPS_PROXY`等）に依存する可能性があり、`trust_env=False`への変更が影響する範囲を事前に読み切れないと判断したため。headers追加後もRemoteProtocolErrorが解消しない場合の次の検討候補として、`trust_env=False`または別のHTTP client方式（`requests`ライブラリへの切り替え等）をここに記録するに留める。
+- **今回変更していないもの**: Common Crawl取得件数（3件上限）・UI・frontend・candidate parsing・画面表示用reason・`trust_env`・HTTP client実装（`httpx`のまま）・DataForSEO/ChatGPT関連コード。
+- **次の課題**: headers追加後、実際にRender環境でRemoteProtocolErrorが解消するかどうかの再検証。改善しない場合は`trust_env=False`または別HTTP client方式を検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）
