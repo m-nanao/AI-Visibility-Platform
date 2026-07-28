@@ -58,6 +58,20 @@ STOPWORDS = {
     "さん", "たち", "など", "そちら", "こちら", "あちら",
     "です", "ます", "ました", "ください", "という", "して", "した",
     "ある", "あります", "できる", "なる",
+    # Added 2026-07-28 (fix/cooccurrence-noise-filter) — the simple
+    # tokenizer's hiragana/katakana/kanji run-splitting (see
+    # _split_japanese_run) can hand back a standalone case-particle or
+    # auxiliary-verb fragment as its own "token" whenever it sits at a
+    # character-type boundary (e.g. "サイトには" -> "サイト" / "には").
+    # These showed up as top-ranked "keywords" on Common Crawl-sourced
+    # HTML, whose sentence boundaries are messier than curated sample
+    # text. See also NOISE_SUFFIXES/is_low_value_cooccurrence_term()
+    # below for the longer, suffix-based fragments a fixed stopword set
+    # alone can't catch.
+    "には", "では", "とも", "から", "まで", "より",
+    "ことが", "ことは", "ことを", "ものが", "ものを",
+    "くこと", "くことが", "しくなる", "する", "いる",
+    "される", "れる", "られる",
 }
 
 MIN_KEYWORD_LENGTH = 2
@@ -109,6 +123,66 @@ def _char_type(ch: str) -> str:
 
 def _split_japanese_run(run: str) -> list[str]:
     return ["".join(chars) for _, chars in groupby(run, key=_char_type)]
+
+
+def _is_hiragana_only(text: str) -> bool:
+    return len(text) > 0 and all(_char_type(ch) == "hiragana" for ch in text)
+
+
+# Suffixes strongly associated with Japanese function-word fragments —
+# case particles ("には"/"では"), auxiliary-verb/adjective conjugations
+# and sentence-ending forms ("ことが"/"ことは"/"ことを"/"こと",
+# "ものが"/"ものは"/"ものを", "ます"/"です"), and inflected-adjective
+# endings ("くなる"/"しくなる", e.g. from "楽しくなる"). Checked as a
+# *suffix* rather than only an exact stopword match, because a run of
+# same-type hiragana characters is never split further (see
+# _split_japanese_run) — a longer noisy token like "できることが" would
+# slip past a fixed STOPWORDS set even though it plainly ends in the
+# same noise as the shorter "ことが". Added 2026-07-28
+# (fix/cooccurrence-noise-filter) after Common Crawl-sourced HTML
+# surfaced this kind of fragment as a top-ranked "keyword".
+NOISE_SUFFIXES = (
+    "ことが", "ことは", "ことを", "こと",
+    "ものが", "ものは", "ものを",
+    "には", "では",
+    "ます", "です",
+    "しくなる", "くなる",
+)
+
+# Pure-hiragana tokens this short are almost always grammatical
+# connective tissue (particles, auxiliary-verb conjugations, sentence
+# fragments) rather than meaningful content words in Japanese — real
+# content nouns near a brand name are typically kanji, katakana
+# (loanwords), or kanji+okurigana compounds (e.g. "サイト"/"デジタル"/
+# "導入事例"/"グループウェア", none of which are pure hiragana). Longer
+# all-hiragana runs are left alone, since this is a coarse heuristic
+# — not a dictionary lookup — and shouldn't over-exclude.
+MAX_HIRAGANA_ONLY_NOISE_LENGTH = 4
+
+
+def is_low_value_cooccurrence_term(term: str) -> bool:
+    """Second-layer noise filter shared by both tokenizer modes (called
+    from _is_simple_candidate_keyword/_is_janome_candidate_keyword
+    below) — catches Japanese function-word fragments (particles,
+    auxiliary-verb conjugations, sentence-ending forms) that can slip
+    through each tokenizer's own POS/stopword filtering, especially
+    from Common Crawl-sourced HTML whose sentence boundaries are
+    messier than curated sample text (see docs/05_tasks.md, 2026-07-28,
+    "共起語ランキングのノイズ語を減らす").
+
+    Never raises on empty/blank input — returns True (low-value) for
+    it instead, same as for actual noise.
+    """
+    stripped = term.strip()
+    if not stripped:
+        return True
+    if stripped in STOPWORDS:
+        return True
+    if stripped.endswith(NOISE_SUFFIXES):
+        return True
+    if _is_hiragana_only(stripped) and len(stripped) <= MAX_HIRAGANA_ONLY_NOISE_LENGTH:
+        return True
+    return False
 
 
 def _tokenizer_mode() -> str:
@@ -241,6 +315,8 @@ def _is_janome_candidate_keyword(surface: str, part_of_speech: str, brand_name: 
         return False
     if surface.lower() == brand_name.lower():
         return False
+    if is_low_value_cooccurrence_term(surface):
+        return False
 
     return True
 
@@ -258,6 +334,8 @@ def _is_simple_candidate_keyword(token: str, brand_name: str) -> bool:
     if token.lower() in SIMPLE_MODE_STOPWORDS:
         return False
     if token.lower() == brand_name.lower():
+        return False
+    if is_low_value_cooccurrence_term(token):
         return False
 
     return True
