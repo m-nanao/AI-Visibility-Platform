@@ -39,6 +39,9 @@ import json
 import logging
 import re
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import Literal
 
@@ -93,12 +96,75 @@ def _request_headers(settings: CommonCrawlSettings) -> dict[str, str]:
 # env vars, etc.) as a remaining suspect. `"default"` is httpx.get()'s
 # normal behavior (`trust_env` left at its default); `"no-env"` passes
 # `trust_env=False` to ignore any HTTP_PROXY/HTTPS_PROXY/etc. environment
-# variables Render's process might have set. This is deliberately the
-# only difference between the two modes — same headers, same query
+# variables Render's process might have set. Both httpx modes still
+# failed on Render with the same httpx.RemoteProtocolError, so `"urllib"`
+# was added as a third mode — it uses Python's standard library
+# `urllib.request` instead of httpx entirely, to rule out an
+# httpx-specific transport/Render incompatibility. This is deliberately
+# the only thing that differs between modes — same headers, same query
 # variants, same retry policy — see `_http_get`.
 _TRANSPORT_MODE_DEFAULT = "default"
 _TRANSPORT_MODE_NO_ENV = "no-env"
-_TRANSPORT_MODES = (_TRANSPORT_MODE_DEFAULT, _TRANSPORT_MODE_NO_ENV)
+_TRANSPORT_MODE_URLLIB = "urllib"
+_TRANSPORT_MODES = (_TRANSPORT_MODE_DEFAULT, _TRANSPORT_MODE_NO_ENV, _TRANSPORT_MODE_URLLIB)
+
+
+@dataclass(frozen=True)
+class _IndexHttpResponse:
+    """Minimal response shape shared between `httpx.Response` (used by
+    the `default`/`no-env` transport modes) and `_urllib_get()` (the
+    `urllib` transport mode) — every call site only ever reads
+    `.status_code`/`.text`, so this is enough to keep the rest of the
+    module transport-agnostic without an httpx dependency leaking into
+    the `urllib` code path.
+    """
+
+    status_code: int
+    text: str
+
+
+def _urllib_get(
+    url: str,
+    *,
+    params: list[tuple[str, str]] | None,
+    headers: dict[str, str],
+    timeout: float,
+) -> _IndexHttpResponse:
+    """Fetches `url` using Python's standard library `urllib.request`
+    instead of httpx — no new package dependency. `params` is encoded
+    with `urllib.parse.urlencode(params, doseq=True)`, which produces
+    byte-for-byte the same query string as `httpx.URL(url,
+    params=params)` for this module's query shapes (including the
+    multi-value `filter` param from `_build_query_variants`), so the
+    request actually sent matches what's already logged as
+    `request_url`.
+
+    `urllib.error.HTTPError` (a non-2xx response) is converted into an
+    `_IndexHttpResponse` instead of raising, mirroring `httpx.get()`'s
+    behavior of returning a `Response` for any status code — this lets
+    the existing non-200/retry handling apply unchanged regardless of
+    transport. Any other failure (`urllib.error.URLError`,
+    `TimeoutError`, `ssl.SSLError`, or any other `OSError`) is left to
+    propagate: every one of these is an `OSError` subclass, and call
+    sites already catch `(httpx.TransportError, OSError)` together so
+    the same retry/query-fallback/transport-fallback logic applies no
+    matter which transport raised it.
+    """
+    full_url = url
+    if params:
+        full_url = f"{url}?{urllib.parse.urlencode(params, doseq=True)}"
+    request = urllib.request.Request(full_url, headers=dict(headers), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (fixed https:// host)
+            raw_body = response.read()
+            status_code = response.status
+            charset = response.headers.get_content_charset() or "utf-8"
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read()
+        status_code = exc.code
+        charset = (exc.headers.get_content_charset() if exc.headers else None) or "utf-8"
+    text = raw_body.decode(charset, errors="replace")
+    return _IndexHttpResponse(status_code=status_code, text=text)
 
 
 def _http_get(
@@ -108,11 +174,15 @@ def _http_get(
     timeout: float,
     transport_mode: str,
     params: list[tuple[str, str]] | None = None,
-) -> httpx.Response:
-    """Thin wrapper around `httpx.get()`. The only thing `transport_mode`
-    changes is whether `trust_env=False` is passed — everything else
-    (headers, timeout, params) is identical between modes.
+) -> httpx.Response | _IndexHttpResponse:
+    """Issues one GET request under `transport_mode`. `"default"`/
+    `"no-env"` are thin wrappers around `httpx.get()` (the only
+    difference being whether `trust_env=False` is passed); `"urllib"`
+    uses `_urllib_get()` instead, bypassing httpx entirely. Headers,
+    timeout, and params are identical across all three modes.
     """
+    if transport_mode == _TRANSPORT_MODE_URLLIB:
+        return _urllib_get(url, params=params, headers=headers, timeout=timeout)
     if transport_mode == _TRANSPORT_MODE_NO_ENV:
         return httpx.get(url, params=params, headers=headers, timeout=timeout, trust_env=False)
     return httpx.get(url, params=params, headers=headers, timeout=timeout)
@@ -383,12 +453,17 @@ def _fetch_collinfo_response(
                 timeout=settings.timeout_seconds,
                 transport_mode=transport_mode,
             )
-        except httpx.TransportError as exc:
+        except (httpx.TransportError, OSError) as exc:
             # error_type distinguishes a genuine read timeout
             # (httpx.ReadTimeout/ConnectTimeout) from an immediate failure
             # like DNS resolution/connection refusal (httpx.ConnectError)
             # or an abrupt disconnect (httpx.RemoteProtocolError) — all of
             # which are worth a short retry, since they're often transient.
+            # `OSError` also catches every exception `_urllib_get()` can
+            # raise for the `urllib` transport mode (`urllib.error.URLError`,
+            # `TimeoutError`, `ssl.SSLError` are all `OSError` subclasses;
+            # `urllib.error.HTTPError` never reaches here — see
+            # `_urllib_get`).
             last_error_type = exc.__class__.__name__
             logger.warning(
                 "Common Crawl collinfo.json request failed transport_mode=%s attempt=%d/%d error_type=%s error=%s",
@@ -493,10 +568,11 @@ def _fetch_latest_index(settings: CommonCrawlSettings) -> CommonCrawlIndexResolu
     on collinfo.json always being sorted a particular way.
 
     Tries `_TRANSPORT_MODES` in order (see module docstring above that
-    constant) — `"default"` first, falling back to `"no-env"`
-    (`trust_env=False`) only if every attempt across every query variant
-    under `"default"` was exhausted via a transient transport failure or
-    a retryable non-200 (see `_fetch_collinfo_response`). Any other
+    constant) — `"default"`, then `"no-env"` (`trust_env=False`), then
+    `"urllib"` (`urllib.request` instead of httpx) — moving to the next
+    mode only once every attempt across every query variant under the
+    current mode was exhausted via a transient transport failure or a
+    retryable non-200 (see `_fetch_collinfo_response`). Any other
     failure (a non-transport HTTPError, a non-retryable non-200 status,
     or exhausting every transport mode) still returns `success=False`
     with a safe reason instead of raising.
@@ -531,7 +607,13 @@ def _fetch_latest_index(settings: CommonCrawlSettings) -> CommonCrawlIndexResolu
         )
 
     try:
-        payload = response.json()
+        # `json.loads(response.text)` rather than `response.json()` — the
+        # latter is an httpx.Response-only method, and `response` may be
+        # a `_IndexHttpResponse` when the `urllib` transport mode
+        # succeeded (see `_TRANSPORT_MODE_URLLIB`). `json.JSONDecodeError`
+        # is a `ValueError` subclass, so the existing handling below
+        # covers both transports identically.
+        payload = json.loads(response.text)
     except ValueError:
         logger.warning("Common Crawl collinfo.json returned a non-JSON response")
         return CommonCrawlIndexResolution(
@@ -701,15 +783,19 @@ def _search_query_variants(
                     timeout=settings.timeout_seconds,
                     transport_mode=transport_mode,
                 )
-            except httpx.TransportError as exc:
+            except (httpx.TransportError, OSError) as exc:
                 # error_type (e.g. "RemoteProtocolError" vs "ReadTimeout"
-                # vs "ConnectError") is what distinguishes an abrupt
-                # disconnect or immediate connection failure from a
-                # genuine read timeout — Render observed
-                # RemoteProtocolError ("Server disconnected without
-                # sending a response") persisting across all 3 retries of
-                # every query variant, which is what motivated trying a
-                # transport-mode fallback rather than more query variants.
+                # vs "ConnectError" vs "URLError") is what distinguishes an
+                # abrupt disconnect or immediate connection failure from a
+                # genuine read timeout — Render observed RemoteProtocolError
+                # ("Server disconnected without sending a response")
+                # persisting across all 3 retries of every query variant
+                # under both httpx transport modes, which is what motivated
+                # adding the `urllib` transport mode. `OSError` also catches
+                # everything `_urllib_get()` can raise (`urllib.error.URLError`,
+                # `TimeoutError`, `ssl.SSLError` are all `OSError` subclasses;
+                # `urllib.error.HTTPError` never reaches here — see
+                # `_urllib_get`).
                 last_error_type = exc.__class__.__name__
                 logger.warning(
                     "Common Crawl Index API request failed index=%s domain=%s transport_mode=%s query_variant=%s attempt=%d/%d error_type=%s error=%s",
@@ -896,14 +982,15 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
     gating belongs to a future provider layer, not here.
 
     Tries `_TRANSPORT_MODES` in order (see module docstring above that
-    constant) — `"default"` first, falling back to `"no-env"`
-    (`trust_env=False`) only if every query variant's every attempt
-    under `"default"` was exhausted via a transient transport failure
-    (`httpx.TransportError` — RemoteProtocolError, ConnectError,
-    ReadTimeout, etc.) or a retryable non-200 status (502/503/504) —
-    see `_search_query_variants`. A non-transport `httpx.HTTPError`, a
-    non-retryable non-200 status (e.g. 400/404), or a
-    successful-but-empty result does **not** fall back to another
+    constant) — `"default"`, then `"no-env"` (`trust_env=False`), then
+    `"urllib"` (`urllib.request` instead of httpx) — moving to the next
+    mode only once every query variant's every attempt under the
+    current mode was exhausted via a transient transport failure
+    (`httpx.TransportError`/`OSError` — RemoteProtocolError,
+    ConnectError, ReadTimeout, URLError, etc.) or a retryable non-200
+    status (502/503/504) — see `_search_query_variants`. A non-transport
+    `httpx.HTTPError`, a non-retryable non-200 status (e.g. 400/404), or
+    a successful-but-empty result does **not** fall back to another
     query variant or transport mode — those return
     `status="unavailable"` immediately, same as before this fallback
     was added. Every failure path still returns a

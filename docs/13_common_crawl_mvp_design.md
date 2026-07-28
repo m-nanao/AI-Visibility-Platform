@@ -454,6 +454,36 @@ retry・query fallback・headers明示のいずれも実装どおり正しく動
 - **今回変更していないもの**: query variant fallback・retryロジック・headers（`_request_headers()`は無変更で両transportに使い回す）・candidate parsing・画面表示用reason・取得件数・UI・frontend・DataForSEO/ChatGPT関連コード。別HTTP client方式・外部プロキシ/API経由・Render外環境での疎通確認は実装しておらず、次の検討候補としてここに記録するに留める。
 - **次の課題**: `trust_env=False`fallback追加後、実際にRender環境でRemoteProtocolErrorが解消するかどうかの再検証。改善しない場合は別HTTP client方式の検討、またはRender外環境での疎通確認（Render特有の問題かどうかの切り分け）を行う（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 25. Common Crawl Index API urllib fallback追加（backend、2026-07-29追記）
+
+前節（24.）の`trust_env=False` transport fallback追加後も、Renderで以下の事象が確認できた。
+
+- `transport_mode=default`: `default-filtered`/`default-unfiltered`/`www-unfiltered`いずれもRemoteProtocolError
+- `transport_mode=no-env`: 同上、`default-filtered`/`default-unfiltered`/`www-unfiltered`いずれもRemoteProtocolError
+
+```
+error_type=RemoteProtocolError
+error=Server disconnected without sending a response.
+```
+
+timeout・headers・retry・query fallback・`trust_env=False`のいずれもすでに投入済みで正しく動作しているにもかかわらず、httpxベースの2つのtransport modeがどちらもRemoteProtocolErrorで失敗し続けた。ここまで来ると、Common Crawl Index API・query形式・Render環境変数のいずれの問題でもなく、**httpxというHTTP clientライブラリ自体とRender環境（またはCommon Crawl側）との相性問題**である可能性が高いと判断し、`fix/common-crawl-index-urllib-fallback`でPython標準ライブラリの`urllib.request`を使った第3のtransport modeを追加した。
+
+- **transport mode**: `_TRANSPORT_MODES`を`("default", "no-env", "urllib")`の3つに拡張。`"urllib"`はhttpxを一切使わず、`urllib.request.urlopen()`で直接HTTPリクエストを行う。**新規packageは追加していない**（`urllib`はPython標準ライブラリ）。公開APIレスポンス（`meta.commonCrawlProvider`）に新規フィールドは追加せず、区別は引き続きRenderログの`transport_mode=%s`のみで行う。
+- **実行順**: `default`→`no-env`→`urllib`の順に試す。前の2つのtransport modeがそれぞれ全query variant（3つ）を試し尽くして初めて失敗した場合のみ、次のtransport modeへ進む。`urllib`transportでも既存の3つのquery variant（`default-filtered`/`default-unfiltered`/`www-unfiltered`）を同じ順序で試し、各variantに既存の最大3回retryをそのまま適用する——実装の重複を避けるため、既存のretry/query-fallbackループはそのまま再利用し、リクエストの発行部分（`_http_get()`/新規`_urllib_get()`）だけがtransport modeによって切り替わる。
+- **`_urllib_get()`の実装**:
+  - **URL構築**: `urllib.parse.urlencode(params, doseq=True)`でquery文字列を構築し、`base_url + "?" + query_string`とする。この方式が`httpx.URL(url, params=params)`（既存のquery search側で使っている構築方法）と**完全に同一のエンコード結果**になることを実装時に検証済み（複数値の`filter`パラメータを含む）——そのため、ログに出る`request_url`（従来どおり`httpx.URL`で構築）と、実際に`urllib`が叩くURLが常に一致する。
+  - **headers**: 既存の`_request_headers(settings)`をそのまま再利用し、`urllib.request.Request(...)`にUser-Agent/Accept/Connection: closeを付ける。ヘッダー名の大文字小文字の扱いはurllib内部で正規化されるが、HTTPヘッダーは元々大文字小文字を区別しないため実害はない。
+  - **レスポンスの統一**: httpx/urllibいずれの結果も呼び出し側からは同じ形（`.status_code`/`.text`を持つオブジェクト）に見えるよう、新規`_IndexHttpResponse(status_code, text)`という軽量なdataclassを導入した。`urllib.error.HTTPError`（非2xxレスポンス）は例外として上位に伝播させず、`_IndexHttpResponse`へ変換して返す——これは`httpx.get()`が非2xxレスポンスでも例外を投げずに`Response`を返す挙動に合わせるためで、これにより既存の「`response.status_code != 200`」判定ロジックが変更なしでそのまま使える。
+  - **例外処理**: `urllib.error.HTTPError`以外の失敗（`urllib.error.URLError`・`TimeoutError`・`ssl.SSLError`・その他の`OSError`）はすべて`OSError`のサブクラスであるため、例外として伝播させたまま、呼び出し側の例外処理を`except httpx.TransportError as exc:`から`except (httpx.TransportError, OSError) as exc:`に変更するだけで、httpx側の切断エラーとurllib側の通信エラーの両方を同じretry/query-fallback/transport-fallbackロジックで統一的に扱えるようにした。
+- **urllib fallbackする条件**: `httpx.TransportError`/`OSError`（retryを尽くしても解消しない）、または502/503/504（retryを尽くしても解消しない）。
+- **urllib fallbackしない条件**: `400`/`404`等の非retry対象な非200レスポンス、domain不正、index解決失敗、成功したが0件（query自体は成功しているため）、`COMMON_CRAWL_ENABLED=false`——既存のtransport fallback（`default`→`no-env`）と同じ設計方針をそのまま踏襲。
+- **`_fetch_latest_index()`/collinfo.jsonへの適用**: collinfo.json取得にも同じ`urllib`transportを実装した。この実装の過程で、`_fetch_latest_index()`が成功レスポンスの解析に`response.json()`（`httpx.Response`専用のメソッド）を呼んでいたバグを発見した——`urllib`transportで成功した場合、返るのは`.json()`を持たない`_IndexHttpResponse`であるため、そのままでは`AttributeError`になる。これを`json.loads(response.text)`（`_IndexHttpResponse`/`httpx.Response`どちらの`.text`でも動く）に修正した。**このバグは実際にRenderへデプロイされる前、テスト実装中に発見・修正済み**——`urllib`transportが実際に成功パスを通るテストを書いた際に顕在化した。
+- **ログ**: 各種ログ（request開始・retry・query fallback・all query variants failed）は既存の実装をそのまま再利用しているため、`transport_mode=urllib`という値が入るだけで、ログ文言・フォーマット自体に変更はない。全transport失敗時は`Common Crawl Index API all transports failed index=... domain=... transports=3 last_error_type=%s`になる（`transports`の値が2から3に増える）。
+- **成功時・失敗時の挙動**: `urllib`transportで成功した場合も、既存の`_parse_candidates()`でそのまま処理し、通常どおり`candidates`を返す。3つのtransportすべてが失敗した場合の最終的な`status="unavailable"`と`reason`は**従来と完全に同じ文言**——画面表示用の日本語reason分類への影響は一切ない。
+- **テストの安全策**: `urllib`transportの追加により、既存の「全transport失敗」を模したテストが実際に`urllib.request.urlopen()`（実ネットワーク呼び出し）へ到達するようになったため、`tests/test_common_crawl_index.py`にautouseフィクスチャ（`_no_real_urllib_calls`）を追加し、明示的にmockされていないテストが実urllib呼び出しに到達した場合は即座に`AssertionError`で失敗するようにした——実装前は、この安全策なしにテストを実行すると実ネットワークアクセスを試みてテストがハングすることを確認している。
+- **今回変更していないもの**: query variant fallback・retryロジック・headers・candidate parsing・画面表示用reason・取得件数・UI・frontend・DataForSEO/ChatGPT関連コード・requirements/package.json（新規package追加なし）。
+- **次の課題**: `urllib`fallback追加後も改善しない場合、外部プロキシ/API経由での取得、Render外環境での疎通確認によるRender特有の問題かどうかの切り分け、またはCommon Crawl取得方式そのものの再設計（例えば別のデータソースの検討）が次の課題となる（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

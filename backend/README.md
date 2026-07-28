@@ -572,6 +572,14 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
   - **`_fetch_latest_index()`への適用**: `COMMON_CRAWL_INDEX=latest`時のcollinfo.json取得にも同じtransport fallbackを実装した（同じ`index.commoncrawl.org`ホストへの通信であり、同じ切断問題が起こり得るため）。新規`_fetch_collinfo_response()`が1回のtransport試行の詳細（retry・成否判定）を担い、`_fetch_latest_index()`がtransportのループを担う。
   - **成功時・失敗時の挙動**: no-envで成功した場合も、既存の`_parse_candidates()`でそのまま処理し通常どおり`candidates`を返す。両transportとも失敗した場合の最終的な`status`/`reason`は**従来と完全に同じ**——画面表示用の日本語reason分類への影響は一切ない。
   - **今回変更していないもの**: query variant fallback・retryロジック・headers・candidate parsing・画面表示用reason・取得件数・UI・DataForSEO/ChatGPT関連コード。別HTTP client方式・外部プロキシ経由・Render外環境での疎通確認は実装しておらず、次の検討候補としてdocsに記載するのみ。
+- **`urllib` transport fallback**（2026-07-29追加、`fix/common-crawl-index-urllib-fallback`）: `trust_env=False` fallback追加後もRenderで`default`/`no-env`両方のhttpx transportが全query variant・全attemptでRemoteProtocolErrorになり続ける事象が報告された——query形式・timeout・headers・trust_envのいずれでも解決しないため、httpxそのものとRender環境の相性問題を疑い、httpxを一切使わない第3のtransport mode`"urllib"`（Python標準ライブラリ`urllib.request`）を追加した。**新規packageは追加していない**（標準ライブラリのみ）。
+  - **transport mode**: `_TRANSPORT_MODES = ("default", "no-env", "urllib")`の3つに拡張。`default`/`no-env`が全滅した場合のみ`urllib`を試す。公開APIレスポンスに新規フィールドは追加していない（区別はログの`transport_mode=urllib`のみ）。
+  - **`_urllib_get()`**: `urllib.parse.urlencode(params, doseq=True)`でquery文字列を構築（`httpx.URL(url, params=params)`と同一のエンコード結果になることを確認済み——複数値の`filter`パラメータを含め、ログの`request_url`と実際にurllibが叩くURLが一致する）、`urllib.request.Request(...)`にheaders（User-Agent/Accept/Connection: close、既存の`_request_headers()`をそのまま使い回す）を付け、`urllib.request.urlopen()`で取得する。`urllib.error.HTTPError`（非2xx）は例外として伝播させず、`_IndexHttpResponse(status_code, text)`という簡易レスポンス型に変換して返す——`httpx.get()`が非2xxでも例外を投げずResponseを返すのと同じ挙動に揃えるため。それ以外の失敗（`urllib.error.URLError`・`TimeoutError`・`ssl.SSLError`・その他の`OSError`）はいずれも`OSError`のサブクラスであり、そのまま例外として伝播させる。
+  - **例外処理の統一**: 呼び出し側の`except httpx.TransportError as exc:`を`except (httpx.TransportError, OSError) as exc:`に変更——`httpx.TransportError`（httpx側）と`OSError`（urllib側の`URLError`/`TimeoutError`/`ssl.SSLError`をすべて含む）を同じ1つのretry/query-fallback/transport-fallbackロジックで扱えるようにした。`urllib.error.HTTPError`はこの分岐に到達しない（`_urllib_get()`内で`_IndexHttpResponse`へ変換済みのため）。
+  - **urllib fallbackする条件**: `httpx.TransportError`/`OSError`（retry全滅）、または502/503/504（retry全滅）。**urllib fallbackしない条件**: `400`/`404`等の非retry対象な非200レスポンス、0件（query自体は成功）、domain不正、index解決失敗、`COMMON_CRAWL_ENABLED=false`。
+  - **`_fetch_latest_index()`への適用**: collinfo.json取得にも同じ`urllib`transportを実装した。あわせて、`_fetch_latest_index()`が`response.json()`（httpx.Response専用メソッド）を呼んでいた箇所を`json.loads(response.text)`に修正——`_IndexHttpResponse`にも対応させるための必須修正（`urllib`transportで成功した場合に発生していたバグをテスト実装時に発見・修正した）。
+  - **ログ**: request開始ログの`transport_mode=%s`に`urllib`が入る。成功ログ・retryログ・query fallbackログ・all query variants failedログもすべて`transport_mode=urllib`付きでそのまま出る（既存ロジックの再利用のため追加実装は不要）。全transport失敗時は`Common Crawl Index API all transports failed index=... domain=... transports=3 last_error_type=%s`になる。
+  - **今回変更していないもの**: query variant fallback・retryロジック・headers・candidate parsing・画面表示用reason・取得件数・UI・DataForSEO/ChatGPT関連コード。新規package・requirements変更は行っていない（`urllib`は標準ライブラリ）。それでも失敗する場合は、Render外環境での疎通確認・外部プロキシ/API経由・Common Crawl取得方式の再設計を次の検討候補としてdocsに記載するのみ。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -1043,6 +1051,23 @@ pytest
 - query variant fallback・retryが、transport fallback追加後も従来どおり動作すること（回帰防止）
 - transport fallback追加によって`_parse_candidates()`のcandidate変換結果が変わらないこと（回帰防止）
 - `collinfo.json`取得（`_fetch_latest_index()`）でも同様に、`default`transportが3回失敗し`no-env`transportで成功した場合にindex解決に成功すること、headersが維持されること、全transport失敗時に`all transports failed`ログが出ること、200だが不正なJSONのような非retry対象の失敗ではtransport fallbackが起きないこと
+
+さらに、`urllib` transport fallback追加（2026-07-29、`fix/common-crawl-index-urllib-fallback`）に伴い以下のテストを追加した（すべて`common_crawl_index.urllib.request.urlopen`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない。テストファイル全体にautouseフィクスチャを追加し、明示的にmockしていないテストが誤って実urllib呼び出しに到達した場合は即座に`AssertionError`で失敗するようにしている——実ネットワークへ到達してテストがハングすることを防ぐための安全策）。
+
+- `default`/`no-env`両方のhttpx transportが`RemoteProtocolError`で全滅し、`urllib`transportで成功した場合、`status="real"`かつ`candidates`が返ること
+- `urllib`transportの2回目のattemptで成功した場合、retry後に`candidates`が返ること
+- `urllib`transportで取得できたcandidateも、`_parse_candidates()`によるcandidate変換結果（`url`/`timestamp`/`status`/`mime`/`digest`/`source`）が変わらないこと
+- `default`/`no-env`/`urllib`のすべてが失敗した場合、`status="unavailable"`になり、`reason`が従来と完全に同じ文言のままであること、`all transports failed ... transports=3`ログが出ること
+- `urllib`transportで503が返る場合はretry対象になり2回目で成功すること、400/404が返る場合はretryされず1回で終わること
+- `urllib`のnon-200 body previewも既存の200文字上限が適用されること（巨大なbodyがログに全文出ないこと）
+- `urllib` requestにも`User-Agent`/`Accept`/`Connection: close`が付くこと、`COMMON_CRAWL_USER_AGENT`の値が実際に使われること
+- `urllib`が実際に叩くURL（`Request.full_url`）が、ログに出る`request_url`と一致すること
+- 複数値の`filter`パラメータ（`default-filtered`variant）が`urlencode(..., doseq=True)`で正しくエンコードされること、`default-filtered`/`default-unfiltered`/`www-unfiltered`それぞれのURLが正しく構築されること
+- request開始ログに`transport_mode=urllib`が出ること、成功ログ・失敗時の`error_type=URLError`ログが出ること
+- query variant fallback中もheadersが`urllib`transport内で維持されること
+- `400`/`404`・0件の場合は`default`transportの時点で即座に`unavailable`になり、`urllib`へは一切到達しないこと（呼び出し回数1回の確認）
+- `collinfo.json`取得（`_fetch_latest_index()`）でも同様に、`urllib`transportへのfallbackが機能すること、headersが維持されること、query paramの無いURL（collinfo.jsonそのもの）が正しく使われること、非retry対象の非200ではretry・transport fallbackのいずれも起きないこと
+- **`_fetch_latest_index()`が`response.json()`（httpx.Response専用メソッド）を呼んでいたバグを修正**——`urllib`transport成功時は`_IndexHttpResponse`（`.json()`を持たない）が返るため、`json.loads(response.text)`に変更した。このバグはテスト実装中に発見し、同じコミットで修正している。
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 

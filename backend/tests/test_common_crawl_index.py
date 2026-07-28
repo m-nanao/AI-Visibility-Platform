@@ -1,7 +1,10 @@
+import io
 import json
 import logging
+import urllib.error
 
 import httpx
+import pytest
 
 from services import common_crawl_index
 from services.common_crawl_index import (
@@ -26,6 +29,26 @@ _FIXED_INDEX_SETTINGS = CommonCrawlSettings(
     timeout_seconds=10.0,
     user_agent="AI-Visibility-Platform-MVP",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_urllib_calls(monkeypatch):
+    """Safety net for the `urllib` transport mode (fix/common-crawl-index-
+    urllib-fallback): no test should ever let `urllib.request.urlopen`
+    reach the real network. A test that wants to exercise the `urllib`
+    transport mode monkeypatches `common_crawl_index.urllib.request.urlopen`
+    itself, which overrides this default. Any *other* test that
+    accidentally exhausts the `default`/`no-env` httpx transports and
+    falls through to `urllib` will hit this and fail fast with a clear
+    error instead of hanging on a real network call.
+    """
+
+    def fail_if_called(request, timeout=None):
+        raise AssertionError(
+            "urllib.request.urlopen should not be reached unless a test explicitly mocks it"
+        )
+
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fail_if_called)
 
 
 def _collinfo_payload(*ids: str) -> list[dict]:
@@ -72,8 +95,11 @@ def test_resolve_latest_index_picks_the_greatest_id_regardless_of_list_order(mon
 
 def test_resolve_latest_index_fails_safely_on_network_error(monkeypatch):
     # ConnectTimeout is retryable (fix/common-crawl-index-retry); sleep is
-    # mocked so this exhausts all 3 attempts without a real delay.
+    # mocked so this exhausts all 3 attempts (across all 3 transport
+    # modes — fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback) without a real delay.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def raise_timeout(url, **kwargs):
         raise httpx.ConnectTimeout("timeout", request=httpx.Request("GET", url))
@@ -390,8 +416,10 @@ def test_search_returns_unavailable_and_empty_reason_safe_on_zero_results(monkey
 
 def test_search_fails_safely_on_network_error(monkeypatch):
     # ConnectTimeout is retryable (fix/common-crawl-index-retry); sleep is
-    # mocked so this exhausts all 3 attempts without a real delay.
+    # mocked so this exhausts every query variant across all 3 transport
+    # modes without a real delay.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def raise_timeout(url, **kwargs):
         raise httpx.ConnectTimeout("timeout", request=httpx.Request("GET", url))
@@ -493,10 +521,11 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
     # fix/common-crawl-index-retry), so this now exhausts retries on
     # every query variant under every transport mode
     # (fix/common-crawl-index-query-fallback,
-    # fix/common-crawl-index-trust-env-fallback) — 3 attempts x 3
-    # variants x 2 transport modes. Sleep is mocked so the test doesn't
-    # wait.
+    # fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback) — 3 attempts x 3 variants
+    # x 3 transport modes. Sleep is mocked so the test doesn't wait.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def raise_connect_error(url, **kwargs):
         raise httpx.ConnectError("[Errno -2] Name or service not known", request=httpx.Request("GET", url))
@@ -507,17 +536,19 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 18
+    assert len(failure_records) == 27
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Name or service not known" in failure_records[0].message
     assert "query_variant=default-filtered" in failure_records[0].message
     assert "transport_mode=default" in failure_records[0].message
-    assert "transport_mode=no-env" in failure_records[-1].message
+    assert "transport_mode=urllib" in failure_records[-1].message
+    assert "error_type=URLError" in failure_records[-1].message
 
 
 def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
     # ReadTimeout is also a retryable httpx.TransportError.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def raise_read_timeout(url, **kwargs):
         raise httpx.ReadTimeout("The read operation timed out", request=httpx.Request("GET", url))
@@ -528,7 +559,7 @@ def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 18
+    assert len(failure_records) == 27
     assert "error_type=ReadTimeout" in failure_records[0].message
     assert "error_type=ConnectError" not in failure_records[0].message
 
@@ -609,10 +640,12 @@ def test_fetch_latest_index_logs_request_start_with_url_and_timeout(monkeypatch,
 
 def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog):
     # ConnectError is retryable (fix/common-crawl-index-retry), so this
-    # now runs all 3 attempts under both transport modes
-    # (fix/common-crawl-index-trust-env-fallback) — sleep is mocked to
-    # avoid a real delay.
+    # now runs all 3 attempts under all 3 transport modes
+    # (fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback) — sleep is mocked to avoid
+    # a real delay.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def raise_connect_error(url, **kwargs):
         raise httpx.ConnectError("Connection refused", request=httpx.Request("GET", url))
@@ -623,7 +656,7 @@ def test_fetch_latest_index_logs_error_type_on_connect_error(monkeypatch, caplog
         resolve_common_crawl_index(_LATEST_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 6
+    assert len(failure_records) == 9
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Connection refused" in failure_records[0].message
 
@@ -645,6 +678,61 @@ def _patch_sleep(monkeypatch):
     sleep_calls: list[float] = []
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     return sleep_calls
+
+
+def _patch_urllib_persistent_failure(monkeypatch, message="disconnected"):
+    """Makes the `urllib` transport mode fail on every call with a
+    persistent `OSError`-derived error (mirroring a persistent
+    `httpx.RemoteProtocolError` fake on the httpx transports) — for
+    tests simulating total exhaustion across all `_TRANSPORT_MODES`
+    (`default`/`no-env`/`urllib`).
+    """
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.URLError(message)
+
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+
+class _FakeUrllibHeaders:
+    """Minimal stand-in for the `email.message.Message`-like `.headers`
+    object a real `http.client.HTTPResponse`/`urllib.error.HTTPError`
+    exposes — `_urllib_get()` only ever calls `.get_content_charset()`
+    on it, and always falls back to utf-8 when it returns `None`.
+    """
+
+    def get_content_charset(self):
+        return None
+
+
+class _FakeUrllibResponse:
+    """Stand-in for what `urllib.request.urlopen()` returns on success —
+    supports the context-manager protocol plus `.status`/`.read()`/
+    `.headers`, which is all `_urllib_get()` reads.
+    """
+
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self._body = body.encode("utf-8")
+        self.headers = _FakeUrllibHeaders()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _fake_http_error(request_url: str, code: int, body: str) -> urllib.error.HTTPError:
+    """Builds a `urllib.error.HTTPError` shaped like what a real non-2xx
+    response would raise — `_urllib_get()` reads `.code` and `.read()`
+    from it (via `exc.headers`, which is `None` here, exercised
+    separately from the success-path `_FakeUrllibHeaders`).
+    """
+    return urllib.error.HTTPError(request_url, code, "", None, io.BytesIO(body.encode("utf-8")))
 
 
 def test_search_retries_on_remote_protocol_error_then_succeeds(monkeypatch):
@@ -710,13 +798,16 @@ def test_search_retries_on_connect_error_then_succeeds(monkeypatch):
 
 def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch):
     # With query-variant fallback (fix/common-crawl-index-query-fallback)
-    # and transport-mode fallback (fix/common-crawl-index-trust-env-fallback),
-    # a persistent RemoteProtocolError exhausts retries on every query
-    # variant under every transport mode (3 variants x 3 attempts x 2
-    # transport modes = 18 calls) before finally returning unavailable —
-    # see test_search_all_query_variants_fail_and_log_final_failure for
-    # the dedicated "all variants/transports failed" logging assertions.
+    # and transport-mode fallback
+    # (fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback), a persistent failure
+    # exhausts retries on every query variant under every transport mode
+    # (3 variants x 3 attempts x 3 transport modes = 27 calls) before
+    # finally returning unavailable — see
+    # test_search_all_query_variants_fail_and_log_final_failure for the
+    # dedicated "all variants/transports failed" logging assertions.
     sleep_calls = _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
     calls = {"count": 0}
 
     def fake_get(url, **kwargs):
@@ -731,8 +822,9 @@ def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch)
 
     assert result.status == "unavailable"
     assert "network or timeout" in result.reason
+    # 2 httpx transport modes (default, no-env) x 3 variants x 3 attempts.
     assert calls["count"] == 18
-    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0] * 2
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0] * 3
 
 
 def test_search_does_not_retry_on_http_400(monkeypatch):
@@ -809,6 +901,7 @@ def test_search_retries_on_502_and_504(monkeypatch):
 
 def test_search_logs_attempt_retrying_and_exhausted_messages(monkeypatch, caplog):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError(
@@ -857,10 +950,12 @@ def test_search_logs_success_message_when_a_retry_succeeds(monkeypatch, caplog):
 
 def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monkeypatch):
     # Each query variant still caps its own retry sleep at 0.5+1.0=1.5s;
-    # with 3 variants (fix/common-crawl-index-query-fallback) and 2
-    # transport modes (fix/common-crawl-index-trust-env-fallback), a
-    # persistent failure sleeps at most 3x1.5x2=9.0s in total, never more.
+    # with 3 variants (fix/common-crawl-index-query-fallback) and 3
+    # transport modes (fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback), a persistent failure
+    # sleeps at most 3x1.5x3=13.5s in total, never more.
     sleep_calls = _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
@@ -869,12 +964,13 @@ def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monke
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    assert sum(sleep_calls) <= 9.0
+    assert sum(sleep_calls) <= 13.5
     assert all(delay <= 1.0 for delay in sleep_calls)
 
 
 def test_search_retry_does_not_change_reason_shown_to_ui(monkeypatch):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
@@ -991,11 +1087,15 @@ def test_search_falls_back_through_www_variant_when_first_two_fail(monkeypatch):
 
 
 def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplog):
-    # A persistent RemoteProtocolError exhausts every query variant under
-    # both transport modes (fix/common-crawl-index-trust-env-fallback),
-    # so "query fallback"/"all query variants failed" each appear twice
-    # (once per transport mode) before the final "all transports failed".
+    # A persistent failure exhausts every query variant under all 3
+    # transport modes (fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback), so "query fallback"/"all
+    # query variants failed" each appear 3 times (once per transport
+    # mode) before the final "all transports failed". The two httpx
+    # modes fail with RemoteProtocolError; the urllib mode fails with
+    # URLError (see _patch_urllib_persistent_failure).
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError(
@@ -1012,25 +1112,29 @@ def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplo
 
     messages = [r.message for r in caplog.records]
     fallback_records = [m for m in messages if "query fallback" in m]
-    assert len(fallback_records) == 4
+    assert len(fallback_records) == 6
     assert any("from=default-filtered" in m and "to=default-unfiltered" in m for m in fallback_records)
     assert any("from=default-unfiltered" in m and "to=www-unfiltered" in m for m in fallback_records)
-    assert all("reason=RemoteProtocolError" in m for m in fallback_records)
+    httpx_fallback_records = [m for m in fallback_records if "transport_mode=urllib" not in m]
+    urllib_fallback_records = [m for m in fallback_records if "transport_mode=urllib" in m]
+    assert all("reason=RemoteProtocolError" in m for m in httpx_fallback_records)
+    assert all("reason=URLError" in m for m in urllib_fallback_records)
 
     final_records = [m for m in messages if "all query variants failed" in m]
-    assert len(final_records) == 2
+    assert len(final_records) == 3
     assert all("variants=3" in m for m in final_records)
-    assert all("last_error_type=RemoteProtocolError" in m for m in final_records)
 
     transport_fallback_records = [m for m in messages if "transport fallback" in m]
-    assert len(transport_fallback_records) == 1
+    assert len(transport_fallback_records) == 2
     assert "from=default" in transport_fallback_records[0]
     assert "to=no-env" in transport_fallback_records[0]
+    assert "from=no-env" in transport_fallback_records[1]
+    assert "to=urllib" in transport_fallback_records[1]
 
     all_transports_records = [m for m in messages if "all transports failed" in m]
     assert len(all_transports_records) == 1
-    assert "transports=2" in all_transports_records[0]
-    assert "last_error_type=RemoteProtocolError" in all_transports_records[0]
+    assert "transports=3" in all_transports_records[0]
+    assert "last_error_type=URLError" in all_transports_records[0]
 
 
 def test_search_does_not_fall_back_to_next_query_on_http_400(monkeypatch):
@@ -1137,12 +1241,15 @@ def test_search_www_variant_is_skipped_when_domain_already_has_www(monkeypatch):
 
     monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     search_common_crawl_domain("www.cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     # Only 2 variants (default-filtered, default-unfiltered) for a domain
     # that already starts with "www." — no doubled-up "www.www." variant.
-    # 2 variants x 3 attempts x 2 transport modes (default, no-env).
+    # 2 variants x 3 attempts x 2 httpx transport modes (default, no-env)
+    # — the urllib transport mode's calls go through the separate
+    # _patch_urllib_persistent_failure fake, not this httpx one.
     assert calls["count"] == 12
     assert all(u == "www.cybozu.co.jp/*" for u in seen_urls)
 
@@ -1202,9 +1309,11 @@ def test_fetch_latest_index_retries_on_remote_protocol_error_then_succeeds(monke
 
 
 def test_fetch_latest_index_exhausts_retries_and_fails_safely(monkeypatch):
-    # A persistent RemoteProtocolError exhausts both transport modes
-    # (fix/common-crawl-index-trust-env-fallback): 3 attempts x 2 modes.
+    # A persistent failure exhausts all 3 transport modes
+    # (fix/common-crawl-index-trust-env-fallback,
+    # fix/common-crawl-index-urllib-fallback): 3 attempts x 3 modes.
     sleep_calls = _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
     calls = {"count": 0}
 
     def fake_get(url, **kwargs):
@@ -1217,8 +1326,9 @@ def test_fetch_latest_index_exhausts_retries_and_fails_safely(monkeypatch):
 
     assert resolution.success is False
     assert "network or timeout" in resolution.reason
+    # 2 httpx transport modes (default, no-env) x 3 attempts.
     assert calls["count"] == 6
-    assert sleep_calls == [0.5, 1.0, 0.5, 1.0]
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0]
 
 
 def test_search_logging_does_not_change_success_behavior(monkeypatch, caplog):
@@ -1334,6 +1444,7 @@ def test_fetch_latest_index_sends_the_same_headers(monkeypatch):
 
 def test_search_headers_are_maintained_across_retries(monkeypatch):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
     seen_headers = []
     calls = {"count": 0}
 
@@ -1487,6 +1598,7 @@ def test_search_headers_do_not_affect_candidate_parsing(monkeypatch):
 
 def test_search_headers_do_not_change_reason_shown_to_ui(monkeypatch):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
@@ -1569,6 +1681,7 @@ def test_search_falls_back_to_no_env_transport_after_default_exhausts_on_503(mon
 
 def test_search_all_transports_fail_returns_unavailable_with_unchanged_reason(monkeypatch):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
@@ -1716,6 +1829,7 @@ def test_search_logs_success_with_transport_mode_no_env(monkeypatch, caplog):
 
 def test_search_logs_all_transports_failed_message(monkeypatch, caplog):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
@@ -1727,12 +1841,14 @@ def test_search_logs_all_transports_failed_message(monkeypatch, caplog):
 
     final_records = [r.message for r in caplog.records if "all transports failed" in r.message]
     assert len(final_records) == 1
-    assert "transports=2" in final_records[0]
-    assert "last_error_type=RemoteProtocolError" in final_records[0]
+    assert "transports=3" in final_records[0]
+    # The urllib transport mode (tried last) fails with URLError.
+    assert "last_error_type=URLError" in final_records[0]
 
 
 def test_search_no_env_transport_passes_trust_env_false(monkeypatch):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
     seen_trust_env = []
 
     def fake_get(url, **kwargs):
@@ -1743,10 +1859,12 @@ def test_search_no_env_transport_passes_trust_env_false(monkeypatch):
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    # First 9 calls (default transport) never set trust_env; last 9 calls
-    # (no-env transport) always pass trust_env=False.
+    # First 9 calls (default transport) never set trust_env; next 9 calls
+    # (no-env transport) always pass trust_env=False. The urllib
+    # transport mode (tried last) never calls httpx.get at all.
     assert seen_trust_env[:9] == ["NOT_SET"] * 9
-    assert seen_trust_env[9:] == [False] * 9
+    assert seen_trust_env[9:18] == [False] * 9
+    assert len(seen_trust_env) == 18
 
 
 def test_search_headers_are_maintained_across_transport_fallback(monkeypatch):
@@ -1894,6 +2012,7 @@ def test_fetch_latest_index_headers_are_maintained_across_transport_fallback(mon
 
 def test_fetch_latest_index_logs_all_transports_failed(monkeypatch, caplog):
     _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
 
     def fake_get(url, **kwargs):
         raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
@@ -1906,7 +2025,7 @@ def test_fetch_latest_index_logs_all_transports_failed(monkeypatch, caplog):
     assert resolution.success is False
     final_records = [r.message for r in caplog.records if "all transports failed" in r.message]
     assert len(final_records) == 1
-    assert "transports=2" in final_records[0]
+    assert "transports=3" in final_records[0]
 
 
 def test_fetch_latest_index_does_not_fall_back_to_no_env_on_invalid_json(monkeypatch):
@@ -1923,4 +2042,470 @@ def test_fetch_latest_index_does_not_fall_back_to_no_env_on_invalid_json(monkeyp
     assert resolution.success is False
     # A 200-but-invalid-JSON response is terminal — never retried, never
     # transport-fallback-eligible.
+    assert calls["count"] == 1
+
+
+# --- urllib transport-mode fallback ----------------------------------------------
+# Added 2026-07-29 (fix/common-crawl-index-urllib-fallback) — Render logs showed
+# *both* httpx transport modes (default and no-env/trust_env=False) still
+# exhausting every query variant with httpx.RemoteProtocolError, pointing at an
+# httpx-specific transport/Render incompatibility rather than anything
+# query-shape/header/proxy-related. These tests lock in that a persistent
+# failure across both httpx transports falls back to a third "urllib" mode
+# that bypasses httpx entirely via Python's standard library urllib.request.
+
+
+def _always_raise_remote_protocol_error(url, **kwargs):
+    raise httpx.RemoteProtocolError(
+        "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+    )
+
+
+def test_search_falls_back_to_urllib_after_both_httpx_transports_exhaust(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_urlopen(request, timeout=None):
+        return _FakeUrllibResponse(200, body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert result.candidates[0].url == "https://cybozu.co.jp/"
+
+
+def test_search_urllib_retry_succeeds_on_second_attempt(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise urllib.error.URLError("disconnected")
+        return _FakeUrllibResponse(200, body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert calls["count"] == 2
+
+
+def test_search_urllib_candidate_parsing_is_unchanged(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(
+        url="https://cybozu.co.jp/",
+        timestamp="20260115000000",
+        status="200",
+        mime="text/html",
+        digest="ABC123",
+    )
+
+    def fake_urlopen(request, timeout=None):
+        return _FakeUrllibResponse(200, body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    candidate = result.candidates[0]
+    assert candidate.url == "https://cybozu.co.jp/"
+    assert candidate.timestamp == "20260115000000"
+    assert candidate.status == 200
+    assert candidate.mime == "text/html"
+    assert candidate.digest == "ABC123"
+    assert candidate.source == "common_crawl"
+
+
+def test_search_urllib_retries_on_503(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise _fake_http_error(request.full_url, 503, "Service Unavailable")
+        return _FakeUrllibResponse(200, body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert calls["count"] == 2
+
+
+def test_search_urllib_does_not_retry_on_400(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=None):
+        calls["count"] += 1
+        raise _fake_http_error(request.full_url, 400, "")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "400" in result.reason
+    # Only the urllib transport's first query variant's first attempt —
+    # no retry, no query fallback.
+    assert calls["count"] == 1
+
+
+def test_search_urllib_does_not_retry_on_404(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=None):
+        calls["count"] += 1
+        raise _fake_http_error(request.full_url, 404, "")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert calls["count"] == 1
+
+
+def test_search_urllib_body_preview_is_truncated_to_200_chars(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    huge_body = "x" * 5000
+
+    def fake_urlopen(request, timeout=None):
+        raise _fake_http_error(request.full_url, 503, huge_body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    urllib_non_200_records = [
+        r.message for r in caplog.records if "non-200" in r.message and "transport_mode=urllib" in r.message
+    ]
+    assert len(urllib_non_200_records) >= 1
+    assert len(urllib_non_200_records[0]) < 400
+    assert huge_body not in urllib_non_200_records[0]
+
+
+def test_search_urllib_sends_expected_headers(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert len(seen_requests) > 0
+    request = seen_requests[0]
+    assert request.get_header("User-agent") == "AI-Visibility-Platform-MVP"
+    assert request.get_header("Accept") == "application/json, text/plain;q=0.9, */*;q=0.8"
+    assert request.get_header("Connection") == "close"
+
+
+def test_search_urllib_uses_common_crawl_user_agent_setting(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    settings = CommonCrawlSettings(
+        enabled=True,
+        index="CC-MAIN-2026-08",
+        max_results=5,
+        timeout_seconds=10.0,
+        user_agent="My-Custom-Agent/2.0",
+    )
+    search_common_crawl_domain("cybozu.co.jp", settings)
+
+    assert seen_requests[0].get_header("User-agent") == "My-Custom-Agent/2.0"
+
+
+def test_search_urllib_request_url_matches_logged_request_url(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    urllib_start_records = [
+        r.message for r in caplog.records if "request start" in r.message and "transport_mode=urllib" in r.message
+    ]
+    assert len(urllib_start_records) >= 1
+    logged_request_url = urllib_start_records[0].split("request_url=", 1)[1]
+    assert seen_requests[0].full_url == logged_request_url
+
+
+def test_search_urllib_encodes_multiple_filter_params(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    # First urllib call is for the default-filtered variant, which has 2
+    # "filter" params — both must survive urlencode(..., doseq=True).
+    first_url = seen_requests[0].full_url
+    assert "filter=status%3A200" in first_url
+    assert "filter=mime%3Atext%2Fhtml" in first_url
+
+
+def test_search_urllib_builds_correct_urls_for_each_query_variant(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    urls = [request.full_url for request in seen_requests]
+    assert any("url=cybozu.co.jp%2F%2A" in u and "filter=status%3A200" in u for u in urls)
+    assert any("url=cybozu.co.jp%2F%2A" in u and "filter" not in u for u in urls)
+    assert any("url=www.cybozu.co.jp%2F%2A" in u for u in urls)
+
+
+def test_search_logs_transport_mode_urllib_in_request_start(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    urllib_start_records = [m for m in start_records if "transport_mode=urllib" in m]
+    assert len(urllib_start_records) >= 1
+
+
+def test_search_logs_success_with_transport_mode_urllib(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_urlopen(request, timeout=None):
+        return _FakeUrllibResponse(200, body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    success_records = [r.message for r in caplog.records if "request succeeded" in r.message]
+    assert len(success_records) == 1
+    assert "transport_mode=urllib" in success_records[0]
+    assert "query_variant=default-filtered" in success_records[0]
+    assert "candidates=1" in success_records[0]
+
+
+def test_search_logs_urllib_failure_error_type(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.URLError("Name or service not known")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    urllib_failure_records = [
+        r.message for r in caplog.records if "request failed" in r.message and "transport_mode=urllib" in r.message
+    ]
+    assert len(urllib_failure_records) >= 1
+    assert "error_type=URLError" in urllib_failure_records[0]
+
+
+def test_search_all_transports_failed_log_has_transports_equal_3(monkeypatch, caplog):
+    _patch_sleep(monkeypatch)
+    _patch_urllib_persistent_failure(monkeypatch)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+
+    with caplog.at_level(logging.WARNING, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    final_records = [r.message for r in caplog.records if "all transports failed" in r.message]
+    assert len(final_records) == 1
+    assert "transports=3" in final_records[0]
+
+
+def test_search_urllib_headers_are_maintained_across_query_variant_fallback(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        has_filter = "filter=" in request.full_url
+        if has_filter:
+            raise urllib.error.URLError("still failing")
+        return _FakeUrllibResponse(200, body)
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    for request in seen_requests:
+        assert request.get_header("User-agent") == "AI-Visibility-Platform-MVP"
+        assert request.get_header("Accept") == "application/json, text/plain;q=0.9, */*;q=0.8"
+        assert request.get_header("Connection") == "close"
+
+
+def test_search_does_not_fall_back_to_urllib_on_http_400(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(400, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "400" in result.reason
+    # Only the first query variant's first attempt under the default
+    # transport — no retry, no query fallback, no transport fallback.
+    assert calls["count"] == 1
+
+
+def test_search_does_not_fall_back_to_urllib_on_zero_candidates(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "empty" in result.reason
+    assert calls["count"] == 1
+
+
+# --- urllib transport-mode fallback (collinfo.json / _fetch_latest_index) -----
+
+
+def test_fetch_latest_index_falls_back_to_urllib_after_both_httpx_transports_exhaust(monkeypatch):
+    _patch_sleep(monkeypatch)
+
+    def fake_urlopen(request, timeout=None):
+        return _FakeUrllibResponse(200, json.dumps(_collinfo_payload("CC-MAIN-2026-08")))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is True
+    assert resolution.crawl_index == "CC-MAIN-2026-08"
+
+
+def test_fetch_latest_index_urllib_sends_expected_headers(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        return _FakeUrllibResponse(200, json.dumps(_collinfo_payload("CC-MAIN-2026-08")))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert len(seen_requests) == 1
+    assert seen_requests[0].get_header("User-agent") == "AI-Visibility-Platform-MVP"
+    assert seen_requests[0].get_header("Accept") == "application/json, text/plain;q=0.9, */*;q=0.8"
+    assert seen_requests[0].get_header("Connection") == "close"
+
+
+def test_fetch_latest_index_urllib_url_has_no_query_string(monkeypatch):
+    # collinfo.json is fetched with no query params at all.
+    _patch_sleep(monkeypatch)
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        return _FakeUrllibResponse(200, json.dumps(_collinfo_payload("CC-MAIN-2026-08")))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert seen_requests[0].full_url == COLLINFO_URL
+
+
+def test_fetch_latest_index_urllib_does_not_retry_on_non_retryable_non_200(monkeypatch):
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=None):
+        calls["count"] += 1
+        raise _fake_http_error(request.full_url, 404, "")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is False
     assert calls["count"] == 1
