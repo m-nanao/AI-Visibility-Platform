@@ -57,8 +57,10 @@ docs/13_common_crawl_mvp_design.md) via `_build_common_crawl_documents()`
 below — off by default (`commonCrawlMode` omitted or "off", and even
 when "domain" is requested, only runs when `COMMON_CRAWL_ENABLED=true`).
 When it runs, a domain (from `commonCrawlDomain`, or else `urls[0]`'s
-hostname) is searched against Common Crawl's Index API, and at most one
-candidate is fetched/converted into a Document, which is appended to
+hostname) is searched against Common Crawl's Index API, and up to
+COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE candidates are fetched/converted
+into Documents (trying at most COMMON_CRAWL_MAX_CANDIDATES_TO_TRY
+candidates in order, skipping any that fail), which are appended to
 the primary Document[] before cooccurrence/chunking/analysis — so
 existing Analyzer logic sees it like any other Document, with no
 special-casing. A Common Crawl failure never raises and never affects
@@ -117,12 +119,19 @@ from services.web_fetcher import fetch_url_texts, to_documents as fetch_results_
 
 # Common Crawl's Index API can return up to settings.max_results
 # candidates, but /analyze only tries this many of them (in order)
-# looking for the first that fetches into a usable Document — kept
-# small and independent of settings.max_results so a single /analyze
-# call never issues an excessive number of WARC fetch requests (see
-# docs/13_common_crawl_mvp_design.md's "件数" policy: at most one
-# Document is added, from at most this many attempts).
-COMMON_CRAWL_MAX_CANDIDATES_TO_TRY = 3
+# looking for ones that fetch into a usable Document — kept small and
+# independent of settings.max_results so a single /analyze call never
+# issues an excessive number of WARC fetch requests (see
+# docs/13_common_crawl_mvp_design.md's "件数" policy).
+COMMON_CRAWL_MAX_CANDIDATES_TO_TRY = 5
+
+# At most this many Common Crawl-sourced Documents are ever added to
+# one /analyze call, even if more candidates than this succeed — kept
+# small out of consideration for Render's free tier (each additional
+# Document is another WARC fetch/parse) and for /analyze's own
+# response-time budget. See docs/13_common_crawl_mvp_design.md's "件数"
+# policy.
+COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE = 3
 
 # Without this, INFO-level logs (e.g. the sample-document notice below)
 # are silently dropped: uvicorn's default logging config only sets up
@@ -229,17 +238,18 @@ def _build_common_crawl_documents(
     """Runs the Common Crawl "補完" (supplementary) flow described in
     docs/13_common_crawl_mvp_design.md: resolve a domain, search the
     Index API, then try up to COMMON_CRAWL_MAX_CANDIDATES_TO_TRY
-    candidates (in order) for the first one that fetches and converts
-    into a usable Document.
+    candidates (in order), skipping any that fail to fetch/convert,
+    until COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE Documents have been
+    collected or every candidate has been tried.
 
     Never raises, and never lets a Common Crawl failure affect the rest
     of /analyze — every failure path (mode is "off", Common Crawl is
     disabled, the domain can't be determined, the Index search fails or
     finds nothing, or every candidate fails to fetch/convert) returns an
     empty Document[] plus a CommonCrawlProviderInfo describing why. At
-    most one Document is ever returned (see docs/13_common_crawl_mvp_design.md's
-    "件数" policy — multi-document Common Crawl integration is a later
-    task), and none of `search_common_crawl_domain()`/
+    most COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE Documents are ever
+    returned (see docs/13_common_crawl_mvp_design.md's "件数" policy),
+    and none of `search_common_crawl_domain()`/
     `fetch_common_crawl_warc_record()`/`build_common_crawl_document()`
     themselves do any COMMON_CRAWL_ENABLED gating (see their module
     docstrings) — that gating happens here, once, before any of them
@@ -279,23 +289,36 @@ def _build_common_crawl_documents(
         )
 
     candidate_count = len(index_result.candidates)
+    documents: list[Document] = []
     for candidate in index_result.candidates[:COMMON_CRAWL_MAX_CANDIDATES_TO_TRY]:
+        if len(documents) >= COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE:
+            break
+
         fetch_result = fetch_common_crawl_warc_record(candidate, settings)
         if fetch_result.status != "real":
             continue
 
         document_result = build_common_crawl_document(candidate, fetch_result)
         if document_result.status == "real":
-            documents = list(document_result.documents)
-            return documents, CommonCrawlProviderInfo(
-                mode=common_crawl_mode,
-                status="real",
-                reason=f"Common Crawl added {len(documents)} document(s) for {domain}.",
-                domain=domain,
-                crawlIndex=index_result.crawl_index,
-                candidateCount=candidate_count,
-                documentCount=len(documents),
+            documents.extend(document_result.documents)
+
+    if documents:
+        if len(documents) >= COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE:
+            reason = f"Common Crawl added {len(documents)} document(s) for {domain}."
+        else:
+            reason = (
+                f"Common Crawl completed with partial results "
+                f"({len(documents)} document(s) for {domain})."
             )
+        return documents, CommonCrawlProviderInfo(
+            mode=common_crawl_mode,
+            status="real",
+            reason=reason,
+            domain=domain,
+            crawlIndex=index_result.crawl_index,
+            candidateCount=candidate_count,
+            documentCount=len(documents),
+        )
 
     return [], CommonCrawlProviderInfo(
         mode=common_crawl_mode,

@@ -1111,4 +1111,66 @@ describe("getCommonCrawlProviderDisplay", () => {
     expect(rendered).not.toContain("<html");
     expect(rendered).not.toContain("WARC/1.0");
   });
+
+  // Added 2026-07-28 (feature/common-crawl-multiple-documents) — Common
+  // Crawl補完 now can add up to 3 Documents per request (see
+  // backend/main.py's COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE); this
+  // display function was already generic on documentCount, so these
+  // just lock in that behavior for the new, larger counts.
+  it("shows a document count of 3 when the full cap is reached", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 3 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-08",
+        candidateCount: 5,
+        documentCount: 3,
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
+      "Common Crawl補完: 取得済み（3件）",
+    );
+  });
+
+  it("shows a document count of 2 on a partial success", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl completed with partial results (2 document(s) for cybozu.co.jp).",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-08",
+        candidateCount: 2,
+        documentCount: 2,
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
+      "Common Crawl補完: 取得済み（2件）",
+    );
+  });
+
+  it("does not break when documentCount is 0 on an unavailable result", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason: "Common Crawl found candidates but none could be fetched into a usable document.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-08",
+        candidateCount: 5,
+        documentCount: 0,
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
+      "Common Crawl補完: 未取得（理由: Common Crawl found candidates but none could be fetched into a usable document.）",
+    );
+  });
 });

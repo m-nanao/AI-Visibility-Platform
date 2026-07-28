@@ -1,6 +1,6 @@
 # 13. Common Crawl最小連携 設計ドキュメント（MVP）
 
-**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に`feature/common-crawl-index-client`で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）を、`feature/common-crawl-warc-fetch`で9章のStep 6（WARCレコード取得・HTML抽出、最大1件）を、`feature/common-crawl-document-provider`で9章のStep 7（`Document[]`化）を、`feature/common-crawl-analyze-integration`で9章のStep 8（`/analyze`統合、UIなし）を、続く`feature/common-crawl-ui-selector`で9章のStep 9（UI selector追加）を実装済み——**これで9章の実装ステップ2〜9すべてが完了した**。ただし表示名・説明文・注意書きの文言はすべて依頼者確認前の仮のものである点に変わりはない（11章参照）。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
+**このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に`feature/common-crawl-index-client`で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）を、`feature/common-crawl-warc-fetch`で9章のStep 6（WARCレコード取得・HTML抽出、最大1件）を、`feature/common-crawl-document-provider`で9章のStep 7（`Document[]`化）を、`feature/common-crawl-analyze-integration`で9章のStep 8（`/analyze`統合、UIなし）を、続く`feature/common-crawl-ui-selector`で9章のStep 9（UI selector追加）を実装済み——**これで9章の実装ステップ2〜9すべてが完了した**。その後、`fix/cooccurrence-noise-filter`で共起語ランキングのノイズ語対策（12章）を、`feature/common-crawl-multiple-documents`で最大1件→最大3件への複数件取得拡張（13章）を実装済み。ただし表示名・説明文・注意書きの文言はすべて依頼者確認前の仮のものである点に変わりはない（11章参照）。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
 
 ## 1. 目的
 
@@ -224,7 +224,7 @@ Index検索のみを試せる専用エンドポイントを新設する案。
 - 「AI学習データ推定」という表現を使ってよいか（[01_requirements.md](./01_requirements.md)「重要な前提（スコープの境界）」との整合が必要）
 - Common Crawl由来データを改善提案（`improvement_suggestions.py`）にどの程度反映するか
 - UI上で注意書きをどの強さで出すか（例: 常時表示の警告文にするか、詳細を開いたときだけ見せる補足にとどめるか）
-- 複数件取得（現状は最大1件のみ）をどのタイミングで入れるか
+- ~~複数件取得（現状は最大1件のみ）をどのタイミングで入れるか~~ → 2026-07-28、`feature/common-crawl-multiple-documents`で最大3件（最大5候補試行）へ拡張済み。13章参照
 
 現時点の仮方針（依頼者確認が取れるまでの暫定表現、`app/components/BrandInputForm.tsx`の`COMMON_CRAWL_UI_TEXT`に定数化済み）:
 
@@ -244,6 +244,21 @@ Common Crawl補完を有効化した実環境で、共起語ランキングに�
 対応として、両トークナイザー共通の第二段フィルタ`is_low_value_cooccurrence_term()`を`cooccurrence.py`に追加した（STOPWORDS拡張、接尾辞ベースの除外、短い完全ひらがな語の除外）。Common Crawl由来のDocumentに対する特別な分岐は追加していない——共起語抽出モジュールは取得元（`sourceType`）を一切見ないため、Common Crawl/Webページ/入力テキストいずれのDocumentも同じフィルタを通る。詳細は[backend/README.md](../backend/README.md)「共起語ランキングのノイズ語フィルタ」を参照。
 
 **今回は最小改善である**。将来的な改善余地として、品詞情報（Janomeモード）を活用した複合語抽出の強化や、より精緻な形態素解析ベースのノイズ除外が考えられるが、今回はスコープ外とした（大規模なNLP刷新は行わない方針、[10_ai_development_workflow.md](./10_ai_development_workflow.md)「1タスクの粒度」参照）。
+
+## 13. 複数件取得への拡張（最大1件→最大3件、2026-07-28追記）
+
+実環境でCommon Crawl補完が1件取得できることを確認できたため（`feature/common-crawl-analyze-integration`）、次の段階として`feature/common-crawl-multiple-documents`で最大3件まで取得できるように拡張した。
+
+- Common Crawl補完が最大3件までDocument追加できるようになった（`backend/main.py`の`COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE`）。
+- Index候補は最大5件まで試行する（`backend/main.py`の`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`。Index API自体の取得件数上限`COMMON_CRAWL_MAX_RESULTS`とは独立した別の定数）。
+- 失敗候補（WARC fetch失敗・Document変換失敗いずれも）はスキップし、成功分だけを分析へ追加する。1件の失敗が他の候補の成功を巻き込むことはない。
+- 3件成功した時点でそれ以降の候補は試さず打ち切る。5件すべてを試しても3件に届かない場合は、集まった分（0〜2件）だけを採用する。
+- Common Crawl側が失敗しても（一部失敗・全件失敗いずれも）、通常のURL/documents解析は継続し、`/analyze`全体は成功する。
+- Render無料枠・`/analyze`自体の応答時間を考慮し、これらの上限（3件・5候補）は維持したままにしている——無制限に増やす方針への変更ではない。
+- Common Crawl service層（`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`）は無変更。変更はすべて`backend/main.py`の`_build_common_crawl_documents()`のオーケストレーションループに閉じている。
+- UI表示（`app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`）は元々`documentCount`をそのまま埋め込む実装だったため、コード変更なしで「Common Crawl補完: 取得済み（3件）」のように件数がそのまま反映される。
+
+詳細は[backend/README.md](../backend/README.md)「複数件取得への拡張」を参照。
 
 ## 関連ドキュメント
 

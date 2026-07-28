@@ -1,5 +1,6 @@
 import gzip
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1658,3 +1659,224 @@ def test_analyze_common_crawl_combines_with_dataforseo_and_chatgpt(monkeypatch):
     raw_body = response.text
     assert "super-secret-password" not in raw_body
     assert "sk-super-secret-key" not in raw_body
+
+
+# --- Common Crawl multi-document /analyze integration -----------------------
+# Added 2026-07-28 (feature/common-crawl-multiple-documents): the flow above
+# added at most one Common Crawl Document per /analyze call; this extends it
+# to up to main.COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE (3), trying up to
+# main.COMMON_CRAWL_MAX_CANDIDATES_TO_TRY (5) candidates in order and
+# skipping any that fail to fetch/convert. See docs/13_common_crawl_mvp_design.md.
+
+
+def _cdxj_multi_lines(count: int) -> str:
+    """`count` distinct candidates, each with its own URL and WARC
+    `filename` so a test's fake WARC-fetch handler can tell them apart
+    by request URL (see `_warc_fetch_index_from_url` below).
+    """
+    return "\n".join(
+        _cdxj_line(
+            url=f"https://cybozu.co.jp/page{i}",
+            filename=f"crawl-data/CC-MAIN-2026-08/segments/x/warc/foo{i}.warc.gz",
+        )
+        for i in range(count)
+    )
+
+
+def _warc_fetch_index_from_url(url: str) -> int:
+    # WARC fetch requests hit f"{COMMON_CRAWL_WARC_HOST}/{filename}" (see
+    # services/common_crawl_warc.py) where filename ends in "fooN.warc.gz".
+    match = re.search(r"foo(\d+)\.warc\.gz$", url)
+    assert match is not None, url
+    return int(match.group(1))
+
+
+def test_analyze_common_crawl_caps_at_max_documents_even_with_more_successful_candidates(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_MAX_RESULTS", "5")
+
+    fetch_calls = []
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(5), request=httpx.Request("GET", url))
+        fetch_calls.append(url)
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.status == "real"
+    assert provider.candidateCount == 5
+    assert provider.documentCount == 3
+    # Only the first 3 candidates should ever be fetched — the 4th/5th
+    # successful candidates are never even tried once the cap is hit.
+    assert len(fetch_calls) == 3
+    assert "partial" not in provider.reason.lower()
+
+
+def test_analyze_common_crawl_tries_at_most_five_candidates(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_MAX_RESULTS", "8")
+
+    fetch_calls = []
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(8), request=httpx.Request("GET", url))
+        fetch_calls.append(url)
+        return httpx.Response(500, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.status == "unavailable"
+    assert provider.candidateCount == 8
+    assert provider.documentCount == 0
+    # Index reported 8 candidates, but at most 5 are ever tried.
+    assert len(fetch_calls) == 5
+
+
+def test_analyze_common_crawl_skips_candidate_when_warc_fetch_fails(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(2), request=httpx.Request("GET", url))
+        if _warc_fetch_index_from_url(url) == 0:
+            return httpx.Response(500, request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.status == "real"
+    assert provider.candidateCount == 2
+    assert provider.documentCount == 1
+
+
+def test_analyze_common_crawl_skips_candidate_when_document_conversion_fails(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(2), request=httpx.Request("GET", url))
+        if _warc_fetch_index_from_url(url) == 0:
+            # Non-HTML content type -> build_common_crawl_document() reports unavailable.
+            return httpx.Response(
+                200,
+                content=gzip.compress(
+                    b"WARC/1.0\r\nWARC-Type: response\r\n\r\n"
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n\x89PNG"
+                ),
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.status == "real"
+    assert provider.documentCount == 1
+
+
+def test_analyze_common_crawl_partial_success_reports_partial_reason_and_analyze_succeeds(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(2), request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.status == "real"
+    assert provider.candidateCount == 2
+    assert provider.documentCount == 2
+    assert "partial" in provider.reason.lower()
+    assert result.cooccurrenceRanking is not None
+
+
+def test_analyze_succeeds_when_all_common_crawl_candidates_fail_to_fetch(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(5), request=httpx.Request("GET", url))
+        return httpx.Response(500, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.status == "unavailable"
+    assert provider.candidateCount == 5
+    assert provider.documentCount == 0
+    assert result.cooccurrenceRanking is not None
+
+
+def test_analyze_common_crawl_multi_document_reason_never_contains_html_or_warc_body(monkeypatch):
+    _enable_common_crawl(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("-index"):
+            return httpx.Response(200, text=_cdxj_multi_lines(3), request=httpx.Request("GET", url))
+        return httpx.Response(200, content=_gzipped_warc_html(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    response = client.post(
+        "/analyze",
+        json={"brandName": "Cybozu", "commonCrawlMode": "domain", "commonCrawlDomain": "cybozu.co.jp"},
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    provider = result.meta.commonCrawlProvider
+    assert provider.documentCount == 3
+    assert "<html" not in provider.reason
+    assert "WARC/1.0" not in provider.reason
+    raw_body = response.text
+    assert "WARC/1.0" not in raw_body
