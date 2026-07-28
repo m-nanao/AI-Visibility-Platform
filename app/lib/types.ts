@@ -107,14 +107,16 @@ export interface ChatGptProviderInfo {
   environment?: ChatGptEnvironment;
 }
 
-// Whether /analyze should try to add one supplementary Document from
+// Whether /analyze should try to add supplementary Document(s) from
 // Common Crawl — see backend/services/common_crawl_index.py /
 // common_crawl_warc.py / common_crawl_document_provider.py and
 // docs/13_common_crawl_mvp_design.md. "off" (default) does nothing;
 // "domain" searches Common Crawl's Index API for a domain (see
 // AnalyzeRequestBody.commonCrawlDomain in analysis-request.ts) and
-// tries to fetch/build a Document from the first usable candidate.
-// Unlike aiOverviewMode/chatgptMode there is no separate
+// tries to fetch/build Documents from up to a few usable candidates
+// (currently up to 3 — see backend/main.py's
+// COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE). Unlike
+// aiOverviewMode/chatgptMode there is no separate
 // ALLOW_*_OVERRIDE backend env gate — the request field is honored
 // directly, but only ever does anything when the backend's
 // COMMON_CRAWL_ENABLED=true, so a request body alone still can't turn
@@ -131,11 +133,12 @@ export type CommonCrawlProviderMode = "off" | "domain";
 // failed/found nothing, or every candidate failed to fetch/convert.
 export type CommonCrawlProviderStatus = "off" | "real" | "unavailable";
 
-// Reports whether a supplementary Common Crawl Document was added to
+// Reports whether supplementary Common Crawl Document(s) were added to
 // this request's Document[], and why. Mirrors backend/models.py's
 // CommonCrawlProviderInfo — entirely independent of
-// AIOverviewProviderInfo/ChatGptProviderInfo above. At most one
-// Document is ever added this way (documentCount is 0 or 1).
+// AIOverviewProviderInfo/ChatGptProviderInfo above. At most a few
+// Documents are ever added this way (currently up to 3 — see
+// backend/main.py's COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE).
 export interface CommonCrawlProviderInfo {
   mode: CommonCrawlProviderMode;
   status: CommonCrawlProviderStatus;

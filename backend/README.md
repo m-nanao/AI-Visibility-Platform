@@ -559,14 +559,25 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 
 #### `/analyze`統合（`backend/main.py`、2026-07-28）
 
-`POST /analyze`のリクエストに`commonCrawlMode`（`"off"`デフォルト / `"domain"`）・`commonCrawlDomain`（任意）を追加し、指定domainに基づくCommon Crawl補完Documentを**最大1件**だけ既存のDocument[]へ追加できるようにした。UIにも検証用selectorを追加済み（下記「フロントエンドUI selector」参照）だが、依頼者向けの表示名・説明文はまだ確定していない（下記「依頼者確認が必要な点」参照）。
+`POST /analyze`のリクエストに`commonCrawlMode`（`"off"`デフォルト / `"domain"`）・`commonCrawlDomain`（任意）を追加し、指定domainに基づくCommon Crawl補完Documentを既存のDocument[]へ追加できるようにした（当初は最大1件、2026-07-28に最大3件へ拡張——下記「複数件取得への拡張」参照）。UIにも検証用selectorを追加済み（下記「フロントエンドUI selector」参照）だが、依頼者向けの表示名・説明文はまだ確定していない（下記「依頼者確認が必要な点」参照）。
 
 - **リクエストフィールド**: `commonCrawlMode`（`AnalyzeRequest.commonCrawlMode`、不正値は他のmodeフィールドと同じく400 `{"error": "invalid request body"}`）・`commonCrawlDomain`（`AnalyzeRequest.commonCrawlDomain`、任意の文字列。`main.py`が呼ぶ前に`common_crawl_index.py`が正規化・検証するため、ここでの追加バリデーションはない）。`aiOverviewMode`/`chatgptMode`と異なり、`ALLOW_*_OVERRIDE`のような追加のenv gateは設けていない——リクエストの`commonCrawlMode`はそのまま尊重されるが、実行されるかどうかは常に`COMMON_CRAWL_ENABLED`次第（後述）。
-- **オーケストレーション**（`main.py`の`_build_common_crawl_documents()`）: `commonCrawlMode == "off"`なら即座に`status="off"`。`COMMON_CRAWL_ENABLED`が`false`なら、`commonCrawlMode="domain"`が指定されていても一切接続せず`status="off"`（「無効化されている」ことを表す。ネットワークエラー等の実行時失敗である`"unavailable"`とは区別する）。それ以外の場合のみ、domain解決 → `search_common_crawl_domain()` → 最大`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`（3件）の候補を順に`fetch_common_crawl_warc_record()` → `build_common_crawl_document()`で試し、最初に成功した1件を採用する。`search_common_crawl_domain()`/`fetch_common_crawl_warc_record()`/`build_common_crawl_document()`自体は相変わらず`COMMON_CRAWL_ENABLED`を参照しない——ゲーティングは`main.py`側のこの1箇所だけで行う。
+- **オーケストレーション**（`main.py`の`_build_common_crawl_documents()`）: `commonCrawlMode == "off"`なら即座に`status="off"`。`COMMON_CRAWL_ENABLED`が`false`なら、`commonCrawlMode="domain"`が指定されていても一切接続せず`status="off"`（「無効化されている」ことを表す。ネットワークエラー等の実行時失敗である`"unavailable"`とは区別する）。それ以外の場合のみ、domain解決 → `search_common_crawl_domain()` → 最大`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`（5件）の候補を順に`fetch_common_crawl_warc_record()` → `build_common_crawl_document()`で試し、成功したDocumentを`COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE`（3件）に達するまで、または候補を使い切るまで採用する（詳細は下記「複数件取得への拡張」参照）。`search_common_crawl_domain()`/`fetch_common_crawl_warc_record()`/`build_common_crawl_document()`自体は相変わらず`COMMON_CRAWL_ENABLED`を参照しない——ゲーティングは`main.py`側のこの1箇所だけで行う。
 - **domain決定ルール**（`_resolve_common_crawl_domain()`）: `commonCrawlDomain`が指定されていればそれを使う。指定がなければ`urls[0]`のホスト名を使う。どちらもなければ`None`を返し、呼び出し側は`status="unavailable"`（reason: "Common Crawl domain could not be determined from commonCrawlDomain or urls."）にする。ここでは危険なdomainの拒否を行わない——最終的に`search_common_crawl_domain()`自身の厳格なホスト名検証を必ず通るため、二重にバリデーションする必要がない。
 - **Document[]への追加方法**: 成功したDocumentは、`documents`/`urls`/development sampleいずれかで確定した既存の`documents_list`へ、共起解析・チャンク化・文脈分析・ブランド認知サマリー・改善提案の**いずれよりも前に**追加する。これにより、Common Crawl由来のDocumentも他のDocumentとまったく同じ経路でAnalyzerに渡り、特別扱いのコードは一切ない。Common Crawlが失敗しても`documents_list`は変化しないため、`documentsSource`・共起解析等のセクションstatusには一切影響しない。
-- **失敗時の扱い**: domain未決定・Index検索失敗/0件・WARC fetch失敗・Document変換失敗のいずれも、例外を送出せず`/analyze`全体を継続する（`documents`/`urls`由来の解析はそのまま実行される）。`meta.commonCrawlProvider`にのみ結果が反映される。
-- **`meta.commonCrawlProvider`**（`CommonCrawlProviderInfo`）: `mode`（`"off"` / `"domain"`）・`status`（`"off"` / `"real"` / `"unavailable"`）・`reason`・`domain`・`crawlIndex`・`candidateCount`・`documentCount`（0または1）を返す。**HTML本文・WARC本文・生レスポンスはいずれも含まない**（このモデル自体にそのためのフィールドがない）。`aiOverviewProvider`/`chatgptProvider`とは完全に独立しており、3つの併用が壊れないことをテストで確認済み。
+- **失敗時の扱い**: domain未決定・Index検索失敗/0件・WARC fetch失敗・Document変換失敗のいずれも、例外を送出せず`/analyze`全体を継続する（`documents`/`urls`由来の解析はそのまま実行される）。候補ごとの失敗も同様に、その候補だけをスキップして次の候補を試す（1件の失敗が他の候補の成功を巻き込まない）。`meta.commonCrawlProvider`にのみ結果が反映される。
+- **`meta.commonCrawlProvider`**（`CommonCrawlProviderInfo`）: `mode`（`"off"` / `"domain"`）・`status`（`"off"` / `"real"` / `"unavailable"`）・`reason`・`domain`・`crawlIndex`・`candidateCount`・`documentCount`（0〜`COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE`）を返す。**HTML本文・WARC本文・生レスポンスはいずれも含まない**（このモデル自体にそのためのフィールドがない）。`aiOverviewProvider`/`chatgptProvider`とは完全に独立しており、3つの併用が壊れないことをテストで確認済み。
+
+#### 複数件取得への拡張（最大1件→最大3件、2026-07-28、`feature/common-crawl-multiple-documents`）
+
+実環境で1件取得できることが確認できたため、安全制限を維持したまま複数件取得できるように拡張した。Common Crawl service層（`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`）は無変更——変更はすべて`main.py`の`_build_common_crawl_documents()`のオーケストレーションループ内に閉じている。
+
+- **`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`**（`main.py`内定数、5）: Index検索で得られた候補のうち、実際にWARC fetchを試す上限。Index API自体の取得件数上限（`COMMON_CRAWL_MAX_RESULTS`環境変数、デフォルト5）とは独立した別の定数——Index側の上限を大きくしても、1回の`/analyze`が発行するWARC fetchリクエスト数はこの値で頭打ちになる。
+- **`COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE`**（`main.py`内定数、3）: 1回の`/analyze`で追加するCommon Crawl由来Documentの上限。Renderの無料枠・`/analyze`自体の応答時間を考慮し、成功候補が3件を超えて存在してもここで打ち切る。
+- **ループの挙動**: 候補を順番に試し、各候補についてWARC fetch → Document化を行う。失敗した候補は理由を問わずスキップして次の候補へ進む。成功したDocumentが`COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE`件に達したら、それ以降の候補は（成功していたはずでも）一切試さずループを終了する。5件すべてを試しても3件に届かない場合は、集まった分（0〜2件）だけを採用する。
+- **`candidateCount`/`documentCount`の意味**: `candidateCount`はIndex検索で得られた候補の総数（`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`によるトリミング前の件数）。`documentCount`は実際にDocument化できた件数（0〜3）。
+- **`reason`の文言**: 3件そろって成功した場合は従来通り`"Common Crawl added N document(s) for {domain}."`。1〜2件で打ち切った場合（=候補を使い切った、または途中で失敗が多かった場合）は`"Common Crawl completed with partial results (N document(s) for {domain})."`という別文言にする。0件（全滅）の場合の`reason`は既存の`"Common Crawl found candidates but none could be fetched into a usable document."`のまま変更していない。
+- **UI表示への影響**: `app/lib/meta-label.ts`の`getCommonCrawlProviderDisplay()`は元々`documentCount`をそのまま埋め込む実装だったため、コード変更は不要——「Common Crawl補完: 取得済み（3件）」のようにdocumentCountの値がそのまま反映される（表示件数のテストのみ追加）。UIの文言・レイアウト自体は変更していない。
 
 #### フロントエンドUI selector（`app/components/BrandInputForm.tsx`、2026-07-28）
 
@@ -861,6 +872,16 @@ pytest
 - 巨大な不正レスポンス（gzip展開失敗）を返しても`meta.commonCrawlProvider.reason`が短い安全な文言のままであること（HTML/WARC本文が含まれないことの確認）
 - `aiOverviewMode="dataforseo"` + `chatgptMode="openai"` + `commonCrawlMode="domain"`を同時指定しても3つのproviderが独立して動作し、認証情報がレスポンス本文に一切含まれないこと
 
+さらに、複数件取得への拡張（2026-07-28、`feature/common-crawl-multiple-documents`）に伴い以下のテストも追加した（いずれも候補ごとに異なるWARC `filename`を持つ複数のcdxj行をmockして候補を区別する）。
+
+- 5件すべての候補が成功しても、実際にDocumentへ追加されるのは3件だけであり、WARC fetchも3回しか呼ばれないこと（`documentCount=3`・4件目以降は一切fetchされない）
+- Index検索が8件の候補を返しても、実際に試すのは`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`（5件）までであること（全件失敗させ、fetch呼び出し回数が5回であることを確認）
+- 1件目のWARC fetchが失敗しても、2件目の候補を試して成功させられること
+- 1件目のDocument変換が失敗（非HTML content-type）しても、2件目の候補を試して成功させられること
+- 2件しか候補がなく2件とも成功した場合（3件に届かない一部成功）、`reason`に`"partial"`という語が含まれ、`/analyze`全体は200で成功すること
+- 5件の候補すべてが失敗した場合も`/analyze`全体は200で成功し、`documentCount=0`・既存の`cooccurrenceRanking`等は通常通り計算されること
+- 複数候補が成功した場合でも`meta.commonCrawlProvider.reason`にHTML本文・WARC本文が含まれないこと（レスポンス全体にも`"WARC/1.0"`が含まれないこと）
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -948,7 +969,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | （いずれも任意、2026-07-23追加）`dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字）、`references`は最大10件に重複排除された引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`/`category`、すべて任意）、`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定（`urls`未指定時は`null`＝判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は上記「DataForSEO Sandbox/Live接続」参照 |
 | `aiOverviewComparison[].references[].category` / `.referenceSummary` | （いずれも任意、2026-07-23追加）参照元のルールベース簡易分類（`official`/`wikipedia`/`sns`/`ugc`/`news`/`media`/`video`/`other`）と、その集計（`{total, official, thirdParty, categories}`）。新たなDataForSEO呼び出しはなく、既存の`references`とリクエストの`urls`だけから算出する。詳細は上記「AI Overview比較のprovider mode」の「参照元の簡易分類」参照 |
 | `meta.chatgptProvider` | （任意、2026-07-23追加）ChatGPT相当モデルの1問観測（OpenAI API）が`aiOverviewComparison`にカードを追加したかどうか（`{mode, status, reason, environment}`）。`mode`は`"off"`/`"openai"`、`status`は`"real"`/`"off"`/`"unavailable"`、`environment`は`"api"`/`"off"`/`"unavailable"`。`aiOverviewProvider`とは完全に独立（DataForSEO成功時にChatGPT観測がない、またはその逆もあり得る）。`reason`はOpenAI設定状態を安全に説明するがAPIキーの値は含まない。詳細は上記「ChatGPT相当モデルの1問観測」参照 |
-| リクエストの`commonCrawlMode` / `commonCrawlDomain` | （任意、2026-07-28追加）`commonCrawlMode`は`"off"`（デフォルト）/`"domain"`。`"domain"`かつバックエンドの`COMMON_CRAWL_ENABLED=true`の場合のみ、指定domain（省略時は`urls[0]`のホスト名）に基づくCommon Crawl補完Documentを最大1件追加する。`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`時のみ表示される検証用selectorから送信できる（デフォルトは非表示）。詳細は上記「Common Crawl最小連携」の「`/analyze`統合」「フロントエンドUI selector」参照 |
+| リクエストの`commonCrawlMode` / `commonCrawlDomain` | （任意、2026-07-28追加。同日中に最大1件→最大3件へ拡張）`commonCrawlMode`は`"off"`（デフォルト）/`"domain"`。`"domain"`かつバックエンドの`COMMON_CRAWL_ENABLED=true`の場合のみ、指定domain（省略時は`urls[0]`のホスト名）に基づくCommon Crawl補完Documentを最大3件追加する（最大5候補まで試行）。`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`時のみ表示される検証用selectorから送信できる（デフォルトは非表示）。詳細は上記「Common Crawl最小連携」の「`/analyze`統合」「複数件取得への拡張」「フロントエンドUI selector」参照 |
 | `meta.commonCrawlProvider` | （任意、2026-07-28追加）Common Crawl補完Documentが追加されたかどうか（`{mode, status, reason, domain, crawlIndex, candidateCount, documentCount}`）。`mode`は`"off"`/`"domain"`、`status`は`"off"`/`"real"`/`"unavailable"`。`aiOverviewProvider`/`chatgptProvider`とは完全に独立。`reason`にHTML本文・WARC本文・生レスポンスは一切含まない。詳細は上記「Common Crawl最小連携」の「`/analyze`統合」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
@@ -968,7 +989,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
-- Common Crawlの依頼者向け表示確定・複数件取得・改善提案への反映方針（Index API検索・WARCレコード取得（最大1件）・HTML抽出・`Document[]`変換・`/analyze`統合・検証用UI selectorまで実装済み、2026-07-28。表示名「Common Crawl補完」・説明文・注意書きの文言はすべて依頼者確認前の仮のもの、複数件の一括取得・Common Crawl結果一覧UI・WARC metadata詳細表示は未実装。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
+- Common Crawlの依頼者向け表示確定・改善提案への反映方針（Index API検索・WARCレコード取得・HTML抽出・`Document[]`変換・`/analyze`統合（最大3件、最大5候補試行）・検証用UI selectorまで実装済み、2026-07-28。表示名「Common Crawl補完」・説明文・注意書きの文言はすべて依頼者確認前の仮のもの、Common Crawl結果一覧UI・WARC metadata詳細表示は未実装。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）

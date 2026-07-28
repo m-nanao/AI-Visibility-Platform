@@ -35,15 +35,16 @@
 - **Current/Done（現状）**:
   - Common Crawl MVP設計ドキュメント作成（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）
   - Common Crawl settings + Index API client（`COMMON_CRAWL_*`環境変数、`latest`/`CC-MAIN-YYYY-NN`index解決、domain指定Index検索、`CommonCrawlCandidate`への正規化。デフォルトoff、認証不要）
-  - WARC fetch / HTML extraction service（`CommonCrawlCandidate`1件のWARCレコードをRange requestで取得、gzip展開、HTML本文抽出。`backend/services/common_crawl_warc.py`、複数件取得はまだ）
+  - WARC fetch / HTML extraction service（`CommonCrawlCandidate`1件のWARCレコードをRange requestで取得、gzip展開、HTML本文抽出。`backend/services/common_crawl_warc.py`）
   - `CommonCrawlCandidate` → `Document[]` conversion service（`backend/services/common_crawl_document_provider.py`。`sourceType: "common_crawl"`、既存Cleaner/Normalizer連携済み）
-  - `/analyze` integration（`commonCrawlMode`/`commonCrawlDomain`リクエストフィールド、`backend/main.py`が検索→WARC取得（最大3候補まで試行）→Document化までをオーケストレーションし、最大1件のCommon Crawl補完Documentを追加。`meta.commonCrawlProvider`で状態を報告。`COMMON_CRAWL_ENABLED=false`時は実行しない）
+  - `/analyze` integration（`commonCrawlMode`/`commonCrawlDomain`リクエストフィールド、`backend/main.py`が検索→WARC取得→Document化までをオーケストレーションし、Common Crawl補完Documentを追加。`meta.commonCrawlProvider`で状態を報告。`COMMON_CRAWL_ENABLED=false`時は実行しない）
   - UI mode selector（`app/components/BrandInputForm.tsx`の「Common Crawl補完（検証用）」off/domain selector＋任意のドメイン入力欄。`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=true`時のみ表示、デフォルト非表示。`meta.commonCrawlProvider`の状態を共起語ランキングカードに軽く表示）
   - 表示文言の整理（`style/common-crawl-source-labels`、2026-07-28。ブランド認知サマリーに残っていた「Common Crawl（未実装）」を「Common Crawl補完」へ修正、見出しを「主要プラットフォーム」→「分析ソース」へ変更）
+  - 共起語ランキングのノイズ語対策（`fix/cooccurrence-noise-filter`、2026-07-28。Common Crawl由来テキストで目立った「には」「くことが」等の機能語断片を除外する第二段フィルタを追加、[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「12. 共起語ランキングのノイズ語対策」参照）
+  - Common Crawl補完 最大3件取得（`feature/common-crawl-multiple-documents`、2026-07-28。最大5候補まで試行し、成功したDocumentを最大3件まで分析入力へ追加。失敗候補はスキップして次候補を試し、全件失敗時も`/analyze`全体は成功する。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「13. 複数件取得への拡張」参照）
 - **Next（次のステップ、優先順）**:
   - 表示名・説明文の依頼者確認（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
   - status表示洗練（依頼者確認後、UI selectorのデフォルト表示化とあわせて見せ方を検討）
-  - 複数件のCommon Crawl Document取得
   - Common Crawl結果の改善提案（`improvement_suggestions.py`）への反映方針
 - **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合
 
@@ -85,7 +86,7 @@
 | 0 | フロントエンドMVP（ダミー表示） | 完了 |
 | 1 | APIルート雛形（固定JSON） | 完了 |
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
-| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合＋検証用UI selectorまで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
+| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（最大3件取得）＋検証用UI selector＋共起語ノイズ対策まで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
 | 5 | PostgreSQL永続化 | 未着手 |
 | 6 | プロダクション化 | 未着手 |

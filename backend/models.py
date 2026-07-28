@@ -101,13 +101,14 @@ ChatGptStatus = Literal["real", "off", "unavailable"]
 # otherwise. See services/chatgpt_provider.py's build_chatgpt_observation().
 ChatGptEnvironment = Literal["api", "off", "unavailable"]
 
-# Whether /analyze should try to add one supplementary Document from
+# Whether /analyze should try to add supplementary Document(s) from
 # Common Crawl (see services/common_crawl_index.py /
 # common_crawl_warc.py / common_crawl_document_provider.py and
 # docs/13_common_crawl_mvp_design.md). "off" (default) does nothing;
 # "domain" searches Common Crawl's Index API for the request's domain
 # (see AnalyzeRequest.commonCrawlDomain below) and tries to fetch/build
-# a Document from the first usable candidate. Unlike
+# Documents from up to main.py's COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE
+# usable candidates. Unlike
 # AiOverviewProviderMode/ChatGptProviderMode there is no separate
 # ALLOW_*_OVERRIDE env gate — the request field is honored directly,
 # but only ever does anything when COMMON_CRAWL_ENABLED=true (see
@@ -229,9 +230,9 @@ class CommonCrawlProviderInfo(BaseModel):
     each independently, and this never touches `documentsSource` or the
     section statuses above (Common Crawl is a supplementary input, not
     a replacement for the primary documents/urls/development_sample
-    source). At most one Document is ever added this way — `documentCount`
-    is 0 or 1, never more (multi-document Common Crawl integration is a
-    later task).
+    source). At most main.py's COMMON_CRAWL_MAX_DOCUMENTS_PER_ANALYZE
+    (currently 3) Documents are ever added this way — `documentCount`
+    ranges from 0 up to that limit.
     """
 
     mode: CommonCrawlProviderMode
