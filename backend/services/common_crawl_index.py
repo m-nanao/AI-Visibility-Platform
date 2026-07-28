@@ -58,6 +58,33 @@ COLLINFO_URL = f"{COMMON_CRAWL_HOST}/collinfo.json"
 # response (candidate parsing doesn't log the body at all).
 _BODY_PREVIEW_MAX_CHARS = 200
 
+# Explicit request headers for every Common Crawl Index API request
+# (search and collinfo.json alike). Added after Render logs showed every
+# query variant (see `_build_query_variants`) failing with
+# httpx.RemoteProtocolError even with retry and query fallback already in
+# place — an explicit Accept and "Connection: close" (in case the
+# disconnect is a keep-alive/connection-reuse interaction) are a
+# low-risk next step to try before anything heavier like
+# `trust_env=False` or a different HTTP client (see
+# docs/13_common_crawl_mvp_design.md). None of these headers are secret
+# — Common Crawl's Index API is public and unauthenticated.
+_INDEX_API_ACCEPT_HEADER = "application/json, text/plain;q=0.9, */*;q=0.8"
+_INDEX_API_CONNECTION_HEADER = "close"
+
+
+def _request_headers(settings: CommonCrawlSettings) -> dict[str, str]:
+    """HTTP headers sent with every Common Crawl Index API request.
+    `User-Agent` reuses `CommonCrawlSettings.user_agent` — previously
+    only used for WARC fetches, now explicit here too instead of the
+    Index API request relying on httpx's own default.
+    """
+    return {
+        "User-Agent": settings.user_agent,
+        "Accept": _INDEX_API_ACCEPT_HEADER,
+        "Connection": _INDEX_API_CONNECTION_HEADER,
+    }
+
+
 # Retry policy for transient Common Crawl request failures. Added after a
 # Render deployment showed httpx.RemoteProtocolError ("Server disconnected
 # without sending a response") — an abrupt disconnect that happens
@@ -295,20 +322,24 @@ def _fetch_latest_index(settings: CommonCrawlSettings) -> CommonCrawlIndexResolu
     or exhausting all attempts) still returns `success=False` with a
     safe reason instead of raising.
     """
+    headers = _request_headers(settings)
     last_error_type: str | None = None
     response: httpx.Response | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         logger.info(
-            "Common Crawl collinfo.json request start url=%s timeout=%s attempt=%d/%d",
+            "Common Crawl collinfo.json request start url=%s timeout=%s attempt=%d/%d user_agent=%s accept=%s connection=%s",
             COLLINFO_URL,
             settings.timeout_seconds,
             attempt,
             _MAX_ATTEMPTS,
+            headers["User-Agent"],
+            headers["Accept"],
+            headers["Connection"],
         )
         try:
             response = httpx.get(
                 COLLINFO_URL,
-                headers={"User-Agent": settings.user_agent},
+                headers=headers,
                 timeout=settings.timeout_seconds,
             )
         except httpx.TransportError as exc:
@@ -539,6 +570,7 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
     crawl_index = resolution.crawl_index or ""
     base_url = f"{COMMON_CRAWL_HOST}/{crawl_index}-index"
     variants = _build_query_variants(normalized_domain, settings.max_results)
+    headers = _request_headers(settings)
 
     last_failure_type: str | None = None
     for variant_index, (variant_name, url_pattern, params) in enumerate(variants):
@@ -556,7 +588,7 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
             # error)" log line be root-caused (or ruled out) without
             # needing a code change to reproduce it.
             logger.info(
-                "Common Crawl Index API request start index=%s domain=%s query_variant=%s url_pattern=%s timeout=%s attempt=%d/%d request_url=%s",
+                "Common Crawl Index API request start index=%s domain=%s query_variant=%s url_pattern=%s timeout=%s attempt=%d/%d user_agent=%s accept=%s connection=%s request_url=%s",
                 crawl_index,
                 normalized_domain,
                 variant_name,
@@ -564,6 +596,9 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
                 settings.timeout_seconds,
                 attempt,
                 _MAX_ATTEMPTS,
+                headers["User-Agent"],
+                headers["Accept"],
+                headers["Connection"],
                 request_url,
             )
 
@@ -571,7 +606,7 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
                 response = httpx.get(
                     base_url,
                     params=params,
-                    headers={"User-Agent": settings.user_agent},
+                    headers=headers,
                     timeout=settings.timeout_seconds,
                 )
             except httpx.TransportError as exc:

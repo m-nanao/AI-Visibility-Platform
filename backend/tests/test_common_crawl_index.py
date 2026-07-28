@@ -231,7 +231,11 @@ def test_search_sends_expected_query_params(monkeypatch):
     assert ("filter", "status:200") in params
     assert ("filter", "mime:text/html") in params
     assert ("limit", "3") in params
-    assert seen_headers[0] == {"User-Agent": "Custom-UA/1.0"}
+    assert seen_headers[0] == {
+        "User-Agent": "Custom-UA/1.0",
+        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+        "Connection": "close",
+    }
     assert seen_timeout[0] == 7.5
 
 
@@ -1209,3 +1213,261 @@ def test_search_logging_does_not_change_success_behavior(monkeypatch, caplog):
     # The reason shown to the UI (and eventually classified into a
     # Japanese message by app/lib/meta-label.ts) is unchanged.
     assert "Common Crawl Index API request succeeded" in result.reason
+
+
+# --- explicit request headers ---------------------------------------------------
+# Added 2026-07-29 (fix/common-crawl-index-request-headers) — Render logs showed
+# *every* query variant (default-filtered/default-unfiltered/www-unfiltered)
+# failing with httpx.RemoteProtocolError even with retry and query fallback
+# already in place. As a low-risk next step (before trust_env=False or a
+# different HTTP client), Index API requests now send an explicit User-Agent,
+# Accept, and "Connection: close" header — in case the disconnect is a
+# keep-alive/connection-reuse interaction with Render's networking.
+
+
+def test_search_sends_user_agent_header(monkeypatch):
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert seen_headers[0]["User-Agent"] == "AI-Visibility-Platform-MVP"
+
+
+def test_search_sends_accept_header(monkeypatch):
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert "application/json" in seen_headers[0]["Accept"]
+
+
+def test_search_sends_connection_close_header(monkeypatch):
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert seen_headers[0]["Connection"] == "close"
+
+
+def test_search_uses_common_crawl_user_agent_setting(monkeypatch):
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    settings = CommonCrawlSettings(
+        enabled=True,
+        index="CC-MAIN-2026-08",
+        max_results=5,
+        timeout_seconds=10.0,
+        user_agent="My-Custom-Agent/2.0",
+    )
+    search_common_crawl_domain("cybozu.co.jp", settings)
+
+    assert seen_headers[0]["User-Agent"] == "My-Custom-Agent/2.0"
+
+
+def test_fetch_latest_index_sends_the_same_headers(monkeypatch):
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        return httpx.Response(200, json=_collinfo_payload("CC-MAIN-2026-08"), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert seen_headers[0] == {
+        "User-Agent": "AI-Visibility-Platform-MVP",
+        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+        "Connection": "close",
+    }
+
+
+def test_search_headers_are_maintained_across_retries(monkeypatch):
+    _patch_sleep(monkeypatch)
+    seen_headers = []
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        seen_headers.append(kwargs.get("headers"))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    # 3 attempts for the first variant alone (before falling back).
+    assert calls["count"] >= 3
+    assert all(
+        h
+        == {
+            "User-Agent": "AI-Visibility-Platform-MVP",
+            "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+            "Connection": "close",
+        }
+        for h in seen_headers
+    )
+
+
+def test_search_headers_are_maintained_across_query_fallback(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_headers = []
+
+    def fake_get(url, **kwargs):
+        seen_headers.append(kwargs.get("headers"))
+        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
+        if has_filter:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    # Headers are identical across the failing variant and the
+    # fallback variant that eventually succeeds.
+    expected_headers = {
+        "User-Agent": "AI-Visibility-Platform-MVP",
+        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+        "Connection": "close",
+    }
+    assert all(h == expected_headers for h in seen_headers)
+
+
+def test_search_second_attempt_success_behavior_unchanged_by_headers(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert calls["count"] == 2
+
+
+def test_search_logs_headers_summary_in_request_start(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "user_agent=AI-Visibility-Platform-MVP" in start_records[0]
+    assert "accept=application/json" in start_records[0]
+    assert "connection=close" in start_records[0]
+
+
+def test_fetch_latest_index_logs_headers_summary_in_request_start(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, json=_collinfo_payload("CC-MAIN-2026-08"), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "user_agent=AI-Visibility-Platform-MVP" in start_records[0]
+    assert "accept=application/json" in start_records[0]
+    assert "connection=close" in start_records[0]
+
+
+def test_search_logs_never_contain_raw_header_dict_or_secret_looking_values(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    messages = " ".join(r.message for r in caplog.records)
+    # Only the compact key=value fields should appear — never a raw dict
+    # repr (which would look like "{'User-Agent': ...}"), and no
+    # Authorization/token/api-key-shaped header (there is none to leak,
+    # since Common Crawl requires no authentication).
+    assert "{'User-Agent'" not in messages
+    assert "Authorization" not in messages
+    assert "api_key" not in messages.lower()
+    assert "token" not in messages.lower()
+
+
+def test_search_headers_do_not_affect_candidate_parsing(monkeypatch):
+    # Regression guard: adding explicit headers must not change how a
+    # successful response's candidates are parsed.
+    body = _cdxj_line(
+        url="https://cybozu.co.jp/",
+        timestamp="20260115000000",
+        status="200",
+        mime="text/html",
+        digest="ABC123",
+    )
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    candidate = result.candidates[0]
+    assert candidate.url == "https://cybozu.co.jp/"
+    assert candidate.timestamp == "20260115000000"
+    assert candidate.status == 200
+    assert candidate.mime == "text/html"
+    assert candidate.digest == "ABC123"
+    assert candidate.source == "common_crawl"
+
+
+def test_search_headers_do_not_change_reason_shown_to_ui(monkeypatch):
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."

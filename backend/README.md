@@ -556,6 +556,13 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
   - **ログ**: request開始ログに`query_variant=%s`を追加。variantを切り替える際に`Common Crawl Index API query fallback index=... domain=... from=%s to=%s reason=%s`（INFO、`reason`は直前のvariantの`error_type`または`HTTP{status}`）を出す。variant内でretryが成功した場合、またはfallback後のvariantで成功した場合は`request succeeded ... query_variant=%s attempt=N/3 candidates=%d`ログを出す。全variantが失敗した場合は`Common Crawl Index API all query variants failed index=... domain=... variants=%d last_error_type=%s`（WARNING）を出す。
   - **成功時・失敗時の挙動**: fallback後のvariantで成功した場合も、既存の`_parse_candidates()`でそのまま処理し、通常どおり`candidates`を返す（filterなしqueryでは`status`/`mime`が含まれない候補が混じり得るが、既存の型はいずれもOptionalであり、後続のWARC取得・HTML抽出側で本文抽出できないものは既存方針どおりskipされる）。全variantが失敗した場合の最終的な`status`/`reason`は**従来と完全に同じ**（画面表示用の日本語reason分類に影響なし）。
   - **今回変更していないもの**: Common Crawl取得件数（3件上限）・UI・`common_crawl_warc.py`/`common_crawl_document_provider.py`・DataForSEO/ChatGPT関連コード。0件時に別queryへ広げるかどうかは今回のスコープ外（今後の検討事項としてdocsに記載）。
+- **request headers明示**（2026-07-29追加、`fix/common-crawl-index-request-headers`）: query fallback追加後もRenderで**全query variant**（`default-filtered`/`default-unfiltered`/`www-unfiltered`）が3回ずつRemoteProtocolErrorで失敗し続ける事象が報告された——retry・query fallbackはいずれも正しく動作しているが、query形式の問題だけでは説明できず、Render環境からのHTTP通信自体（または`httpx`のデフォルト設定）との相性問題の可能性を考慮し、新規`_request_headers()`が返す明示的なheadersを`search_common_crawl_domain()`/`_fetch_latest_index()`双方のリクエストに付けた。
+  - **`User-Agent`**: 従来からWARC取得で使っていた`CommonCrawlSettings.user_agent`をIndex APIリクエストにも使う（従来はhttpxのデフォルトUser-Agentのままだった）。
+  - **`Accept`**: `application/json, text/plain;q=0.9, */*;q=0.8`（Index APIのJSON Linesレスポンスを想定した明示指定）。
+  - **`Connection`**: `close`——RemoteProtocolErrorがkeep-alive/コネクション再利用まわりの問題である可能性に備え、MVPでは明示的に接続を都度閉じる。
+  - **ログ**: request開始ログに`user_agent=%s accept=%s connection=%s`を追加（raw headers dictの丸ごとログ出力はしない。secretは元々存在しないが、念のため個別のkey=valueペアのみを出す）。
+  - **retry/fallbackとの関係**: headersは`search_common_crawl_domain()`内で1回だけ構築し、variant・attemptを問わず同じdictをそのまま使い回す——retry中・query fallback後もheadersは変わらない。
+  - **今回変更していないもの**: `trust_env`（`httpx.get()`のデフォルトのまま）、HTTP clientの実装方式、candidate parsing、画面表示用reason、取得件数、UI、DataForSEO/ChatGPT関連コード。`trust_env=False`や別HTTP client方式への切り替えは、今回のheaders追加でも改善しない場合の次の検討候補としてdocsに記載するのみに留めた（実装はしていない）。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -997,6 +1004,21 @@ pytest
 - 全variant失敗時に`all query variants failed ... variants=3 last_error_type=%s`ログが出ること
 - fallback後に成功した場合、成功ログに`query_variant=%s`（fallback先のvariant名）が出ること
 - query variantが変わっても`_parse_candidates()`によるcandidate変換結果（`url`/`timestamp`/`status`/`mime`/`digest`/`source`）が変わらないこと（回帰防止）
+
+さらに、Index API request headers明示（2026-07-29、`fix/common-crawl-index-request-headers`）に伴い以下のテストを追加した。
+
+- Index API search requestに`User-Agent`（`CommonCrawlSettings.user_agent`の値）が含まれること
+- Index API search requestに`Accept`（`application/json`を含む値）が含まれること
+- Index API search requestに`Connection: close`が含まれること
+- `COMMON_CRAWL_USER_AGENT`（`CommonCrawlSettings.user_agent`経由）の値がIndex API requestにも実際に使われること（カスタムUser-Agent設定での確認）
+- `collinfo.json`取得（`_fetch_latest_index()`）にも同じ3つのheaders（User-Agent/Accept/Connection）が使われること
+- retry中（同一query variant内で複数回失敗する場合）もheadersがすべて同一であること
+- query fallback後（別のvariantに切り替わった後）もheadersが同一であること
+- 2回目の attempt で成功した場合の挙動（`candidates`が返ること）がheaders追加によって変わらないこと
+- request開始ログに`user_agent=%s accept=%s connection=%s`が出ること（`search_common_crawl_domain()`・`_fetch_latest_index()`双方）
+- ログにraw headers dictの丸ごと出力（`{'User-Agent': ...}`のような形）が含まれないこと、`Authorization`/`api_key`/`token`のような語がログに一切出ないこと（そもそもheadersにsecretは無いが、念のための確認）
+- headers追加によって`_parse_candidates()`のcandidate変換結果が変わらないこと（回帰防止）
+- headers追加によって、全variant失敗時の画面表示用`reason`文言が変わらないこと（回帰防止）
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
