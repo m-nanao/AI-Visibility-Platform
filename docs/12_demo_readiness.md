@@ -25,7 +25,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 
 以下は現段階では未実装、または今回のデモ対象外。依頼者から質問が出た場合は「次フェーズで検討」と説明する。
 
-- Common Crawl本格連携
+- Common Crawl本格連携（**backend `/analyze`にはAPI/Console検証用の最小統合済み**（2026-07-28、`commonCrawlMode`/`commonCrawlDomain`リクエストフィールド）だが、画面（UI）にはまだ一切表示されない——デモでは触れない。詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
 - Claude / Gemini / Perplexity等の複数AI実連携
 - 定期取得・自動スケジュール実行
 - DB保存（分析結果は画面をリロードすると消える）

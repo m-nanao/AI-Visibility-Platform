@@ -31,6 +31,8 @@ const aiOverviewEnvironmentSchema = z.enum(["mock", "sandbox", "live", "off", "u
 const chatGptProviderModeSchema = z.enum(["off", "openai"]);
 const chatGptStatusSchema = z.enum(["real", "off", "unavailable"]);
 const chatGptEnvironmentSchema = z.enum(["api", "off", "unavailable"]);
+const commonCrawlProviderModeSchema = z.enum(["off", "domain"]);
+const commonCrawlProviderStatusSchema = z.enum(["off", "real", "unavailable"]);
 
 const analysisSectionStatusesSchema = z.object({
   summary: sectionStatusSchema,
@@ -69,6 +71,16 @@ const chatGptProviderInfoSchema = z.object({
   environment: optionalFromPython(chatGptEnvironmentSchema),
 });
 
+const commonCrawlProviderInfoSchema = z.object({
+  mode: commonCrawlProviderModeSchema,
+  status: commonCrawlProviderStatusSchema,
+  reason: z.string(),
+  domain: optionalFromPython(z.string()),
+  crawlIndex: optionalFromPython(z.string()),
+  candidateCount: optionalFromPython(z.number()),
+  documentCount: optionalFromPython(z.number()),
+});
+
 const analysisMetaSchema = z.object({
   sections: analysisSectionStatusesSchema,
   documentsSource: documentsSourceSchema,
@@ -82,6 +94,7 @@ const analysisMetaSchema = z.object({
   chunkCount: optionalFromPython(z.number()),
   aiOverviewProvider: optionalFromPython(aiOverviewProviderInfoSchema),
   chatgptProvider: optionalFromPython(chatGptProviderInfoSchema),
+  commonCrawlProvider: optionalFromPython(commonCrawlProviderInfoSchema),
 });
 
 const brandSummarySchema = z.object({

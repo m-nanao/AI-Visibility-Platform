@@ -29,7 +29,7 @@ LLMO / AI Visibility Platform の分析エンジン用FastAPIサービス。`coo
 - `services/common_crawl_settings.py` — Common Crawl連携の環境変数（`COMMON_CRAWL_ENABLED`/`COMMON_CRAWL_INDEX`等）を読み取る設定モジュール。このモジュール自体は外部APIを呼ばない。公開データセットのためcredential型はない。`load_common_crawl_settings()`。詳細は下記「Common Crawl最小連携」参照
 - `services/common_crawl_index.py` — Common Crawl Index API（`index.commoncrawl.org`）へ実際にHTTP接続し、domain指定でURL候補を検索・正規化するクライアント（**WARC本文取得・HTML抽出は`common_crawl_warc.py`が担当**、`/analyze`への統合もまだ）。`resolve_common_crawl_index()`/`search_common_crawl_domain()`。詳細は下記「Common Crawl最小連携」参照
 - `services/common_crawl_warc.py` — `CommonCrawlCandidate`1件のWARCレコードをRange requestで取得し、gzip展開してHTML本文を抽出するクライアント（**複数件取得・`Document[]`化・`/analyze`統合は`common_crawl_document_provider.py`が一部を担当**）。`fetch_common_crawl_warc_record()`。詳細は下記「Common Crawl最小連携」参照
-- `services/common_crawl_document_provider.py` — Common Crawlの`CommonCrawlCandidate` + `CommonCrawlFetchResult`を既存の`Document`型（`sourceType: "common_crawl"`）へ変換するDocument Pipelineの「Provider」段階。既存Cleaner/Normalizerをそのまま再利用（**このモジュール自体はCommon Crawlへ接続しない、`/analyze`統合・UI追加・複数件の一括fetchは未実装**）。`build_common_crawl_document()`/`build_common_crawl_documents()`。詳細は下記「Common Crawl最小連携」参照
+- `services/common_crawl_document_provider.py` — Common Crawlの`CommonCrawlCandidate` + `CommonCrawlFetchResult`を既存の`Document`型（`sourceType: "common_crawl"`）へ変換するDocument Pipelineの「Provider」段階。既存Cleaner/Normalizerをそのまま再利用（**このモジュール自体はCommon Crawlへ接続しない、UI追加・複数件の一括fetchは未実装**。`/analyze`統合は`main.py`が行う）。`build_common_crawl_document()`/`build_common_crawl_documents()`。詳細は下記「Common Crawl最小連携」参照
 - `tests/test_main.py`, `tests/test_cooccurrence.py`, `tests/test_cooccurrence_simple.py`, `tests/test_web_fetcher.py`, `tests/test_document_cleaner.py`, `tests/test_document_normalizer.py`, `tests/test_document_chunker.py`, `tests/test_context_analysis.py`, `tests/test_brand_summary.py`, `tests/test_improvement_suggestions.py`, `tests/test_ai_overview_provider.py`, `tests/test_dataforseo_settings.py`, `tests/test_dataforseo_client.py`, `tests/test_chatgpt_settings.py`, `tests/test_chatgpt_client.py`, `tests/test_chatgpt_provider.py`, `tests/test_common_crawl_settings.py`, `tests/test_common_crawl_index.py`, `tests/test_common_crawl_warc.py`, `tests/test_common_crawl_document_provider.py`, `tests/test_sample_documents.py` — pytestによる最低限のテスト（DataForSEO・OpenAI・Common Crawl関連テストはすべて`httpx`をmonkeypatchで差し替え、実APIへは一切接続しない）
 - `render.yaml` — Render向けのデプロイ設定（Blueprint）。`Procfile` — Railway等の代替サービス向けの起動コマンド定義。いずれも確認用環境への公開に使う（[../docs/09_deployment.md](../docs/09_deployment.md)）
 
@@ -509,26 +509,26 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 
 ### Common Crawl最小連携（`common_crawl_settings.py` / `common_crawl_index.py` / `common_crawl_warc.py` / `common_crawl_document_provider.py`、2026-07-28新設）
 
-Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）の第一段階としてIndex API検索のクライアントを、第二段階としてWARCレコード取得・HTML抽出のクライアントを、第三段階として`Document[]`への変換serviceを実装した。**`/analyze`統合・UI追加はまだ行っていない**——これらのモジュールは現時点では`/analyze`のどのコードパスからも呼ばれず、以下の環境変数も`/analyze`の挙動には一切影響しない。
+Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）の第一段階としてIndex API検索のクライアントを、第二段階としてWARCレコード取得・HTML抽出のクライアントを、第三段階として`Document[]`への変換serviceを、第四段階として`/analyze`への最小統合を実装した（2026-07-28）。**UI（`BrandInputForm.tsx`）にはまだ追加していない**——API/Consoleから`commonCrawlMode`/`commonCrawlDomain`を明示的に送った場合のみ動作する（詳細は下記「`/analyze`統合」参照）。
 
 **`common_crawl_settings.py`**: `load_common_crawl_settings() -> CommonCrawlSettings`を公開する。Common Crawl自体は認証不要の公開データセットのため、DataForSEO/ChatGPTのような`*Credentials`型・secret管理は存在しない——`CommonCrawlSettings`の全フィールドはログ出力しても安全。
 
 | 環境変数 | デフォルト | 説明 |
 | --- | --- | --- |
-| `COMMON_CRAWL_ENABLED` | `false` | Common Crawl連携全体の大元のスイッチ（将来のproviderレイヤーが参照する想定。このモジュール・クライアント自体はこの値でのゲーティングを行わない——後述） |
+| `COMMON_CRAWL_ENABLED` | `false` | Common Crawl連携全体の大元のスイッチ。このモジュール・`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`自体はこの値でのゲーティングを行わない——`backend/main.py`の`_build_common_crawl_documents()`がこの値を読み、`false`なら`commonCrawlMode="domain"`が指定されても一切接続しない（詳細は下記「`/analyze`統合」参照） |
 | `COMMON_CRAWL_INDEX` | `latest` | `latest`（collinfo.jsonから最新のindexを解決）または`CC-MAIN-YYYY-NN`形式のindex idを明示指定。不正な値は警告ログを出しつつ`latest`にフォールバック。大文字小文字は区別せず、正規化して`CC-MAIN-`は大文字で保持する |
 | `COMMON_CRAWL_MAX_RESULTS` | `5` | 1回のdomain検索で取得するURL候補の上限。1〜10の範囲外・不正値は5にフォールバック |
 | `COMMON_CRAWL_TIMEOUT_SECONDS` | `10` | collinfo.json・Index検索いずれのHTTPリクエストにも使うタイムアウト秒数。3〜30の範囲外・不正値は10にフォールバック |
 | `COMMON_CRAWL_USER_AGENT` | `AI-Visibility-Platform-MVP` | Common Crawlへのリクエストに使うUser-Agent。空文字・200文字超はデフォルトにフォールバック |
 
-**`common_crawl_index.py`**: `resolve_common_crawl_index(settings) -> CommonCrawlIndexResolution`と`search_common_crawl_domain(domain, settings) -> CommonCrawlIndexResult`を公開する。**このモジュール自体は`COMMON_CRAWL_ENABLED`を一切参照せず、呼ばれれば常に実際にHTTPリクエストを行う**——DataForSEOの`dataforseo_client.py`・ChatGPTの`chatgpt_client.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲しており、`COMMON_CRAWL_ENABLED`によるON/OFF制御は将来実装するprovider層（`common_crawl_provider.py`相当、今回は未実装）の責務とする。
+**`common_crawl_index.py`**: `resolve_common_crawl_index(settings) -> CommonCrawlIndexResolution`と`search_common_crawl_domain(domain, settings) -> CommonCrawlIndexResult`を公開する。**このモジュール自体は`COMMON_CRAWL_ENABLED`を一切参照せず、呼ばれれば常に実際にHTTPリクエストを行う**——DataForSEOの`dataforseo_client.py`・ChatGPTの`chatgpt_client.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲しており、`COMMON_CRAWL_ENABLED`によるON/OFF制御は呼び出し側（`backend/main.py`の`_build_common_crawl_documents()`）の責務とする。
 
 - **index解決**（`resolve_common_crawl_index()`）: `settings.index`が`"latest"`以外（明示的な`CC-MAIN-YYYY-NN`）ならその値をそのまま使い、`collinfo.json`への追加リクエストは行わない。`"latest"`の場合のみ`https://index.commoncrawl.org/collinfo.json`を取得し、レスポンス内の全エントリの`id`から`(year, week)`が最大のものを選ぶ（配列の並び順を信頼せず、実際に値を比較して最新を決定する）。取得失敗・不正JSON・有効なidが1つもない場合は`success=False`と安全な`reason`を返す。
 - **domain検索**（`search_common_crawl_domain()`）: 入力domainを正規化（前後空白除去、`scheme://`除去、path/query/fragment除去、userinfo/port除去、小文字化）した上で、厳格なホスト名の許可リスト正規表現で検証する——ドットを含まない文字列（例:`localhost`）や`javascript:alert(1)`のような危険な入力は、HTTPリクエストを一切送らずに拒否する。正規化後、`https://index.commoncrawl.org/{crawl_index}-index`へ`GET`し、クエリパラメータは`url={domain}/*`・`output=json`・`filter=status:200`・`filter=mime:text/html`・`limit={max_results}`、ヘッダーに`User-Agent`、タイムアウトに`timeout_seconds`を指定する。
 - **レスポンス変換**: Index APIのレスポンス（JSON Lines、1行1JSON）を1行ずつパースし、`url`を持つ行のみ`CommonCrawlCandidate`（`url`/`timestamp`/`status`/`mime`/`digest`/`length`/`offset`/`filename`/`crawl_index`/`source: "common_crawl"`固定）へ変換する。`status`/`length`/`offset`はCommon Crawl側が文字列・整数のどちらで返しても安全に整数変換する。パースできない行・`url`を持たない行はスキップし、`max_results`件に達したら残りの行は処理しない。**HTML本文・WARC本文はいずれも取得・保持しない**（`CommonCrawlCandidate`にそのためのフィールド自体が存在しない）。
 - **失敗時の扱い**: 空domain・不正domain・index解決失敗・ネットワークエラー/タイムアウト・非200レスポンス・0件、いずれも例外を送出せず`CommonCrawlIndexResult(status="unavailable", reason="...")`を返す。`reason`には巨大なレスポンス本文や生JSONを一切含めない（0件・パース不能はまとめて「Common Crawl index result was empty.」という定型文言にする）。`status: Literal["real", "unavailable", "off"]`の`"off"`は将来のprovider層が`COMMON_CRAWL_ENABLED=false`時に使う値として型に含めているだけで、このモジュール自体は返さない。
 
-**`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得・`Document[]`化・`/analyze`統合はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
+**`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
 - **WARC URL生成**: `candidate.filename`が空の場合は`"Common Crawl candidate is missing WARC filename."`で即座に`unavailable`（HTTPは呼ばない）。それ以外は`https://data.commoncrawl.org/{filename}`をWARC URLとする。
 - **Range request**: `candidate.offset`/`candidate.length`が欠けている・0以下・負のoffsetの場合は`"Common Crawl candidate is missing WARC offset or length."`で`unavailable`（HTTPは呼ばない）。`length`がモジュール内定数`MAX_WARC_RANGE_BYTES`（1,500,000バイト）を超える場合も`"Common Crawl WARC range is too large."`でHTTPを呼ばずに`unavailable`にする。それ以外は`Range: bytes={offset}-{offset + length - 1}`ヘッダーと`User-Agent: settings.user_agent`を付けて`GET`し、タイムアウトは`settings.timeout_seconds`を使う。ステータス`200`/`206`のみ許容し、それ以外・ネットワークエラー/タイムアウト・空レスポンスはいずれも`unavailable`。
@@ -537,12 +537,23 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
 - **サイズ制限**: 抽出後のHTMLはモジュール内定数`MAX_HTML_CHARS`（200,000文字）を超えると切り詰める（`unavailable`にはしない。`document_cleaner.MAX_BODY_TEXT_LENGTH`と同じ単純スライスによる切り詰め方式）。件数を増やしすぎないよう、これらの上限は新しい`COMMON_CRAWL_*`環境変数ではなくモジュール内定数として実装した。
 - **返り値**: `CommonCrawlFetchResult(status, reason, url, crawl_index, html, content_type, fetched_bytes)`。成功時のみ`html`/`content_type`/`fetched_bytes`（Rangeで実際に取得した圧縮バイト数）が入る。**生のWARCバイト列・巨大なレスポンス本文は`reason`は元よりどのフィールドにも一切保持しない**。
 
-**`common_crawl_document_provider.py`**: `build_common_crawl_document(candidate, fetch_result) -> CommonCrawlDocumentResult`と、複数件をまとめる`build_common_crawl_documents(pairs) -> CommonCrawlDocumentResult`を公開する。Document Pipeline（[docs/11_architecture_v1.md](../docs/11_architecture_v1.md)「4. Document Pipeline」）の`common_crawl`ソース向けの「Provider」段階にあたり、`services/web_fetcher.py`の`to_documents()`・`services/sample_documents.py`の`build_sample_documents_as_documents()`と同じ役割を果たす。このモジュール自体はCommon Crawlへ一切接続しない（`CommonCrawlCandidate`/`CommonCrawlFetchResult`という、既にfetch済みの結果を受け取って変換するだけ）。**Common Crawl検索→WARC取得→Document化までを自動でつなぐ処理・`/analyze`統合・UI追加・複数件の一括fetchはまだ行っていない**。
+**`common_crawl_document_provider.py`**: `build_common_crawl_document(candidate, fetch_result) -> CommonCrawlDocumentResult`と、複数件をまとめる`build_common_crawl_documents(pairs) -> CommonCrawlDocumentResult`を公開する。Document Pipeline（[docs/11_architecture_v1.md](../docs/11_architecture_v1.md)「4. Document Pipeline」）の`common_crawl`ソース向けの「Provider」段階にあたり、`services/web_fetcher.py`の`to_documents()`・`services/sample_documents.py`の`build_sample_documents_as_documents()`と同じ役割を果たす。このモジュール自体はCommon Crawlへ一切接続しない（`CommonCrawlCandidate`/`CommonCrawlFetchResult`という、既にfetch済みの結果を受け取って変換するだけ）。**UI追加・複数件の一括fetchはまだ行っていない**（Common Crawl検索→WARC取得→Document化をつなぐオーケストレーションは`backend/main.py`が行う。下記「`/analyze`統合」参照）。
 
 - **成否判定**: `fetch_result.status != "real"`は`"Common Crawl fetch result was unavailable."`、`fetch_result.html`が`None`/空文字は`"Common Crawl fetch result did not contain HTML."`で、いずれも即座に`CommonCrawlDocumentResult(status="unavailable")`を返す。
 - **Cleaner/Normalizer連携**: `fetch_result.html`を既存の`document_cleaner.clean_html_to_text()`（変更なし、Common Crawl専用のHTML parserは追加していない）でクリーニングし、続けて既存の`document_normalizer.normalize_text()`（`web_fetch`/`development_sample`と同じ）を通す。クリーニング後のテキストが空の場合は`"Common Crawl cleaned text was empty."`で`unavailable`（scriptタグのみ等、本文が実質空のページを弾く）。
 - **Document生成**: `sourceType: "common_crawl"`・`sourceUrl: candidate.url`（`fetch_result.url`とではなく、常に`candidate.url`を使う）・`domain`は`candidate.url`のホスト名・`title`は`extract_title(fetch_result.html)`・`text`はクリーニング＋正規化後のテキスト。`metadata`には`provider: "common_crawl"`・`crawlIndex`・`warcFilename`・`warcOffset`・`warcLength`・`warcTimestamp`・`mime`・`status`・`digest`（いずれも`candidate`由来）・`fetchedBytes`・`contentType`（`fetch_result`由来）を格納する（camelCaseキーは[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)の`Document.metadata`案に合わせた。`sourceUrl`は`Document`のトップレベルフィールドで既に持っているため、metadataには重複格納しない）。**HTML本文全体・WARC生バイト列はmetadataは元よりどこにも保持しない**。
 - **複数件wrapper**: `build_common_crawl_documents()`は各ペアを独立に変換し、1件の失敗が他の成功を巻き込まない（`web_fetcher.py`の複数URL処理と同じ方針）。1件でも成功すれば`status="real"`、全件失敗（または入力が空）なら`status="unavailable"`。
+
+#### `/analyze`統合（`backend/main.py`、2026-07-28）
+
+`POST /analyze`のリクエストに`commonCrawlMode`（`"off"`デフォルト / `"domain"`）・`commonCrawlDomain`（任意）を追加し、指定domainに基づくCommon Crawl補完Documentを**最大1件**だけ既存のDocument[]へ追加できるようにした。**UI（`BrandInputForm.tsx`）にはまだ追加していない**——API/Consoleから直接POSTボディに含めた場合のみ動作する検証用の統合であり、依頼者向けの表示名・説明文はまだ確定していない（下記「依頼者確認が必要な点」参照）。
+
+- **リクエストフィールド**: `commonCrawlMode`（`AnalyzeRequest.commonCrawlMode`、不正値は他のmodeフィールドと同じく400 `{"error": "invalid request body"}`）・`commonCrawlDomain`（`AnalyzeRequest.commonCrawlDomain`、任意の文字列。`main.py`が呼ぶ前に`common_crawl_index.py`が正規化・検証するため、ここでの追加バリデーションはない）。`aiOverviewMode`/`chatgptMode`と異なり、`ALLOW_*_OVERRIDE`のような追加のenv gateは設けていない——リクエストの`commonCrawlMode`はそのまま尊重されるが、実行されるかどうかは常に`COMMON_CRAWL_ENABLED`次第（後述）。
+- **オーケストレーション**（`main.py`の`_build_common_crawl_documents()`）: `commonCrawlMode == "off"`なら即座に`status="off"`。`COMMON_CRAWL_ENABLED`が`false`なら、`commonCrawlMode="domain"`が指定されていても一切接続せず`status="off"`（「無効化されている」ことを表す。ネットワークエラー等の実行時失敗である`"unavailable"`とは区別する）。それ以外の場合のみ、domain解決 → `search_common_crawl_domain()` → 最大`COMMON_CRAWL_MAX_CANDIDATES_TO_TRY`（3件）の候補を順に`fetch_common_crawl_warc_record()` → `build_common_crawl_document()`で試し、最初に成功した1件を採用する。`search_common_crawl_domain()`/`fetch_common_crawl_warc_record()`/`build_common_crawl_document()`自体は相変わらず`COMMON_CRAWL_ENABLED`を参照しない——ゲーティングは`main.py`側のこの1箇所だけで行う。
+- **domain決定ルール**（`_resolve_common_crawl_domain()`）: `commonCrawlDomain`が指定されていればそれを使う。指定がなければ`urls[0]`のホスト名を使う。どちらもなければ`None`を返し、呼び出し側は`status="unavailable"`（reason: "Common Crawl domain could not be determined from commonCrawlDomain or urls."）にする。ここでは危険なdomainの拒否を行わない——最終的に`search_common_crawl_domain()`自身の厳格なホスト名検証を必ず通るため、二重にバリデーションする必要がない。
+- **Document[]への追加方法**: 成功したDocumentは、`documents`/`urls`/development sampleいずれかで確定した既存の`documents_list`へ、共起解析・チャンク化・文脈分析・ブランド認知サマリー・改善提案の**いずれよりも前に**追加する。これにより、Common Crawl由来のDocumentも他のDocumentとまったく同じ経路でAnalyzerに渡り、特別扱いのコードは一切ない。Common Crawlが失敗しても`documents_list`は変化しないため、`documentsSource`・共起解析等のセクションstatusには一切影響しない。
+- **失敗時の扱い**: domain未決定・Index検索失敗/0件・WARC fetch失敗・Document変換失敗のいずれも、例外を送出せず`/analyze`全体を継続する（`documents`/`urls`由来の解析はそのまま実行される）。`meta.commonCrawlProvider`にのみ結果が反映される。
+- **`meta.commonCrawlProvider`**（`CommonCrawlProviderInfo`）: `mode`（`"off"` / `"domain"`）・`status`（`"off"` / `"real"` / `"unavailable"`）・`reason`・`domain`・`crawlIndex`・`candidateCount`・`documentCount`（0または1）を返す。**HTML本文・WARC本文・生レスポンスはいずれも含まない**（このモデル自体にそのためのフィールドがない）。`aiOverviewProvider`/`chatgptProvider`とは完全に独立しており、3つの併用が壊れないことをテストで確認済み。
 
 ## テスト
 
@@ -808,6 +819,18 @@ pytest
 - `aiOverviewMode="mock"`の場合、`chatgptMode="openai"`を明示しても`httpx.post`は呼ばれず、既存の固定mockデータ（「ChatGPT」という名前の1件を含む）がそのまま返ること（実データのChatGPTカードが重複して追加されないこと）
 - `ALLOW_CHATGPT_MODE_OVERRIDE`が未設定の場合、リクエストの`chatgptMode="openai"`が無視されること
 
+`tests/test_main.py`には、Common Crawl `/analyze`統合テストとして以下も含まれる（すべて`common_crawl_index.httpx.get`をmonkeypatchで差し替え、実際のCommon Crawlへは接続しない）。
+
+- `commonCrawlMode`未指定・`commonCrawlMode="off"`のいずれも、`COMMON_CRAWL_ENABLED=true`でも`httpx.get`が一切呼ばれず`meta.commonCrawlProvider.status`が`"off"`になること
+- 不正な`commonCrawlMode`値は400 `{"error": "invalid request body"}`になること
+- `COMMON_CRAWL_ENABLED=false`の場合、`commonCrawlMode="domain"`を指定しても`httpx.get`が呼ばれず`status="off"`になること
+- `commonCrawlMode="domain"` + `COMMON_CRAWL_ENABLED=true`で、Index検索→WARC fetch→Document化が実際に呼ばれ、`meta.commonCrawlProvider`に`status="real"`・`domain`・`crawlIndex`・`candidateCount`・`documentCount`が正しく入ること。追加されたDocumentが`meta.sourceTypes`に`"common_crawl"`として反映されること
+- `commonCrawlDomain`未指定時、`urls[0]`のホスト名へフォールバックしてIndex検索が行われること（実際に送られた`url`クエリパラメータで確認）
+- `commonCrawlDomain`も`urls`も指定がない場合、`httpx.get`を一切呼ばずに`status="unavailable"`になること
+- Index検索が0件の場合・WARC fetchが失敗した場合・Document変換が失敗した場合（非HTML content-type等）、いずれも`/analyze`全体は200で成功し、`meta.commonCrawlProvider.status="unavailable"`・`documentCount=0`になること（既存の`cooccurrenceRanking`等は通常通り計算されること）
+- 巨大な不正レスポンス（gzip展開失敗）を返しても`meta.commonCrawlProvider.reason`が短い安全な文言のままであること（HTML/WARC本文が含まれないことの確認）
+- `aiOverviewMode="dataforseo"` + `chatgptMode="openai"` + `commonCrawlMode="domain"`を同時指定しても3つのproviderが独立して動作し、認証情報がレスポンス本文に一切含まれないこと
+
 `tests/test_sample_documents.py` では `build_sample_documents_as_documents()` を直接テストしている。
 
 - サンプルテンプレートと同じ件数の`Document`が返ること
@@ -853,7 +876,6 @@ pytest
 - HTML bodyが空の場合は`status="unavailable"`になること、`MAX_HTML_CHARS`（200,000文字）を超える巨大なHTMLは`unavailable`にはせず切り詰められること
 - いずれの失敗パターン・成功パターンでも`reason`に巨大なレスポンス本文・HTML本文・WARC本文が含まれないこと（`reason`は常に短い説明文であること）
 - 成功時、`CommonCrawlFetchResult`の`url`/`crawl_index`/`content_type`/`html`/`fetched_bytes`に期待通りの値が入ること。生のWARCバイト列自体はどのフィールドにも保持されないこと
-- `backend/main.py`のソースコードに`common_crawl_warc`/`fetch_common_crawl_warc_record`への参照が一切ないこと（`/analyze`へまだ統合されていないことの回帰防止）
 
 `tests/test_common_crawl_document_provider.py` では `build_common_crawl_document()` / `build_common_crawl_documents()` を直接テストしている（外部接続は行わない、`CommonCrawlCandidate`/`CommonCrawlFetchResult`を直接組み立ててテストする）。
 
@@ -865,7 +887,6 @@ pytest
 - 失敗時・成功時いずれも`reason`にHTML本文・WARC本文・巨大なテキストが含まれないこと（`reason`は常に短い説明文であること）、`Document`・`metadata`のどのフィールドにも生バイト列（`bytes`/`bytearray`）が含まれないこと、`metadata`に`login`/`password`等それらしいキーが一切ないこと
 - 複数件をまとめる`build_common_crawl_documents()`が、一部失敗しても成功分だけを`Document[]`として返すこと（1件の失敗が他を巻き込まない）、全件失敗・空入力はいずれも`status="unavailable"`になること
 - 既存の`sample_documents.build_sample_documents_as_documents()`・`web_fetcher.to_documents()`が本モジュール追加後も変わらず動作すること（リグレッション確認）
-- `backend/main.py`のソースコードに`common_crawl_document_provider`/`build_common_crawl_document`への参照が一切ないこと（`/analyze`へまだ統合されていないことの回帰防止）
 
 ## Next.js側との連携
 
@@ -897,10 +918,12 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 | `aiOverviewComparison[].fullSummary` / `.references` / `.ownDomainReferenced` | （いずれも任意、2026-07-23追加）`dataforseo`モード成功時のみ設定される。`fullSummary`はAI Overview本文の長め抜粋（最大2500文字）、`references`は最大10件に重複排除された引用元一覧（`title`/`domain`/`url`/`text`/`source`/`position`/`category`、すべて任意）、`ownDomainReferenced`はリクエストの`urls`のドメインが`references`に含まれるかの簡易判定（`urls`未指定時は`null`＝判定不能）。**DataForSEOレスポンスの生データ全文は含まれない**。詳細は上記「DataForSEO Sandbox/Live接続」参照 |
 | `aiOverviewComparison[].references[].category` / `.referenceSummary` | （いずれも任意、2026-07-23追加）参照元のルールベース簡易分類（`official`/`wikipedia`/`sns`/`ugc`/`news`/`media`/`video`/`other`）と、その集計（`{total, official, thirdParty, categories}`）。新たなDataForSEO呼び出しはなく、既存の`references`とリクエストの`urls`だけから算出する。詳細は上記「AI Overview比較のprovider mode」の「参照元の簡易分類」参照 |
 | `meta.chatgptProvider` | （任意、2026-07-23追加）ChatGPT相当モデルの1問観測（OpenAI API）が`aiOverviewComparison`にカードを追加したかどうか（`{mode, status, reason, environment}`）。`mode`は`"off"`/`"openai"`、`status`は`"real"`/`"off"`/`"unavailable"`、`environment`は`"api"`/`"off"`/`"unavailable"`。`aiOverviewProvider`とは完全に独立（DataForSEO成功時にChatGPT観測がない、またはその逆もあり得る）。`reason`はOpenAI設定状態を安全に説明するがAPIキーの値は含まない。詳細は上記「ChatGPT相当モデルの1問観測」参照 |
+| リクエストの`commonCrawlMode` / `commonCrawlDomain` | （任意、2026-07-28追加）`commonCrawlMode`は`"off"`（デフォルト）/`"domain"`。`"domain"`かつバックエンドの`COMMON_CRAWL_ENABLED=true`の場合のみ、指定domain（省略時は`urls[0]`のホスト名）に基づくCommon Crawl補完Documentを最大1件追加する。**UIからは送られない**（API/Console検証用）。詳細は上記「Common Crawl最小連携」の「`/analyze`統合」参照 |
+| `meta.commonCrawlProvider` | （任意、2026-07-28追加）Common Crawl補完Documentが追加されたかどうか（`{mode, status, reason, domain, crawlIndex, candidateCount, documentCount}`）。`mode`は`"off"`/`"domain"`、`status`は`"off"`/`"real"`/`"unavailable"`。`aiOverviewProvider`/`chatgptProvider`とは完全に独立。`reason`にHTML本文・WARC本文・生レスポンスは一切含まない。詳細は上記「Common Crawl最小連携」の「`/analyze`統合」参照 |
 
 フロント側（画面）では、この `meta.sections` をもとに「共起語のみ実計算、その他は開発用データ」のような要約文を小さく表示する。`cooccurrenceRanking` が `"unavailable"` の場合は、ランキングの代わりに「URLを取得できなかったため共起解析を実行できませんでした」という専用メッセージを表示し、正常に計算して0件だった場合と区別する。`meta.urlFetchResults` の個々の `error` テキストはUIにそのまま表示せず、「N/M件成功」という件数のみを表示する（詳細な理由はサーバーログに残す）。
 
-なお、画面のブランド入力フォームには `urls` を入力する複数行テキストエリアがあり（1行1件・最大10件・空行除外・重複除外・`http(s)://`形式チェックをブラウザ側で実施）、ここから入力されたURLがそのままこのAPIの `urls` として送られてくる（[../app/lib/url-validation.ts](../app/lib/url-validation.ts)、[../app/components/BrandInputForm.tsx](../app/components/BrandInputForm.tsx)）。`documents` にはまだ画面からの入力手段がなく、API経由でのみ指定できる。
+なお、画面のブランド入力フォームには `urls` を入力する複数行テキストエリアがあり（1行1件・最大10件・空行除外・重複除外・`http(s)://`形式チェックをブラウザ側で実施）、ここから入力されたURLがそのままこのAPIの `urls` として送られてくる（[../app/lib/url-validation.ts](../app/lib/url-validation.ts)、[../app/components/BrandInputForm.tsx](../app/components/BrandInputForm.tsx)）。`documents` にはまだ画面からの入力手段がなく、API経由でのみ指定できる。`commonCrawlMode`/`commonCrawlDomain` も同様に画面からの入力手段はまだなく、Next.js側の`/api/analyze`（`app/api/analyze/route.ts`）はこの2フィールドをそのままこのAPIへ中継するだけで、UI selectorの追加は次タスク。
 
 ## 今後（未実装）
 
@@ -915,7 +938,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - `references`のスコアリング・信頼度評価、競合ドメインの分類、参照元ページ自体の内容取得（現状は`domain`/`url`/`title`等のメタ情報のみで、参照先ページを実際にフェッチ・解析することはしない）
 - `references[].category`の高精度化（現状は小さなハードコードdomainリストによるルールベース分類のみ。`"media"`カテゴリは値として予約されているが実際には何も分類されず`"other"`に倒れる。AIによる分類・ニュース/メディアの網羅的な判定は対象外）
 - 共起解析自体をChunker（`services/document_chunker.py`）ベースに変更するかどうかの検討（現状は`Document.text`全体を直接読む。`contextAnalysis`/`summary`/`improvements`は既にChunker出力（経由の結果）を消費している）
-- Common Crawlの`/analyze`統合・UI追加（`common_crawl_settings.py`/`common_crawl_index.py`/`common_crawl_warc.py`/`common_crawl_document_provider.py`でIndex API検索・WARCレコード取得（最大1件）・HTML抽出・`Document[]`変換までは実装済み、2026-07-28。Common Crawl検索→WARC取得→Document化までを自動でつなぐ処理・複数件の一括取得・`/analyze`統合・UI追加はまだ。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
+- Common CrawlのUI追加・依頼者向け表示確定（Index API検索・WARCレコード取得（最大1件）・HTML抽出・`Document[]`変換・`/analyze`最小統合までは実装済み、2026-07-28。`commonCrawlMode`/`commonCrawlDomain`はAPI/Consoleから送信可能だがUI selectorは未追加、複数件の一括取得・表示名/説明文の依頼者確認もまだ。詳細は[../docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)）
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）

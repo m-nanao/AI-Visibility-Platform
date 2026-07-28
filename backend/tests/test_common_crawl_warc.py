@@ -483,13 +483,3 @@ def test_result_never_holds_raw_compressed_warc_bytes(monkeypatch):
         if isinstance(value, (bytes, bytearray)):
             raise AssertionError("CommonCrawlFetchResult must not hold raw bytes fields")
     assert raw_gzip not in (result.html or "").encode("utf-8", errors="ignore")
-
-
-def test_common_crawl_warc_module_is_not_wired_into_main():
-    import inspect
-
-    import main
-
-    source = inspect.getsource(main)
-    assert "common_crawl_warc" not in source
-    assert "fetch_common_crawl_warc_record" not in source

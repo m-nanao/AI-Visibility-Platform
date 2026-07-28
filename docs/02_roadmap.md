@@ -30,17 +30,19 @@
 
 ## Phase 3-2 — 実データ収集基盤（Common Crawl連携）
 
-最小MVPの設計を[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)としてまとめた（2026-07-28）。ブランド名の全文検索ではなく、**domain指定でのCommon Crawl Index検索から始める**方針。設定モジュール・Index API検索クライアント・WARCレコード取得/HTML抽出クライアント・`Document[]`変換serviceを実装済み（2026-07-28、`backend/services/common_crawl_settings.py`/`backend/services/common_crawl_index.py`/`backend/services/common_crawl_warc.py`/`backend/services/common_crawl_document_provider.py`。詳細は[backend/README.md](../backend/README.md)「Common Crawl最小連携」）。**`/analyze`統合・UI連携はまだ未着手。**
+最小MVPの設計を[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)としてまとめた（2026-07-28）。ブランド名の全文検索ではなく、**domain指定でのCommon Crawl Index検索から始める**方針。設定モジュール・Index API検索クライアント・WARCレコード取得/HTML抽出クライアント・`Document[]`変換service・`/analyze`への最小統合（UIなし）を実装済み（2026-07-28、詳細は[backend/README.md](../backend/README.md)「Common Crawl最小連携」）。**UI連携はまだ未着手。**
 
 - **Current/Done（現状）**:
   - Common Crawl MVP設計ドキュメント作成（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）
   - Common Crawl settings + Index API client（`COMMON_CRAWL_*`環境変数、`latest`/`CC-MAIN-YYYY-NN`index解決、domain指定Index検索、`CommonCrawlCandidate`への正規化。デフォルトoff、認証不要）
   - WARC fetch / HTML extraction service（`CommonCrawlCandidate`1件のWARCレコードをRange requestで取得、gzip展開、HTML本文抽出。`backend/services/common_crawl_warc.py`、複数件取得はまだ）
-  - `CommonCrawlCandidate` → `Document[]` conversion service（`backend/services/common_crawl_document_provider.py`。`sourceType: "common_crawl"`、既存Cleaner/Normalizer連携済み、検索→WARC取得→Document化までを自動でつなぐ処理はまだ）
+  - `CommonCrawlCandidate` → `Document[]` conversion service（`backend/services/common_crawl_document_provider.py`。`sourceType: "common_crawl"`、既存Cleaner/Normalizer連携済み）
+  - `/analyze` integration without UI（`commonCrawlMode`/`commonCrawlDomain`リクエストフィールド、`backend/main.py`が検索→WARC取得（最大3候補まで試行）→Document化までをオーケストレーションし、最大1件のCommon Crawl補完Documentを追加。`meta.commonCrawlProvider`で状態を報告。`COMMON_CRAWL_ENABLED=false`時は実行しない。API/Console検証のみ、UI selectorはまだ未追加）
 - **Next（次のステップ、優先順）**:
-  - `/analyze`でのCommon Crawl mode統合
   - UI mode selector追加（既存の検証用selectorと同じパターン）
   - 表示名・説明文の依頼者確認（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」参照）
+  - 複数件のCommon Crawl Document取得
+  - Common Crawl status表示の洗練（UI追加後、`meta.commonCrawlProvider`の見せ方を検討）
 - **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合
 
 目安: 3〜4週間（データソースの契約・API調査を含む）。ただしCommon Crawl自体は認証不要の公開データセットのため、契約は不要。
@@ -81,7 +83,7 @@
 | 0 | フロントエンドMVP（ダミー表示） | 完了 |
 | 1 | APIルート雛形（固定JSON） | 完了 |
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
-| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換serviceまで実装済み（2026-07-28）。`/analyze`統合/UIは未着手 |
+| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（UIなし）まで実装済み（2026-07-28）。UIは未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
 | 5 | PostgreSQL永続化 | 未着手 |
 | 6 | プロダクション化 | 未着手 |

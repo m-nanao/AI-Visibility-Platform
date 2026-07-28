@@ -266,13 +266,3 @@ def test_existing_web_fetcher_to_documents_still_works():
 
     assert len(documents) == 1
     assert documents[0].sourceType == "web_fetch"
-
-
-def test_common_crawl_document_provider_module_is_not_wired_into_main():
-    import inspect
-
-    import main
-
-    source = inspect.getsource(main)
-    assert "common_crawl_document_provider" not in source
-    assert "build_common_crawl_document" not in source
