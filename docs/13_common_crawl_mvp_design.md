@@ -484,6 +484,39 @@ timeout・headers・retry・query fallback・`trust_env=False`のいずれもす
 - **今回変更していないもの**: query variant fallback・retryロジック・headers・candidate parsing・画面表示用reason・取得件数・UI・frontend・DataForSEO/ChatGPT関連コード・requirements/package.json（新規package追加なし）。
 - **次の課題**: `urllib`fallback追加後も改善しない場合、外部プロキシ/API経由での取得、Render外環境での疎通確認によるRender特有の問題かどうかの切り分け、またはCommon Crawl取得方式そのものの再設計（例えば別のデータソースの検討）が次の課題となる（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 26. Common Crawl Index API exact-domain query variant追加（backend、2026-07-29追記）
+
+前節（25.）の`urllib` transport追加後も、Renderで以下の事象が確認できた。
+
+```
+transport_mode=default
+  default-filtered / default-unfiltered / www-unfiltered すべて失敗
+transport_mode=no-env
+  default-filtered / default-unfiltered / www-unfiltered すべて失敗
+transport_mode=urllib
+  default-filtered / default-unfiltered / www-unfiltered すべて失敗
+```
+
+httpxでは`RemoteProtocolError`（「Server disconnected without sending a response.」）、urllibでは`RemoteDisconnected`（「Remote end closed connection without response」）——別々のHTTP clientライブラリで同じ「レスポンス送信前の切断」が起きており、query形式（`url=domain/*`のwildcard＋filter）自体、またはCommon Crawl側の当該queryに対する挙動が不安定である可能性が浮上した。一方、手動確認で以下の結果が得られた。
+
+- `https://index.commoncrawl.org/CC-MAIN-2026-25-index?url=cybozu.co.jp` （wildcardなし）→ JSONが返る
+- `https://index.commoncrawl.org/CC-MAIN-2026-25-index?url=cybozu.co.jp%2F%2A&output=json&filter=status%3A200&filter=mime%3Atext%2Fhtml&limit=5` （`url=domain/*`のwildcard付き＋filter）→ 503
+
+**`url=domain/*`のwildcard自体がCommon Crawl側で不安定になっている可能性が高い**と判断し、`fix/common-crawl-index-exact-domain-query`でwildcardなしの「exact domain」query variantを追加した。
+
+- **追加したvariant**（`_build_query_variants()`）:
+  1. `exact-domain-unfiltered` — `url=domain`のみ（wildcardなし、filterなし）
+  2. `exact-domain-filtered` — `url=domain`のみ（wildcardなし）＋`filter=status:200`＋`filter=mime:text/html`
+- **variant順**: `exact-domain-unfiltered` → `exact-domain-filtered` → `default-filtered`（`url=domain/*`＋filter） → `default-unfiltered`（`url=domain/*`） → `www-unfiltered`（`url=www.domain/*`）の5variant（従来の3variantに2つ追加、既存のwildcard付きvariantより先に試す）。実装が複雑になりすぎる場合は`exact-domain-unfiltered`のみでもよいとされていたが、`exact-domain-filtered`も含めて実装した。
+- **0件時のfallback**（`allow_empty_fallback`）: `_build_query_variants()`の各variantタプルに新規`allow_empty_fallback: bool`フィールドを追加した。`exact-domain-unfiltered`/`exact-domain-filtered`は`True`——成功したが0件だった場合も次のvariantへfallbackする。理由は、exact queryがdomain直下の完全一致のみを見るため0件になりやすく、そこで即座に「候補なし」と断定するとwildcard queryを試す機会を失ってしまうため。`default-filtered`/`default-unfiltered`/`www-unfiltered`は従来どおり`allow_empty_fallback=False`——0件は即座に`status="unavailable"`（`reason="Common Crawl index result was empty."`）として終了する（今回のスコープでは変更していない。0件時にwildcard variantの範囲をさらに広げるかどうかは別課題）。
+- **実装**: `_search_query_variants()`の200レスポンス処理に、0件かつ`allow_empty_fallback`かつ次のvariantが存在する場合のfallback分岐を追加した。既存の「retryを使い切った場合のfallback」（`break`→variantループの`continue`）とは別の理由でfallbackするため、`variant_skipped_for_empty_result`という区別フラグを設け、0件fallback時は専用ログのみを出し、retry全滅時の既存`query fallback ... reason=%s`ログとは重複させないようにした。
+- **ログ**: 0件でのfallback時に`Common Crawl Index API query variant returned no candidates; trying next variant index=... domain=... transport_mode=... from=%s to=%s`（INFO）を新規に出す。それ以外の既存ログ（request start・retry・成功・query fallback・all query variants failed・transport fallback・all transports failed）は、`query_variant=%s`に`exact-domain-unfiltered`/`exact-domain-filtered`という値が入るだけで、ログ文言・フォーマット自体は変更していない。
+- **URL構築**: `exact-domain-unfiltered`/`exact-domain-filtered`は`url_pattern`に`normalized_domain`をそのまま使う（`f"{normalized_domain}/*"`を使わない）。`request_url`の例:`https://index.commoncrawl.org/CC-MAIN-2026-25-index?url=cybozu.co.jp&output=json&limit=5`——`cybozu.co.jp%2F%2A`のようなwildcardエンコードは含まれない。
+- **transport/retry/query-fallbackとの関係**: `default`/`no-env`/`urllib`いずれのtransportモードでも同じ5variant順を使う。既存のretry（最大3回）・query-variant fallback（失敗時）・transport fallbackのロジック自体は変更しておらず、variant数が3から5に増えただけでそのまま動作する。
+- **成功時・失敗時の挙動**: `exact-domain-unfiltered`で成功した場合、既存の`_parse_candidates()`でそのまま処理し、通常どおり`candidates`を返す——wildcard付きqueryは一切呼ばれない。全variant・全transportが失敗した場合の最終的な`status="unavailable"`と`reason`は**従来と完全に同じ文言**——画面表示用の日本語reason分類への影響は一切ない。
+- **今回変更していないもの**: candidate parsing・画面表示用reason・取得件数（3件上限）・UI・frontend・retry/query-fallback/transport-fallbackのロジック自体・DataForSEO/ChatGPT関連コード・requirements/package.json（新規package追加なし）。
+- **次の課題**: exact-domain query variant追加後、実際にRender環境で失敗が解消するかどうかの再検証。改善しない場合はRender外環境での疎通確認、外部プロキシ/API経由での取得を検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

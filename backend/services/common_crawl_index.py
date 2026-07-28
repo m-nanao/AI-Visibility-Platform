@@ -220,18 +220,65 @@ _QUERY_VARIANT_DEFAULT_FILTERED = "default-filtered"
 _QUERY_VARIANT_DEFAULT_UNFILTERED = "default-unfiltered"
 _QUERY_VARIANT_WWW_UNFILTERED = "www-unfiltered"
 
+# Wildcard-free ("exact") query variants, tried *before* the wildcard
+# variants above. Added after manual verification against the real
+# Index API found that `url={domain}` (no `/*`) reliably returned JSON,
+# while `url={domain}/*` (with the wildcard, plus the status/mime
+# filters) intermittently returned 503 or triggered the
+# RemoteProtocolError Render kept hitting across every transport mode —
+# suggesting the wildcard itself (not query filters, headers, or
+# transport) may be what makes the query unstable. Unlike the wildcard
+# variants, a *successful but empty* result (0 candidates) from an exact
+# variant still falls through to the next variant (see
+# `allow_empty_fallback` below) — an exact, non-wildcard match on a
+# domain's root is much more likely to legitimately return 0 candidates
+# than a `/*` wildcard is, so treating "0 results" as "give up" here
+# would forfeit the wildcard variants' broader reach for no reason.
+_QUERY_VARIANT_EXACT_DOMAIN_UNFILTERED = "exact-domain-unfiltered"
+_QUERY_VARIANT_EXACT_DOMAIN_FILTERED = "exact-domain-filtered"
+
 
 def _build_query_variants(
     normalized_domain: str, max_results: int
-) -> list[tuple[str, str, list[tuple[str, str]]]]:
+) -> list[tuple[str, str, list[tuple[str, str]], bool]]:
     """Query variants to try, in order, against the Index API for one
-    domain search. Each item is `(variant_name, url_pattern, params)`.
-    The "www." variant is skipped when `normalized_domain` already
-    starts with "www." (it would just repeat the unfiltered variant
-    with a doubled-up "www.www." host).
+    domain search. Each item is `(variant_name, url_pattern, params,
+    allow_empty_fallback)` — `allow_empty_fallback` is `True` only for
+    the wildcard-free "exact" variants (see module-level comment above
+    `_QUERY_VARIANT_EXACT_DOMAIN_UNFILTERED`), meaning a successful but
+    empty (0-candidate) result there still falls through to the next
+    variant, unlike the wildcard variants (`allow_empty_fallback=False`,
+    unchanged from before the exact variants were added) where 0
+    candidates is treated as a terminal "unavailable" result.
+
+    The "www." wildcard variant is skipped when `normalized_domain`
+    already starts with "www." (it would just repeat the unfiltered
+    wildcard variant with a doubled-up "www.www." host).
     """
     url_pattern = f"{normalized_domain}/*"
-    variants: list[tuple[str, str, list[tuple[str, str]]]] = [
+    variants: list[tuple[str, str, list[tuple[str, str]], bool]] = [
+        (
+            _QUERY_VARIANT_EXACT_DOMAIN_UNFILTERED,
+            normalized_domain,
+            [
+                ("url", normalized_domain),
+                ("output", "json"),
+                ("limit", str(max_results)),
+            ],
+            True,
+        ),
+        (
+            _QUERY_VARIANT_EXACT_DOMAIN_FILTERED,
+            normalized_domain,
+            [
+                ("url", normalized_domain),
+                ("output", "json"),
+                ("filter", "status:200"),
+                ("filter", "mime:text/html"),
+                ("limit", str(max_results)),
+            ],
+            True,
+        ),
         (
             _QUERY_VARIANT_DEFAULT_FILTERED,
             url_pattern,
@@ -242,6 +289,7 @@ def _build_query_variants(
                 ("filter", "mime:text/html"),
                 ("limit", str(max_results)),
             ],
+            False,
         ),
         (
             _QUERY_VARIANT_DEFAULT_UNFILTERED,
@@ -251,6 +299,7 @@ def _build_query_variants(
                 ("output", "json"),
                 ("limit", str(max_results)),
             ],
+            False,
         ),
     ]
     if not normalized_domain.startswith("www."):
@@ -264,6 +313,7 @@ def _build_query_variants(
                     ("output", "json"),
                     ("limit", str(max_results)),
                 ],
+                False,
             )
         )
     return variants
@@ -728,27 +778,33 @@ def _search_query_variants(
     the Index API under one `transport_mode`, each with its own
     `_MAX_ATTEMPTS` retries, falling back to the next variant once a
     variant's attempts are exhausted (see module-level
-    `_build_query_variants` docstring).
+    `_build_query_variants` docstring). A successful-but-empty result
+    also falls through to the next variant when the current variant's
+    `allow_empty_fallback` is `True` (the wildcard-free "exact" variants
+    only) and a next variant exists — otherwise it's terminal, same as
+    every wildcard variant's empty result always has been.
 
     Returns `(result, None)` for a *terminal* outcome — success, or a
     failure that should not trigger a transport-mode fallback (a
     non-transport `httpx.HTTPError`, a non-retryable non-200 status, or
-    a successful-but-empty result) — the caller returns `result`
-    immediately, same as before transport-mode fallback was added.
-    Returns `(None, last_failure_type)` when every query variant's
-    retries were exhausted via a transient transport failure or a
-    retryable non-200 status — eligible for a transport-mode fallback
-    (see `search_common_crawl_domain`).
+    a successful-but-empty result that isn't eligible for
+    `allow_empty_fallback`) — the caller returns `result` immediately,
+    same as before transport-mode fallback was added. Returns `(None,
+    last_failure_type)` when every query variant's retries were
+    exhausted via a transient transport failure or a retryable non-200
+    status — eligible for a transport-mode fallback (see
+    `search_common_crawl_domain`).
     """
     base_url = f"{COMMON_CRAWL_HOST}/{crawl_index}-index"
     variants = _build_query_variants(normalized_domain, settings.max_results)
 
     last_failure_type: str | None = None
-    for variant_index, (variant_name, url_pattern, params) in enumerate(variants):
+    for variant_index, (variant_name, url_pattern, params, allow_empty_fallback) in enumerate(variants):
         # No secrets here: Common Crawl's Index API is public and
         # unauthenticated (see module docstring).
         request_url = str(httpx.URL(base_url, params=params))
         last_error_type: str | None = None
+        variant_skipped_for_empty_result = False
 
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             # Logged before each attempt so the actually-effective
@@ -902,12 +958,12 @@ def _search_query_variants(
                     None,
                 )
 
-            # A 200 response never falls back to another query variant or
-            # transport mode — even a successful-but-empty result (see
-            # module docstring: whether to broaden the query on zero
-            # results is a separate, future consideration from this
-            # fallback's purpose of working around a communication
-            # failure).
+            # A 200 response never falls back to another transport mode.
+            # Whether it falls back to another *query variant* on an
+            # empty result depends on `allow_empty_fallback` — `True`
+            # only for the wildcard-free "exact" variants (see
+            # `_build_query_variants`); every wildcard variant keeps the
+            # original behavior of treating 0 candidates as terminal.
             candidates = _parse_candidates(response.text, crawl_index, settings.max_results)
             if variant_index > 0 or attempt > 1 or transport_mode != _TRANSPORT_MODE_DEFAULT:
                 logger.info(
@@ -921,6 +977,18 @@ def _search_query_variants(
                     len(candidates),
                 )
             if not candidates:
+                if allow_empty_fallback and variant_index < len(variants) - 1:
+                    next_variant_name = variants[variant_index + 1][0]
+                    logger.info(
+                        "Common Crawl Index API query variant returned no candidates; trying next variant index=%s domain=%s transport_mode=%s from=%s to=%s",
+                        crawl_index,
+                        normalized_domain,
+                        transport_mode,
+                        variant_name,
+                        next_variant_name,
+                    )
+                    variant_skipped_for_empty_result = True
+                    break
                 return (
                     CommonCrawlIndexResult(
                         status="unavailable",
@@ -939,6 +1007,12 @@ def _search_query_variants(
                 ),
                 None,
             )
+
+        if variant_skipped_for_empty_result:
+            # Already logged above; move straight to the next variant
+            # without also emitting the retry-exhaustion "query
+            # fallback" message below.
+            continue
 
         # Reached only via `break` above: this variant's attempts (or its
         # retryable non-200 status) were exhausted. Fall back to the next
@@ -989,15 +1063,18 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
     (`httpx.TransportError`/`OSError` — RemoteProtocolError,
     ConnectError, ReadTimeout, URLError, etc.) or a retryable non-200
     status (502/503/504) — see `_search_query_variants`. A non-transport
-    `httpx.HTTPError`, a non-retryable non-200 status (e.g. 400/404), or
-    a successful-but-empty result does **not** fall back to another
-    query variant or transport mode — those return
-    `status="unavailable"` immediately, same as before this fallback
-    was added. Every failure path still returns a
-    `CommonCrawlIndexResult` with `status="unavailable"` and a safe,
-    credential-free `reason` instead of raising (there are no
-    credentials to leak in the first place, since Common Crawl is a
-    public, unauthenticated dataset).
+    `httpx.HTTPError` or a non-retryable non-200 status (e.g. 400/404)
+    does **not** fall back to another query variant or transport mode —
+    those return `status="unavailable"` immediately, same as before
+    this fallback was added. A successful-but-empty result falls back
+    to the next *query variant* only for the wildcard-free "exact"
+    variants (see `_build_query_variants`'s `allow_empty_fallback`) —
+    every wildcard variant's empty result remains terminal, and an
+    empty result never triggers a *transport-mode* fallback either way.
+    Every failure path still returns a `CommonCrawlIndexResult` with
+    `status="unavailable"` and a safe, credential-free `reason` instead
+    of raising (there are no credentials to leak in the first place,
+    since Common Crawl is a public, unauthenticated dataset).
     """
     normalized_domain = _normalize_domain(domain)
     if normalized_domain is None:

@@ -175,8 +175,11 @@ def test_search_normalizes_a_full_url_to_a_bare_hostname(monkeypatch):
 
     search_common_crawl_domain("https://example.com/path", _FIXED_INDEX_SETTINGS)
 
+    # The first variant tried is exact-domain-unfiltered (url=domain, no
+    # "/*" wildcard) — domain normalization (scheme/path stripping)
+    # applies before any variant is built.
     params = dict(seen_params[0])
-    assert params["url"] == "example.com/*"
+    assert params["url"] == "example.com"
 
 
 def test_search_lowercases_the_domain(monkeypatch):
@@ -191,7 +194,7 @@ def test_search_lowercases_the_domain(monkeypatch):
     search_common_crawl_domain("EXAMPLE.COM", _FIXED_INDEX_SETTINGS)
 
     params = dict(seen_params[0])
-    assert params["url"] == "example.com/*"
+    assert params["url"] == "example.com"
 
 
 def test_search_rejects_an_empty_domain():
@@ -250,19 +253,44 @@ def test_search_sends_expected_query_params(monkeypatch):
     )
     search_common_crawl_domain("cybozu.co.jp", settings)
 
-    assert seen_urls == ["https://index.commoncrawl.org/CC-MAIN-2026-08-index"]
-    params = seen_params[0]
-    assert ("url", "cybozu.co.jp/*") in params
-    assert ("output", "json") in params
-    assert ("filter", "status:200") in params
-    assert ("filter", "mime:text/html") in params
-    assert ("limit", "3") in params
+    # Every attempt hits the same base URL (only query params differ
+    # between variants) — a 200-but-empty response from every variant
+    # means exact-domain-unfiltered/exact-domain-filtered (both
+    # allow_empty_fallback=True) fall through, and default-filtered
+    # (allow_empty_fallback=False) terminates on its own empty result,
+    # so exactly 3 calls are made (the 2 later wildcard variants are
+    # never reached).
+    assert seen_urls == ["https://index.commoncrawl.org/CC-MAIN-2026-08-index"] * 3
     assert seen_headers[0] == {
         "User-Agent": "Custom-UA/1.0",
         "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
         "Connection": "close",
     }
     assert seen_timeout[0] == 7.5
+
+    # 1st variant: exact-domain-unfiltered (url=domain, no wildcard, no filters).
+    exact_unfiltered_params = seen_params[0]
+    assert ("url", "cybozu.co.jp") in exact_unfiltered_params
+    assert ("output", "json") in exact_unfiltered_params
+    assert ("limit", "3") in exact_unfiltered_params
+    assert not any(key == "filter" for key, _ in exact_unfiltered_params)
+
+    # 2nd variant: exact-domain-filtered (url=domain, no wildcard, with filters).
+    exact_filtered_params = seen_params[1]
+    assert ("url", "cybozu.co.jp") in exact_filtered_params
+    assert ("filter", "status:200") in exact_filtered_params
+    assert ("filter", "mime:text/html") in exact_filtered_params
+    assert ("limit", "3") in exact_filtered_params
+
+    # 3rd variant: default-filtered (url=domain/*, with filters) — the
+    # original wildcard query this test exercised before exact-domain
+    # variants were added.
+    default_filtered_params = seen_params[2]
+    assert ("url", "cybozu.co.jp/*") in default_filtered_params
+    assert ("output", "json") in default_filtered_params
+    assert ("filter", "status:200") in default_filtered_params
+    assert ("filter", "mime:text/html") in default_filtered_params
+    assert ("limit", "3") in default_filtered_params
 
 
 # --- JSON Lines parsing / normalization --------------------------------------
@@ -506,12 +534,16 @@ def test_search_logs_request_start_with_index_domain_timeout_and_url(monkeypatch
         search_common_crawl_domain("cybozu.co.jp", settings)
 
     start_records = [r for r in caplog.records if "request start" in r.message]
-    assert len(start_records) == 1
-    message = start_records[0].message
+    # exact-domain-unfiltered/exact-domain-filtered fall through on their
+    # own empty result; default-filtered (the first wildcard variant)
+    # then terminates on its own empty result — 3 start records total.
+    assert len(start_records) == 3
+    message = start_records[-1].message
     assert "index=CC-MAIN-2026-25" in message
     assert "domain=cybozu.co.jp" in message
     assert "timeout=60.0" in message
     assert "url_pattern=cybozu.co.jp/*" in message
+    assert "query_variant=default-filtered" in message
     assert "index.commoncrawl.org/CC-MAIN-2026-25-index" in message
     assert "cybozu.co.jp" in message
 
@@ -522,8 +554,10 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
     # every query variant under every transport mode
     # (fix/common-crawl-index-query-fallback,
     # fix/common-crawl-index-trust-env-fallback,
-    # fix/common-crawl-index-urllib-fallback) — 3 attempts x 3 variants
-    # x 3 transport modes. Sleep is mocked so the test doesn't wait.
+    # fix/common-crawl-index-urllib-fallback,
+    # fix/common-crawl-index-exact-domain-query) — 3 attempts x 5
+    # variants x 3 transport modes. Sleep is mocked so the test doesn't
+    # wait.
     monkeypatch.setattr(common_crawl_index.time, "sleep", lambda seconds: None)
     _patch_urllib_persistent_failure(monkeypatch)
 
@@ -536,10 +570,10 @@ def test_search_logs_distinguish_connect_error_from_read_timeout(monkeypatch, ca
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 27
+    assert len(failure_records) == 45
     assert "error_type=ConnectError" in failure_records[0].message
     assert "Name or service not known" in failure_records[0].message
-    assert "query_variant=default-filtered" in failure_records[0].message
+    assert "query_variant=exact-domain-unfiltered" in failure_records[0].message
     assert "transport_mode=default" in failure_records[0].message
     assert "transport_mode=urllib" in failure_records[-1].message
     assert "error_type=URLError" in failure_records[-1].message
@@ -559,7 +593,7 @@ def test_search_logs_read_timeout_distinctly(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     failure_records = [r for r in caplog.records if "request failed" in r.message]
-    assert len(failure_records) == 27
+    assert len(failure_records) == 45
     assert "error_type=ReadTimeout" in failure_records[0].message
     assert "error_type=ConnectError" not in failure_records[0].message
 
@@ -797,12 +831,12 @@ def test_search_retries_on_connect_error_then_succeeds(monkeypatch):
 
 
 def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch):
-    # With query-variant fallback (fix/common-crawl-index-query-fallback)
-    # and transport-mode fallback
-    # (fix/common-crawl-index-trust-env-fallback,
+    # With query-variant fallback (fix/common-crawl-index-query-fallback,
+    # fix/common-crawl-index-exact-domain-query) and transport-mode
+    # fallback (fix/common-crawl-index-trust-env-fallback,
     # fix/common-crawl-index-urllib-fallback), a persistent failure
     # exhausts retries on every query variant under every transport mode
-    # (3 variants x 3 attempts x 3 transport modes = 27 calls) before
+    # (5 variants x 3 attempts x 3 transport modes = 45 calls) before
     # finally returning unavailable — see
     # test_search_all_query_variants_fail_and_log_final_failure for the
     # dedicated "all variants/transports failed" logging assertions.
@@ -822,9 +856,9 @@ def test_search_exhausts_retries_after_three_remote_protocol_errors(monkeypatch)
 
     assert result.status == "unavailable"
     assert "network or timeout" in result.reason
-    # 2 httpx transport modes (default, no-env) x 3 variants x 3 attempts.
-    assert calls["count"] == 18
-    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0] * 3
+    # 2 httpx transport modes (default, no-env) x 5 variants x 3 attempts.
+    assert calls["count"] == 30
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0, 0.5, 1.0, 0.5, 1.0] * 3
 
 
 def test_search_does_not_retry_on_http_400(monkeypatch):
@@ -950,10 +984,11 @@ def test_search_logs_success_message_when_a_retry_succeeds(monkeypatch, caplog):
 
 def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monkeypatch):
     # Each query variant still caps its own retry sleep at 0.5+1.0=1.5s;
-    # with 3 variants (fix/common-crawl-index-query-fallback) and 3
-    # transport modes (fix/common-crawl-index-trust-env-fallback,
+    # with 5 variants (fix/common-crawl-index-query-fallback,
+    # fix/common-crawl-index-exact-domain-query) and 3 transport modes
+    # (fix/common-crawl-index-trust-env-fallback,
     # fix/common-crawl-index-urllib-fallback), a persistent failure
-    # sleeps at most 3x1.5x3=13.5s in total, never more.
+    # sleeps at most 5x1.5x3=22.5s in total, never more.
     sleep_calls = _patch_sleep(monkeypatch)
     _patch_urllib_persistent_failure(monkeypatch)
 
@@ -964,7 +999,7 @@ def test_search_retry_never_sleeps_more_than_1_5_seconds_per_query_variant(monke
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    assert sum(sleep_calls) <= 13.5
+    assert sum(sleep_calls) <= 22.5
     assert all(delay <= 1.0 for delay in sleep_calls)
 
 
@@ -1002,14 +1037,17 @@ def test_search_falls_back_to_unfiltered_query_after_remote_protocol_error(monke
     def fake_get(url, **kwargs):
         params = kwargs.get("params", [])
         seen_params.append(params)
+        url_param = next((v for k, v in params if k == "url"), None)
         has_filter = any(k == "filter" for k, _ in params)
-        # First query variant (has "filter") always fails; second variant
-        # (no "filter" key at all) succeeds immediately.
-        if has_filter:
-            raise httpx.RemoteProtocolError(
-                "Server disconnected without sending a response.", request=httpx.Request("GET", url)
-            )
-        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        # Every variant fails except default-unfiltered (url=domain/*,
+        # no status/mime filters) — the first two ("exact", no wildcard)
+        # variants and default-filtered all fail, then default-unfiltered
+        # succeeds immediately.
+        if url_param == "cybozu.co.jp/*" and not has_filter:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError(
+            "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+        )
 
     monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
 
@@ -1017,10 +1055,11 @@ def test_search_falls_back_to_unfiltered_query_after_remote_protocol_error(monke
 
     assert result.status == "real"
     assert len(result.candidates) == 1
-    # First variant (default-filtered) exhausted 3 attempts, then the
-    # second variant (default-unfiltered) succeeded on its first attempt.
-    assert len(seen_params) == 4
-    assert sleep_calls == [0.5, 1.0]
+    # exact-domain-unfiltered, exact-domain-filtered, and default-filtered
+    # each exhaust 3 attempts (9 calls total), then default-unfiltered
+    # succeeds on its first attempt.
+    assert len(seen_params) == 10
+    assert sleep_calls == [0.5, 1.0, 0.5, 1.0, 0.5, 1.0]
 
 
 def test_search_falls_back_to_unfiltered_query_after_read_timeout(monkeypatch):
@@ -1112,7 +1151,10 @@ def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplo
 
     messages = [r.message for r in caplog.records]
     fallback_records = [m for m in messages if "query fallback" in m]
-    assert len(fallback_records) == 6
+    # 5 variants -> 4 fallback transitions per transport mode x 3 modes.
+    assert len(fallback_records) == 12
+    assert any("from=exact-domain-unfiltered" in m and "to=exact-domain-filtered" in m for m in fallback_records)
+    assert any("from=exact-domain-filtered" in m and "to=default-filtered" in m for m in fallback_records)
     assert any("from=default-filtered" in m and "to=default-unfiltered" in m for m in fallback_records)
     assert any("from=default-unfiltered" in m and "to=www-unfiltered" in m for m in fallback_records)
     httpx_fallback_records = [m for m in fallback_records if "transport_mode=urllib" not in m]
@@ -1122,7 +1164,7 @@ def test_search_all_query_variants_fail_and_log_final_failure(monkeypatch, caplo
 
     final_records = [m for m in messages if "all query variants failed" in m]
     assert len(final_records) == 3
-    assert all("variants=3" in m for m in final_records)
+    assert all("variants=5" in m for m in final_records)
 
     transport_fallback_records = [m for m in messages if "transport fallback" in m]
     assert len(transport_fallback_records) == 2
@@ -1172,6 +1214,11 @@ def test_search_does_not_fall_back_to_next_query_on_http_404(monkeypatch):
 
 
 def test_search_does_not_fall_back_to_next_query_on_zero_candidates(monkeypatch):
+    # The two "exact" (wildcard-free) variants have allow_empty_fallback
+    # so a 0-candidate result there falls through, but default-filtered
+    # (the first *wildcard* variant) still terminates on a 0-candidate
+    # result without falling back further, same as before the exact
+    # variants were added.
     _patch_sleep(monkeypatch)
     calls = {"count": 0}
 
@@ -1185,9 +1232,11 @@ def test_search_does_not_fall_back_to_next_query_on_zero_candidates(monkeypatch)
 
     assert result.status == "unavailable"
     assert "empty" in result.reason
-    # Only the first query variant — a successful-but-empty result does
-    # not fall back to a broader/simpler query in this MVP.
-    assert calls["count"] == 1
+    # exact-domain-unfiltered and exact-domain-filtered each fall through
+    # on their own empty result (1 call each), then default-filtered
+    # terminates on its own empty result (1 call) — 3 calls total, never
+    # reaching default-unfiltered/www-unfiltered.
+    assert calls["count"] == 3
 
 
 def test_search_logs_query_variant_in_request_start(monkeypatch, caplog):
@@ -1202,8 +1251,10 @@ def test_search_logs_query_variant_in_request_start(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     start_records = [r.message for r in caplog.records if "request start" in r.message]
+    # exact-domain-unfiltered (the first variant tried) succeeds
+    # immediately.
     assert len(start_records) == 1
-    assert "query_variant=default-filtered" in start_records[0]
+    assert "query_variant=exact-domain-unfiltered" in start_records[0]
 
 
 def test_search_logs_query_variant_in_success_message_after_fallback(monkeypatch, caplog):
@@ -1211,10 +1262,15 @@ def test_search_logs_query_variant_in_success_message_after_fallback(monkeypatch
     body = _cdxj_line(url="https://cybozu.co.jp/")
 
     def fake_get(url, **kwargs):
-        has_filter = any(k == "filter" for k, _ in kwargs.get("params", []))
-        if has_filter:
-            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
-        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        params = kwargs.get("params", [])
+        url_param = next((v for k, v in params if k == "url"), None)
+        has_filter = any(k == "filter" for k, _ in params)
+        # Every variant fails except default-unfiltered (url=domain/*,
+        # no filters) — forces a fallback across exact-domain-unfiltered,
+        # exact-domain-filtered, and default-filtered before succeeding.
+        if url_param == "cybozu.co.jp/*" and not has_filter:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
 
     monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
 
@@ -1245,13 +1301,15 @@ def test_search_www_variant_is_skipped_when_domain_already_has_www(monkeypatch):
 
     search_common_crawl_domain("www.cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    # Only 2 variants (default-filtered, default-unfiltered) for a domain
-    # that already starts with "www." — no doubled-up "www.www." variant.
-    # 2 variants x 3 attempts x 2 httpx transport modes (default, no-env)
+    # 4 variants (exact-domain-unfiltered, exact-domain-filtered,
+    # default-filtered, default-unfiltered) for a domain that already
+    # starts with "www." — no doubled-up "www.www." variant appended.
+    # 4 variants x 3 attempts x 2 httpx transport modes (default, no-env)
     # — the urllib transport mode's calls go through the separate
     # _patch_urllib_persistent_failure fake, not this httpx one.
-    assert calls["count"] == 12
-    assert all(u == "www.cybozu.co.jp/*" for u in seen_urls)
+    assert calls["count"] == 24
+    assert all(u in ("www.cybozu.co.jp", "www.cybozu.co.jp/*") for u in seen_urls)
+    assert not any(u.startswith("www.www.") for u in seen_urls)
 
 
 def test_search_query_fallback_does_not_change_candidate_parsing(monkeypatch):
@@ -1527,7 +1585,11 @@ def test_search_logs_headers_summary_in_request_start(monkeypatch, caplog):
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     start_records = [r.message for r in caplog.records if "request start" in r.message]
-    assert len(start_records) == 1
+    # exact-domain-unfiltered/exact-domain-filtered fall through on their
+    # own empty result; default-filtered (the first wildcard variant)
+    # then terminates on its own empty result — 3 start records total,
+    # each with the same headers.
+    assert len(start_records) == 3
     assert "user_agent=AI-Visibility-Platform-MVP" in start_records[0]
     assert "accept=application/json" in start_records[0]
     assert "connection=close" in start_records[0]
@@ -1639,9 +1701,9 @@ def test_search_falls_back_to_no_env_transport_after_default_exhausts_on_remote_
 
     assert result.status == "real"
     assert len(result.candidates) == 1
-    # Default transport exhausted all 3 variants (3 attempts each = 9
+    # Default transport exhausted all 5 variants (3 attempts each = 15
     # calls) before the no-env transport succeeded on its first variant.
-    assert seen_trust_env.count("NOT_SET") == 9
+    assert seen_trust_env.count("NOT_SET") == 15
     assert seen_trust_env.count(False) == 1
 
 
@@ -1743,9 +1805,12 @@ def test_search_does_not_fall_back_to_no_env_on_zero_candidates(monkeypatch):
 
     assert result.status == "unavailable"
     assert "empty" in result.reason
-    # A successful-but-empty result under the default transport does not
-    # trigger a no-env fallback.
-    assert calls["count"] == 1
+    # exact-domain-unfiltered and exact-domain-filtered fall through on
+    # their own empty result (query-variant fallback, not transport
+    # fallback), then default-filtered terminates on its own empty
+    # result — 3 calls total, all still under the default transport (no
+    # no-env fallback is triggered by an empty result).
+    assert calls["count"] == 3
 
 
 def test_search_logs_transport_mode_default_in_request_start(monkeypatch, caplog):
@@ -1758,8 +1823,12 @@ def test_search_logs_transport_mode_default_in_request_start(monkeypatch, caplog
         search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
     start_records = [r.message for r in caplog.records if "request start" in r.message]
-    assert len(start_records) == 1
-    assert "transport_mode=default" in start_records[0]
+    # exact-domain-unfiltered/exact-domain-filtered fall through on their
+    # own empty result; default-filtered (the first wildcard variant)
+    # then terminates on its own empty result — 3 start records total,
+    # all still under the default transport.
+    assert len(start_records) == 3
+    assert all("transport_mode=default" in m for m in start_records)
 
 
 def test_search_logs_transport_mode_no_env_after_fallback(monkeypatch, caplog):
@@ -1822,7 +1891,7 @@ def test_search_logs_success_with_transport_mode_no_env(monkeypatch, caplog):
     success_records = [r.message for r in caplog.records if "request succeeded" in r.message]
     assert len(success_records) == 1
     assert "transport_mode=no-env" in success_records[0]
-    assert "query_variant=default-filtered" in success_records[0]
+    assert "query_variant=exact-domain-unfiltered" in success_records[0]
     assert "attempt=1/3" in success_records[0]
     assert "candidates=1" in success_records[0]
 
@@ -1859,12 +1928,13 @@ def test_search_no_env_transport_passes_trust_env_false(monkeypatch):
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    # First 9 calls (default transport) never set trust_env; next 9 calls
-    # (no-env transport) always pass trust_env=False. The urllib
-    # transport mode (tried last) never calls httpx.get at all.
-    assert seen_trust_env[:9] == ["NOT_SET"] * 9
-    assert seen_trust_env[9:18] == [False] * 9
-    assert len(seen_trust_env) == 18
+    # First 15 calls (default transport, 5 variants x 3 attempts) never
+    # set trust_env; next 15 calls (no-env transport) always pass
+    # trust_env=False. The urllib transport mode (tried last) never
+    # calls httpx.get at all.
+    assert seen_trust_env[:15] == ["NOT_SET"] * 15
+    assert seen_trust_env[15:30] == [False] * 15
+    assert len(seen_trust_env) == 30
 
 
 def test_search_headers_are_maintained_across_transport_fallback(monkeypatch):
@@ -2282,11 +2352,13 @@ def test_search_urllib_encodes_multiple_filter_params(monkeypatch):
 
     search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
 
-    # First urllib call is for the default-filtered variant, which has 2
-    # "filter" params — both must survive urlencode(..., doseq=True).
-    first_url = seen_requests[0].full_url
-    assert "filter=status%3A200" in first_url
-    assert "filter=mime%3Atext%2Fhtml" in first_url
+    # Calls 0-2 are exact-domain-unfiltered's 3 attempts (no "filter"
+    # param at all); call 3 is exact-domain-filtered's 1st attempt — it
+    # has 2 "filter" params, both of which must survive
+    # urlencode(..., doseq=True).
+    exact_filtered_url = seen_requests[3].full_url
+    assert "filter=status%3A200" in exact_filtered_url
+    assert "filter=mime%3Atext%2Fhtml" in exact_filtered_url
 
 
 def test_search_urllib_builds_correct_urls_for_each_query_variant(monkeypatch):
@@ -2342,7 +2414,7 @@ def test_search_logs_success_with_transport_mode_urllib(monkeypatch, caplog):
     success_records = [r.message for r in caplog.records if "request succeeded" in r.message]
     assert len(success_records) == 1
     assert "transport_mode=urllib" in success_records[0]
-    assert "query_variant=default-filtered" in success_records[0]
+    assert "query_variant=exact-domain-unfiltered" in success_records[0]
     assert "candidates=1" in success_records[0]
 
 
@@ -2437,7 +2509,11 @@ def test_search_does_not_fall_back_to_urllib_on_zero_candidates(monkeypatch):
 
     assert result.status == "unavailable"
     assert "empty" in result.reason
-    assert calls["count"] == 1
+    # exact-domain-unfiltered and exact-domain-filtered fall through on
+    # their own empty result (query-variant fallback), then
+    # default-filtered terminates on its own empty result — 3 calls
+    # total, all under the default transport (no urllib fallback).
+    assert calls["count"] == 3
 
 
 # --- urllib transport-mode fallback (collinfo.json / _fetch_latest_index) -----
@@ -2509,3 +2585,344 @@ def test_fetch_latest_index_urllib_does_not_retry_on_non_retryable_non_200(monke
 
     assert resolution.success is False
     assert calls["count"] == 1
+
+
+# --- exact-domain (wildcard-free) query variant ---------------------------------
+# Added 2026-07-29 (fix/common-crawl-index-exact-domain-query) — manual
+# verification against the real Index API found that `url={domain}` (no "/*"
+# wildcard) reliably returns JSON, while `url={domain}/*` (with the wildcard,
+# plus filters) intermittently returned 503 or triggered the RemoteProtocolError
+# Render kept hitting across every transport mode. These tests lock in that the
+# wildcard-free "exact" variants are tried first, that they use `url=domain`
+# (never `url=domain/*`), and that a 0-candidate result there falls through to
+# the next variant (unlike the wildcard variants).
+
+
+def test_build_query_variants_includes_exact_domain_unfiltered_first(monkeypatch):
+    variants = common_crawl_index._build_query_variants("cybozu.co.jp", 5)
+
+    assert len(variants) == 5
+    first_name, first_url_pattern, first_params, first_allow_empty_fallback = variants[0]
+    assert first_name == "exact-domain-unfiltered"
+    assert first_url_pattern == "cybozu.co.jp"
+    assert ("url", "cybozu.co.jp") in first_params
+    assert ("output", "json") in first_params
+    assert ("limit", "5") in first_params
+    assert not any(k == "filter" for k, _ in first_params)
+    assert first_allow_empty_fallback is True
+
+
+def test_build_query_variants_includes_exact_domain_filtered_second(monkeypatch):
+    variants = common_crawl_index._build_query_variants("cybozu.co.jp", 5)
+
+    second_name, second_url_pattern, second_params, second_allow_empty_fallback = variants[1]
+    assert second_name == "exact-domain-filtered"
+    assert second_url_pattern == "cybozu.co.jp"
+    assert ("url", "cybozu.co.jp") in second_params
+    assert ("filter", "status:200") in second_params
+    assert ("filter", "mime:text/html") in second_params
+    assert ("limit", "5") in second_params
+    assert second_allow_empty_fallback is True
+
+
+def test_build_query_variants_wildcard_variants_still_present_and_ordered_last(monkeypatch):
+    variants = common_crawl_index._build_query_variants("cybozu.co.jp", 5)
+
+    names = [name for name, _, _, _ in variants]
+    assert names == [
+        "exact-domain-unfiltered",
+        "exact-domain-filtered",
+        "default-filtered",
+        "default-unfiltered",
+        "www-unfiltered",
+    ]
+    # Wildcard variants keep allow_empty_fallback=False, unchanged.
+    for name, _, _, allow_empty_fallback in variants[2:]:
+        assert allow_empty_fallback is False
+
+
+def test_search_first_request_url_has_no_wildcard(monkeypatch, caplog):
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) >= 1
+    first_message = start_records[0]
+    assert (
+        "request_url=https://index.commoncrawl.org/CC-MAIN-2026-08-index?url=cybozu.co.jp&output=json&limit=5"
+        in first_message
+    )
+    assert "cybozu.co.jp%2F%2A" not in first_message
+
+
+def test_search_exact_domain_unfiltered_succeeds_without_calling_wildcard_query(monkeypatch):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # Only exact-domain-unfiltered was called — no wildcard query variant
+    # was ever reached.
+    assert calls["count"] == 1
+
+
+def test_search_exact_domain_unfiltered_falls_back_after_remote_protocol_error(monkeypatch):
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_params = []
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", [])
+        seen_params.append(params)
+        url_param = next((v for k, v in params if k == "url"), None)
+        has_filter = any(k == "filter" for k, _ in params)
+        is_exact_domain_unfiltered = url_param == "cybozu.co.jp" and not has_filter
+        if is_exact_domain_unfiltered:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response.", request=httpx.Request("GET", url)
+            )
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # exact-domain-unfiltered exhausted its 3 attempts, then
+    # exact-domain-filtered succeeded on its first attempt.
+    assert len(seen_params) == 4
+
+
+def test_search_exact_domain_unfiltered_zero_candidates_falls_through_to_next_variant(monkeypatch):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_urls = []
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", [])
+        url_param = next((v for k, v in params if k == "url"), None)
+        has_filter = any(k == "filter" for k, _ in params)
+        seen_urls.append((url_param, has_filter))
+        if url_param == "cybozu.co.jp" and not has_filter:
+            # exact-domain-unfiltered: succeeds but returns 0 candidates.
+            return httpx.Response(200, text="", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # exact-domain-unfiltered (0 candidates) then exact-domain-filtered
+    # (succeeds) — 2 calls total, falling through rather than
+    # terminating on the empty result.
+    assert seen_urls == [("cybozu.co.jp", False), ("cybozu.co.jp", True)]
+
+
+def test_search_exact_domain_filtered_zero_candidates_falls_through_to_default_filtered(monkeypatch):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    seen_urls = []
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", [])
+        url_param = next((v for k, v in params if k == "url"), None)
+        has_filter = any(k == "filter" for k, _ in params)
+        seen_urls.append((url_param, has_filter))
+        if url_param == "cybozu.co.jp":
+            # Both exact variants succeed but return 0 candidates.
+            return httpx.Response(200, text="", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # exact-domain-unfiltered (0) -> exact-domain-filtered (0) ->
+    # default-filtered (succeeds).
+    assert seen_urls == [
+        ("cybozu.co.jp", False),
+        ("cybozu.co.jp", True),
+        ("cybozu.co.jp/*", True),
+    ]
+
+
+def test_search_wildcard_variant_zero_candidates_still_terminates(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert "empty" in result.reason
+    # exact-domain-unfiltered (0) -> exact-domain-filtered (0) ->
+    # default-filtered (0, terminal — wildcard variants don't fall
+    # through on an empty result).
+    assert calls["count"] == 3
+
+
+def test_search_logs_no_candidates_trying_next_variant_message(monkeypatch, caplog):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", [])
+        url_param = next((v for k, v in params if k == "url"), None)
+        if url_param == "cybozu.co.jp":
+            return httpx.Response(200, text="", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    no_candidates_records = [
+        r.message for r in caplog.records if "returned no candidates; trying next variant" in r.message
+    ]
+    assert len(no_candidates_records) == 2
+    assert "from=exact-domain-unfiltered" in no_candidates_records[0]
+    assert "to=exact-domain-filtered" in no_candidates_records[0]
+    assert "from=exact-domain-filtered" in no_candidates_records[1]
+    assert "to=default-filtered" in no_candidates_records[1]
+
+
+def test_search_logs_query_variant_exact_domain_unfiltered_on_success(monkeypatch, caplog):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "query_variant=exact-domain-unfiltered" in start_records[0]
+
+
+def test_search_exact_domain_candidate_parsing_is_unchanged(monkeypatch):
+    body = _cdxj_line(
+        url="https://cybozu.co.jp/",
+        timestamp="20260115000000",
+        status="200",
+        mime="text/html",
+        digest="ABC123",
+    )
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    candidate = result.candidates[0]
+    assert candidate.url == "https://cybozu.co.jp/"
+    assert candidate.timestamp == "20260115000000"
+    assert candidate.status == 200
+    assert candidate.mime == "text/html"
+    assert candidate.digest == "ABC123"
+    assert candidate.source == "common_crawl"
+
+
+def test_search_exact_domain_variant_used_under_no_env_transport(monkeypatch):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", [])
+        url_param = next((v for k, v in params if k == "url"), None)
+        has_filter = any(k == "filter" for k, _ in params)
+        if kwargs.get("trust_env") is False and url_param == "cybozu.co.jp" and not has_filter:
+            return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+    _patch_sleep(monkeypatch)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_exact_domain_variant_used_under_urllib_transport(monkeypatch):
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_urlopen(request, timeout=None):
+        if request.full_url == f"{common_crawl_index.COMMON_CRAWL_HOST}/CC-MAIN-2026-08-index?url=cybozu.co.jp&output=json&limit=5":
+            return _FakeUrllibResponse(200, body)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+    _patch_sleep(monkeypatch)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+
+
+def test_search_urllib_exact_domain_url_has_no_wildcard_encoding(monkeypatch):
+    seen_requests = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_requests.append(request)
+        raise urllib.error.URLError("still failing")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", _always_raise_remote_protocol_error)
+    monkeypatch.setattr(common_crawl_index.urllib.request, "urlopen", fake_urlopen)
+    _patch_sleep(monkeypatch)
+
+    search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    first_url = seen_requests[0].full_url
+    assert first_url == "https://index.commoncrawl.org/CC-MAIN-2026-08-index?url=cybozu.co.jp&output=json&limit=5"
+    assert "%2F%2A" not in first_url
+
+
+def test_search_retry_and_query_fallback_still_work_with_exact_domain_variants(monkeypatch):
+    # Regression guard: retry within a variant, and fallback across
+    # variants, both still work exactly as before the exact-domain
+    # variants were added — this exercises retry (1st attempt fails),
+    # then success on the 2nd attempt of the very first variant tried.
+    _patch_sleep(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    assert calls["count"] == 2

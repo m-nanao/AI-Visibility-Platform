@@ -580,6 +580,14 @@ Common Crawl連携の最小MVP（[docs/13_common_crawl_mvp_design.md](../docs/13
   - **`_fetch_latest_index()`への適用**: collinfo.json取得にも同じ`urllib`transportを実装した。あわせて、`_fetch_latest_index()`が`response.json()`（httpx.Response専用メソッド）を呼んでいた箇所を`json.loads(response.text)`に修正——`_IndexHttpResponse`にも対応させるための必須修正（`urllib`transportで成功した場合に発生していたバグをテスト実装時に発見・修正した）。
   - **ログ**: request開始ログの`transport_mode=%s`に`urllib`が入る。成功ログ・retryログ・query fallbackログ・all query variants failedログもすべて`transport_mode=urllib`付きでそのまま出る（既存ロジックの再利用のため追加実装は不要）。全transport失敗時は`Common Crawl Index API all transports failed index=... domain=... transports=3 last_error_type=%s`になる。
   - **今回変更していないもの**: query variant fallback・retryロジック・headers・candidate parsing・画面表示用reason・取得件数・UI・DataForSEO/ChatGPT関連コード。新規package・requirements変更は行っていない（`urllib`は標準ライブラリ）。それでも失敗する場合は、Render外環境での疎通確認・外部プロキシ/API経由・Common Crawl取得方式の再設計を次の検討候補としてdocsに記載するのみ。
+- **exact-domain（wildcardなし）query variant追加**（2026-07-29追加、`fix/common-crawl-index-exact-domain-query`）: `urllib` transport追加後もRenderで全パターン（3 transport × 既存3 query variant）がRemoteProtocolError/RemoteDisconnectedで失敗し続ける事象が報告された。一方、手動確認で`https://index.commoncrawl.org/CC-MAIN-2026-25-index?url=cybozu.co.jp`（wildcardなし）はJSONが返り、`...?url=cybozu.co.jp%2F%2A&output=json&filter=...`（`url=domain/*`のwildcard付き）は503になることを確認した——`url=domain/*`のwildcard自体がCommon Crawl側で不安定になっている可能性が高いと判断し、`_build_query_variants()`にwildcardなしの`exact-domain-unfiltered`/`exact-domain-filtered`を追加し、既存のwildcard付きquery variantより先に試すようにした。
+  - **query variant順**: `exact-domain-unfiltered`（`url=domain`のみ）→ `exact-domain-filtered`（`url=domain`+`filter=status:200`+`filter=mime:text/html`）→ `default-filtered`（`url=domain/*`+filter）→ `default-unfiltered`（`url=domain/*`）→ `www-unfiltered`（`url=www.domain/*`）の5つ（従来の3つに2つ追加）。
+  - **0件時のfallback**: `exact-domain-unfiltered`/`exact-domain-filtered`は`allow_empty_fallback=True`——成功したが0件だった場合も次のvariantへフォールバックする（exact queryはdomain直下の完全一致のみを見るため、0件でも「候補なし」と即断せず、より広いwildcard queryを試す余地を残すため）。`default-filtered`/`default-unfiltered`/`www-unfiltered`は従来どおり`allow_empty_fallback=False`——0件は即座に`unavailable`として終了する。
+  - **ログ**: 0件でのfallback時は`Common Crawl Index API query variant returned no candidates; trying next variant index=... domain=... transport_mode=... from=%s to=%s`（INFO）を新規に出す（retry全滅時の既存`query fallback ... reason=%s`ログとは別メッセージ）。それ以外のログ（request start・retry・成功・all query variants failed）は`query_variant=exact-domain-unfiltered`等の値が入るだけで、既存ロジックをそのまま再利用している。
+  - **URL構築**: `exact-domain-unfiltered`/`exact-domain-filtered`は`url_pattern`にdomainそのもの（wildcardの`/*`を含まない）を使う。例:`request_url=https://index.commoncrawl.org/CC-MAIN-2026-25-index?url=cybozu.co.jp&output=json&limit=5`（`cybozu.co.jp%2F%2A`にならないことをテストで確認）。
+  - **transport/retry/query-fallbackとの関係**: `default`/`no-env`/`urllib`いずれのtransportでも同じ5variant順を使う。既存のretry（最大3回）・query-variant fallback（0件以外の失敗）・transport fallbackのロジックは変更しておらず、そのまま5variantに対して動作する。
+  - **成功時の挙動**: `exact-domain-unfiltered`で成功した場合、既存の`_parse_candidates()`でそのまま処理し通常どおり`candidates`を返す。wildcard付きqueryは一切呼ばれない。
+  - **今回変更していないもの**: candidate parsing・画面表示用reason・取得件数・UI・DataForSEO/ChatGPT関連コード・新規package/requirements。
 
 **`common_crawl_warc.py`**: `fetch_common_crawl_warc_record(candidate, settings) -> CommonCrawlFetchResult`を公開する。`common_crawl_index.py`が返す`CommonCrawlCandidate`**1件**の`filename`/`offset`/`length`を使い、WARCレコードを1件だけ取得してHTML本文を抽出する（**複数件の一括取得はまだ行っていない**）。このモジュールも`COMMON_CRAWL_ENABLED`を一切参照しない——`common_crawl_index.py`と同じ「クライアントはゲート判定を持たない」設計を踏襲する。
 
@@ -1068,6 +1076,22 @@ pytest
 - `400`/`404`・0件の場合は`default`transportの時点で即座に`unavailable`になり、`urllib`へは一切到達しないこと（呼び出し回数1回の確認）
 - `collinfo.json`取得（`_fetch_latest_index()`）でも同様に、`urllib`transportへのfallbackが機能すること、headersが維持されること、query paramの無いURL（collinfo.jsonそのもの）が正しく使われること、非retry対象の非200ではretry・transport fallbackのいずれも起きないこと
 - **`_fetch_latest_index()`が`response.json()`（httpx.Response専用メソッド）を呼んでいたバグを修正**——`urllib`transport成功時は`_IndexHttpResponse`（`.json()`を持たない）が返るため、`json.loads(response.text)`に変更した。このバグはテスト実装中に発見し、同じコミットで修正している。
+
+さらに、exact-domain query variant追加（2026-07-29、`fix/common-crawl-index-exact-domain-query`）に伴い以下のテストを追加・更新した。
+
+- `_build_query_variants()`が5つのvariant（`exact-domain-unfiltered`/`exact-domain-filtered`/`default-filtered`/`default-unfiltered`/`www-unfiltered`）をこの順で返すこと
+- `exact-domain-unfiltered`は`url=domain`（wildcardの`/*`なし）・filterなし・`allow_empty_fallback=True`であること、`exact-domain-filtered`は`url=domain`＋両filter・`allow_empty_fallback=True`であること
+- 最初に試されるvariantが`exact-domain-unfiltered`であること、その`request_url`が`url=cybozu.co.jp`になり`cybozu.co.jp%2F%2A`にならないこと
+- `exact-domain-unfiltered`が成功した場合、`status="real"`かつcandidatesが返り、wildcard付きqueryは一切呼ばれないこと（呼び出し回数1回の確認）
+- `exact-domain-unfiltered`が`RemoteProtocolError`で3回とも失敗した場合、`exact-domain-filtered`へfallbackすること
+- `exact-domain-unfiltered`が0件の場合は`exact-domain-filtered`へ、`exact-domain-filtered`も0件の場合は`default-filtered`へ、それぞれ次のvariantへ進むこと（`allow_empty_fallback=True`によるfallback）
+- wildcard付きvariant（`default-filtered`等）が0件の場合は従来どおりそこで終了し、次のvariantへは進まないこと
+- 0件でのfallback時に`query variant returned no candidates; trying next variant ... from=%s to=%s`ログが出ること（retry全滅時の既存`query fallback`ログとは別メッセージ）
+- 成功ログに`query_variant=exact-domain-unfiltered`が出ること
+- `exact-domain-unfiltered`/`exact-domain-filtered`経由で取得したcandidateも`_parse_candidates()`の変換結果が変わらないこと（回帰防止）
+- `no-env`/`urllib`いずれのtransportでも同じexact-domain variantが正しく使われ、`urllib`transportでも`url=cybozu.co.jp`（wildcardエンコードなし）のURLが正しく構築されること
+- exact-domain variant追加後も、既存のretry（1回目失敗・2回目成功）とquery-variant fallbackが従来どおり動作すること（回帰防止）
+- 既存の23件のテスト（domain正規化・query paramsの形状・request startログ・retry全滅時の呼び出し回数/sleep合計・all query/transports failedログ・www variant省略確認・headers確認・transport fallback確認等）は、最初に試されるvariantが`default-filtered`から`exact-domain-unfiltered`に変わったこと、variant数が3→5に増えたことに合わせて期待値を更新した。あわせて`backend/tests/test_main.py`の1テスト（Common Crawl domain解決の統合テスト）も、最初に呼ばれるquery variantの`url`パラメータ形状が変わったことに合わせて更新した。
 
 `tests/test_common_crawl_warc.py` では `fetch_common_crawl_warc_record()` を直接テストしている（すべて`httpx.get`をmonkeypatchで差し替え、実際のネットワークアクセスは一切行わない）。
 
