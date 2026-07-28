@@ -30,14 +30,14 @@
 
 ## Phase 3-2 — 実データ収集基盤（Common Crawl連携）
 
-最小MVPの設計を[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)としてまとめた（2026-07-28）。ブランド名の全文検索ではなく、**domain指定でのCommon Crawl Index検索から始める**方針。設定モジュールとIndex API検索クライアントを実装済み（2026-07-28、`backend/services/common_crawl_settings.py`/`backend/services/common_crawl_index.py`。詳細は[backend/README.md](../backend/README.md)「Common Crawl最小連携」）。**WARC本文取得・`Document[]`統合・`/analyze`統合・UI連携はまだ未着手。**
+最小MVPの設計を[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)としてまとめた（2026-07-28）。ブランド名の全文検索ではなく、**domain指定でのCommon Crawl Index検索から始める**方針。設定モジュール・Index API検索クライアント・WARCレコード取得/HTML抽出クライアントを実装済み（2026-07-28、`backend/services/common_crawl_settings.py`/`backend/services/common_crawl_index.py`/`backend/services/common_crawl_warc.py`。詳細は[backend/README.md](../backend/README.md)「Common Crawl最小連携」）。**`Document[]`統合・`/analyze`統合・UI連携はまだ未着手。**
 
 - **Current/Done（現状）**:
   - Common Crawl MVP設計ドキュメント作成（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）
   - Common Crawl settings + Index API client（`COMMON_CRAWL_*`環境変数、`latest`/`CC-MAIN-YYYY-NN`index解決、domain指定Index検索、`CommonCrawlCandidate`への正規化。デフォルトoff、認証不要）
+  - WARC fetch / HTML extraction service（`CommonCrawlCandidate`1件のWARCレコードをRange requestで取得、gzip展開、HTML本文抽出。`backend/services/common_crawl_warc.py`、複数件取得・`Document[]`化・`/analyze`統合はまだ）
 - **Next（次のステップ、優先順）**:
-  - WARC取得・HTML抽出（初期はstubまたは最大1件から）
-  - `CommonCrawlCandidate` → `Document[]`統合（既存のDocument Pipelineへ合流、`sourceType: "common_crawl"`）
+  - `CommonCrawlCandidate` → `Document[]`統合（既存のDocument Pipelineへ合流、`sourceType: "common_crawl"`、既存Cleaner/Normalizer/Chunkerとの連携）
   - `/analyze`でのCommon Crawl mode統合
   - UI mode selector追加（既存の検証用selectorと同じパターン）
 - **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合
@@ -80,7 +80,7 @@
 | 0 | フロントエンドMVP（ダミー表示） | 完了 |
 | 1 | APIルート雛形（固定JSON） | 完了 |
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
-| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client実装済み（2026-07-28）。WARC取得/`Document[]`統合/`/analyze`統合/UIは未着手 |
+| 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction serviceまで実装済み（2026-07-28）。`Document[]`統合/`/analyze`統合/UIは未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
 | 5 | PostgreSQL永続化 | 未着手 |
 | 6 | プロダクション化 | 未着手 |
