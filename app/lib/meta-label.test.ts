@@ -4,6 +4,7 @@ import {
   REFERENCE_CATEGORY_LABELS,
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
+  getAnalysisSourceBreakdownDisplay,
   getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
   getSectionStatusSummary,
@@ -1006,6 +1007,113 @@ describe("getUrlFetchSummary", () => {
     };
 
     expect(getUrlFetchSummary(meta)).toBe("URL取得: 0/1件成功");
+  });
+});
+
+// Added 2026-07-28 (style/analysis-source-breakdown) — combines the
+// Webページ (urlFetchResults) and Common Crawl補完 (commonCrawlProvider)
+// counts into one "分析ソース内訳" line, so it's obvious at a glance how
+// many Documents came from each source in the same analysis.
+describe("getAnalysisSourceBreakdownDisplay", () => {
+  it("returns null when there are no url fetch results and no common crawl provider", () => {
+    expect(getAnalysisSourceBreakdownDisplay(baseMeta())).toBeNull();
+  });
+
+  it("shows only the web page count when Common Crawl is off", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [{ url: "https://example.com/a", success: true }],
+      commonCrawlProvider: {
+        mode: "off",
+        status: "off",
+        reason: "Common Crawl integration is off.",
+      },
+    };
+
+    expect(getAnalysisSourceBreakdownDisplay(meta)).toBe("Webページ 1件");
+  });
+
+  it("shows only the web page count when meta.commonCrawlProvider isn't present at all", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [{ url: "https://example.com/a", success: true }],
+    };
+
+    expect(getAnalysisSourceBreakdownDisplay(meta)).toBe("Webページ 1件");
+  });
+
+  it("combines web page and common crawl counts on a full success", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [{ url: "https://cybozu.co.jp/about", success: true }],
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 3 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 5,
+        documentCount: 3,
+      },
+    };
+
+    expect(getAnalysisSourceBreakdownDisplay(meta)).toBe(
+      "Webページ 1件 / Common Crawl補完 3件",
+    );
+  });
+
+  it("shows only the common crawl count when there are no url fetch results", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 1,
+        documentCount: 1,
+      },
+    };
+
+    expect(getAnalysisSourceBreakdownDisplay(meta)).toBe("Common Crawl補完 1件");
+  });
+
+  it("excludes common crawl from the breakdown when it's unavailable, keeping only the web page count", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [{ url: "https://cybozu.co.jp/about", success: true }],
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason: "Common Crawl found candidates but none could be fetched into a usable document.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 5,
+      },
+    };
+
+    expect(getAnalysisSourceBreakdownDisplay(meta)).toBe("Webページ 1件");
+  });
+
+  it("never renders HTML or WARC body text", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      urlFetchResults: [{ url: "https://cybozu.co.jp/about", success: true }],
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 2 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 2,
+        documentCount: 2,
+      },
+    };
+
+    const breakdown = getAnalysisSourceBreakdownDisplay(meta) ?? "";
+    expect(breakdown).not.toContain("<html");
+    expect(breakdown).not.toContain("WARC/1.0");
   });
 });
 
