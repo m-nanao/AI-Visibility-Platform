@@ -50,10 +50,10 @@
   - Common Crawl status表示の英語reason再確認・強化（`fix/common-crawl-status-japanese-reasons`、2026-07-28。前タスクのマージ後に旧表示形式が見えたとの報告を受け再調査——backendが返しうる`reason`文字列11種類すべてを検証し、現行コードは既に正しく日本語分類していることを確認（コード上の欠陥は見つからず、古いデプロイ・キャッシュを見ていた可能性）。安全のためdomain未確定系の分類パターンをより広い部分一致に強化し、テストを8件追加。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「18. Common Crawl status表示の英語reason再確認・強化」参照）
   - Common Crawl取得ページ一覧の表示（`feature/common-crawl-analyzed-urls-display`、2026-07-28。実際にDocument化できたページのURL一覧を`meta.commonCrawlProvider.analyzedUrls`として返し、`status="real"`かつ1件以上ある場合のみ「取得ページ」として「共起語ランキング」カードに表示。URLのみでHTML/WARC本文・raw responseは含めない。**3件上限は今回も維持し、全件取得・非同期ジョブ化・DB保存は行っていない**。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「19. Common Crawl取得ページ一覧の表示」参照）
   - Common Crawl Index API失敗時の診断ログ強化（`chore/common-crawl-index-diagnostics`、2026-07-29。Render上でCommon Crawl補完が即時失敗する事象を受け、`search_common_crawl_domain()`/`_fetch_latest_index()`のログを強化——request開始時にindex/domain/url pattern/timeout実効値/request URLをINFOで、失敗時に`error_type`（例:`ConnectError`/`ReadTimeout`）と例外メッセージをWARNINGで、non-200時にstatus codeと200文字までのbody previewを出す。**取得ロジック・retry・fallback index・取得件数・画面表示用reasonはいずれも変更していない**。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「20. Common Crawl Index API失敗時の診断ログ強化」参照）
+  - Common Crawl Index API retry（`fix/common-crawl-index-retry`、2026-07-29。診断ログにより、Render上の実際の失敗が`httpx.RemoteProtocolError`（タイムアウト経過を待たず即座に発生し、`COMMON_CRAWL_TIMEOUT_SECONDS`を伸ばしても効かない切断系エラー）であることが判明したため、`search_common_crawl_domain()`/`_fetch_latest_index()`双方に最大3回（初回+retry2回、0.5秒→1.0秒待機）のretryを追加。retry対象は`httpx.TransportError`（RemoteProtocolError/ConnectError/ConnectTimeout/ReadTimeout等）と非200のうち502/503/504のみ（400/404はretryしない）。**retry後も失敗した場合の画面表示用reasonは従来と完全に同じで、取得件数・fallback indexは変更していない**。`COMMON_CRAWL_TIMEOUT_SECONDS`の許可範囲（3〜30秒、範囲外は10秒にフォールバック）をdocsに明記。[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「21. Common Crawl Index API retry追加」参照）
 - **Next（次のステップ、優先順）**:
-  - Common Crawl Index APIのretry/fallback検討（診断ログで実際の`error_type`を確認した上で、retry実装・fallback indexの要否を判断する）
+  - Common Crawl Index API fallback検討（retry後もなお失敗が続く場合に備えたfallback index等の要否を判断する）
   - 依頼者確認後の文言調整（[15_requester_review_items.md](./15_requester_review_items.md)の確認項目をもとに、表示名・説明文・改善提案文言を確定させる）
-  - Common Crawl結果の改善提案への重み付け検討（他の改善提案ルールとの優先度バランス、複数件それぞれの内容を個別反映するか等）
   - Common Crawl取得件数の段階的拡張検討（5件/10件への引き上げ、Render環境のメモリ・timeout影響を見ながら段階的に検討）
 - **Later（将来）**: DB永続化、定期クロール・スケジュール実行、時系列比較、競合比較、複数データソースの重み付け統合、非同期ジョブキュー化
 

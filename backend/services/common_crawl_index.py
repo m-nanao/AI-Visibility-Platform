@@ -38,6 +38,7 @@ field for either).
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -56,6 +57,26 @@ COLLINFO_URL = f"{COMMON_CRAWL_HOST}/collinfo.json"
 # ending up in logs. Never the full body, and never used for a 200
 # response (candidate parsing doesn't log the body at all).
 _BODY_PREVIEW_MAX_CHARS = 200
+
+# Retry policy for transient Common Crawl request failures. Added after a
+# Render deployment showed httpx.RemoteProtocolError ("Server disconnected
+# without sending a response") — an abrupt disconnect that happens
+# immediately, not after `timeout_seconds` elapses, so raising the timeout
+# setting alone can never fix it. Fixed for the MVP (not env-configurable);
+# see docs/13_common_crawl_mvp_design.md.
+_MAX_ATTEMPTS = 3
+# Delay before attempt 2 and before attempt 3, respectively.
+_RETRY_DELAYS_SECONDS = (0.5, 1.0)
+# A non-200 response is not retried by default (400/404 etc. are almost
+# never transient), except these three, which commonly indicate a
+# temporary upstream/gateway problem.
+_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
+
+
+def _next_retry_delay(attempt: int) -> float:
+    """Delay to wait after a failed `attempt` (1-based) before retrying."""
+    return _RETRY_DELAYS_SECONDS[attempt - 1]
+
 
 # One label of a DNS hostname: 1-63 chars, alphanumeric/hyphen, not
 # starting or ending with a hyphen. A full hostname is 2+ labels
@@ -204,45 +225,110 @@ def _fetch_latest_index(settings: CommonCrawlSettings) -> CommonCrawlIndexResolu
     """Fetches collinfo.json and picks the entry with the greatest
     (year, week) — not just the first entry — so this doesn't depend
     on collinfo.json always being sorted a particular way.
-    """
-    logger.info(
-        "Common Crawl collinfo.json request start url=%s timeout=%s",
-        COLLINFO_URL,
-        settings.timeout_seconds,
-    )
-    try:
-        response = httpx.get(
-            COLLINFO_URL,
-            headers={"User-Agent": settings.user_agent},
-            timeout=settings.timeout_seconds,
-        )
-    except httpx.HTTPError as exc:
-        # error_type distinguishes a genuine read timeout
-        # (httpx.ReadTimeout/ConnectTimeout) from an immediate failure
-        # like DNS resolution/connection refusal (httpx.ConnectError) or
-        # a TLS handshake failure — all of which this same "network or
-        # timeout error" reason previously lumped together with no way
-        # to tell them apart from Render logs alone.
-        logger.warning(
-            "Common Crawl collinfo.json request failed error_type=%s error=%s",
-            exc.__class__.__name__,
-            exc,
-        )
-        return CommonCrawlIndexResolution(
-            success=False,
-            reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
-        )
 
-    if response.status_code != 200:
-        logger.warning(
-            "Common Crawl collinfo.json returned non-200 status=%d body_preview=%s",
-            response.status_code,
-            _body_preview(response.text),
+    Retries up to `_MAX_ATTEMPTS` times on a transient transport failure
+    (`httpx.TransportError` — covers RemoteProtocolError, ConnectError,
+    ReadTimeout, etc.) or a retryable non-200 status (502/503/504),
+    sleeping `_next_retry_delay(attempt)` between attempts. Any other
+    failure (a non-transport HTTPError, a non-retryable non-200 status,
+    or exhausting all attempts) still returns `success=False` with a
+    safe reason instead of raising.
+    """
+    last_error_type: str | None = None
+    response: httpx.Response | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        logger.info(
+            "Common Crawl collinfo.json request start url=%s timeout=%s attempt=%d/%d",
+            COLLINFO_URL,
+            settings.timeout_seconds,
+            attempt,
+            _MAX_ATTEMPTS,
         )
-        return CommonCrawlIndexResolution(
-            success=False,
-            reason=f"Common Crawl collinfo.json request failed with HTTP {response.status_code}.",
-        )
+        try:
+            response = httpx.get(
+                COLLINFO_URL,
+                headers={"User-Agent": settings.user_agent},
+                timeout=settings.timeout_seconds,
+            )
+        except httpx.TransportError as exc:
+            # error_type distinguishes a genuine read timeout
+            # (httpx.ReadTimeout/ConnectTimeout) from an immediate failure
+            # like DNS resolution/connection refusal (httpx.ConnectError)
+            # or an abrupt disconnect (httpx.RemoteProtocolError) — all of
+            # which are worth a short retry, since they're often transient.
+            last_error_type = exc.__class__.__name__
+            logger.warning(
+                "Common Crawl collinfo.json request failed attempt=%d/%d error_type=%s error=%s",
+                attempt,
+                _MAX_ATTEMPTS,
+                exc.__class__.__name__,
+                exc,
+            )
+            if attempt < _MAX_ATTEMPTS:
+                delay = _next_retry_delay(attempt)
+                logger.info(
+                    "Common Crawl collinfo.json request retrying next_attempt=%d/%d delay=%s",
+                    attempt + 1,
+                    _MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            logger.warning(
+                "Common Crawl collinfo.json request exhausted retries attempts=%d last_error_type=%s",
+                _MAX_ATTEMPTS,
+                last_error_type,
+            )
+            return CommonCrawlIndexResolution(
+                success=False,
+                reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
+            )
+        except httpx.HTTPError as exc:
+            # A non-transport HTTPError is not retried — unexpected and
+            # unlikely to be transient.
+            logger.warning(
+                "Common Crawl collinfo.json request failed attempt=%d/%d error_type=%s error=%s",
+                attempt,
+                _MAX_ATTEMPTS,
+                exc.__class__.__name__,
+                exc,
+            )
+            return CommonCrawlIndexResolution(
+                success=False,
+                reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
+            )
+
+        if response.status_code != 200:
+            retryable = response.status_code in _RETRYABLE_STATUS_CODES
+            logger.warning(
+                "Common Crawl collinfo.json returned non-200 attempt=%d/%d status=%d body_preview=%s",
+                attempt,
+                _MAX_ATTEMPTS,
+                response.status_code,
+                _body_preview(response.text),
+            )
+            if retryable and attempt < _MAX_ATTEMPTS:
+                delay = _next_retry_delay(attempt)
+                logger.info(
+                    "Common Crawl collinfo.json request retrying next_attempt=%d/%d delay=%s",
+                    attempt + 1,
+                    _MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            return CommonCrawlIndexResolution(
+                success=False,
+                reason=f"Common Crawl collinfo.json request failed with HTTP {response.status_code}.",
+            )
+
+        if attempt > 1:
+            logger.info(
+                "Common Crawl collinfo.json request succeeded attempt=%d/%d",
+                attempt,
+                _MAX_ATTEMPTS,
+            )
+        break
 
     try:
         payload = response.json()
@@ -358,14 +444,18 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
     is *allowed* — see the module docstring: any `COMMON_CRAWL_ENABLED`
     gating belongs to a future provider layer, not here.
 
-    Issues at most two HTTP requests: one to resolve the index (only
-    when `settings.index == "latest"` — see `resolve_common_crawl_index`)
-    and one to the Index API itself. Never raises; every failure path
-    (invalid domain, index resolution failure, network/timeout error,
-    non-200 response, empty result) returns a `CommonCrawlIndexResult`
-    with `status="unavailable"` and a safe, credential-free `reason`
-    (there are no credentials to leak in the first place, since Common
-    Crawl is a public, unauthenticated dataset).
+    Issues at most `_MAX_ATTEMPTS` HTTP requests to the Index API itself
+    (plus one, only when `settings.index == "latest"`, to resolve the
+    index — see `resolve_common_crawl_index`, which has its own,
+    separate retry loop). A transient transport failure
+    (`httpx.TransportError` — RemoteProtocolError, ConnectError,
+    ReadTimeout, etc.) or a retryable non-200 status (502/503/504) is
+    retried, sleeping `_next_retry_delay(attempt)` between attempts;
+    everything else still returns a `CommonCrawlIndexResult` with
+    `status="unavailable"` and a safe, credential-free `reason` instead
+    of raising or retrying (there are no credentials to leak in the
+    first place, since Common Crawl is a public, unauthenticated
+    dataset).
     """
     normalized_domain = _normalize_domain(domain)
     if normalized_domain is None:
@@ -388,77 +478,154 @@ def search_common_crawl_domain(domain: str, settings: CommonCrawlSettings) -> Co
         ("filter", "mime:text/html"),
         ("limit", str(settings.max_results)),
     ]
-
-    # Logged before the request so the actually-effective index/timeout
-    # (as resolved from CommonCrawlSettings, not just whatever's in the
-    # environment) and the exact request URL are always on record —
-    # this is what let Render's "request failed (network/timeout
-    # error)" log line be root-caused (or ruled out) without needing a
-    # code change to reproduce it. No secrets here: Common Crawl's Index
-    # API is public and unauthenticated (see module docstring).
+    # No secrets here: Common Crawl's Index API is public and
+    # unauthenticated (see module docstring).
     request_url = str(httpx.URL(url, params=params))
-    logger.info(
-        "Common Crawl Index API request start index=%s domain=%s url_pattern=%s timeout=%s request_url=%s",
-        crawl_index,
-        normalized_domain,
-        url_pattern,
-        settings.timeout_seconds,
-        request_url,
-    )
 
-    try:
-        response = httpx.get(
-            url,
-            params=params,
-            headers={"User-Agent": settings.user_agent},
-            timeout=settings.timeout_seconds,
-        )
-    except httpx.HTTPError as exc:
-        # error_type (e.g. "ReadTimeout" vs "ConnectError") is what
-        # distinguishes a genuine read timeout from an immediate failure
-        # (DNS resolution, connection refusal, TLS handshake) — the
-        # previous single "network/timeout error" log line couldn't
-        # tell these apart, which was the actual blocker when
-        # COMMON_CRAWL_TIMEOUT_SECONDS didn't change the (instant)
-        # failure behavior on Render.
-        logger.warning(
-            "Common Crawl Index API request failed index=%s domain=%s error_type=%s error=%s",
+    last_error_type: str | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        # Logged before each attempt so the actually-effective
+        # index/timeout (as resolved from CommonCrawlSettings, not just
+        # whatever's in the environment) and the exact request URL are
+        # always on record — this is what let Render's "request failed
+        # (network/timeout error)" log line be root-caused (or ruled
+        # out) without needing a code change to reproduce it.
+        logger.info(
+            "Common Crawl Index API request start index=%s domain=%s url_pattern=%s timeout=%s attempt=%d/%d request_url=%s",
             crawl_index,
             normalized_domain,
-            exc.__class__.__name__,
-            exc,
-        )
-        return CommonCrawlIndexResult(
-            status="unavailable",
-            reason="Common Crawl Index API request failed due to a network or timeout error.",
-            crawl_index=crawl_index,
+            url_pattern,
+            settings.timeout_seconds,
+            attempt,
+            _MAX_ATTEMPTS,
+            request_url,
         )
 
-    if response.status_code != 200:
-        logger.warning(
-            "Common Crawl Index API returned non-200 index=%s domain=%s status=%d body_preview=%s",
-            crawl_index,
-            normalized_domain,
-            response.status_code,
-            _body_preview(response.text),
-        )
+        try:
+            response = httpx.get(
+                url,
+                params=params,
+                headers={"User-Agent": settings.user_agent},
+                timeout=settings.timeout_seconds,
+            )
+        except httpx.TransportError as exc:
+            # error_type (e.g. "RemoteProtocolError" vs "ReadTimeout" vs
+            # "ConnectError") is what distinguishes an abrupt disconnect
+            # or immediate connection failure from a genuine read
+            # timeout — Render observed RemoteProtocolError ("Server
+            # disconnected without sending a response"), which happens
+            # instantly and is unaffected by COMMON_CRAWL_TIMEOUT_SECONDS,
+            # so a short retry is the actual fix rather than a longer
+            # timeout.
+            last_error_type = exc.__class__.__name__
+            logger.warning(
+                "Common Crawl Index API request failed index=%s domain=%s attempt=%d/%d error_type=%s error=%s",
+                crawl_index,
+                normalized_domain,
+                attempt,
+                _MAX_ATTEMPTS,
+                exc.__class__.__name__,
+                exc,
+            )
+            if attempt < _MAX_ATTEMPTS:
+                delay = _next_retry_delay(attempt)
+                logger.info(
+                    "Common Crawl Index API request retrying index=%s domain=%s next_attempt=%d/%d delay=%s",
+                    crawl_index,
+                    normalized_domain,
+                    attempt + 1,
+                    _MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            logger.warning(
+                "Common Crawl Index API request exhausted retries index=%s domain=%s attempts=%d last_error_type=%s",
+                crawl_index,
+                normalized_domain,
+                _MAX_ATTEMPTS,
+                last_error_type,
+            )
+            return CommonCrawlIndexResult(
+                status="unavailable",
+                reason="Common Crawl Index API request failed due to a network or timeout error.",
+                crawl_index=crawl_index,
+            )
+        except httpx.HTTPError as exc:
+            # A non-transport HTTPError is not retried — unexpected and
+            # unlikely to be transient.
+            logger.warning(
+                "Common Crawl Index API request failed index=%s domain=%s attempt=%d/%d error_type=%s error=%s",
+                crawl_index,
+                normalized_domain,
+                attempt,
+                _MAX_ATTEMPTS,
+                exc.__class__.__name__,
+                exc,
+            )
+            return CommonCrawlIndexResult(
+                status="unavailable",
+                reason="Common Crawl Index API request failed due to a network or timeout error.",
+                crawl_index=crawl_index,
+            )
+
+        if response.status_code != 200:
+            retryable = response.status_code in _RETRYABLE_STATUS_CODES
+            logger.warning(
+                "Common Crawl Index API returned non-200 index=%s domain=%s attempt=%d/%d status=%d body_preview=%s",
+                crawl_index,
+                normalized_domain,
+                attempt,
+                _MAX_ATTEMPTS,
+                response.status_code,
+                _body_preview(response.text),
+            )
+            if retryable and attempt < _MAX_ATTEMPTS:
+                delay = _next_retry_delay(attempt)
+                logger.info(
+                    "Common Crawl Index API request retrying index=%s domain=%s next_attempt=%d/%d delay=%s",
+                    crawl_index,
+                    normalized_domain,
+                    attempt + 1,
+                    _MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            return CommonCrawlIndexResult(
+                status="unavailable",
+                reason=f"Common Crawl Index API request failed with HTTP {response.status_code}.",
+                crawl_index=crawl_index,
+            )
+
+        candidates = _parse_candidates(response.text, crawl_index, settings.max_results)
+        if attempt > 1:
+            logger.info(
+                "Common Crawl Index API request succeeded index=%s domain=%s attempt=%d/%d candidates=%d",
+                crawl_index,
+                normalized_domain,
+                attempt,
+                _MAX_ATTEMPTS,
+                len(candidates),
+            )
+        if not candidates:
+            return CommonCrawlIndexResult(
+                status="unavailable",
+                reason="Common Crawl index result was empty.",
+                crawl_index=crawl_index,
+            )
+
         return CommonCrawlIndexResult(
-            status="unavailable",
-            reason=f"Common Crawl Index API request failed with HTTP {response.status_code}.",
+            status="real",
+            reason=f"Common Crawl Index API request succeeded ({len(candidates)} candidate(s)).",
             crawl_index=crawl_index,
+            candidates=candidates,
         )
 
-    candidates = _parse_candidates(response.text, crawl_index, settings.max_results)
-    if not candidates:
-        return CommonCrawlIndexResult(
-            status="unavailable",
-            reason="Common Crawl index result was empty.",
-            crawl_index=crawl_index,
-        )
-
+    # Unreachable: every branch above either `continue`s (only when
+    # attempt < _MAX_ATTEMPTS) or returns.
     return CommonCrawlIndexResult(
-        status="real",
-        reason=f"Common Crawl Index API request succeeded ({len(candidates)} candidate(s)).",
+        status="unavailable",
+        reason="Common Crawl Index API request failed due to a network or timeout error.",
         crawl_index=crawl_index,
-        candidates=candidates,
     )
