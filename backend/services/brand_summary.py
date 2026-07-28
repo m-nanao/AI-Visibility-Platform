@@ -64,7 +64,20 @@ _SOURCE_TYPE_LABELS: dict[str, str] = {
     "web_fetch": "Webページ",
     "user_provided": "入力テキスト",
     "development_sample": "開発用サンプル",
-    "common_crawl": "Common Crawl（未実装）",
+    # Common Crawl integration is implemented (see
+    # services/common_crawl_document_provider.py) — this label only
+    # ever appears when a Document with this sourceType was actually
+    # added to the analyzed Document[] (i.e. commonCrawlMode="domain"
+    # succeeded), so "未実装" would be inaccurate here. "補完"
+    # ("supplementary") reflects that Common Crawl is an auxiliary
+    # input source, not a measured AI platform — see module docstring.
+    # Display name is provisional pending client confirmation (see
+    # docs/13_common_crawl_mvp_design.md "11. 依頼者確認が必要な点").
+    "common_crawl": "Common Crawl補完",
+    # DataForSEO is not (and is not expected to become) a Document
+    # source — it only ever feeds aiOverviewComparison, never this
+    # sourceType label — but the entry is kept for defensive coverage
+    # of DocumentSourceType's full value set.
     "dataforseo": "DataForSEO（未実装）",
 }
 
