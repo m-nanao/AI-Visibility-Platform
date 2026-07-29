@@ -5,9 +5,10 @@
 ## 依頼者・非エンジニア向け（まずこの順で読む）
 
 1. [16_requester_overview.md](./16_requester_overview.md) — **MVPの現状まとめ**。何ができて何ができないか、Common Crawl補完の位置づけ、今後の拡張候補を平易な言葉で説明する。依頼者側AIに現状を説明させる場合は、まずこれを読ませる。
-2. [15_requester_review_items.md](./15_requester_review_items.md) — **依頼者への確認事項**。サービス説明・Common Crawl補完・AI Overview/ChatGPT観測の表現・用語・未取得時の表示・今後の優先順位について、確認したいこと・推奨方針・そのまま投げられる質問文・回答前の仮置き方針をまとめる。
-3. [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md) — Common Crawl補完の設計。特に冒頭の「0. 現行設計まとめ」は現行の挙動を簡潔にまとめており、2章以降は開発の経緯を記録した設計ログ。
-4. [02_roadmap.md](./02_roadmap.md) — フェーズ別ロードマップ。今できていること（Current/Done）・次にやること（Next）・将来の拡張候補（Later）が分かる。
+2. [17_usage_guide.md](./17_usage_guide.md) — **使い方ガイド**。入力項目・入力例・デモ用おすすめ入力例・結果画面の見方・Common Crawl補完の表示の読み方を、技術仕様ではなく操作手順として説明する。
+3. [15_requester_review_items.md](./15_requester_review_items.md) — **依頼者への確認事項**。サービス説明・Common Crawl補完・AI Overview/ChatGPT観測の表現・用語・未取得時の表示・今後の優先順位について、確認したいこと・推奨方針・そのまま投げられる質問文・回答前の仮置き方針をまとめる。
+4. [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md) — Common Crawl補完の設計。特に冒頭の「0. 現行設計まとめ」は現行の挙動を簡潔にまとめており、2章以降は開発の経緯を記録した設計ログ。
+5. [02_roadmap.md](./02_roadmap.md) — フェーズ別ロードマップ。今できていること（Current/Done）・次にやること（Next）・将来の拡張候補（Later）が分かる。
 
 ## 開発者向け
 
