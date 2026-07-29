@@ -2,7 +2,7 @@
 
 別チャット・将来のAI（ChatGPT・Claude Code問わず）が、このプロジェクトの「今」を素早く把握するための1ファイル。詳細な経緯は各docsを参照。このファイルは**要点のみ**を保ち、詳細を書きたくなったら該当するdocsへ書いて、ここからはリンクする。
 
-依頼者・非エンジニア・依頼者側AIに現状を説明する場合は、このファイルとあわせて[16_requester_overview.md](./16_requester_overview.md)（非エンジニア向けの現状まとめ）を参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。**MVPの使い方ガイド（入力例・結果画面の見方）は[17_usage_guide.md](./17_usage_guide.md)に追加した**——デモ用おすすめ入力例はブランド名「サイボウズ」／URL`https://cybozu.co.jp/`／補完対象ドメイン`cybozu.co.jp`（実際にCommon Crawl補完成功の実績あり）。Common Crawl補完は**成功時（取得済み・件数表示・重複除外表示）と未取得時（通常分析は継続される旨の表示）の両方**を同ファイルで説明している。
+依頼者・非エンジニア・依頼者側AIに現状を説明する場合は、このファイルとあわせて[16_requester_overview.md](./16_requester_overview.md)（非エンジニア向けの現状まとめ）を参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。**MVPの使い方ガイド（入力例・結果画面の見方）は[17_usage_guide.md](./17_usage_guide.md)に追加した**——デモ用おすすめ入力例はブランド名「サイボウズ」／URL`https://cybozu.co.jp/`／補完対象ドメイン`cybozu.co.jp`（実際にCommon Crawl補完成功の実績あり）。Common Crawl補完は**成功時（取得済み・件数表示・重複除外表示）と未取得時（通常分析は継続される旨の表示）の両方**を同ファイルで説明している。**依頼者への確認事項は[15_requester_review_items.md](./15_requester_review_items.md)に集約している**（サービス説明・Common Crawl・AI Overview/ChatGPT観測の表現・用語・優先順位）——回答前の仮置き方針は「断定表現を避け、Common Crawlを補助データとして扱う」（詳細は同ファイル参照）。
 
 **最終更新日: 2026-07-29（`main`最新コミットまで反映済み）**
 
@@ -157,6 +157,6 @@
 - 公開手順: [09_deployment.md](./09_deployment.md)
 - デモ提出用チェックリスト（推奨env・入力例・見せる順番）: [12_demo_readiness.md](./12_demo_readiness.md)
 - Common Crawl最小連携の設計（MVP）: [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)
-- Common Crawl関連 依頼者確認用メモ（表示名・説明文・改善提案文言）: [15_requester_review_items.md](./15_requester_review_items.md)
+- 依頼者確認事項まとめ（サービス説明・Common Crawl・AI Overview/ChatGPT観測の表現・用語・優先順位、依頼者へ投げる質問文と仮置き方針を含む）: [15_requester_review_items.md](./15_requester_review_items.md)
 - AI協調開発フロー（Claude Codeの中断・再開ルールを含む）: [10_ai_development_workflow.md](./10_ai_development_workflow.md)
 - タスク依頼・レビュー・中断/再開時の報告フォーマット: [task_template.md](./task_template.md) / [review_template.md](./review_template.md)
