@@ -2,6 +2,18 @@
 
 **このドキュメントは元々設計のみのタスクとして作成された。** その後、2026-07-28に`feature/common-crawl-index-client`で9章のStep 2〜4（settings追加・Index API clientの追加・Index検索のみのテスト）を、`feature/common-crawl-warc-fetch`で9章のStep 6（WARCレコード取得・HTML抽出、最大1件）を、`feature/common-crawl-document-provider`で9章のStep 7（`Document[]`化）を、`feature/common-crawl-analyze-integration`で9章のStep 8（`/analyze`統合、UIなし）を、続く`feature/common-crawl-ui-selector`で9章のStep 9（UI selector追加）を実装済み——**これで9章の実装ステップ2〜9すべてが完了した**。その後、`fix/cooccurrence-noise-filter`で共起語ランキングのノイズ語対策（12章）を、`feature/common-crawl-multiple-documents`で最大1件→最大3件への複数件取得拡張（13章）を実装済み。ただし表示名・説明文・注意書きの文言はすべて依頼者確認前の仮のものである点に変わりはない（11章参照）。実装済み範囲の詳細は[backend/README.md](../backend/README.md)の「Common Crawl最小連携」節を参照。
 
+## 0. 現行設計まとめ（2026-07-29時点）
+
+2章以降は開発の経緯を時系列で記録した設計ログ（21章以降は特にRenderでの障害調査ログの性質が強い）。**現行の設計・挙動を素早く把握したい場合はこの章だけを読めば足りる**——依頼者・非エンジニア向けのやさしい説明は[16_requester_overview.md](./16_requester_overview.md)を参照。
+
+- **Common Crawlは補助データである**。既存のURL入力・Documentに、Common Crawl由来のDocumentを最大3件まで補助的に追加する仕組みであり、Common Crawlが分析の主役や必須の入力になることはない（`COMMON_CRAWL_ENABLED=false`のままでも通常分析は完全に成立する）。
+- **Common CrawlはAIの学習内容そのものを保証しない**。「このページがCommon Crawlに存在する＝特定のAIモデルが必ず学習している」という意味では全くなく、あくまで「AIが参照・学習し得るWeb上の情報環境の一断面」を推定するための入力の1つに過ぎない（[01_requirements.md](./01_requirements.md)「重要な前提（スコープの境界）」、1章参照）。
+- **Common Crawl Index APIは不安定であるため、fail-fastする**。同じqueryでも成功する場合・504になる場合・Render環境ではReadTimeoutになる場合があることを手動確認・Renderログの双方で確認済み（21〜27章）。retry・query variant fallback・transport fallback（`default`/`no-env`/`urllib`）・exact-domain query variantを積み重ねても解消しなかったため、Index API検索全体に同期処理用のfail-fast budget（`COMMON_CRAWL_INDEX_BUDGET_SECONDS`、デフォルト8秒、27章参照）を設け、一定時間内に完了しなければ補完取得を諦める設計にしている。
+- **成功時は`Document`型へ変換し、既存の分析パイプラインへそのまま混ぜる**。Common Crawl Index API検索→WARC取得→HTML抽出→`Document`変換（`sourceType: "common_crawl"`）まで通れば、既存のCleaner/Normalizer/Chunker/Analyzerを一切変更せず、他のDocumentと全く同じ経路で共起語ランキング・文脈分析・ブランド認知サマリー・改善提案へ反映される（9章、13章）。
+- **失敗時は通常分析をそのまま継続する**。domain未確定・Index検索失敗/0件・WARC fetch失敗・Document変換失敗・fail-fast budget超過、いずれの場合も`/analyze`全体は失敗させず、`meta.commonCrawlProvider.status="unavailable"`として通常分析結果を返す。画面表示にも「通常分析は継続されています」と明記している（28章）。
+- **画面表示では、取得Document件数と重複除外後のURL件数を区別する**。`meta.commonCrawlProvider.documentCount`（実際に取得・変換できたDocumentの生の件数）と`analyzedUrls`（そのうち重複を除いたユニークなURLのリスト）は別の意味を持つフィールドであり、両者が異なる場合（同じURLが複数回クロールされていた場合）は「取得ページ: 1件（取得データ3件から重複除外）」のように差分が分かる形で表示する（19章、28章）。
+- **将来的には、同期取得ではなく非同期job + DB保存 + scheduled crawlが望ましい**。現状は`/analyze`リクエストの中で同期的にCommon Crawl Index API/WARCを叩いているため、外部APIの不安定さの影響を受けやすい。本格運用する場合は、Common Crawl検索・WARC取得を非同期job化してDBへ保存し、`/analyze`時は保存済みデータを参照するだけの構成にするのが安全（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
+
 ## 1. 目的
 
 - Web上に存在するブランド関連ページを、ユーザー入力URL（`urls`）だけでなくCommon Crawlから補完し、解析対象の母集団を広げる。

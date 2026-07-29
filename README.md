@@ -4,6 +4,8 @@
 
 **現在MVP開発中です。** 要件・ロードマップ・API設計などの詳細は [docs/](docs/01_requirements.md) を、開発時の規約は [CLAUDE.md](CLAUDE.md) を参照してください。Python製の分析API（土台のみ）は [backend/](backend/README.md) にあります。
 
+- ドキュメント全体の索引・読む順番は [docs/00_index.md](docs/00_index.md) を参照
+- 依頼者・非エンジニア向けのMVP現状まとめは [docs/16_requester_overview.md](docs/16_requester_overview.md) を参照
 - 現状のまとめ（実装済み/ダミーの機能・公開URL・既知の課題）は [docs/development_status.md](docs/development_status.md) を参照
 - 公開・デプロイ手順は [docs/09_deployment.md](docs/09_deployment.md) を参照
 - ChatGPT・Claude Codeによる開発運用フローは [docs/10_ai_development_workflow.md](docs/10_ai_development_workflow.md) を参照

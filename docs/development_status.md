@@ -2,7 +2,9 @@
 
 別チャット・将来のAI（ChatGPT・Claude Code問わず）が、このプロジェクトの「今」を素早く把握するための1ファイル。詳細な経緯は各docsを参照。このファイルは**要点のみ**を保ち、詳細を書きたくなったら該当するdocsへ書いて、ここからはリンクする。
 
-**最終更新日: 2026-07-29**
+依頼者・非エンジニア・依頼者側AIに現状を説明する場合は、このファイルとあわせて[16_requester_overview.md](./16_requester_overview.md)（非エンジニア向けの現状まとめ）を参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+
+**最終更新日: 2026-07-29（`main`最新コミットまで反映済み）**
 
 ## 現在のフェーズ
 
@@ -88,7 +90,7 @@
 
 ## 未接続の外部サービス・機能
 
-- Common Crawl（Phase 3、settings + Index API検索クライアント + WARC fetch/HTML extraction service + `Document[]`変換service + `/analyze`統合（最大3件・最大5候補試行） + 検証用UI selector + 改善提案への軽い反映（`status`に応じた1件） + status表示の整理（off/unavailable時の非技術的な文言化） + 取得ページ一覧の表示（`analyzedUrls`） + Index API失敗時の診断ログ強化 + Index API retry追加 + Index API query形式fallback追加 + Index API request headers明示 + Index API trust_env=False fallback追加 + Index API urllib fallback追加 + Index API exact-domain query variant追加まで実装済み・2026-07-29。診断ログでRender上の実際の失敗原因（`httpx.RemoteProtocolError`）が判明し、retry・query fallback・headers明示・trust_env=False・urllib fallbackを追加後も全パターンで失敗し続けたため、手動確認で判明したwildcard queryの不安定さを踏まえ、wildcardなしのexact-domain query variantを追加済み（実環境での再検証は未実施。表示名・説明文・改善提案文言・「取得ページ」ラベルの依頼者確認は未着手）。デフォルトoff（`COMMON_CRAWL_ENABLED=false`・`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=false`）で、通常の画面・挙動には未反映——検証時のみ両方をtrueにした場合に動作する。詳細は上記「実装済み機能」・[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)参照）
+- Common Crawl（Phase 3、settings + Index API検索クライアント + WARC fetch/HTML extraction service + `Document[]`変換service + `/analyze`統合（最大3件・最大5候補試行） + 検証用UI selector + 改善提案への軽い反映（`status`に応じた1件） + status表示の整理（off/unavailable時の非技術的な文言化） + 取得ページ一覧の表示（`analyzedUrls`） + Index API失敗時の診断ログ強化 + Index API retry追加 + Index API query形式fallback追加 + Index API request headers明示 + Index API trust_env=False fallback追加 + Index API urllib fallback追加 + Index API exact-domain query variant追加 + Index API fail-fast budget追加 + 補完ステータス/取得ページ表示の整理まで実装済み・2026-07-29。**手動確認・Renderログの双方でCommon Crawl Index API自体が不安定であることを確認済み**（同じqueryでもJSONが返る場合・504になる場合・Render環境ではReadTimeoutになる場合があり、何度か試すと成功することもある）。retry・query fallback・headers明示・trust_env=False・urllib fallback・exact-domain query variantを積み重ねても解消しなかったため、**Index API検索全体に同期処理用のfail-fast budget（`COMMON_CRAWL_INDEX_BUDGET_SECONDS`、デフォルト8秒）を追加し、一定時間内に完了しなければCommon Crawl補完を諦めて通常分析結果をそのまま返す**設計にした。成功時は取得したDocument件数（`documentCount`）と重複除外後のユニークURL件数（`analyzedUrls.length`）が異なる場合があり、画面には「取得ページ: 1件（取得データ3件から重複除外）」のように両方が分かる形で表示する（実環境での継続再検証・表示名/説明文/改善提案文言/「取得ページ」ラベルの依頼者確認は未着手）。デフォルトoff（`COMMON_CRAWL_ENABLED=false`・`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR=false`）で、通常の画面・挙動には未反映——検証時のみ両方をtrueにした場合に動作する。依頼者・非エンジニア向けの説明は[16_requester_overview.md](./16_requester_overview.md)にまとめた。詳細は上記「実装済み機能」・[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)参照）
 - DataForSEO **Live** APIの常時運用・自動スケジュール実行（Phase 3、未着手。Sandboxへの基本接続、および手動確認用ゲート付きのLive接続はPhase 4側で実装済み、[11_architecture_v1.md](./11_architecture_v1.md)参照）
 - PostgreSQL（Phase 5、未着手。分析結果は保存されず、画面をリロードすると消える）
 - 認証・ユーザー管理（Phase 6、未着手）
@@ -125,6 +127,7 @@
 - AI Overview比較（`ai_overview_provider.py`）は`mock`/`off`/`dataforseo`のprovider切り替え基盤・認証情報/実行安全ルールの設計（`dataforseo_settings.py`）・DataForSEO **Sandbox**への実接続（`dataforseo_client.py`）に加え、**5つの手動確認用ゲートが揃った場合に限るLive本番API接続**まで完了している。`dataforseo`モード＋`DATAFORSEO_API_ENV=live`でも、いずれかのゲート（`DATAFORSEO_LIVE_API_ENABLED`/`DATAFORSEO_LIVE_CONFIRM_TEXT`/`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE`/認証情報）が欠けていれば外部APIは呼ばれず`"unavailable"`になる。常時のLive運用・自動スケジュール実行は今回も未着手。またSandboxのレスポンスは実際の本番SERPデータではなくテスト用モックデータである点（Live接続時のレスポンスは実際の本番SERPデータであり費用が発生し得る点）、Google AI OverviewとGoogle AI Modeが同一のレスポンス構造で表現されるかはSandboxでのみ確認済みでLive本番ホストに対する検証は未実施である点にも注意（[11_architecture_v1.md](./11_architecture_v1.md)参照）。
 - `ownDomainReferenced`（2026-07-23追加）はリクエストの`urls`のドメインと`references`のドメインの単純な文字列一致にとどまり、参照元ページの実際の内容確認・スコアリング・競合ドメインの分類は行わない。`references`自体もDataForSEOが返した`title`/`domain`/`url`等のメタ情報のみで、参照先ページを実際にフェッチして内容を検証することはしない。`references[].category`/`referenceSummary`（同日追加）も同様に、小さなハードコードdomainリストとの照合によるルールベース簡易分類にとどまる——AIによる分類や高精度なニュース/メディア判定ではなく、`"media"`カテゴリは値として予約されているのみで現時点では何も分類されない。
 - ChatGPT相当モデルの1問観測（`chatgpt_provider.py`）はOpenAI APIのモデルへの1回の質問と回答にとどまり、ChatGPTアプリ画面そのものの内部認識を再現するものではない。Web検索・参照元付き回答は使わず、`rank`/`references`/`referenceSummary`/`ownDomainReferenced`も持たない（すべて`None`固定）。1 `/analyze`あたり最大1回に固定しているため、複数回の質問による傾向把握はできない（[11_architecture_v1.md](./11_architecture_v1.md)参照）。`CHATGPT_TEMPERATURE`（デフォルト`0.2`、2026-07-28追加）により回答のばらつきは抑えているが、`temperature`は完全に`0`ではないため毎回一言一句同じ回答になることは保証されない（デモ・検証時の安定性向上が目的であり、決定論的な再現ではない）。また`gpt-5`系モデル（`gpt-5`/`gpt-5-mini`等）は`temperature`パラメータ自体を受け付けないため、`chatgpt_client.py`がモデル名で判定してリクエストボディから自動的に省略する（2026-07-28追加、`should_send_temperature()`）——`gpt-4.1`系/`gpt-4o`系では引き続き`temperature`が送信される。
+- **Common Crawl Index APIは外部APIとして不安定**（`fix/common-crawl-index-fail-fast-budget`調査時に確認）。同じqueryでも成功してJSONが返る場合・504になる場合・Render環境ではReadTimeoutになる場合があり、何度か試すと成功することもある。retry・query variant fallback・transport fallback（`default`/`no-env`/`urllib`）・exact-domain query variantといった対策を積み重ねたが、Common Crawl Index API側の不安定さそのものは解消できていない。そのため、**Common Crawlはあくまで補助データという位置づけとし、取得できた場合のみ分析に加え、取得できない場合（budget超過を含む）でも通常分析（共起語ランキング・文脈分析・ブランド認知サマリー・改善提案・AI Overview比較等）は必ず継続して結果を返す**設計にしている（`status="unavailable"`時の画面表示にも「通常分析は継続されています」と明記）。同期`/analyze`の中で不安定な外部APIを待ち続けないよう、fail-fast budget（デフォルト8秒、`COMMON_CRAWL_INDEX_BUDGET_SECONDS`）で一定時間を超えたら諦める設計にしているため、Common Crawl Index APIの不安定さがアプリ全体の応答性を損なうことはない。次の推奨フェーズは、同期実行そのものをやめて**非同期job化・DB保存・定期取得（scheduled crawl）**へ移行すること（[02_roadmap.md](./02_roadmap.md)のNext/Later欄、[16_requester_overview.md](./16_requester_overview.md)「9. 今後の拡張候補」参照）。
 - `documents`（文章を直接渡す入力）にはまだ画面からの入力UIがない（`urls`のみUIがある）。
 - URL取得はrobots.txt確認・レート制限・DNS rebinding対策が未実装（運用者の責任として文書化のみ、[backend/README.md](../backend/README.md)参照）。
 - ~~GitHub ActionsでNode.js 20 deprecation warning~~ → 調査済み・対応済み（2026-07-15）。GitHubがActions runner上のNode.js 20ランタイムを段階的に廃止しており（2026-06-16よりNode24がデフォルト、2026-09-16に完全廃止予定）、`actions/checkout`・`actions/setup-node`・`actions/setup-python`がNode.js 20ランタイムで動いていることに起因する警告だった。`.github/workflows/ci.yml`の各actionを、Node24対応が確認できるバージョン（`actions/checkout@v5`、`actions/setup-node@v5`、`actions/setup-python@v6`）へ更新して解消した。**アプリのビルド/テストに使う`node-version: "20"`（Next.js 16系の要件）とは無関係**であり、これは変更していない。
@@ -143,6 +146,8 @@
 
 ## 関連ドキュメント
 
+- docs全体の索引・読む順番: [00_index.md](./00_index.md)
+- 依頼者・非エンジニア向け現状まとめ: [16_requester_overview.md](./16_requester_overview.md)
 - 要件・スコープ: [01_requirements.md](./01_requirements.md)
 - ロードマップ: [02_roadmap.md](./02_roadmap.md)
 - タスク一覧（詳細）: [05_tasks.md](./05_tasks.md)

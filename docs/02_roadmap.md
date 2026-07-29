@@ -64,7 +64,7 @@
   - DB persistence（Common Crawl検索結果の永続化）
   - scheduled crawl（定期的なCommon Crawl再検索・キャッシュ更新）
   - 依頼者確認後の文言調整（[15_requester_review_items.md](./15_requester_review_items.md)の確認項目をもとに、表示名・説明文・改善提案文言を確定させる）
-- **Later（将来）**: historical comparison（時系列比較）、competitor comparison（競合比較）、source weighting（複数データソースの重み付け統合）、async job queue（非同期ジョブキュー化）
+- **Later（将来）**: historical comparison（時系列比較）、competitor comparison（競合比較）、source weighting（複数データソースの重み付け統合）、async job queue（非同期ジョブキュー化）、report export（レポート出力）
 
 目安: 3〜4週間（データソースの契約・API調査を含む）。ただしCommon Crawl自体は認証不要の公開データセットのため、契約は不要。
 
