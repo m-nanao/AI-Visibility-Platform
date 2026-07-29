@@ -2,7 +2,7 @@
 
 別チャット・将来のAI（ChatGPT・Claude Code問わず）が、このプロジェクトの「今」を素早く把握するための1ファイル。詳細な経緯は各docsを参照。このファイルは**要点のみ**を保ち、詳細を書きたくなったら該当するdocsへ書いて、ここからはリンクする。
 
-依頼者・非エンジニア・依頼者側AIに現状を説明する場合は、このファイルとあわせて[16_requester_overview.md](./16_requester_overview.md)（非エンジニア向けの現状まとめ）を参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+依頼者・非エンジニア・依頼者側AIに現状を説明する場合は、このファイルとあわせて[16_requester_overview.md](./16_requester_overview.md)（非エンジニア向けの現状まとめ）を参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。**MVPの使い方ガイド（入力例・結果画面の見方）は[17_usage_guide.md](./17_usage_guide.md)に追加した**——デモ用おすすめ入力例はブランド名「サイボウズ」／URL`https://cybozu.co.jp/`／補完対象ドメイン`cybozu.co.jp`（実際にCommon Crawl補完成功の実績あり）。Common Crawl補完は**成功時（取得済み・件数表示・重複除外表示）と未取得時（通常分析は継続される旨の表示）の両方**を同ファイルで説明している。
 
 **最終更新日: 2026-07-29（`main`最新コミットまで反映済み）**
 
@@ -148,6 +148,7 @@
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
 - 依頼者・非エンジニア向け現状まとめ: [16_requester_overview.md](./16_requester_overview.md)
+- MVP使い方ガイド（入力例・デモ用おすすめ入力例・結果画面の見方）: [17_usage_guide.md](./17_usage_guide.md)
 - 要件・スコープ: [01_requirements.md](./01_requirements.md)
 - ロードマップ: [02_roadmap.md](./02_roadmap.md)
 - タスク一覧（詳細）: [05_tasks.md](./05_tasks.md)
