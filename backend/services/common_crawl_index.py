@@ -245,14 +245,6 @@ def _remaining_budget_seconds(deadline: float) -> float:
     return deadline - time.monotonic()
 
 
-def _search_budget_exhausted_result(crawl_index: str) -> CommonCrawlIndexResult:
-    return CommonCrawlIndexResult(
-        status="unavailable",
-        reason="Common Crawl Index API request failed due to a network or timeout error.",
-        crawl_index=crawl_index,
-    )
-
-
 def _log_search_budget_exhausted(
     crawl_index: str,
     normalized_domain: str,
@@ -275,13 +267,6 @@ def _log_search_budget_exhausted(
         "Common Crawl Index API search stopped by budget index=%s domain=%s",
         crawl_index,
         normalized_domain,
-    )
-
-
-def _collinfo_budget_exhausted_resolution() -> CommonCrawlIndexResolution:
-    return CommonCrawlIndexResolution(
-        success=False,
-        reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
     )
 
 
@@ -477,6 +462,27 @@ class CommonCrawlIndexResult:
     reason: str
     crawl_index: str | None = None
     candidates: tuple[CommonCrawlCandidate, ...] = ()
+
+
+# Defined here (after CommonCrawlIndexResolution/CommonCrawlIndexResult,
+# rather than alongside the other budget helpers above) because their
+# return type annotations reference those classes — Python evaluates
+# annotations at `def` time on the Python versions this backend targets
+# (3.11 on Render), so defining these before the classes they reference
+# raises `NameError` at import time.
+def _search_budget_exhausted_result(crawl_index: str) -> CommonCrawlIndexResult:
+    return CommonCrawlIndexResult(
+        status="unavailable",
+        reason="Common Crawl Index API request failed due to a network or timeout error.",
+        crawl_index=crawl_index,
+    )
+
+
+def _collinfo_budget_exhausted_resolution() -> CommonCrawlIndexResolution:
+    return CommonCrawlIndexResolution(
+        success=False,
+        reason="Common Crawl collinfo.json request failed due to a network or timeout error.",
+    )
 
 
 def _normalize_domain(raw: str) -> str | None:

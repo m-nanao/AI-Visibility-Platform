@@ -1,3 +1,4 @@
+import inspect
 import io
 import json
 import logging
@@ -3246,3 +3247,29 @@ def test_search_and_fetch_latest_index_have_independent_budgets(monkeypatch):
 
     assert result.status == "real"
     assert len(result.candidates) == 1
+
+
+# --- module import order regression (fix/common-crawl-index-result-nameerror) -----
+# `_search_budget_exhausted_result()`/`_collinfo_budget_exhausted_resolution()`
+# (fix/common-crawl-index-fail-fast-budget) were originally defined above
+# CommonCrawlIndexResult/CommonCrawlIndexResolution, which return-annotated
+# a name that didn't exist yet at `def` time. Python evaluates function
+# annotations eagerly at `def` time on the Python version Render actually
+# runs (3.11.9 — see backend/render.yaml), so this raised `NameError: name
+# 'CommonCrawlIndexResult' is not defined` on backend startup — but not
+# locally, since Python 3.14+ defers annotation evaluation (PEP 649) by
+# default, so `import services.common_crawl_index` succeeds locally
+# regardless of this ordering bug. This test locks in the fix (both
+# helpers moved below the classes they return) using source order rather
+# than a runtime import, so it still catches a regression even when run
+# under a Python version where the bug wouldn't otherwise reproduce.
+
+
+def test_budget_exhausted_helpers_are_defined_after_the_classes_they_return():
+    source = inspect.getsource(common_crawl_index)
+    assert source.index("class CommonCrawlIndexResult") < source.index(
+        "def _search_budget_exhausted_result"
+    )
+    assert source.index("class CommonCrawlIndexResolution") < source.index(
+        "def _collinfo_budget_exhausted_resolution"
+    )
