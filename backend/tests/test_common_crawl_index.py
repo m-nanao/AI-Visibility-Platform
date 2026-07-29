@@ -2926,3 +2926,323 @@ def test_search_retry_and_query_fallback_still_work_with_exact_domain_variants(m
     assert result.status == "real"
     assert len(result.candidates) == 1
     assert calls["count"] == 2
+
+
+# --- fail-fast budget (fix/common-crawl-index-fail-fast-budget) -------------
+# Common Crawl's Index API is unreliable enough in practice (the same query
+# can 504 or succeed on consecutive manual attempts) that retry + query
+# fallback + transport fallback alone could still cost up to 45 requests in
+# the worst case (3 transports x 5 variants x 3 attempts). Since Common Crawl
+# is supplementary data for the synchronous /analyze request, every loop
+# level now checks a wall-clock budget (CommonCrawlSettings.
+# index_budget_seconds) first and stops immediately — without trying
+# anything else — once it's exhausted. These tests use a fake monotonic
+# clock (never real time.sleep/time.monotonic) so they stay fast and
+# deterministic.
+
+
+class _FakeClock:
+    """Deterministic stand-in for `time.monotonic()` — advances only when
+    a test explicitly calls `.advance(seconds)`, e.g. as a `fake_get`
+    side effect, so budget exhaustion can be triggered at an exact,
+    reproducible point in the request sequence instead of depending on
+    real wall-clock time.
+    """
+
+    def __init__(self, start: float = 0.0):
+        self._now = start
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+def _patch_clock(monkeypatch, start: float = 0.0) -> _FakeClock:
+    clock = _FakeClock(start)
+    monkeypatch.setattr(common_crawl_index.time, "monotonic", clock.monotonic)
+    return clock
+
+
+def test_search_budget_stops_before_a_new_request_once_exhausted(monkeypatch):
+    # Every attempt "costs" 4 seconds of the 8-second default budget: the
+    # 1st attempt leaves 4s remaining (>= the 1s floor, so a retry sleep
+    # is allowed), but the 2nd attempt leaves 0s remaining — below the 1s
+    # floor — so the 3rd attempt (and every later variant/transport) must
+    # never be attempted.
+    clock = _patch_clock(monkeypatch)
+    sleep_calls = _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        clock.advance(4.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+    # Exactly 2 requests: the budget was exhausted before a 3rd could
+    # start (no retry, no query-variant fallback, no transport fallback).
+    assert calls["count"] == 2
+    # Only 1 retry sleep (before the 2nd attempt) — the budget check
+    # before what would have been the 3rd attempt's sleep stopped it
+    # before `time.sleep` was ever called again.
+    assert len(sleep_calls) == 1
+
+
+def test_search_budget_exhausted_does_not_start_a_request_when_remaining_is_under_one_second(monkeypatch):
+    _patch_clock(monkeypatch)
+
+    def fail_if_called(url, **kwargs):
+        raise AssertionError("no HTTP request should be made once the budget is already exhausted")
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fail_if_called)
+
+    settings = CommonCrawlSettings(
+        enabled=True,
+        index="CC-MAIN-2026-08",
+        max_results=5,
+        timeout_seconds=10.0,
+        user_agent="ua",
+        index_budget_seconds=0.5,
+    )
+    result = search_common_crawl_domain("cybozu.co.jp", settings)
+
+    assert result.status == "unavailable"
+    assert result.reason == "Common Crawl Index API request failed due to a network or timeout error."
+
+
+def test_search_budget_stops_before_query_variant_fallback(monkeypatch):
+    # Exhausts the 1st variant's retries (transport error every attempt),
+    # with a large clock jump on the last attempt so the budget is
+    # already gone by the time the code would otherwise fall back to the
+    # 2nd query variant.
+    clock = _patch_clock(monkeypatch)
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 3:
+            clock.advance(10.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    # Exactly 3 calls: all 3 attempts of the 1st query variant
+    # (exact-domain-unfiltered) — the 2nd variant is never reached.
+    assert calls["count"] == 3
+
+
+def test_search_budget_stops_before_transport_fallback(monkeypatch):
+    # Exhausts every query variant's every attempt under the "default"
+    # transport mode (5 variants x 3 attempts = 15 calls), with a large
+    # clock jump on the very last of those calls so the budget is already
+    # gone by the time the code would otherwise fall back to the
+    # "no-env" transport mode.
+    clock = _patch_clock(monkeypatch)
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 15:
+            clock.advance(10.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "unavailable"
+    # Exactly 15 calls: every variant/attempt under "default" — "no-env"
+    # and "urllib" are never reached.
+    assert calls["count"] == 15
+
+
+def test_search_effective_timeout_is_bounded_by_remaining_budget(monkeypatch):
+    # settings.timeout_seconds (30) is far larger than the budget (8s,
+    # the default) — the request must use the smaller of the two.
+    _patch_clock(monkeypatch)
+    seen_timeouts = []
+
+    def fake_get(url, **kwargs):
+        seen_timeouts.append(kwargs.get("timeout"))
+        return httpx.Response(200, text="", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    settings = CommonCrawlSettings(
+        enabled=True,
+        index="CC-MAIN-2026-08",
+        max_results=5,
+        timeout_seconds=30.0,
+        user_agent="ua",
+    )
+    search_common_crawl_domain("cybozu.co.jp", settings)
+
+    assert seen_timeouts[0] == 8.0
+
+
+def test_search_succeeds_within_budget_without_extra_fallback(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1
+    # Exactly 1 request: exact-domain-unfiltered succeeded immediately,
+    # so no retry, no query-variant fallback, no transport fallback.
+    assert calls["count"] == 1
+    assert clock.monotonic() < 8.0
+
+
+def test_search_request_start_log_includes_budget_fields(monkeypatch, caplog):
+    _patch_clock(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    start_records = [r.message for r in caplog.records if "request start" in r.message]
+    assert len(start_records) == 1
+    assert "budget_seconds=8.0" in start_records[0]
+    assert "remaining_budget_seconds=8.000" in start_records[0]
+
+
+def test_search_logs_budget_exhausted_and_stopped_by_budget(monkeypatch, caplog):
+    clock = _patch_clock(monkeypatch)
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        clock.advance(4.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        search_common_crawl_domain("cybozu.co.jp", _FIXED_INDEX_SETTINGS)
+
+    exhausted_records = [r for r in caplog.records if "budget exhausted" in r.message]
+    stopped_records = [r for r in caplog.records if "search stopped by budget" in r.message]
+    assert len(exhausted_records) == 1
+    assert exhausted_records[0].levelname == "WARNING"
+    assert "elapsed_seconds=" in exhausted_records[0].message
+    assert "budget_seconds=8.0" in exhausted_records[0].message
+    assert len(stopped_records) == 1
+    assert "index=CC-MAIN-2026-08" in stopped_records[0].message
+    assert "domain=cybozu.co.jp" in stopped_records[0].message
+
+
+def test_fetch_latest_index_budget_stops_before_a_new_request_once_exhausted(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    sleep_calls = _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        clock.advance(4.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is False
+    assert "network or timeout" in resolution.reason
+    assert calls["count"] == 2
+    assert len(sleep_calls) == 1
+
+
+def test_fetch_latest_index_budget_stops_before_transport_fallback(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    _patch_sleep(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 3:
+            clock.advance(10.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    resolution = resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    assert resolution.success is False
+    # Exactly 3 calls: all 3 attempts under the "default" transport mode —
+    # "no-env"/"urllib" are never reached.
+    assert calls["count"] == 3
+
+
+def test_fetch_latest_index_logs_budget_exhausted_and_stopped_by_budget(monkeypatch, caplog):
+    clock = _patch_clock(monkeypatch)
+    _patch_sleep(monkeypatch)
+
+    def fake_get(url, **kwargs):
+        clock.advance(4.0)
+        raise httpx.RemoteProtocolError("disconnected", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.common_crawl_index"):
+        resolve_common_crawl_index(_LATEST_SETTINGS)
+
+    exhausted_records = [r for r in caplog.records if "budget exhausted" in r.message]
+    stopped_records = [r for r in caplog.records if "search stopped by budget" in r.message]
+    assert len(exhausted_records) == 1
+    assert "Common Crawl collinfo.json budget exhausted" in exhausted_records[0].message
+    assert len(stopped_records) == 1
+    assert "Common Crawl collinfo.json search stopped by budget" in stopped_records[0].message
+
+
+def test_search_and_fetch_latest_index_have_independent_budgets(monkeypatch):
+    # `settings.index == "latest"` means search_common_crawl_domain() does
+    # a collinfo.json fetch (_fetch_latest_index) *before* the
+    # domain-query search — this test locks in that the two operations
+    # each get their own fresh `index_budget_seconds` window rather than
+    # sharing one, by exhausting almost the whole budget during collinfo
+    # resolution and then still succeeding on the very first domain-query
+    # attempt.
+    clock = _patch_clock(monkeypatch)
+    body = _cdxj_line(url="https://cybozu.co.jp/")
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        if url == common_crawl_index.COLLINFO_URL:
+            clock.advance(7.9)
+            return httpx.Response(
+                200,
+                json=[{"id": "CC-MAIN-2026-08", "name": "CC-MAIN-2026-08"}],
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(common_crawl_index.httpx, "get", fake_get)
+
+    result = search_common_crawl_domain("cybozu.co.jp", _LATEST_SETTINGS)
+
+    assert result.status == "real"
+    assert len(result.candidates) == 1

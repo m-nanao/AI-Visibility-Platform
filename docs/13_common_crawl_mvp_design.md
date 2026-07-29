@@ -517,6 +517,35 @@ httpxでは`RemoteProtocolError`（「Server disconnected without sending a resp
 - **今回変更していないもの**: candidate parsing・画面表示用reason・取得件数（3件上限）・UI・frontend・retry/query-fallback/transport-fallbackのロジック自体・DataForSEO/ChatGPT関連コード・requirements/package.json（新規package追加なし）。
 - **次の課題**: exact-domain query variant追加後、実際にRender環境で失敗が解消するかどうかの再検証。改善しない場合はRender外環境での疎通確認、外部プロキシ/API経由での取得を検討する（[02_roadmap.md](./02_roadmap.md)のNext欄参照）。
 
+## 27. Common Crawl Index API fail-fast budget追加（backend、2026-07-29追記）
+
+前節（26.）のexact-domain query variant追加後も、Renderでexact-domain-unfilteredまで到達しつつ`RemoteProtocolError`/`RemoteDisconnected`で失敗し続ける事象が報告された。手動確認でも、以下のようにCommon Crawl Index API自体が不安定であることが分かった。
+
+- `url=cybozu.co.jp&output=json`が返ることもある
+- 同じURLでも504になることもある
+- `url=cybozu.co.jp/*`も504になることがある
+- 何度か繰り返すとJSONが返ることもある
+
+ここまでretry（最大3回）・query variant fallback（5variant）・transport fallback（`default`/`no-env`/`urllib`）を積み重ねてきた結果、**現在の最悪ケースは3 transport×5 variant×3 attempt=最大45リクエストになり得る**。Common Crawl Index API自体が確率的に不安定である以上、これ以上retry/fallbackの層を積み増しても根本解決にはならず、むしろフロント画面側では「エラーではないが結果確認がしづらい、または長時間待たされる」状態を悪化させるだけになる。
+
+**Common Crawl補完はMVPでは補助データであり、通常の分析結果全体を止めるべきではない**という方針のもと、`fix/common-crawl-index-fail-fast-budget`でIndex API検索全体に同期処理用のfail-fast budgetを追加した。
+
+- **同期MVPの方針**: Common Crawlは外部APIとして不安定なため、`/analyze`のような同期リクエストの中でCommon Crawl補完を待つ場合は、一定時間を超えたら諦めて（fail-fast）通常の分析結果を返す。Common Crawlの不安定さそのものを直す・迂回するアプローチ（retry/query fallback/transport fallback）は21〜26節で相応に積み増し済みであり、これ以上は費用対効果が薄い。将来的には、Common Crawl補完を同期`/analyze`から切り離し、非同期job・DB保存・scheduled crawlによる事前キャッシュへ移行することを検討する（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
+- **budget設定**（`common_crawl_settings.py`）: 新規環境変数`COMMON_CRAWL_INDEX_BUDGET_SECONDS`（デフォルト`8.0`秒、許可範囲`3.0`〜`20.0`秒、範囲外・不正値はデフォルトへフォールバック——既存の`_resolve_timeout_seconds()`と完全に同じパターンの`_resolve_index_budget_seconds()`を追加）。`CommonCrawlSettings`に`index_budget_seconds: float = DEFAULT_INDEX_BUDGET_SECONDS`をデフォルト値付きで追加したため、既存のテスト・呼び出し箇所（`main.py`含む）はいずれも無変更で動作する。
+- **budgetの適用範囲**（`common_crawl_index.py`）: `search_common_crawl_domain()`のdomain検索（`_search_query_variants()`のtransport/query-variant/retryループ全体）と、`_fetch_latest_index()`のcollinfo.json取得（`COMMON_CRAWL_INDEX=latest`時のみ）、それぞれに独立した`settings.index_budget_seconds`秒のbudget windowを設けた——新規`_new_deadline(settings)`（`time.monotonic() + settings.index_budget_seconds`を都度計算）で各操作の開始時に1回だけ絶対deadlineを作り、`_remaining_budget_seconds(deadline)`で随時残りを確認する。2つの操作でbudgetを共有しないのは、両者が概念的に別のIndex API操作であるため（現状`COMMON_CRAWL_INDEX`はCC-MAIN-2026-25固定で検証中のため、Renderでは実質domain検索側のbudgetのみが効く）。
+- **budget確認タイミング**（少なくとも4箇所）:
+  1. 各HTTPリクエスト開始前（`_search_query_variants()`のattemptループ先頭、`_fetch_collinfo_response()`のattemptループ先頭）
+  2. retry sleep前（transport error・retryable非200のいずれの`time.sleep()`呼び出し前も）
+  3. query variant fallback前（retry全滅によるfallback、および0件による`allow_empty_fallback`fallbackの両方）
+  4. transport fallback前（`search_common_crawl_domain()`/`_fetch_latest_index()`いずれの transport ループも）
+- **budget超過時の挙動**: 残りbudgetが`_MIN_REQUEST_BUDGET_SECONDS`（1秒）を下回っていたら、残りのretry/variant/transportがあってもすべて中断し、即座に`CommonCrawlIndexResult(status="unavailable", reason=...)`（collinfo.jsonは`CommonCrawlIndexResolution(success=False, reason=...)`）を返す。**`reason`は従来のnetwork/timeout系文言のまま変更していない**（`"Common Crawl Index API request failed due to a network or timeout error."`/`"Common Crawl collinfo.json request failed due to a network or timeout error."`）——画面表示用の日本語reason分類（`app/lib/meta-label.ts`）への影響は一切ない。
+- **effective timeout**: 各HTTPリクエストに渡すtimeoutは`effective_timeout = min(settings.timeout_seconds, remaining_budget_seconds)`。`COMMON_CRAWL_TIMEOUT_SECONDS=30`のような大きな値を設定していても、残りbudgetがそれより小さければ残りbudget側が優先される——1回のリクエストだけでbudget全体を使い切ってしまう事態を防ぐ。残りbudgetが1秒未満の場合はHTTPリクエスト自体を発行しない。
+- **ログ**: request開始ログ（INFO）に新規`budget_seconds=%s remaining_budget_seconds=%.3f`を追加した（既存の`timeout=%s`表示は`settings.timeout_seconds`のまま変更していない——実際に使う`effective_timeout`とは別の表示のため、既存テストの期待値と衝突しない）。budget超過時は`Common Crawl Index API budget exhausted index=... domain=... transport_mode=... query_variant=... elapsed_seconds=... budget_seconds=...`（WARNING）と`Common Crawl Index API search stopped by budget index=... domain=...`（INFO）を続けて出す（collinfo.jsonはそれぞれ`Common Crawl collinfo.json budget exhausted transport_mode=... elapsed_seconds=... budget_seconds=...`/`Common Crawl collinfo.json search stopped by budget`）。
+- **既存fallbackとの関係**: exact-domain/wildcard query variant・retry（最大3回）・query-variant fallback（0件によるものと失敗によるもの両方）・transport fallback（`default`/`no-env`/`urllib`）は**いずれも削除していない**——budgetを超えた時点でそれらの「残り」を試すのをやめるだけで、budget内であれば従来どおりすべて動作する。
+- **成功時の挙動**: budget内で成功した場合の`candidate parsing`（`_parse_candidates()`）・返り値の形状は変更していない。
+- **今回変更していないもの**: フロントエンド・UI表示（画面表示は現行のまま「Common Crawl補完: 補完データ未取得」＋「理由: Common Crawl補完の取得処理が完了しませんでした」——今回のタスクではUI変更をしていない。ただし結果としてフロントは長時間待たされにくくなる）、Common Crawl取得件数（3件上限）、WARC fetch retry、外部プロキシ/API実装、DataForSEO/ChatGPT関連コード、新規package/requirements、Render/Vercel環境変数（`COMMON_CRAWL_INDEX_BUDGET_SECONDS`は未設定でもデフォルト8秒で動作するため、既存のRender環境変数設定を変更する必要はない）。
+- **次の課題**: fail-fast budget追加後、実際にRender環境での応答時間・成功率がどう変化するかの再検証。Common Crawl補完を同期`/analyze`から完全に切り離す非同期job化、検索結果のDB永続化、定期的なscheduled crawlによる事前キャッシュが次の検討候補（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

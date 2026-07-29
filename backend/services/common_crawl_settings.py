@@ -43,6 +43,17 @@ DEFAULT_USER_AGENT = "AI-Visibility-Platform-MVP"
 # protocol requirement.
 MAX_USER_AGENT_LENGTH = 200
 
+# Common Crawl's Index API is unreliable in practice (observed both
+# manually and in Render logs: the same query can 504 or succeed on
+# consecutive attempts). Common Crawl is supplementary data for the
+# synchronous /analyze request, so the whole Index API search (retries,
+# query-variant fallback, transport fallback, and — separately —
+# collinfo.json resolution when COMMON_CRAWL_INDEX=latest) is capped by
+# this wall-clock budget instead of being allowed to run unbounded.
+DEFAULT_INDEX_BUDGET_SECONDS = 8.0
+MIN_INDEX_BUDGET_SECONDS = 3.0
+MAX_INDEX_BUDGET_SECONDS = 20.0
+
 
 @dataclass(frozen=True)
 class CommonCrawlSettings:
@@ -59,6 +70,7 @@ class CommonCrawlSettings:
     max_results: int
     timeout_seconds: float
     user_agent: str
+    index_budget_seconds: float = DEFAULT_INDEX_BUDGET_SECONDS
 
 
 def _resolve_enabled() -> bool:
@@ -151,6 +163,33 @@ def _resolve_user_agent() -> str:
     return raw
 
 
+def _resolve_index_budget_seconds() -> float:
+    raw = os.environ.get(
+        "COMMON_CRAWL_INDEX_BUDGET_SECONDS", str(DEFAULT_INDEX_BUDGET_SECONDS)
+    ).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "COMMON_CRAWL_INDEX_BUDGET_SECONDS=%r is not a number; falling back to %s",
+            raw,
+            DEFAULT_INDEX_BUDGET_SECONDS,
+        )
+        return DEFAULT_INDEX_BUDGET_SECONDS
+
+    if value < MIN_INDEX_BUDGET_SECONDS or value > MAX_INDEX_BUDGET_SECONDS:
+        logger.warning(
+            "COMMON_CRAWL_INDEX_BUDGET_SECONDS=%s is outside the allowed range [%s, %s]; falling back to %s",
+            value,
+            MIN_INDEX_BUDGET_SECONDS,
+            MAX_INDEX_BUDGET_SECONDS,
+            DEFAULT_INDEX_BUDGET_SECONDS,
+        )
+        return DEFAULT_INDEX_BUDGET_SECONDS
+
+    return value
+
+
 def load_common_crawl_settings() -> CommonCrawlSettings:
     """Reads COMMON_CRAWL_* env vars fresh on every call (mirrors the
     AI_OVERVIEW_PROVIDER_MODE/CHATGPT_* pattern elsewhere in this
@@ -164,4 +203,5 @@ def load_common_crawl_settings() -> CommonCrawlSettings:
         max_results=_resolve_max_results(),
         timeout_seconds=_resolve_timeout_seconds(),
         user_agent=_resolve_user_agent(),
+        index_budget_seconds=_resolve_index_budget_seconds(),
     )

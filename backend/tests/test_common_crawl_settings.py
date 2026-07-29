@@ -1,5 +1,6 @@
 from services.common_crawl_settings import (
     DEFAULT_INDEX,
+    DEFAULT_INDEX_BUDGET_SECONDS,
     DEFAULT_MAX_RESULTS,
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_USER_AGENT,
@@ -14,6 +15,7 @@ def _clear_common_crawl_env(monkeypatch):
         "COMMON_CRAWL_MAX_RESULTS",
         "COMMON_CRAWL_TIMEOUT_SECONDS",
         "COMMON_CRAWL_USER_AGENT",
+        "COMMON_CRAWL_INDEX_BUDGET_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -27,6 +29,7 @@ def test_defaults_are_all_safe(monkeypatch):
     assert settings.max_results == DEFAULT_MAX_RESULTS
     assert settings.timeout_seconds == DEFAULT_TIMEOUT_SECONDS
     assert settings.user_agent == DEFAULT_USER_AGENT
+    assert settings.index_budget_seconds == DEFAULT_INDEX_BUDGET_SECONDS
 
 
 # --- enabled -----------------------------------------------------------
@@ -200,4 +203,56 @@ def test_settings_contain_no_secret_by_design(monkeypatch):
     _clear_common_crawl_env(monkeypatch)
     settings = load_common_crawl_settings()
     field_names = {f for f in settings.__dataclass_fields__}
-    assert field_names == {"enabled", "index", "max_results", "timeout_seconds", "user_agent"}
+    assert field_names == {
+        "enabled",
+        "index",
+        "max_results",
+        "timeout_seconds",
+        "user_agent",
+        "index_budget_seconds",
+    }
+
+
+# --- index_budget_seconds ---------------------------------------------------
+
+
+def test_index_budget_accepts_3(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_INDEX_BUDGET_SECONDS", "3")
+    assert load_common_crawl_settings().index_budget_seconds == 3.0
+
+
+def test_index_budget_accepts_8(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_INDEX_BUDGET_SECONDS", "8")
+    assert load_common_crawl_settings().index_budget_seconds == 8.0
+
+
+def test_index_budget_accepts_20(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_INDEX_BUDGET_SECONDS", "20")
+    assert load_common_crawl_settings().index_budget_seconds == 20.0
+
+
+def test_index_budget_unset_defaults_to_8(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    assert load_common_crawl_settings().index_budget_seconds == DEFAULT_INDEX_BUDGET_SECONDS
+    assert DEFAULT_INDEX_BUDGET_SECONDS == 8.0
+
+
+def test_index_budget_non_numeric_falls_back_to_default(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_INDEX_BUDGET_SECONDS", "not-a-number")
+    assert load_common_crawl_settings().index_budget_seconds == DEFAULT_INDEX_BUDGET_SECONDS
+
+
+def test_index_budget_below_minimum_falls_back_to_default(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_INDEX_BUDGET_SECONDS", "2")
+    assert load_common_crawl_settings().index_budget_seconds == DEFAULT_INDEX_BUDGET_SECONDS
+
+
+def test_index_budget_above_maximum_falls_back_to_default(monkeypatch):
+    _clear_common_crawl_env(monkeypatch)
+    monkeypatch.setenv("COMMON_CRAWL_INDEX_BUDGET_SECONDS", "21")
+    assert load_common_crawl_settings().index_budget_seconds == DEFAULT_INDEX_BUDGET_SECONDS
