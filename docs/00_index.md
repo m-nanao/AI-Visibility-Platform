@@ -5,8 +5,9 @@
 ## 依頼者・非エンジニア向け（まずこの順で読む）
 
 1. [16_requester_overview.md](./16_requester_overview.md) — **MVPの現状まとめ**。何ができて何ができないか、Common Crawl補完の位置づけ、今後の拡張候補を平易な言葉で説明する。依頼者側AIに現状を説明させる場合は、まずこれを読ませる。
-2. [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md) — Common Crawl補完の設計。特に冒頭の「0. 現行設計まとめ」は現行の挙動を簡潔にまとめており、2章以降は開発の経緯を記録した設計ログ。
-3. [02_roadmap.md](./02_roadmap.md) — フェーズ別ロードマップ。今できていること（Current/Done）・次にやること（Next）・将来の拡張候補（Later）が分かる。
+2. [15_requester_review_items.md](./15_requester_review_items.md) — **依頼者への確認事項**。サービス説明・Common Crawl補完・AI Overview/ChatGPT観測の表現・用語・未取得時の表示・今後の優先順位について、確認したいこと・推奨方針・そのまま投げられる質問文・回答前の仮置き方針をまとめる。
+3. [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md) — Common Crawl補完の設計。特に冒頭の「0. 現行設計まとめ」は現行の挙動を簡潔にまとめており、2章以降は開発の経緯を記録した設計ログ。
+4. [02_roadmap.md](./02_roadmap.md) — フェーズ別ロードマップ。今できていること（Current/Done）・次にやること（Next）・将来の拡張候補（Later）が分かる。
 
 ## 開発者向け
 
@@ -26,7 +27,6 @@
 - [09_deployment.md](./09_deployment.md) — 公開手順（依頼者確認用のVercel/Render公開）
 - [12_demo_readiness.md](./12_demo_readiness.md) — デモ提出用チェックリスト（推奨env・入力例・見せる順番）
 - [14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md) — Common Crawl由来データを改善提案へ反映する方針（表現ガイドライン）
-- [15_requester_review_items.md](./15_requester_review_items.md) — 表示名・説明文・改善提案文言など、依頼者確認が必要な仮文言の一覧
 - [task_template.md](./task_template.md) / [review_template.md](./review_template.md) — タスク依頼・レビューの雛形
 
 ## 注意
