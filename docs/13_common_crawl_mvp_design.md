@@ -546,6 +546,19 @@ httpxでは`RemoteProtocolError`（「Server disconnected without sending a resp
 - **今回変更していないもの**: フロントエンド・UI表示（画面表示は現行のまま「Common Crawl補完: 補完データ未取得」＋「理由: Common Crawl補完の取得処理が完了しませんでした」——今回のタスクではUI変更をしていない。ただし結果としてフロントは長時間待たされにくくなる）、Common Crawl取得件数（3件上限）、WARC fetch retry、外部プロキシ/API実装、DataForSEO/ChatGPT関連コード、新規package/requirements、Render/Vercel環境変数（`COMMON_CRAWL_INDEX_BUDGET_SECONDS`は未設定でもデフォルト8秒で動作するため、既存のRender環境変数設定を変更する必要はない）。
 - **次の課題**: fail-fast budget追加後、実際にRender環境での応答時間・成功率がどう変化するかの再検証。Common Crawl補完を同期`/analyze`から完全に切り離す非同期job化、検索結果のDB永続化、定期的なscheduled crawlによる事前キャッシュが次の検討候補（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
 
+## 28. Common Crawl補完ステータス/取得ページ表示の整理（frontend、2026-07-29追記）
+
+Render上でCommon Crawl補完が成功する状態（Index API 200 OK → WARC取得206×3 → `documents=3`）まで確認できたが、画面の「取得ページ」には`https://cybozu.co.jp/`しか表示されず、「3件取得したのに1件しか見えない」という状態が誤解（アプリのバグに見える）を招く懸念があった。実際には`backend/main.py`の`_build_common_crawl_documents()`が取得したDocumentの`sourceUrl`を`analyzedUrls`へセットする際に**既にURL重複除外を行っており**（`CommonCrawlProviderInfo.documentCount`＝生のDocument件数、`analyzedUrls`＝重複除外後のURLリストという、既存の2フィールドがそもそも別の意味を持っていた）、バックエンド側に新規フィールドを追加する必要はなく、**`style/common-crawl-status-url-display`はfrontendのみの変更**で対応した。
+
+- **`app/lib/meta-label.ts`の`getCommonCrawlAnalyzedPagesDisplay()`**: 返り値の`label: string`（固定文字列「取得ページ」）を`heading: string`（件数・重複除外の説明を含む1行）に置き換えた。`provider.documentCount`（生のDocument件数、欠けている場合は`urls.length`にフォールバック）が`urls.length`（重複除外後のユニークURL件数）より大きい場合のみ、`取得ページ: 1件（取得データ3件から重複除外）`のように件数差を明示する。差がない場合（重複がそもそもなかった場合）は`取得ページ: 3件`のように件数のみを表示し、余計な注記は出さない。`urls`が空の場合は従来どおり`null`を返し、欄自体を非表示にする（「取得ページはありません」という明示的な文言は採用しなかった——「該当なしなら表示しない」という既存の一貫した方針に合わせた）。
+- **`getCommonCrawlProviderDisplay()`**: 返り値の型に`note?: string`を追加し、`status === "unavailable"`の場合のみ`note: "通常分析は継続されています"`を返すようにした。既存の`summary`（「Common Crawl補完: 補完データ未取得」）・`detail`（「理由: ...」、`classifyCommonCrawlUnavailableReason()`によるreason分類）は**変更していない**——「Common Crawlが落ちている」「一時障害」のような断定は避け、システムの実際の挙動（通常分析は継続する）のみを事実として伝える文言にした。`off`/`real`の場合は`note`を返さない。
+- **`app/components/sections/CooccurrenceRankingSection.tsx`**: `commonCrawlProvider.note`があれば`<p>`として追加表示し、`commonCrawlAnalyzedPages.label`への参照を`.heading`に更新した（JSX側で追加していた末尾の`:`は`heading`文字列に統合済みのため削除）。大きなレイアウト変更・CSS変更は行っていない（URLリストの`truncate`スタイルも現行維持）。
+- **`getAnalysisSourceBreakdownDisplay()`（「分析ソース: Webページ N件 / Common Crawl補完 N件」）**: 変更していない。取得ページ欄の重複除外説明は「取得ページ」行自体に埋め込んだため（上記`heading`）、分析ソース行の近くに別途注記を追加する必要はないと判断した。
+- **backend**: `backend/main.py`/`backend/models.py`/response schema/Zod validationはいずれも変更していない——`documentCount`と`analyzedUrls`（重複除外済み）は既存メタで既に十分だった。`backend/tests/test_main.py`の既存テスト（`test_analyze_common_crawl_analyzed_urls_deduplicates_repeated_urls`等）もそのまま変更なしで通る。
+- **テスト**: `app/lib/meta-label.test.ts`に新規テストを追加・既存テストを更新した。`documentCount`と`analyzedUrls.length`が一致する場合（重複なし、3件）・異なる場合（重複あり、3件取得→1件表示）・`documentCount`が欠けている場合（古いバックエンド応答を想定、注記なしで件数のみ）それぞれの`heading`文字列を確認するテストと、`unavailable`時のみ`note`が付き`off`/`real`では付かないことを確認するテストを追加した。既存の`getCommonCrawlProviderDisplay`のreason分類テスト（`classifyCommonCrawlUnavailableReason`関連）・`getAnalysisSourceBreakdownDisplay`テストはいずれも無変更で通ることを確認済み。
+- **今回変更していないもの**: Common Crawl取得件数（3件上限）・Common Crawl補完の非同期化・DB保存・scheduled crawl・外部プロキシ/API実装・DataForSEO/ChatGPT関連コード・backend response schema・新規package/requirements・Render/Vercel環境変数・大幅なUIリデザイン。
+- **次の課題**: 依頼者確認後、「取得ページ」というラベル自体の文言確定（[15_requester_review_items.md](./15_requester_review_items.md)参照）。Common Crawl補完の非同期job化・DB persistence・scheduled crawlは引き続き未着手（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
+
 ## 関連ドキュメント
 
 - Document Pipelineの全体設計: [11_architecture_v1.md](./11_architecture_v1.md)（「4. Document Pipeline」「7. Common Crawlの位置づけ」）

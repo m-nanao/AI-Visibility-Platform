@@ -195,6 +195,14 @@ export interface CommonCrawlProviderDisplay {
   // CommonCrawlProviderInfo at all) and never the backend's raw
   // `reason` string verbatim.
   detail?: string;
+  // Present only on an "unavailable" result — a short, non-committal
+  // reassurance that the rest of the analysis still ran (Common Crawl
+  // is supplementary data for the MVP, not a dependency the whole
+  // request needs). Deliberately doesn't claim *why* Common Crawl
+  // failed (e.g. never says "temporary" or "outage") — see
+  // style/common-crawl-status-url-display's task description for why
+  // that would overstate what the backend actually knows.
+  note?: string;
 }
 
 // Matched in order against meta.commonCrawlProvider.reason (a
@@ -299,18 +307,29 @@ export function getCommonCrawlProviderDisplay(
       return {
         summary: "Common Crawl補完: 補完データ未取得",
         detail: `理由: ${classifyCommonCrawlUnavailableReason(provider.reason)}`,
+        note: "通常分析は継続されています",
       };
   }
 }
 
 export interface CommonCrawlAnalyzedPagesDisplay {
-  // Tentative label, pending client confirmation (see
-  // docs/15_requester_review_items.md) — "取得ページ".
-  label: string;
+  // A single line combining the (tentative, see
+  // docs/15_requester_review_items.md) "取得ページ" label with the
+  // deduplicated URL count, e.g. "取得ページ: 3件" — or, when
+  // provider.documentCount counted more raw Documents than there are
+  // unique URLs (the backend already deduplicates analyzedUrls before
+  // sending it — see backend/main.py's _build_common_crawl_documents),
+  // "取得ページ: 1件（取得データ3件から重複除外）" — added
+  // (style/common-crawl-status-url-display) so "3件取得したのに1件し
+  // か見えない" doesn't read as a bug: the count difference is
+  // explained right where the reader would notice it, instead of
+  // silently deduplicating with no explanation.
+  heading: string;
   // The source URL of each Common Crawl Document actually added this
   // request (meta.commonCrawlProvider.analyzedUrls, passed through
-  // as-is) — never HTML/WARC body text, since that field doesn't exist
-  // on CommonCrawlProviderInfo in the first place.
+  // as-is — already deduplicated backend-side) — never HTML/WARC body
+  // text, since that field doesn't exist on CommonCrawlProviderInfo in
+  // the first place.
   urls: string[];
 }
 
@@ -335,7 +354,18 @@ export function getCommonCrawlAnalyzedPagesDisplay(
   const urls = provider.analyzedUrls ?? [];
   if (urls.length === 0) return null;
 
-  return { label: "取得ページ", urls };
+  // provider.documentCount counts every Document actually added
+  // (before dedup); analyzedUrls.length counts unique URLs among
+  // those. The two only diverge when Common Crawl returned more than
+  // one capture of the same URL — falls back to urls.length (no
+  // parenthetical) when documentCount is missing (an older/mocked
+  // response), so this never claims a dedup happened that can't
+  // actually be confirmed.
+  const documentCount = provider.documentCount ?? urls.length;
+  const dedupNote =
+    documentCount > urls.length ? `（取得データ${documentCount}件から重複除外）` : "";
+
+  return { heading: `取得ページ: ${urls.length}件${dedupNote}`, urls };
 }
 
 export interface AiOverviewProviderStatusDisplay {

@@ -1201,6 +1201,41 @@ describe("getCommonCrawlProviderDisplay", () => {
     expect(display?.detail).toBe("理由: 補完対象ドメインを特定できませんでした");
   });
 
+  // Added 2026-07-29 (style/common-crawl-status-url-display) — Common
+  // Crawl is supplementary data for the MVP; an unavailable result
+  // should never read like the whole analysis failed.
+  it("adds a reassurance note that the rest of the analysis still ran on an unavailable result", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "unavailable",
+        reason: "Common Crawl Index API request failed due to a network or timeout error.",
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(meta)?.note).toBe("通常分析は継続されています");
+  });
+
+  it("does not add a note on off or real results", () => {
+    const offMeta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: { mode: "off", status: "off", reason: "Common Crawl integration is off." },
+    };
+    const realMeta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s).",
+        documentCount: 1,
+      },
+    };
+
+    expect(getCommonCrawlProviderDisplay(offMeta)?.note).toBeUndefined();
+    expect(getCommonCrawlProviderDisplay(realMeta)?.note).toBeUndefined();
+  });
+
   it("never renders HTML or WARC body text — meta.commonCrawlProvider has no field for either", () => {
     const meta: AnalysisMeta = {
       ...baseMeta(),
@@ -1482,13 +1517,73 @@ describe("getCommonCrawlAnalyzedPagesDisplay", () => {
     };
 
     expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toEqual({
-      label: "取得ページ",
+      heading: "取得ページ: 3件",
       urls: [
         "https://cybozu.co.jp/",
         "https://cybozu.co.jp/company/",
         "https://cybozu.co.jp/products/",
       ],
     });
+  });
+
+  // Added 2026-07-29 (style/common-crawl-status-url-display) — when
+  // Common Crawl returns more than one capture of the same URL, the
+  // backend already deduplicates analyzedUrls (see
+  // backend/main.py's _build_common_crawl_documents), but
+  // documentCount still counts every raw Document added. Without an
+  // explanation, "documentCount: 3 / analyzedUrls: 1 URL" reads like a
+  // bug ("3件取得したのに1件しか見えない") rather than expected
+  // deduplication.
+  it("explains the count difference when documentCount exceeds the deduplicated URL count", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 3 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        crawlIndex: "CC-MAIN-2026-25",
+        candidateCount: 5,
+        documentCount: 3,
+        analyzedUrls: ["https://cybozu.co.jp/"],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)).toEqual({
+      heading: "取得ページ: 1件（取得データ3件から重複除外）",
+      urls: ["https://cybozu.co.jp/"],
+    });
+  });
+
+  it("omits the dedup note when documentCount equals the unique URL count", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        documentCount: 1,
+        analyzedUrls: ["https://cybozu.co.jp/"],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)?.heading).toBe("取得ページ: 1件");
+  });
+
+  it("omits the dedup note when documentCount is missing (older backend response)", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      commonCrawlProvider: {
+        mode: "domain",
+        status: "real",
+        reason: "Common Crawl added 1 document(s) for cybozu.co.jp.",
+        domain: "cybozu.co.jp",
+        analyzedUrls: ["https://cybozu.co.jp/", "https://cybozu.co.jp/about/"],
+      },
+    };
+
+    expect(getCommonCrawlAnalyzedPagesDisplay(meta)?.heading).toBe("取得ページ: 2件");
   });
 
   it("returns null when analyzedUrls is missing (e.g. an older backend response)", () => {

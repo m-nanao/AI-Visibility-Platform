@@ -49,14 +49,18 @@ export default function CooccurrenceRankingSection({
         <div className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
           <p>{commonCrawlProvider.summary}</p>
           {commonCrawlProvider.detail && <p>{commonCrawlProvider.detail}</p>}
+          {commonCrawlProvider.note && <p>{commonCrawlProvider.note}</p>}
           {/* URLのみを表示する（HTML/WARC本文・raw responseは
               meta.commonCrawlProvider自体にそのためのフィールドが
               存在しないため表示しようがない）。ラベル「取得ページ」は
               依頼者確認前の仮のもの — docs/15_requester_review_items.md
-              参照。 */}
+              参照。件数は重複除外後のURL数（heading自体に含まれる。
+              取得Document件数と異なる場合は「取得データN件から重複除外」
+              を併記する — app/lib/meta-label.tsのgetCommonCrawlAnalyzedPagesDisplay
+              参照）。 */}
           {commonCrawlAnalyzedPages && (
             <div className="mt-1">
-              <p>{commonCrawlAnalyzedPages.label}:</p>
+              <p>{commonCrawlAnalyzedPages.heading}</p>
               <ul className="list-inside list-disc">
                 {commonCrawlAnalyzedPages.urls.map((url) => (
                   <li key={url} className="truncate">
