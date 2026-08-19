@@ -26,14 +26,19 @@ const CHATGPT_MODE_OPTIONS: { value: ChatGptProviderMode; label: string }[] = [
   { value: "openai", label: "openai: OpenAI API" },
 ];
 
-// Wording for the Common Crawl補完 selector, centralized so it's easy
-// to update once the client confirms the final display name/wording
-// (see docs/13_common_crawl_mvp_design.md "11. 依頼者確認が必要な点" —
-// these are all provisional as of 2026-07-28).
+// Wording for the Common Crawl補完 selector. The policy/tone behind
+// this wording (auxiliary data, never a guarantee of what any AI
+// actually learned) was approved by the requester 2026-08-20 — see
+// docs/15_requester_review_items.md's「依頼者確認結果」— and finalized
+// here (style/finalize-approved-ui-copy). `selectorLabel` keeps its
+// "（検証用）" suffix because the selector itself is still gated behind
+// NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR (off by default,
+// dev/staging-only) — that's an accurate statement about rollout
+// status, not an AI-related claim the approved policy is about.
 export const COMMON_CRAWL_UI_TEXT = {
   selectorLabel: "Common Crawl補完（検証用）",
   helperText:
-    "入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。",
+    "入力URLに加えて、公式ドメイン配下のCommon Crawl由来データを補助的に取得し、Web上の情報環境分析に加えます。",
   warningText:
     "Common Crawl由来の情報は、Web上の情報環境を推定するための補助データです。AIの学習内容そのものを保証するものではありません。",
   domainLabel: "補完対象ドメイン（任意）",
@@ -267,9 +272,10 @@ export default function BrandInputForm({
           body; whether the Python API actually contacts Common Crawl
           still depends entirely on the server-side
           COMMON_CRAWL_ENABLED gate (see backend/main.py) that this UI
-          cannot change. Display name/wording are provisional pending
-          client confirmation — see
-          docs/13_common_crawl_mvp_design.md「11. 依頼者確認が必要な点」. */}
+          cannot change. Wording policy approved 2026-08-20 — see
+          docs/15_requester_review_items.md「依頼者確認結果」; the exact
+          candidate strings (COMMON_CRAWL_UI_TEXT above) are finalized
+          as of style/finalize-approved-ui-copy. */}
       {showCommonCrawlModeSelector && (
         <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
           <label

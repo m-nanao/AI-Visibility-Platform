@@ -255,7 +255,7 @@ def _common_crawl_suggestion(
             description=(
                 "Common Crawl補完で取得したページにもブランド関連文脈が含まれています。"
                 "公式サイト側では、導入事例・対象顧客・主要機能の説明を一貫して記載すると、"
-                "AIに拾われる文脈を安定させやすくなります。"
+                "Web上のブランド説明の一貫性を高められます。"
             ),
             priority="medium",
         )

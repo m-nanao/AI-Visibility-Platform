@@ -18,7 +18,7 @@ export default function AIOverviewComparisonSection({
   return (
     <Card
       title="4. AI Overview比較"
-      description="主要AIサービスにおける掲載・言及状況の比較"
+      description="AI Overview / ChatGPT観測で確認された回答・参照状況（結果側の観測データ）"
     >
       {providerStatus && (
         <div className="mb-3 flex flex-col items-start gap-1">
@@ -66,6 +66,11 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
           <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
             順位: {item.rank ? `${item.rank}位` : "—"}
           </p>
+          {detail.platformNote && (
+            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              {detail.platformNote}
+            </p>
+          )}
         </div>
 
         {item.mentioned ? (

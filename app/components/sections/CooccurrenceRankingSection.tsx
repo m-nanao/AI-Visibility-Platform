@@ -42,9 +42,9 @@ export default function CooccurrenceRankingSection({
 
       {/* Common Crawl「補完」の状態は、この結果に使われたDocument[]の
           出典に関する軽い状態表示であり、大きなカードは持たない
-          （詳細なWARC情報・HTML本文は一切表示しない）。表示名・文言は
-          依頼者確認前の仮のもの — docs/13_common_crawl_mvp_design.md
-          「11. 依頼者確認が必要な点」参照。 */}
+          （詳細なWARC情報・HTML本文は一切表示しない）。表示名・文言の
+          方針は2026-08-20に依頼者承認済み — docs/15_requester_review_items.md
+          「依頼者確認結果」参照。 */}
       {commonCrawlProvider && (
         <div className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
           <p>{commonCrawlProvider.summary}</p>
@@ -53,8 +53,7 @@ export default function CooccurrenceRankingSection({
           {/* URLのみを表示する（HTML/WARC本文・raw responseは
               meta.commonCrawlProvider自体にそのためのフィールドが
               存在しないため表示しようがない）。ラベル「取得ページ」は
-              依頼者確認前の仮のもの — docs/15_requester_review_items.md
-              参照。件数は重複除外後のURL数（heading自体に含まれる。
+              docs/15_requester_review_items.md参照。件数は重複除外後のURL数（heading自体に含まれる。
               取得Document件数と異なる場合は「取得データN件から重複除外」
               を併記する — app/lib/meta-label.tsのgetCommonCrawlAnalyzedPagesDisplay
               参照）。 */}

@@ -31,7 +31,8 @@ MVP自体の現状（何ができて何ができないか）は[16_requester_ove
 - **2026-07-28（`fix/common-crawl-status-japanese-reasons`）:** 英語reasonがそのまま見えたという報告を再調査した結果、コード上の欠陥はなく分類ロジックは正しく動作していることを確認（表示文言自体は変更なし）。
 - **2026-07-28（`feature/common-crawl-analyzed-urls-display`）:** 取得ページ一覧（`analyzedUrls`）の表示を追加、ラベルの確認事項を新設。
 - **2026-07-29（`docs/sync-requester-review-items`）:** Common Crawl fail-fast budget・取得ページの重複除外表示・[16_requester_overview.md](./16_requester_overview.md)追加までの実装状況を反映し、スコープをCommon Crawl単独から**サービス全体の説明・AI Overview/ChatGPT観測の表現・用語・優先順位**まで拡張した。依頼者へそのまま投げられる質問文と、回答がない場合の仮置き方針を新設した。
-- **2026-08-20（`docs/requester-review-approved`、今回）:** 依頼者から「推奨設定で問題ない」との回答を受け、「依頼者確認結果」章を新設。方針・トーン・優先順位レベルの確認事項は承認済みとして扱う（個別の表示名・説明文の最終文言は引き続き未確定）。
+- **2026-08-20（`docs/requester-review-approved`）:** 依頼者から「推奨設定で問題ない」との回答を受け、「依頼者確認結果」章を新設。方針・トーン・優先順位レベルの確認事項は承認済みとして扱う（個別の表示名・説明文の最終文言は引き続き未確定）。
+- **2026-08-20（`style/finalize-approved-ui-copy`、今回）:** 承認済み方針に沿って、UIの最終文言を確定させた。各項目に「採用（2026-08-20）」を追記。主な変更: B（Common Crawl説明文、`COMMON_CRAWL_UI_TEXT.helperText`）・D（改善提案文言、`_common_crawl_suggestion()`のreal時description）・2-3（AI Overview比較セクションの`description`、ChatGPTカードへの`platformNote`新設）。A（表示名）・E・F・G・H・2-4は現行のまま変更なし（理由を各項目に記載）。取得ロジック・API仕様は変更していない。詳細は[02_roadmap.md](./02_roadmap.md)参照。
 
 ## 1. 目的
 
@@ -70,18 +71,22 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 
 **推奨:** 現時点では「Common Crawl補完」（技術的に正確、過度に断定しない、依頼者に説明しやすい）。
 
+**採用（2026-08-20、`style/finalize-approved-ui-copy`）:** 「Common Crawl補完」を維持。selectorの「（検証用）」サフィックスもあえて残した——これはAI関連の断定表現の話ではなく、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`によりデフォルトoff・dev/staging限定で表示されるという、機能の公開状況を正直に示すラベルであるため（外すとむしろ正式リリース済みであるかのように誤解させる）。表示結果側（`Common Crawl補完: 取得済み（N件）`等）はもともと「検証用」を含んでいない。
+
 #### B. 説明文
 
-**現在:** 「入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。」（`COMMON_CRAWL_UI_TEXT.helperText`）
+**現在（採用前）:** 「入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。」（`COMMON_CRAWL_UI_TEXT.helperText`）
 
 **確認したいこと:** 「公式ドメイン配下」に限定した説明でよいか。「過去クロールURL」という表現が分かりやすいか。より営業向けに言い換えるか。
 
 **候補:**
-1. 入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。（現行）
+1. 入力URLに加えて、Common Crawlから公式ドメイン配下の過去クロールURLを補助的に取得して分析します。（旧・現行）
 2. 入力URLだけでは拾いきれないWeb上のブランド関連ページを補完して分析します。
 3. AIが参照・学習し得るWeb情報環境を推定するため、Common Crawl由来のページを補助的に分析します。
 
 **推奨:** 画面上は1つ目または2つ目。提案書や説明資料では3つ目も可、ただし「推定」を必ず入れる。
+
+**採用（2026-08-20、`style/finalize-approved-ui-copy`）:** 「入力URLに加えて、公式ドメイン配下のCommon Crawl由来データを補助的に取得し、Web上の情報環境分析に加えます。」——1つ目（現行）をベースに、「Web上の情報環境分析」という、このタスクが明確化したかった「原因側・入力側の推定分析」という位置づけを明示する語を追加した。
 
 #### C. Common Crawl＝「補助データ」であることの明記（「AI学習データ推定」という表現）
 
@@ -98,19 +103,21 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 
 #### D. 改善提案の文言
 
-**現在（`status: "real"`時、`backend/services/improvement_suggestions.py`の`_common_crawl_suggestion()`）:**
+**現在（採用前。`status: "real"`時、`backend/services/improvement_suggestions.py`の`_common_crawl_suggestion()`）:**
 
 > Common Crawl補完で取得したページにもブランド関連文脈が含まれています。公式サイト側では、導入事例・対象顧客・主要機能の説明を一貫して記載すると、AIに拾われる文脈を安定させやすくなります。
 
-**現在（`status: "unavailable"`時）:**
+**現在（`status: "unavailable"`時、変更なし）:**
 
 > Common Crawl補完では十分なページを取得できませんでした。まずは公式サイト内の重要ページを明確化し、クロールされやすい構造・内部リンクを整えることを検討してください。
 
 **確認したいこと:** 「AIに拾われる」という表現でよいか。もっと硬い表現にするか。もっと営業向けにするか。
 
-**候補（real時の該当箇所）:** AIに拾われる文脈を安定させやすくなります（現行）/ AIが参照しやすい文脈を整えやすくなります / Web上のブランド説明の一貫性を高められます / AI回答に反映される可能性のある文脈を整備できます
+**候補（real時の該当箇所）:** AIに拾われる文脈を安定させやすくなります（旧・現行）/ AIが参照しやすい文脈を整えやすくなります / Web上のブランド説明の一貫性を高められます / AI回答に反映される可能性のある文脈を整備できます
 
 **推奨:** 画面上は「Web上のブランド説明の一貫性を高められます」。提案書では「AIが参照・学習し得る文脈を整える」と表現してもよい。
+
+**採用（2026-08-20、`style/finalize-approved-ui-copy`）:** 推奨どおり「Web上のブランド説明の一貫性を高められます」を採用。real時の全文は「Common Crawl補完で取得したページにもブランド関連文脈が含まれています。公式サイト側では、導入事例・対象顧客・主要機能の説明を一貫して記載すると、Web上のブランド説明の一貫性を高められます。」`title`（`Common Crawl補完で確認できる文脈の一貫性を高める`）・`priority`（`medium`）・unavailable時の文言は変更していない。
 
 #### E. 成功時の件数表示
 
@@ -119,6 +126,8 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 **確認したいこと:** 成功時に「Common Crawl補完 3件」と表示する方針でよいか。
 
 **推奨:** 現行のまま（取得件数を数値でそのまま示す、誇張表現を加えない）。
+
+**採用（2026-08-20）:** 現行のまま変更なし。
 
 #### F. 取得ページ一覧のラベル・重複除外表示（2026-07-29更新）
 
@@ -132,6 +141,8 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 **候補（ラベル）:** 取得ページ（現行）/ 分析に使用したページ / Common Crawl由来ページ / 補完分析に使用したページ
 
 **推奨:** 画面上は「取得ページ」＋現行の重複除外の説明表示。docsでは「分析に使用したCommon Crawl由来ページ」と説明する。
+
+**採用（2026-08-20）:** 現行のまま変更なし。
 
 #### G. 未取得時の説明（アプリ全体は止まらないこと）
 
@@ -152,6 +163,8 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 - 改善提案は「重要ページ・内部リンク・クロールされやすい構造を整える」程度に留める。
 
 **避けたい表現:** Common Crawlに出ないためAIに認識されません / クロールされていないため評価が低いです / SEO上不利です
+
+**採用（2026-08-20）:** 現行のまま変更なし（強いエラー表現・断定表現がないことを再確認済み）。
 
 #### H. Common Crawl Index APIの不安定性・fail-fast方針の説明
 
@@ -176,6 +189,8 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 - 「OpenAI APIによる観測」と明記する。
 - AI Overviewも取得条件や時点により変動する観測データとして扱う（同じブランド名でも再実行すると結果が変わり得ることを明記する）。
 
+**採用（2026-08-20、`style/finalize-approved-ui-copy`）:** セクション見出し「4. AI Overview比較」自体は維持しつつ、`Card`の`description`を「主要AIサービスにおける掲載・言及状況の比較」から「AI Overview / ChatGPT観測で確認された回答・参照状況（結果側の観測データ）」へ変更し、「結果側の観測」という位置づけを明示した（`app/components/sections/AIOverviewComparisonSection.tsx`）。あわせて、`platform === "ChatGPT (OpenAI API)"`のカードにのみ、「OpenAI APIによる1問観測です。ChatGPTアプリ全体の認識や内部状態を保証するものではありません。」という注記（`platformNote`）を新設し、ChatGPTアプリそのものとは断定しない旨をカード上で直接示すようにした（`app/lib/meta-label.ts`の`getAiOverviewItemDetailDisplay()`）。mock固定の「ChatGPT」プレースホルダーカード（`app/lib/dummy-data.ts`、OpenAI API未経由）には付与しない。DataForSEO Sandbox/Live側の`label`/`description`/`caution`（`getAiOverviewProviderStatusDisplay()`）は元々断定的表現がなかったため変更していない。
+
 ### 2-4. 「AI引用率」「AI採用率」などの用語確認
 
 **確認したいこと:**
@@ -189,6 +204,8 @@ Common Crawl固有の確認事項は項目が多いため、以下A〜Iに細分
 - 厳密な意味では「AI引用率」は慎重に扱う（因果関係を証明できないため）。
 - MVPでは「AI Overview掲載状況」「AI回答内の参照状況」「AI採用傾向」などの表現が安全。
 - 「Web改善により必ずAIに引用される」とは言わない。
+
+**採用（2026-08-20、`style/finalize-approved-ui-copy`）:** `app/`・`backend/`を対象に`引用率|採用率|AI引用|AI採用|必ず引用|必ず参照|学習済み|学習した`をgrepし、UIに出るコード上に該当表現がないことを再確認済み（ヒットなし。唯一の関連ヒットは`backend/services/improvement_suggestions.py`のdocstringコメント内で、避けるべき表現を説明する文脈であり、実際のUI出力ではない）。対応不要のため変更なし。
 
 ### 2-5. 未取得・失敗時の画面表示確認（アプリ全体）
 
