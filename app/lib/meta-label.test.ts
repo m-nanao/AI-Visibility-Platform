@@ -523,6 +523,41 @@ describe("getAiOverviewItemDetailDisplay", () => {
       other: "その他",
     });
   });
+
+  // Added 2026-08-20 (style/finalize-approved-ui-copy) — the ChatGPT
+  // (OpenAI API) observation card gets a short reminder that it's a
+  // single scripted question, not a reproduction of the ChatGPT app's
+  // own internal state (docs/15_requester_review_items.md 2-3,
+  // approved by the requester).
+  it("adds a platformNote reminder for the real ChatGPT (OpenAI API) observation card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      platform: "ChatGPT (OpenAI API)",
+    });
+
+    expect(display.platformNote).toBe(
+      "OpenAI APIによる1問観測です。ChatGPTアプリ全体の認識や内部状態を保証するものではありません。",
+    );
+  });
+
+  it("does not add a platformNote for non-ChatGPT platforms (DataForSEO Sandbox/Live)", () => {
+    expect(getAiOverviewItemDetailDisplay(baseItem()).platformNote).toBeUndefined();
+    expect(
+      getAiOverviewItemDetailDisplay({
+        ...baseItem(),
+        platform: "Google AI Mode (DataForSEO Live)",
+      }).platformNote,
+    ).toBeUndefined();
+  });
+
+  it("does not add a platformNote for the plain mock \"ChatGPT\" placeholder platform", () => {
+    // app/lib/dummy-data.ts's mock fixture uses the bare "ChatGPT" label
+    // (no "(OpenAI API)" suffix) — that card was never an OpenAI API
+    // observation, so it must not claim to be one.
+    expect(
+      getAiOverviewItemDetailDisplay({ ...baseItem(), platform: "ChatGPT" }).platformNote,
+    ).toBeUndefined();
+  });
 });
 
 describe("getAiOverviewItemDetailDisplay — continuation text (続きを見る)", () => {

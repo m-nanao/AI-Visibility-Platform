@@ -529,7 +529,25 @@ export interface AiOverviewItemDetailDisplay {
   // references were found" — both mean there's nothing to conclude
   // from, so the UI shows neither a positive nor a negative statement.
   ownDomainStatus: OwnDomainReferenceStatus;
+  // Present only for the real ChatGPT (OpenAI API) observation card —
+  // a short reminder that this is a single scripted question to an
+  // OpenAI API model (see backend/services/chatgpt_provider.py), not a
+  // reproduction of the ChatGPT app's own internal state (added
+  // style/finalize-approved-ui-copy per docs/15_requester_review_items.md
+  // 2-3, approved 2026-08-20). Never present on the generic "ChatGPT"
+  // mock placeholder card (app/lib/dummy-data.ts) — that card was never
+  // an OpenAI API observation, so adding this note there would overstate
+  // what it actually is.
+  platformNote?: string;
 }
+
+// Must match backend/services/chatgpt_provider.py's
+// CHATGPT_PLATFORM_LABEL exactly — this is the only signal the
+// frontend has for "this card is the real OpenAI API observation" vs.
+// e.g. the mock fixture's plain "ChatGPT" placeholder.
+const CHATGPT_OPENAI_PLATFORM_LABEL = "ChatGPT (OpenAI API)";
+const CHATGPT_PLATFORM_NOTE =
+  "OpenAI APIによる1問観測です。ChatGPTアプリ全体の認識や内部状態を保証するものではありません。";
 
 // Below this length, a "続きを見る" toggle would reveal only a sliver of
 // text — not worth the extra click. Applies both to a continuation
@@ -735,6 +753,9 @@ export function getAiOverviewItemDetailDisplay(
         : item.summary;
   }
 
+  const platformNote =
+    item.platform === CHATGPT_OPENAI_PLATFORM_LABEL ? CHATGPT_PLATFORM_NOTE : undefined;
+
   return {
     hasContinuation,
     continuationText,
@@ -742,5 +763,6 @@ export function getAiOverviewItemDetailDisplay(
     references,
     referenceSummary,
     ownDomainStatus,
+    platformNote,
   };
 }

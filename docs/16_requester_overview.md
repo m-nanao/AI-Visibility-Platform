@@ -27,7 +27,7 @@ Common Crawl補完機能をMVPに追加しました。
 
 Common Crawlは、Web上のページを大規模にクロールして保存している公開データです。これを利用することで、現在入力されたURLだけでなく、過去にクロールされた公式ドメイン配下のページも補助的に分析対象へ加えられます。
 
-画面上では、成功時に以下のように表示されます（2026-08-20時点、方針としては依頼者から承認済みだが、表示名・説明文の個別の最終文言はなお仮のもの。[15_requester_review_items.md](./15_requester_review_items.md)参照）。
+画面上では、成功時に以下のように表示されます（2026-08-20、承認済み方針に沿って表示文言を最終調整済み。[15_requester_review_items.md](./15_requester_review_items.md)参照）。
 
 ```
 分析ソース: Common Crawl補完 3件
@@ -170,5 +170,5 @@ Common Crawlは外部APIのため取得が不安定な場合がありますが�
 - 開発者向け現状サマリー: [development_status.md](./development_status.md)
 - ロードマップ: [02_roadmap.md](./02_roadmap.md)
 - Common Crawl補完の設計（現行設計まとめは0章）: [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)
-- 依頼者への確認事項・確認結果（方針は2026-08-20に承認済み、個別の表示名・説明文の最終文言は未確定）: [15_requester_review_items.md](./15_requester_review_items.md)
+- 依頼者への確認事項・確認結果（方針・表示文言ともに2026-08-20に承認・確定済み）: [15_requester_review_items.md](./15_requester_review_items.md)
 - 要件・スコープ（このMVPが「AIの学習内容を完全再現するものではない」という前提の詳細）: [01_requirements.md](./01_requirements.md)

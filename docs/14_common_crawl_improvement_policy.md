@@ -35,21 +35,21 @@ Common Crawl由来データ（`Document.sourceType: "common_crawl"`）は、以�
 - 「Common Crawlだけでブランド認知を断定する」（Common Crawlはあくまで補助ソースであり、単独の根拠として強い結論を出さない）
 - 「取得件数が少ない状態で強い結論を出す」（現状は最大3件までしか取得しない設計であり——[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「13. 複数件取得への拡張」参照——サンプル数が少ない前提を踏まえた、控えめな提案にとどめる）
 
-## 5. 最小実装案（2026-07-28、`feature/common-crawl-improvement-suggestion`で実装済み）
+## 5. 最小実装案（2026-07-28、`feature/common-crawl-improvement-suggestion`で実装済み。2026-08-20、`style/finalize-approved-ui-copy`で文言確定）
 
 `meta.commonCrawlProvider.status`（`"off"`/`"real"`/`"unavailable"`）に応じて、以下の軽い改善提案を最大1件追加する。
 
-**Common Crawl補完が取得済み（`status: "real"`）の場合の仮文言案:**
+**Common Crawl補完が取得済み（`status: "real"`）の場合の文言（2026-08-20確定）:**
 
-> Common Crawl補完で取得したページにもブランド関連文脈が含まれています。公式サイト側では、導入事例・対象顧客・主要機能の説明を一貫して記載すると、AIに拾われる文脈を安定させやすくなります。
+> Common Crawl補完で取得したページにもブランド関連文脈が含まれています。公式サイト側では、導入事例・対象顧客・主要機能の説明を一貫して記載すると、Web上のブランド説明の一貫性を高められます。
 
-**Common Crawl補完が未取得（`status: "unavailable"`、`commonCrawlMode: "domain"`だが取得失敗した場合）の仮文言案:**
+**Common Crawl補完が未取得（`status: "unavailable"`、`commonCrawlMode: "domain"`だが取得失敗した場合）の文言（変更なし）:**
 
 > Common Crawl補完では十分なページを取得できませんでした。まずは公式サイト内の重要ページを明確化し、クロールされやすい構造・内部リンクを整えることを検討してください。
 
 **注意:**
 
-- 上記はいずれも依頼者確認前の仮文言であり、依頼者確認後に調整する前提とする（実装済みだが、文言自体はまだ確定していない）。
+- 2026-08-20、依頼者から[15_requester_review_items.md](./15_requester_review_items.md)記載の確認事項について「推奨設定で問題ない」との回答を得て、上記2文言のうち`status: "real"`側を[15_requester_review_items.md](./15_requester_review_items.md)「2-2 D」の推奨案（「Web上のブランド説明の一貫性を高められます」）へ更新し確定した（旧文言「AIに拾われる文脈を安定させやすくなります」は不採用）。`status: "unavailable"`側はもともと推奨どおりの内容だったため変更していない。
 - `status: "off"`（Common Crawl機能自体が無効、または`commonCrawlMode`未指定）の場合は、Common Crawl関連の改善提案自体を出さない（既存の`aiOverviewComparison`が`mock`の場合にChatGPT観測カードを追加しないのと同様、機能がオフの状態にまで言及すると却って紛らわしいため）。
 - 優先度は実装時に`status: "real"`→`priority: "medium"`、`status: "unavailable"`→`priority: "low"`とした——Common Crawl由来データはサンプル数が少なく（最大3件）、単独では強い優先度をつける根拠として弱いため、他の改善提案（`_pricing_suggestion`等の`"high"`/`"medium"`）と比べて控えめに設定している。
 - 判定は`documentCount`の値を見ず`status`のみに基づく実装とした——`status: "real"`は設計上「少なくとも1件Documentが追加された」ことを常に意味するため（`CommonCrawlProviderInfo`のdocstring参照）、`documentCount`による重複チェックは行っていない。
