@@ -92,6 +92,7 @@
 
 - **Current/Done（現状）**:
   - DB保存・履歴管理の設計メモ（`docs/db-persistence-design`、2026-08-20。docsのみ・コード変更なし。新規[18_db_persistence_design.md](./18_db_persistence_design.md)を追加し、PostgreSQL/Supabaseを前提に、保存対象の全体像・主要エンティティ（Brand/AnalysisRun/Document/CommonCrawlFetch等）・テーブル設計案・AnalysisRunを基本単位とする分析履歴の持ち方・Common Crawl由来データ/AI Overview/ChatGPT観測の保存方針・将来のpgvector拡張・段階的な移行手順（Phase 1〜6）・初期実装でやること/やらないことを整理した。既存の[04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」とはエンティティ命名が一部異なり、まだ食い違いを解消していない旨を明記——実装フェーズ着手時に改めて整理する。**DB接続・migration作成・Supabase導入・ORM追加はいずれも行っていない**）
+  - データモデル旧案との整合整理（`docs/sync-data-model-and-db-design`、2026-08-20。docsのみ・コード変更なし。[04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」（MVP初期段階の旧案）と[18_db_persistence_design.md](./18_db_persistence_design.md)（現行設計）の関係を整理し、**現行のDB設計方針は[18_db_persistence_design.md](./18_db_persistence_design.md)を正とする**旨を両ドキュメントに明記した。[04_data_model.md](./04_data_model.md)に新規「5. 現行設計との対応関係」章を追加し、`analyses`→`analysis_runs`+`analysis_results`、`ai_overview_comparisons`→`ai_overview_observations`+`chatgpt_observations`等のテーブル単位の対応表を収録。文脈分析（`context_analyses`相当）とCommon Crawl以外の情報源トラッキング（`analysis_sources`相当）の2点は新案にまだ対応テーブルがなく、両ドキュメントに未整理事項として明記した。**旧案は削除せず検討履歴として維持**（`analysis_sources`/`analysis_result_sources`等は[03_api_design.md](./03_api_design.md)・[05_tasks.md](./05_tasks.md)・[08_screen_design.md](./08_screen_design.md)からも引き続き参照される）。詳細は[04_data_model.md](./04_data_model.md)「現行DB設計方針について」「5. 現行設計との対応関係」参照）
 - **Next（次のステップ、優先順）**:
   - Supabase/PostgreSQL接続方針の決定
   - AnalysisRun保存の最小実装設計

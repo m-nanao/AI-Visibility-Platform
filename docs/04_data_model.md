@@ -95,9 +95,17 @@ interface AnalysisResult {
 
 `meta` はデータの出どころを示す開発用メタ情報（[03_api_design.md](./03_api_design.md) の「`meta`フィールド」参照）。`/api/analyze`（[route.ts](../app/api/analyze/route.ts)）は、環境変数 `PYTHON_ANALYSIS_API_URL` が設定されていればPython分析API（`backend/`）の `POST /analyze` を呼び出してその結果を返し（`meta.sections.cooccurrenceRanking: "real"`）、未設定・失敗時は [dummy-data.ts](../app/lib/dummy-data.ts) の固定値にフォールバックする（全セクション `"mock"`）。Python側のレスポンスは [analysis-result-schema.ts](../app/lib/analysis-result-schema.ts) のZodスキーマで検証してから使用する。
 
-## 2. 将来のPostgreSQLスキーマ案（Phase 5）
+## 現行DB設計方針について
 
-正規化した分析結果永続化のためのテーブル案。実際のカラム型・制約はORM選定後に調整する。
+このドキュメント（特にこの章「2. 将来のPostgreSQLスキーマ案」）には、MVP初期段階（Phase 3以前、Common Crawl補完・AI Overview/ChatGPT観測が実装される前）で検討したデータモデル案が含まれる。
+
+**DB保存・履歴管理の現行方針は、[18_db_persistence_design.md](./18_db_persistence_design.md)を優先する。** 特にPostgreSQL / Supabaseを前提にした実装フェーズでは、AnalysisRunを履歴管理の基本単位とする[18_db_persistence_design.md](./18_db_persistence_design.md)の設計を正とする。
+
+本ドキュメント内の下記の旧PostgreSQLスキーマ案は、**削除せず検討履歴として残す**。旧案と[18_db_persistence_design.md](./18_db_persistence_design.md)の新案との対応関係は「5. 現行設計（18_db_persistence_design.md）との対応関係」を参照。
+
+## 2. 将来のPostgreSQLスキーマ案（Phase 5、MVP初期段階の検討案）
+
+正規化した分析結果永続化のためのテーブル案。実際のカラム型・制約はORM選定後に調整する。**2026-08-20時点の現行設計は[18_db_persistence_design.md](./18_db_persistence_design.md)であり、以下は検討履歴として残しているMVP初期段階の案（上記「現行DB設計方針について」参照）。**
 
 ### `brands`
 
@@ -223,3 +231,21 @@ analysis_sources 1 ── N analysis_result_sources
 - MVP〜Phase 4まではDBを使わず、フロントは `dummy-data.ts` のダミーデータ、APIは固定値/インメモリ計算結果を返す形で進める。
 - Phase 5でORM（Prisma or Drizzle、選定はタスク化）を導入し、上記テーブルをマイグレーションとして定義する。
 - `AnalysisResult`（フロント型）とDBスキーマは1対1対応させず、API層（Next.js Route Handler）で変換する設計とする。
+
+## 5. 現行設計（[18_db_persistence_design.md](./18_db_persistence_design.md)）との対応関係
+
+**2026-08-20、`docs/sync-data-model-and-db-design`で追加。** 上記2章の旧PostgreSQLスキーマ案（MVP初期段階の検討案）と、[18_db_persistence_design.md](./18_db_persistence_design.md)の現行設計との対応関係を整理する。**実装フェーズでは[18_db_persistence_design.md](./18_db_persistence_design.md)側のエンティティ名・設計を正とする**（冒頭「現行DB設計方針について」参照）。
+
+| 旧案（本ドキュメント2章） | 新案（[18_db_persistence_design.md](./18_db_persistence_design.md)） | 補足 |
+| --- | --- | --- |
+| `brands` | `brands` | 同名・同じ役割（分析対象ブランド）。新案は`canonical_domain`カラムが追加候補。 |
+| `analyses` + `analysis_summaries` | `analysis_runs` + `analysis_results` | 「1回の分析実行」と「結果サマリ」を分離する構造自体は共通。旧`analyses`の`status`/`requested_at`/`completed_at`が新`analysis_runs`の`status`/`started_at`/`completed_at`に、旧`analysis_summaries`の各カラムが新`analysis_results`の`summary_json`に相当。新`analysis_runs`は入力条件のスナップショット（`input_snapshot`）を持つ点が旧案と異なる。 |
+| `cooccurrence_keywords` | `cooccurrence_terms` | ほぼ同一（`keyword`→`term`のカラム名変更）。旧案にあった`trend`（`up`/`down`/`flat`）カラムは新案の主なカラム案にまだ含まれておらず、今後の検討事項（13章参照）。 |
+| `context_analyses` | 対応テーブルなし（`ContextSummary`はエンティティとしてのみ言及） | [18_db_persistence_design.md](./18_db_persistence_design.md)「5. 主要エンティティ案」には`ContextSummary`が挙がっているが、「6. テーブル設計案」の候補テーブル一覧にはまだ含まれていない。**新案側の未整理箇所**——実装フェーズで`context_summaries`相当のテーブルを補う必要がある。 |
+| `ai_overview_comparisons` | `ai_overview_observations` + `chatgpt_observations` | 旧案は`platform`カラムでAI Overview/ChatGPTを1テーブルにまとめていたが、新案はAI Overview（DataForSEO経由）とChatGPT（OpenAI API経由）を別テーブルに分割し、「結果側の観測」という位置づけを明確化（[15_requester_review_items.md](./15_requester_review_items.md)2-3参照）。 |
+| `improvement_suggestions` | `improvement_suggestions` | 同名・同じ役割。新案は`source`カラムが追加候補。 |
+| `analysis_sources` + `analysis_result_sources` | 部分的に`common_crawl_fetches`（Common Crawl経由のみ） | 旧案は情報源の種別を問わない汎用的な「結果 ⇔ 情報源」の多態的紐付け（News/PR TIMES/Wikipedia/Qiita等を含む）だったが、新案の`common_crawl_fetches`はCommon Crawl取得履歴に特化しており、Common Crawl以外の情報源トラッキングに対応するテーブルがまだない。**新案側の未整理箇所**。旧案のこのテーブルは[03_api_design.md](./03_api_design.md)・[05_tasks.md](./05_tasks.md)・[08_screen_design.md](./08_screen_design.md)からも参照されているため、削除せず残す。 |
+| （旧案になし） | `input_urls` | 入力URL自体を1件ごとに保存する設計は旧案になく、新案で追加。 |
+| （旧案になし） | `documents` | 分析に使われたDocument自体（`user_provided`/`web_fetch`/`development_sample`/`common_crawl`）を保存する設計は旧案になく、新案で追加。 |
+
+**注意:** 上記のうち「対応テーブルなし」「新案側の未整理箇所」とした2件（文脈分析・Common Crawl以外の情報源トラッキング）は、本ドキュメントでは解消していない未確定事項である。実装フェーズ着手時に、[18_db_persistence_design.md](./18_db_persistence_design.md)側のテーブル設計案を拡充するか、本ドキュメントの旧案から該当部分を取り込むかを改めて判断する。

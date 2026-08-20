@@ -2,7 +2,7 @@
 
 **このドキュメントは設計メモであり、DB実装・migration作成・Supabase導入・ORM追加のいずれも含まない。** 今回のスコープはdocsのみ。開発者向けの詳細は[development_status.md](./development_status.md)、依頼者向けの現状は[16_requester_overview.md](./16_requester_overview.md)を参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**既存の関連ドキュメントとの関係:** [04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案（Phase 5）」に、より簡素な初期スキーマ案（`analyses`/`analysis_summaries`/`cooccurrence_keywords`等）が既に存在する。本ドキュメントはそれを置き換えるものではなく、Common Crawl補完・AI Overview/ChatGPT観測・Common Crawl由来Documentの保存など、[04_data_model.md](./04_data_model.md)作成時点（Phase 3以前）にはまだ存在しなかった要素を含めて設計を拡張したもの。**エンティティ名の対応に食い違いがある**（例: 本ドキュメントの`AnalysisRun`は[04_data_model.md](./04_data_model.md)の`analyses`に相当、`AiOverviewObservation`は`ai_overview_comparisons`をAI Overview/ChatGPT観測それぞれに分割したものに相当）。実装フェーズに入る際は、どちらの命名・スキーマを正とするか改めて整理し、[04_data_model.md](./04_data_model.md)側も更新する必要がある——**本ドキュメント作成時点ではこの食い違いを解消していない**。
+**既存の関連ドキュメントとの関係:** [04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案（Phase 5）」に、より簡素なMVP初期段階のスキーマ案（`analyses`/`analysis_summaries`/`cooccurrence_keywords`等）が既に存在する。**DB保存・履歴管理の現行方針は本ドキュメントを優先する** —— [04_data_model.md](./04_data_model.md)の旧案は削除せず検討履歴として残しているが、AnalysisRunを履歴管理の基本単位とする本ドキュメントの設計が正であり、実装フェーズでは本ドキュメントのエンティティ名・テーブル設計案をベースに、必要に応じて[04_data_model.md](./04_data_model.md)の旧案から有用な要素（例: `analysis_sources`の汎用的な情報源トラッキングの考え方）を取り込む。旧案・新案の詳細な対応関係（テーブル単位の対応表）は[04_data_model.md](./04_data_model.md)「5. 現行設計（本ドキュメント）との対応関係」を参照——文脈分析（`context_analyses`相当）とCommon Crawl以外の情報源トラッキング（`analysis_sources`相当）の2点は、本ドキュメントの「6. テーブル設計案」にまだ対応するテーブルがなく、両ドキュメントとも未整理のまま残っている。
 
 **最終更新日: 2026-08-20**
 
@@ -234,12 +234,12 @@ PostgreSQLを前提にすると、将来pgvectorを使ってDocumentや分析結
 - エラー時の再実行方針。
 - 非同期jobの実行基盤。
 - Render/Supabase/Vercelの役割分担（デプロイ・環境変数管理を含む）。
-- [04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」との命名・スキーマの食い違いをどう解消するか（本ドキュメント冒頭「既存の関連ドキュメントとの関係」参照）。
+- [04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」との対応関係は整理済み（[04_data_model.md](./04_data_model.md)「5. 現行設計との対応関係」参照）だが、文脈分析（`context_analyses`相当）とCommon Crawl以外の情報源トラッキング（`analysis_sources`相当）の2点は、本ドキュメントの「6. テーブル設計案」にまだ対応するテーブルがない——実装フェーズでどちらのドキュメントの考え方をベースに補うか。
 
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
-- データモデル（フロント型定義、既存の簡易PostgreSQLスキーマ案）: [04_data_model.md](./04_data_model.md)
+- データモデル（フロント型定義、MVP初期段階の旧PostgreSQLスキーマ案、本ドキュメントとの対応表）: [04_data_model.md](./04_data_model.md)
 - システム構成図（PostgreSQLの位置づけ）: [06_architecture.md](./06_architecture.md)
 - 要件定義・スコープ: [01_requirements.md](./01_requirements.md)
 - フェーズ別ロードマップ（Phase 5 = 永続化）: [02_roadmap.md](./02_roadmap.md)
