@@ -90,6 +90,14 @@
 - マイグレーション整備（Prisma / Drizzle等のORM選定）
 - 分析履歴の一覧・詳細閲覧UI追加
 
+- **Current/Done（現状）**:
+  - DB保存・履歴管理の設計メモ（`docs/db-persistence-design`、2026-08-20。docsのみ・コード変更なし。新規[18_db_persistence_design.md](./18_db_persistence_design.md)を追加し、PostgreSQL/Supabaseを前提に、保存対象の全体像・主要エンティティ（Brand/AnalysisRun/Document/CommonCrawlFetch等）・テーブル設計案・AnalysisRunを基本単位とする分析履歴の持ち方・Common Crawl由来データ/AI Overview/ChatGPT観測の保存方針・将来のpgvector拡張・段階的な移行手順（Phase 1〜6）・初期実装でやること/やらないことを整理した。既存の[04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」とはエンティティ命名が一部異なり、まだ食い違いを解消していない旨を明記——実装フェーズ着手時に改めて整理する。**DB接続・migration作成・Supabase導入・ORM追加はいずれも行っていない**）
+- **Next（次のステップ、優先順）**:
+  - Supabase/PostgreSQL接続方針の決定
+  - AnalysisRun保存の最小実装設計
+  - `brands` / `analysis_runs` / `analysis_results`の初期migration検討
+- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索
+
 目安: 2〜3週間
 
 ## Phase 6 — プロダクション化（MVP後）
