@@ -12,7 +12,7 @@
 
 ## 次フェーズ設計（DB保存・履歴管理）
 
-- [18_db_persistence_design.md](./18_db_persistence_design.md) — **DB保存・履歴管理 設計メモ**。PostgreSQL/Supabaseを前提に、保存対象・主要エンティティ・テーブル設計案・AnalysisRun単位の履歴管理・Common Crawl/AI Overview/ChatGPT観測の保存方針・pgvector拡張・段階的な移行手順を整理する。**設計メモのみで、DB実装・migration・Supabase導入はまだ行っていない。**
+- [18_db_persistence_design.md](./18_db_persistence_design.md) — **DB保存・履歴管理の現行設計方針**。PostgreSQL/Supabaseを前提に、保存対象・主要エンティティ・テーブル設計案・AnalysisRun単位の履歴管理・Common Crawl/AI Overview/ChatGPT観測の保存方針・pgvector拡張・段階的な移行手順を整理する。**設計メモのみで、DB実装・migration・Supabase導入はまだ行っていない。** [04_data_model.md](./04_data_model.md)の旧スキーマ案より、こちらを現行方針として優先する。
 
 ## 開発者向け
 
@@ -25,7 +25,7 @@
 
 - [01_requirements.md](./01_requirements.md) — 要件定義・スコープ（「AIの学習内容を完全再現するものではない」という前提の詳細）
 - [03_api_design.md](./03_api_design.md) — API設計（現状 / 将来）
-- [04_data_model.md](./04_data_model.md) — データモデル（フロント型 / 将来のDBスキーマ）
+- [04_data_model.md](./04_data_model.md) — データモデル（フロント型定義、MVP初期段階のデータモデル検討メモ）。**現行のDB保存・履歴管理設計は[18_db_persistence_design.md](./18_db_persistence_design.md)を優先する**（旧案との対応表を同ファイル5章に収録）。
 - [06_architecture.md](./06_architecture.md) — システム構成図・コンポーネント一覧
 - [07_decisions.md](./07_decisions.md) — 設計判断ログ（なぜそうしたかの記録）
 - [08_screen_design.md](./08_screen_design.md) — 画面設計
