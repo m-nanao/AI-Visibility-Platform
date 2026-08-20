@@ -235,6 +235,19 @@ DB保存機能の追加により、既存の分析体験が壊れることを避
 - RLS/ユーザー管理を初期実装で扱わない方針でよいか
 - DB保存失敗時のUI表示をどうするか
 
+## 14. 実装状況（2026-08-20更新）
+
+`feature/minimum-db-save-prep`で、本ドキュメントの3テーブル構成に対応するmigration SQL案とbackend側のDB保存準備コードを追加した。**ただし実DB接続・migration適用・Supabase導入はまだ行っていない**（対象外は変更なし）。
+
+- migration SQL案: `backend/migrations/001_initial_analysis_history.sql`（`brands`/`analysis_runs`/`analysis_results`、上記5〜7章のカラム案どおり。updated_at自動更新triggerは今回も入れていない）。
+- DB設定読み取り: `backend/services/db_settings.py`（`DB_SAVE_ENABLED`/`DATABASE_URL`を読む。デフォルトはoff、env未設定でもエラーにしない）。
+- DB保存repository: `backend/services/analysis_history_repository.py`の`save_analysis_history()`。`DB_SAVE_ENABLED=true`かつ`DATABASE_URL`設定時のみ接続を試みる（それ以外は接続を一切試みずNoneを返す）。brandは名前一致の既存行があれば再利用、なければ作成。DB保存に失敗しても例外を外に出さず、ログに残してNoneを返す。
+- PostgreSQLドライバ: `psycopg[binary]`（`>=3.1,<4.0`）を`backend/requirements.txt`へ新規追加した。
+- `backend/main.py`の`/analyze`が、正常レスポンス生成後に`save_analysis_history()`をtry/exceptで囲んで呼び出す（DB保存失敗で`/analyze`のレスポンスは壊れない）。**APIレスポンスschemaは変更していない**——`analysisRunId`等は今回追加しない。
+- テストは実DB接続なし（`psycopg`をmonkeypatchでモック）で、env未設定時のスキップ・DB保存失敗時の非ブロッキング挙動・migration SQLの内容を検証する（`backend/tests/test_db_settings.py`、`test_analysis_history_repository.py`、`test_migrations.py`、`test_main_analysis_history.py`）。
+
+未解決事項（12章・13章）はいずれも今回のタスクでは解消していない——`context_analyses`相当・汎用情報源トラッキングは引き続きJSONB内保持のままであり、専用テーブルへの分離は後続タスクで検討する。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

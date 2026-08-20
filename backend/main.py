@@ -71,6 +71,7 @@ POST body.
 """
 
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -99,6 +100,7 @@ from models import (
     UrlFetchResult,
 )
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
+from services.analysis_history_repository import save_analysis_history
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -636,4 +638,42 @@ def analyze(payload: AnalyzeRequest):
         ),
         commonCrawlProvider=common_crawl_provider,
     )
+
+    # Best-effort DB save (see services/analysis_history_repository.py,
+    # docs/19_minimum_db_migration_design.md). Entirely optional and
+    # non-blocking: skipped outright when DB_SAVE_ENABLED/DATABASE_URL
+    # aren't both set (services/db_settings.py), and
+    # save_analysis_history() itself never raises — but the call is
+    # still wrapped here as a second layer of defense, so a bug in that
+    # module can never turn into a failed /analyze response. The
+    # created analysisRunId is deliberately not added to the response
+    # (no API schema change in this task — see
+    # docs/19_minimum_db_migration_design.md "13. 実装フェーズへ進む前
+    # の確認事項").
+    try:
+        history_result = save_analysis_history(
+            brand_name=brand_name,
+            canonical_domain=None,
+            input_snapshot={
+                "brandName": payload.brandName,
+                "urls": payload.urls,
+                "commonCrawlMode": payload.commonCrawlMode,
+                "commonCrawlDomain": payload.commonCrawlDomain,
+                "aiOverviewMode": payload.aiOverviewMode,
+                "chatgptMode": payload.chatgptMode,
+            },
+            source_summary=dict(Counter(document.sourceType for document in documents_list)),
+            result_json=result.model_dump(),
+            visibility_score=result.summary.visibilityScore,
+            meta_json=result.meta.model_dump(),
+            status="partial" if cooccurrence_status == "unavailable" else "completed",
+        )
+    except Exception:
+        logger.exception("Unexpected error while saving analysis history")
+        history_result = None
+    logger.info(
+        "analysis history save %s",
+        "succeeded" if history_result is not None else "skipped or failed",
+    )
+
     return result
