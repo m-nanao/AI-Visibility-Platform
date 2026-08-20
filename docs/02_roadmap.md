@@ -93,10 +93,11 @@
 - **Current/Done（現状）**:
   - DB保存・履歴管理の設計メモ（`docs/db-persistence-design`、2026-08-20。docsのみ・コード変更なし。新規[18_db_persistence_design.md](./18_db_persistence_design.md)を追加し、PostgreSQL/Supabaseを前提に、保存対象の全体像・主要エンティティ（Brand/AnalysisRun/Document/CommonCrawlFetch等）・テーブル設計案・AnalysisRunを基本単位とする分析履歴の持ち方・Common Crawl由来データ/AI Overview/ChatGPT観測の保存方針・将来のpgvector拡張・段階的な移行手順（Phase 1〜6）・初期実装でやること/やらないことを整理した。既存の[04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」とはエンティティ命名が一部異なり、まだ食い違いを解消していない旨を明記——実装フェーズ着手時に改めて整理する。**DB接続・migration作成・Supabase導入・ORM追加はいずれも行っていない**）
   - データモデル旧案との整合整理（`docs/sync-data-model-and-db-design`、2026-08-20。docsのみ・コード変更なし。[04_data_model.md](./04_data_model.md)「2. 将来のPostgreSQLスキーマ案」（MVP初期段階の旧案）と[18_db_persistence_design.md](./18_db_persistence_design.md)（現行設計）の関係を整理し、**現行のDB設計方針は[18_db_persistence_design.md](./18_db_persistence_design.md)を正とする**旨を両ドキュメントに明記した。[04_data_model.md](./04_data_model.md)に新規「5. 現行設計との対応関係」章を追加し、`analyses`→`analysis_runs`+`analysis_results`、`ai_overview_comparisons`→`ai_overview_observations`+`chatgpt_observations`等のテーブル単位の対応表を収録。文脈分析（`context_analyses`相当）とCommon Crawl以外の情報源トラッキング（`analysis_sources`相当）の2点は新案にまだ対応テーブルがなく、両ドキュメントに未整理事項として明記した。**旧案は削除せず検討履歴として維持**（`analysis_sources`/`analysis_result_sources`等は[03_api_design.md](./03_api_design.md)・[05_tasks.md](./05_tasks.md)・[08_screen_design.md](./08_screen_design.md)からも引き続き参照される）。詳細は[04_data_model.md](./04_data_model.md)「現行DB設計方針について」「5. 現行設計との対応関係」参照）
+  - 最小DB migration設計メモ（`docs/minimum-db-migration-design`、2026-08-20。docsのみ・コード変更なし。新規[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)を追加し、[18_db_persistence_design.md](./18_db_persistence_design.md)「11. MVPからDB対応へ移行する段階的手順」のPhase 1にあたる最小構成を具体化した。初期実装で作るテーブルを`brands`/`analysis_runs`/`analysis_results`の3つに絞り込み、各テーブルのカラム案・`input_snapshot`/`source_summary`/`result_json`のJSONB保存例・AnalysisRun statusの5値設計（`queued`/`running`/`completed`/`partial`/`failed`）・DB保存失敗時も分析結果表示は妨げない方針・Supabase/PostgreSQL migration方針（uuid/jsonb/timestamptz/RLS後回し等）を整理した。文脈分析（`context_analyses`相当）と汎用情報源トラッキング（`analysis_sources`相当）は、初期実装では専用テーブルを作らず`result_json`/`source_summary`内に保持する方針を明記——未解決事項自体は解消しておらず、後続フェーズでの分離検討として残した。**migrationファイル作成・Supabase導入・ORM追加・DB接続実装はいずれも行っていない**）
 - **Next（次のステップ、優先順）**:
   - Supabase/PostgreSQL接続方針の決定
-  - AnalysisRun保存の最小実装設計
-  - `brands` / `analysis_runs` / `analysis_results`の初期migration検討
+  - `brands` / `analysis_runs` / `analysis_results`の最小migration実装（[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)参照）
+  - DB保存失敗時の非ブロッキング実装
 - **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索
 
 目安: 2〜3週間

@@ -13,6 +13,7 @@
 ## 次フェーズ設計（DB保存・履歴管理）
 
 - [18_db_persistence_design.md](./18_db_persistence_design.md) — **DB保存・履歴管理の現行設計方針**。PostgreSQL/Supabaseを前提に、保存対象・主要エンティティ・テーブル設計案・AnalysisRun単位の履歴管理・Common Crawl/AI Overview/ChatGPT観測の保存方針・pgvector拡張・段階的な移行手順を整理する。**設計メモのみで、DB実装・migration・Supabase導入はまだ行っていない。** [04_data_model.md](./04_data_model.md)の旧スキーマ案より、こちらを現行方針として優先する。
+- [19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md) — **DB実装前に読む最小migration設計**。[18_db_persistence_design.md](./18_db_persistence_design.md)の全体設計のうち、最初に実装する`brands`/`analysis_runs`/`analysis_results`の3テーブルに絞り込んだカラム案・JSONB保存方針・AnalysisRun status設計・DB保存失敗時の扱いを整理する。**こちらも設計メモのみで、migrationファイル作成・Supabase導入・ORM追加・DB接続実装はまだ行っていない。**
 
 ## 開発者向け
 
