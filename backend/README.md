@@ -512,7 +512,7 @@ Cleaner・Normalizerが「本文を取り出し整える」役割なのに対し
 }
 ```
 
-`store: false`を常に指定し、OpenAI側にもこの1回限りの観測を保存させない（このプロジェクト自体もDB保存はしない）。`Authorization: Bearer <OPENAI_API_KEY>`ヘッダーで認証する。`httpx`による直接のREST呼び出しで、`openai` SDKは使わない（`requirements.txt`にまだ含まれておらず、今回のスコープでは新規ライブラリ追加を避けた）。
+`store: false`を常に指定し、OpenAI側にもこの1回限りの観測を保存させない。**このプロジェクト自体のDB保存はデフォルトoffであり、`DB_SAVE_ENABLED=true`かつ`DATABASE_URL`設定時のみ、ChatGPT観測を含む分析結果全体が`analysis_results.result_json`の一部として保存される可能性がある**（ChatGPT観測専用の保存や、この観測単体をDBへ送る処理はない。詳細は下記「分析履歴のDB保存」参照）。`Authorization: Bearer <OPENAI_API_KEY>`ヘッダーで認証する。`httpx`による直接のREST呼び出しで、`openai` SDKは使わない（`requirements.txt`にまだ含まれておらず、今回のスコープでは新規ライブラリ追加を避けた）。
 
 **デモ・検証時の回答安定化（`CHATGPT_TEMPERATURE`、2026-07-28追加）**: 同じブランド名でも実行ごとに回答・summary/fullSummaryの長さが変わりすぎる課題を受け、`temperature`をデフォルト`0.2`（低め）に設定し、回答のばらつきを抑えている。加えて、systemプロンプト・userプロンプトを構造化し、「何を提供しているか／主な利用者または用途／代表的な特徴や強み」の3観点を含む3〜5文程度の自然文で回答するよう明示的に指示している（箇条書き禁止、参照元・URLを挙げない指示も明記）。これによりsummary/fullSummaryが極端に短くなりすぎず、デモ時に読みやすい分量に安定しやすくなる。**OpenAI API呼び出し回数（1 analyzeあたり最大1回）・安全ゲート・references取得の対象外扱いはいずれも変更していない**——あくまで同じ1回の呼び出しの中身（temperature・prompt文面）を変えただけ。`CHATGPT_TEMPERATURE`は0.0〜1.0の範囲外・不正値は`0.2`にフォールバックする。
 
@@ -655,6 +655,19 @@ Common Crawlで実際にDocument化できたページのURL一覧を、依頼者
 - **URLのみ**: `analyzedUrls`にはURL文字列のみを格納する。HTML本文・WARC本文・raw response・WARC metadata（filename/offset/length等）はいずれも含めない。
 - **UI表示**（`app/lib/meta-label.ts`の`getCommonCrawlAnalyzedPagesDisplay()`、「2. 共起語ランキング」カード）: `status="real"`かつ`analyzedUrls`が1件以上ある場合のみ「取得ページ」というラベルとURL一覧を表示する（`off`/`unavailable`、または`analyzedUrls`が空/未設定の場合は何も表示しない）。`app/components/sections/CooccurrenceRankingSection.tsx`が各URLを`target="_blank"`/`rel="noreferrer"`付きのリンクとして表示する。ラベル「取得ページ」は依頼者確認前の仮のもの（[docs/15_requester_review_items.md](../docs/15_requester_review_items.md)参照）。
 - **3件上限を維持する理由**: MVP段階ではRender環境のメモリ・timeoutリスクを抑えるため、WARC取得とHTML抽出が重い処理であるため、分析結果の説明性を保つため。まずは「取得できる」「分析に混ぜられる」「どのページを使ったか分かる」を優先し、全件取得・非同期ジョブ化・DB保存は今回のスコープ外（将来の段階的拡張として5件/10件・非同期ジョブ・DB保存・定期取得・source weightingを想定、[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）。
+
+### 分析履歴のDB保存（`services/db_settings.py` / `services/analysis_history_repository.py`、2026-08-20新設）
+
+`/analyze`の正常レスポンス生成後、分析履歴をPostgreSQL/Supabaseへ保存する準備コードを追加した。**分析履歴のDB保存はデフォルトでは無効**であり、この節の設定を何も行わなければ、以前のMVPと完全に同じ挙動になる（設計の詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)参照）。
+
+- **有効化条件**: 環境変数`DB_SAVE_ENABLED=true`かつ`DATABASE_URL`（PostgreSQL接続文字列）が設定されている場合のみ、DB接続・保存を試みる（`services/db_settings.py`の`load_db_settings()`/`is_db_save_configured()`）。**いずれか一方でも未設定なら、DB接続は一切試みない**（デフォルトは両方未設定＝off）。
+- **保存タイミングと内容**: `main.py`の`analyze()`が正常なレスポンスを組み立てた**後**に、`services/analysis_history_repository.py`の`save_analysis_history()`を呼ぶ。`brands`（ブランド名一致で既存行を再利用、なければ作成）→`analysis_runs`（`input_snapshot`＝リクエストのブランド名/urls/各種mode、`source_summary`＝`Document.sourceType`ごとの件数）→`analysis_results`（`result_json`＝`/analyze`が返すレスポンス全体、`meta_json`＝`meta`部分、`visibility_score`＝`summary.visibilityScore`）の順に1トランザクションで保存する。ChatGPT観測・AI Overview比較・Common Crawl補完も含め、レスポンス全体がそのまま`result_json`に含まれる（個別テーブルへの分解はまだ行っていない）。
+- **非ブロッキング**: DB保存に失敗しても（接続不可・クエリエラー・ドライバ未インストール等いずれも）、`/analyze`のレスポンスは失敗させない。`save_analysis_history()`自身が例外を外に出さずログに記録してNoneを返し、`main.py`側でも念のため二重にtry/exceptしている。既存のMVPの分析体験を壊さないための設計であり、DB保存は完全に非ブロッキング扱い。
+- **APIレスポンスschemaは変更していない**: 分析履歴が実際にDBへ保存された場合でも、`analysisRunId`のような識別子はレスポンスへ一切追加していない。フロント（`app/`）・Zodスキーマ（[app/lib/analysis-result-schema.ts](../app/lib/analysis-result-schema.ts)）はいずれも変更不要。
+- **migration SQL案**: `migrations/001_initial_analysis_history.sql`に`brands`/`analysis_runs`/`analysis_results`の3テーブルのDDL案がある。**このファイルはまだ実DBへ適用していない**（設計artifactのみ）。
+- **PostgreSQLドライバ**: `psycopg[binary]`（`requirements.txt`に追加済み）。
+- **本番環境での状態**: Render/Vercelの環境変数には`DB_SAVE_ENABLED`/`DATABASE_URL`のいずれもまだ設定していない——依頼者確認用ステージング環境を含め、現時点ではどの環境でもDB保存は動作しない。
+- **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」参照。
 
 ## テスト
 
@@ -1196,7 +1209,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
-- PostgreSQLとの連携
+- PostgreSQL/Supabaseへの実DB接続（migration SQL案・DB保存準備コードは実装済み。詳細は上記「分析履歴のDB保存」参照。**Render/Vercelへの`DATABASE_URL`設定・実DBへのmigration適用・Supabaseプロジェクト作成はまだ行っていない**）
 - ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
 - Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 
