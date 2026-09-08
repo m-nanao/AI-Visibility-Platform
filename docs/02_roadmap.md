@@ -96,12 +96,15 @@
   - 最小DB migration設計メモ（`docs/minimum-db-migration-design`、2026-08-20。docsのみ・コード変更なし。新規[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)を追加し、[18_db_persistence_design.md](./18_db_persistence_design.md)「11. MVPからDB対応へ移行する段階的手順」のPhase 1にあたる最小構成を具体化した。初期実装で作るテーブルを`brands`/`analysis_runs`/`analysis_results`の3つに絞り込み、各テーブルのカラム案・`input_snapshot`/`source_summary`/`result_json`のJSONB保存例・AnalysisRun statusの5値設計（`queued`/`running`/`completed`/`partial`/`failed`）・DB保存失敗時も分析結果表示は妨げない方針・Supabase/PostgreSQL migration方針（uuid/jsonb/timestamptz/RLS後回し等）を整理した。文脈分析（`context_analyses`相当）と汎用情報源トラッキング（`analysis_sources`相当）は、初期実装では専用テーブルを作らず`result_json`/`source_summary`内に保持する方針を明記——未解決事項自体は解消しておらず、後続フェーズでの分離検討として残した。**migrationファイル作成・Supabase導入・ORM追加・DB接続実装はいずれも行っていない**）
   - Supabase/PostgreSQL向けの最小DB実装準備（`feature/minimum-db-save-prep`、2026-08-20。[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)の3テーブル構成に対応するmigration SQL案（`backend/migrations/001_initial_analysis_history.sql`）と、backend側のDB保存準備コード（`backend/services/db_settings.py`＝`DB_SAVE_ENABLED`/`DATABASE_URL`読み取り、`backend/services/analysis_history_repository.py`＝`save_analysis_history()`）を追加した。**`DB_SAVE_ENABLED=true`かつ`DATABASE_URL`設定時のみ保存を試み、それ以外・DB保存失敗時のいずれも`/analyze`のレスポンスは変えない**（`backend/main.py`がtry/exceptで囲んで呼び出す）。PostgreSQLドライバとして`psycopg[binary]`（`>=3.1,<4.0`）を新規依存として追加した。**APIレスポンスschemaは変更していない**（`analysisRunId`等は追加せず）。テストは実DB接続なし（`psycopg`をmonkeypatchでモック）で追加した。**実DB接続・migration適用・Supabase導入・pgvector導入・非同期job化・Document保存テーブル実装はいずれも今回も行っていない**）
   - Supabase Freeでの最小DB保存確認（`docs/record-supabase-save-verification`、2026-09-09。docsのみ・コード変更なし。Supabase Freeプロジェクトを作成してGitHub連携し、Supabase SQL Editorで`001_initial_analysis_history.sql`を実行して`brands`/`analysis_runs`/`analysis_results`の3テーブルを作成。Render backendに`DB_SAVE_ENABLED=true`・`DATABASE_URL`を設定し、アプリから分析を実行したところ3テーブルにそれぞれ1件ずつ保存されたことをSupabase Table Editorで確認した。**Renderログに接続エラーなし。APIレスポンスschemaは変更なし、`analysisRunId`はフロントへ返していない**。詳細は[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)「実装状況」参照）
+  - 分析履歴 read API 設計メモ（`docs/analysis-history-read-api-design`、2026-09-09。docsのみ・コード変更なし。新規[20_analysis_history_read_api_design.md](./20_analysis_history_read_api_design.md)を追加し、保存済み分析履歴を読む`GET /analysis-runs`（一覧、`result_json`は含めない）・`GET /analysis-runs/{id}`（詳細、`result_json`を含む）の設計案を整理した。read APIは`DB_SAVE_ENABLED`とは別の環境変数`READ_HISTORY_ENABLED`（デフォルトoff）で制御する方針とし、**DB保存と履歴閲覧は安全性が異なる**（保存はbackend内部処理、閲覧APIは外部からアクセスされる）ことを明記。DB未設定時は一覧・詳細とも503、対象IDなしは404を推奨。認証未実装期間はstaging環境限定での利用を前提とし、public本番ではまだ有効化しない方針も明記。`analysisRunId`を`/analyze`レスポンスへ追加するかは論点を整理したのみで結論は出していない（A: 追加しない/B: `meta.analysisRunId: string | null`として追加、のどちらかを実装時に選ぶ）。**read API実装・DB query実装・frontend UI実装・`/analyze`schema変更はいずれも行っていない**）
 - **Next（次のステップ、優先順）**:
-  - DB保存結果の確認方法整理（Supabase Table Editor目視以外の確認手段を検討するか）
-  - 履歴一覧UIの前に、保存済み`analysis_runs`を確認するread APIの設計
-  - `analysisRunId`をAPIレスポンスへ含めるかどうかの検討
+  - `READ_HISTORY_ENABLED`の追加
+  - `GET /analysis-runs`の実装
+  - `GET /analysis-runs/{id}`の実装
+  - read APIのDB未設定時503対応
+  - `analysisRunId`を`/analyze`レスポンスに含めるか検討
   - DB保存失敗時のユーザー向け表示を出すかどうかの検討
-- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、履歴一覧UI
+- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、履歴一覧UI、認証/RLS導入
 
 目安: 2〜3週間
 

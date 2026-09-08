@@ -14,6 +14,7 @@
 
 - [18_db_persistence_design.md](./18_db_persistence_design.md) — **DB保存・履歴管理の現行設計方針**。PostgreSQL/Supabaseを前提に、保存対象・主要エンティティ・テーブル設計案・AnalysisRun単位の履歴管理・Common Crawl/AI Overview/ChatGPT観測の保存方針・pgvector拡張・段階的な移行手順を整理する。**最小構成（`brands`/`analysis_runs`/`analysis_results`）はSupabase Free環境での実DB保存まで確認済み（2026-09-09、[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)参照）だが、それ以外（Document保存・観測系の個別テーブル化・pgvector等）はまだ設計メモの段階。** [04_data_model.md](./04_data_model.md)の旧スキーマ案より、こちらを現行方針として優先する。
 - [19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md) — **DB実装前に読む最小migration設計**。[18_db_persistence_design.md](./18_db_persistence_design.md)の全体設計のうち、最初に実装する`brands`/`analysis_runs`/`analysis_results`の3テーブルに絞り込んだカラム案・JSONB保存方針・AnalysisRun status設計・DB保存失敗時の扱いを整理する。**2026-09-09、Supabase Free環境への実DB接続・保存を確認済み**（3テーブルへそれぞれ1件保存、詳細は同ファイル「15. Supabase Free環境での実DB保存確認」参照）。履歴一覧UI・read API・`analysisRunId`のAPIレスポンス追加はまだ行っていない。
+- [20_analysis_history_read_api_design.md](./20_analysis_history_read_api_design.md) — **保存済み分析履歴を読むread API設計**。履歴一覧UIの前に読む。`GET /analysis-runs`（一覧）・`GET /analysis-runs/{id}`（詳細）の設計案、`READ_HISTORY_ENABLED`によるDB保存とは別の有効化制御、DB未設定・接続失敗時の扱い、認証未実装期間の公開範囲、`analysisRunId`を`/analyze`レスポンスへ追加するかの論点を整理する。**設計メモのみで、read API実装・DB query実装・frontend UI実装はまだ行っていない。**
 
 ## 開発者向け
 
