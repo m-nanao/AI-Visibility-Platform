@@ -88,6 +88,11 @@ curl -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
   -d '{}'
 # => 400 {"error":"brandName is required"}
+
+curl http://localhost:8000/analysis-runs
+# => READ_HISTORY_ENABLED未設定（デフォルト）の場合:
+#    503 {"error":"analysis history read API is not enabled"}
+#    有効化方法は「保存済み分析履歴を読むread API」参照
 ```
 
 ## Tokenizerの選択（`TOKENIZER_MODE`）
@@ -669,9 +674,20 @@ Common Crawlで実際にDocument化できたページのURL一覧を、依頼者
 - **migration SQL案**: `migrations/001_initial_analysis_history.sql`に`brands`/`analysis_runs`/`analysis_results`の3テーブルのDDL案がある。**2026-09-09、Supabase SQL Editorで実行し、Supabase Free環境に3テーブルを作成済み**（アプリ側のmigration自動適用の仕組みはまだなく、SQL Editorへの手動貼り付け実行）。
 - **PostgreSQLドライバ**: `psycopg[binary]`（`requirements.txt`に追加済み）。
 - **DB保存を有効化する方法**: Render backendの環境変数に`DB_SAVE_ENABLED=true`・`DATABASE_URL`（SupabaseのPostgreSQL接続文字列）を設定する。**2026-09-09時点で、依頼者確認用ステージング環境のRender backendにはこの2つを設定済みで、実際にDB保存が動作することを確認している。**
-- **保存結果の確認方法**: 現時点ではSupabase Table Editorで各テーブルの行を直接確認する以外に手段がない——アプリの画面にもAPIレスポンスにも、保存が成功したかどうかを示す情報は一切出ない（`analysisRunId`等を返していないため）。
-- **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、保存済みデータを読み出すread API、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」「15. Supabase Free環境での実DB保存確認」参照。
-- **保存済み履歴を読むread APIは未実装**: `GET /analysis-runs`（一覧）・`GET /analysis-runs/{id}`（詳細）の設計案を[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)として整理済みだが、実装はまだ着手していない。read APIは`DB_SAVE_ENABLED`とは別の環境変数`READ_HISTORY_ENABLED`（デフォルトoff）で制御する方針——DB保存はbackend内部処理だが、閲覧APIは外部からアクセスされるため安全性の扱いが異なる。
+- **保存結果の確認方法**: Supabase Table Editorで各テーブルの行を直接確認するか、下記read API（`READ_HISTORY_ENABLED=true`時のみ）で確認する。両方とも無効・未設定の場合、アプリの画面にもAPIレスポンスにも保存成功有無を示す情報は一切出ない（`analysisRunId`等を返していないため）。
+- **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」「15. Supabase Free環境での実DB保存確認」参照。
+
+### 保存済み分析履歴を読むread API（`GET /analysis-runs` / `GET /analysis-runs/{id}`、2026-09-09新設）
+
+保存済み分析履歴を読むための最小read APIを実装した（設計は[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)参照）。**read APIはデフォルトでは無効**であり、この節の設定を何も行わなければ両エンドポイントとも503を返す。
+
+- **有効化条件**: 環境変数`READ_HISTORY_ENABLED=true`かつ`DATABASE_URL`が設定されている場合のみ、DB接続を試みる（`services/db_settings.py`の`is_history_read_enabled()`）。**`DB_SAVE_ENABLED=true`だけではread APIは有効にならない**——保存はbackend内部処理だが、read APIは外部からアクセスされるため安全性の扱いが異なり、独立したフラグにしている（[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)「9. 認証未実装期間の公開範囲」参照）。
+- **`GET /analysis-runs`**（一覧）: `limit`（デフォルト20、最大100）・`offset`（デフォルト0）・`brand`・`status`のquery paramsに対応。`brands`/`analysis_runs`/`analysis_results`をjoinして`id`/`brandName`/`canonicalDomain`/`status`/`visibilityScore`/`sourceSummary`/`startedAt`/`completedAt`/`createdAt`を返す。**`result_json`全体は返さない**（`services/analysis_history_repository.py`の`list_analysis_runs()`）。
+- **`GET /analysis-runs/{id}`**（詳細）: `brand`/`run`（`inputSnapshot`/`sourceSummary`等）に加え、**`analysis_results.result_json`をそのまま`result`として返す**（`meta_json`は`meta`として返す）。指定IDが存在しない、または不正なUUID形式の場合は404（`services/analysis_history_repository.py`の`get_analysis_run()`）。
+- **エラー時の挙動**: read APIが無効（`READ_HISTORY_ENABLED=false`）・`DATABASE_URL`未設定・DB接続/クエリ失敗はいずれも503（`{"error": "..."}`）。対象IDなしは404。不正な`limit`/`offset`はFastAPIの標準validationにより400（既存の`/analyze`と同じ`{"error": "invalid request body"}`形式、`main.py`の`validation_exception_handler`を共有）。**保存処理（`save_analysis_history()`）と異なり、read APIは失敗を握りつぶさない**——`list_analysis_runs()`/`get_analysis_run()`は接続・クエリ失敗時に`AnalysisHistoryReadError`を送出し、`main.py`側で503に変換する。
+- **APIレスポンスschemaは変更していない**: この2エンドポイントの追加は`/analyze`のリクエスト/レスポンス形状に一切影響しない。`analysisRunId`は今回も`/analyze`のレスポンスへ追加していない。
+- **frontend UIは未実装**: 履歴一覧UI・履歴詳細UIはいずれも今回のスコープ外（`app/`側は無変更）。
+- **今回のスコープ外**: 認証/RLS、`analysisRunId`の`/analyze`レスポンス追加、削除API、検索・高度な絞り込み、正確なtotal件数の実装。詳細は[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)「13. 初期実装でやること・やらないこと」参照。
 
 ## テスト
 
@@ -1213,7 +1229,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
-- PostgreSQL/Supabaseの本格活用（**2026-09-09、Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）は確認済み**。詳細は上記「分析履歴のDB保存」参照。保存済みデータを読み出すread API・分析履歴の一覧・詳細閲覧UI・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化はいずれもまだ行っていない）
+- PostgreSQL/Supabaseの本格活用（**2026-09-09、Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）に加え、保存済み履歴を読む最小read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）も実装済み**。詳細は上記「分析履歴のDB保存」「保存済み分析履歴を読むread API」参照。分析履歴の一覧・詳細閲覧UI・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化・認証/RLSはいずれもまだ行っていない）
 - ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
 - Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 

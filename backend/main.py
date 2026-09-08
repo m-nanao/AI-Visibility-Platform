@@ -76,7 +76,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -89,6 +89,11 @@ from models import (
     AIOverviewProviderInfo,
     AnalysisMeta,
     AnalysisResult,
+    AnalysisRunBrand,
+    AnalysisRunDetailResponse,
+    AnalysisRunInfo,
+    AnalysisRunListItem,
+    AnalysisRunListResponse,
     AnalysisSectionStatuses,
     AnalyzeRequest,
     ChatGptProviderInfo,
@@ -100,7 +105,12 @@ from models import (
     UrlFetchResult,
 )
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
-from services.analysis_history_repository import save_analysis_history
+from services.analysis_history_repository import (
+    AnalysisHistoryReadError,
+    get_analysis_run as repository_get_analysis_run,
+    list_analysis_runs as repository_list_analysis_runs,
+    save_analysis_history,
+)
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -113,6 +123,7 @@ from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
 )
+from services.db_settings import is_history_read_enabled
 from services.document_chunker import chunk_documents
 from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
@@ -677,3 +688,62 @@ def analyze(payload: AnalyzeRequest):
     )
 
     return result
+
+
+# --- Analysis history read API (GET /analysis-runs, GET
+# /analysis-runs/{id}) — see
+# docs/20_analysis_history_read_api_design.md. Entirely separate from
+# /analyze above: no request/response field of /analyze is touched by
+# anything below (no analysisRunId is added to AnalysisResult/
+# AnalysisMeta). Gated by READ_HISTORY_ENABLED (services/db_settings.py's
+# is_history_read_enabled()) — a flag independent of DB_SAVE_ENABLED,
+# since saving is an internal write with no external caller while these
+# two endpoints are reachable by anyone who can call this service.
+HISTORY_READ_NOT_CONFIGURED_MESSAGE = "analysis history read API is not enabled"
+HISTORY_READ_FAILED_MESSAGE = "failed to read analysis history"
+
+
+@app.get("/analysis-runs", response_model=AnalysisRunListResponse)
+def list_analysis_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    brand: str | None = None,
+    status: str | None = None,
+):
+    if not is_history_read_enabled():
+        return error_response(HISTORY_READ_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    try:
+        items = repository_list_analysis_runs(
+            limit=limit, offset=offset, brand=brand, status=status
+        )
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    return AnalysisRunListResponse(
+        items=[AnalysisRunListItem(**item) for item in items],
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/analysis-runs/{analysis_run_id}", response_model=AnalysisRunDetailResponse)
+def get_analysis_run(analysis_run_id: str):
+    if not is_history_read_enabled():
+        return error_response(HISTORY_READ_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    try:
+        detail = repository_get_analysis_run(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    if detail is None:
+        return error_response("analysis run not found", status_code=404)
+
+    return AnalysisRunDetailResponse(
+        id=detail["id"],
+        brand=AnalysisRunBrand(**detail["brand"]),
+        run=AnalysisRunInfo(**detail["run"]),
+        result=detail["result"],
+        meta=detail["meta"],
+    )

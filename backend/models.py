@@ -466,3 +466,74 @@ class AnalyzeRequest(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: str
+
+
+# --- Analysis history read API (GET /analysis-runs, GET
+# /analysis-runs/{id}) — see services/analysis_history_repository.py's
+# list_analysis_runs()/get_analysis_run() and
+# docs/20_analysis_history_read_api_design.md. Field names are
+# camelCase to match the rest of this file's response models, even
+# though these two endpoints aren't consumed by app/ yet. Entirely
+# independent of AnalysisResult/AnalyzeRequest above — /analyze's
+# request/response schema is unchanged by this API.
+
+
+class AnalysisRunListItem(BaseModel):
+    """One row of GET /analysis-runs's `items` — see
+    docs/20_analysis_history_read_api_design.md "5. GET /analysis-runs
+    の設計案". Deliberately excludes result_json/meta_json (see that
+    section's "返さないもの") — use GET /analysis-runs/{id} for those.
+    """
+
+    id: str
+    brandName: str
+    canonicalDomain: str | None
+    status: str
+    visibilityScore: int | None
+    sourceSummary: dict[str, object] | None
+    startedAt: str | None
+    completedAt: str | None
+    createdAt: str | None
+
+
+class AnalysisRunListResponse(BaseModel):
+    items: list[AnalysisRunListItem]
+    limit: int
+    offset: int
+    # Total matching row count across all pages. Always None in this
+    # initial implementation — see
+    # docs/20_analysis_history_read_api_design.md "13. 初期実装でやる
+    # こと・やらないこと" ("total countの正確な実装" is out of scope).
+    total: int | None = None
+
+
+class AnalysisRunBrand(BaseModel):
+    id: str
+    name: str
+    canonicalDomain: str | None
+
+
+class AnalysisRunInfo(BaseModel):
+    status: str
+    inputSnapshot: dict[str, object]
+    sourceSummary: dict[str, object] | None
+    startedAt: str | None
+    completedAt: str | None
+
+
+class AnalysisRunDetailResponse(BaseModel):
+    """GET /analysis-runs/{id} — see
+    docs/20_analysis_history_read_api_design.md "6. GET
+    /analysis-runs/{id} の設計案". Unlike AnalysisRunListItem, `result`
+    holds the full stored analysis_results.result_json (the complete
+    /analyze response as it was at save time) — kept as a loose
+    dict[str, object] rather than AnalysisResult, since a saved row's
+    shape reflects whatever AnalysisResult looked like when it was
+    written, not necessarily the current one.
+    """
+
+    id: str
+    brand: AnalysisRunBrand
+    run: AnalysisRunInfo
+    result: dict[str, object]
+    meta: dict[str, object] | None
