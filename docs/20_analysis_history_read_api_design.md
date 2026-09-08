@@ -316,13 +316,25 @@ read APIができた後、frontendでは履歴一覧UIを追加できる。
 ## 14. 今後の検討事項
 
 - read APIをstaging認証とどう組み合わせるか
-- `READ_HISTORY_ENABLED`の追加
 - `analysisRunId`を`/analyze`レスポンスに含めるか
 - 履歴一覧UIをどこに置くか
 - 履歴詳細UIで現在の結果画面を再利用できるか
 - `result_json`が大きくなった場合の分割方針
 - RLS/ユーザー管理導入時の設計
 - `project_id`/`user_id`/`organization_id`の追加時期
+- 一覧APIの`total`件数の正確な実装
+
+## 15. 実装状況（2026-09-09更新）
+
+`feature/analysis-history-read-api`で、本ドキュメントの設計に沿ってread APIの最小実装を追加した。**frontend UI実装・`/analyze`レスポンスへの`analysisRunId`追加・migration変更・認証/RLS実装はいずれも行っていない。**
+
+- `READ_HISTORY_ENABLED`: `backend/services/db_settings.py`に追加（`DbSettings.read_history_enabled`、`is_history_read_enabled()`）。デフォルトoff、`DB_SAVE_ENABLED`とは独立したフラグ（`DB_SAVE_ENABLED=true`だけではread APIは有効にならないことをテストで確認済み）。
+- repository: `backend/services/analysis_history_repository.py`に`list_analysis_runs()`/`get_analysis_run()`を追加。保存処理（`save_analysis_history()`）と異なり失敗を握りつぶさず、接続・クエリ失敗時は`AnalysisHistoryReadError`を送出する。不正なUUID形式の`analysis_run_id`はDBへ問い合わせずNoneを返す（＝404扱い）。
+- FastAPI route: `backend/main.py`に`GET /analysis-runs`・`GET /analysis-runs/{analysis_run_id}`を追加。`READ_HISTORY_ENABLED`が無効・`DATABASE_URL`未設定・DB接続/クエリ失敗はいずれも503、対象IDなしは404。`limit`/`offset`の不正値は既存の`RequestValidationError`ハンドラを共有し400（`/analyze`と同じ`{"error": "invalid request body"}`形式）。
+- response model: `backend/models.py`に`AnalysisRunListItem`/`AnalysisRunListResponse`/`AnalysisRunBrand`/`AnalysisRunInfo`/`AnalysisRunDetailResponse`を追加（camelCaseフィールド、`AnalysisResult`/`AnalyzeRequest`とは独立）。
+- PostgreSQLドライバ: 新規追加なし（`feature/minimum-db-save-prep`で追加済みの`psycopg[binary]`をそのまま利用）。
+- `.env.example`に`READ_HISTORY_ENABLED=false`を追記。
+- テストは実DB接続なし（`psycopg`をmonkeypatchでモック、FastAPI routeは`main.repository_list_analysis_runs`/`main.repository_get_analysis_run`をmonkeypatch）で追加した（`backend/tests/test_db_settings.py`、`test_analysis_history_repository.py`、`test_main_analysis_history_read_api.py`）。
 
 ## 関連ドキュメント
 
