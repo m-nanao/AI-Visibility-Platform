@@ -671,6 +671,7 @@ Common Crawlで実際にDocument化できたページのURL一覧を、依頼者
 - **DB保存を有効化する方法**: Render backendの環境変数に`DB_SAVE_ENABLED=true`・`DATABASE_URL`（SupabaseのPostgreSQL接続文字列）を設定する。**2026-09-09時点で、依頼者確認用ステージング環境のRender backendにはこの2つを設定済みで、実際にDB保存が動作することを確認している。**
 - **保存結果の確認方法**: 現時点ではSupabase Table Editorで各テーブルの行を直接確認する以外に手段がない——アプリの画面にもAPIレスポンスにも、保存が成功したかどうかを示す情報は一切出ない（`analysisRunId`等を返していないため）。
 - **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、保存済みデータを読み出すread API、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」「15. Supabase Free環境での実DB保存確認」参照。
+- **保存済み履歴を読むread APIは未実装**: `GET /analysis-runs`（一覧）・`GET /analysis-runs/{id}`（詳細）の設計案を[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)として整理済みだが、実装はまだ着手していない。read APIは`DB_SAVE_ENABLED`とは別の環境変数`READ_HISTORY_ENABLED`（デフォルトoff）で制御する方針——DB保存はbackend内部処理だが、閲覧APIは外部からアクセスされるため安全性の扱いが異なる。
 
 ## テスト
 
