@@ -2,7 +2,7 @@
 
 **このドキュメントは設計メモであり、migrationファイル作成・Supabase導入・ORM追加・DB接続実装のいずれも含まない。** 今回のスコープはdocsのみ。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-08-20**
+**最終更新日: 2026-09-09**
 
 ## 1. このドキュメントの目的
 
@@ -247,6 +247,23 @@ DB保存機能の追加により、既存の分析体験が壊れることを避
 - テストは実DB接続なし（`psycopg`をmonkeypatchでモック）で、env未設定時のスキップ・DB保存失敗時の非ブロッキング挙動・migration SQLの内容を検証する（`backend/tests/test_db_settings.py`、`test_analysis_history_repository.py`、`test_migrations.py`、`test_main_analysis_history.py`）。
 
 未解決事項（12章・13章）はいずれも今回のタスクでは解消していない——`context_analyses`相当・汎用情報源トラッキングは引き続きJSONB内保持のままであり、専用テーブルへの分離は後続タスクで検討する。
+
+## 15. Supabase Free環境での実DB保存確認（2026-09-09追記）
+
+`docs/record-supabase-save-verification`で、上記14章の準備コードを使い、実際にSupabase Free環境への接続・保存を確認した。**手動確認のみで、コード変更は行っていない。**
+
+- Supabase Freeプロジェクトを作成し、GitHub連携済み。
+- Supabase SQL Editorで`backend/migrations/001_initial_analysis_history.sql`を実行し、`brands`/`analysis_runs`/`analysis_results`の3テーブルを作成済み。
+- Render backendの環境変数に`DB_SAVE_ENABLED=true`・`DATABASE_URL`（SupabaseのPostgreSQL接続文字列）を設定済み。
+- アプリから分析を実行したところ、3テーブルにそれぞれ1件ずつ保存されたことをSupabase Table Editorで確認した。
+- Renderログに接続エラーは出ていない。
+
+**注意（現時点でもまだ対応していないこと）:**
+
+- 保存済み`analysis_runs`/`analysis_results`を読み出す履歴一覧UIはまだない。
+- 保存済みデータを読み出すread APIもまだない。
+- APIレスポンスには`analysisRunId`等の識別子を今回も追加していない——保存確認は常にSupabase Table Editor上の目視確認によるもので、アプリの画面やAPIレスポンスからは保存有無を確認できない。
+- pgvector導入・非同期job化・Document保存等の個別テーブル化は引き続き対象外。
 
 ## 関連ドキュメント
 

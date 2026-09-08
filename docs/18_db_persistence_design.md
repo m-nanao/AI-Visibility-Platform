@@ -194,7 +194,7 @@ PostgreSQLを前提にすると、将来pgvectorを使ってDocumentや分析結
 
 ## 11. MVPからDB対応へ移行する段階的手順
 
-- **Phase 1: AnalysisRun保存** — 1回の分析結果をDBに保存する。`brands` / `analysis_runs` / `analysis_results`から始める。
+- **Phase 1: AnalysisRun保存** — 1回の分析結果をDBに保存する。`brands` / `analysis_runs` / `analysis_results`から始める。**2026-09-09、Supabase Free環境での実DB保存を確認済み**（詳細は[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)「15. Supabase Free環境での実DB保存確認」参照）。
 - **Phase 2: Document保存** — 入力URL・取得Document・source_typeを保存する。Common Crawl由来Documentも保存する。
 - **Phase 3: 観測データ保存** — AI Overview / ChatGPT観測結果を保存する。
 - **Phase 4: 履歴表示** — 過去分析一覧、前回比較、ブランド別履歴。

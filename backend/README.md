@@ -656,18 +656,21 @@ Common Crawlで実際にDocument化できたページのURL一覧を、依頼者
 - **UI表示**（`app/lib/meta-label.ts`の`getCommonCrawlAnalyzedPagesDisplay()`、「2. 共起語ランキング」カード）: `status="real"`かつ`analyzedUrls`が1件以上ある場合のみ「取得ページ」というラベルとURL一覧を表示する（`off`/`unavailable`、または`analyzedUrls`が空/未設定の場合は何も表示しない）。`app/components/sections/CooccurrenceRankingSection.tsx`が各URLを`target="_blank"`/`rel="noreferrer"`付きのリンクとして表示する。ラベル「取得ページ」は依頼者確認前の仮のもの（[docs/15_requester_review_items.md](../docs/15_requester_review_items.md)参照）。
 - **3件上限を維持する理由**: MVP段階ではRender環境のメモリ・timeoutリスクを抑えるため、WARC取得とHTML抽出が重い処理であるため、分析結果の説明性を保つため。まずは「取得できる」「分析に混ぜられる」「どのページを使ったか分かる」を優先し、全件取得・非同期ジョブ化・DB保存は今回のスコープ外（将来の段階的拡張として5件/10件・非同期ジョブ・DB保存・定期取得・source weightingを想定、[docs/13_common_crawl_mvp_design.md](../docs/13_common_crawl_mvp_design.md)参照）。
 
-### 分析履歴のDB保存（`services/db_settings.py` / `services/analysis_history_repository.py`、2026-08-20新設）
+### 分析履歴のDB保存（`services/db_settings.py` / `services/analysis_history_repository.py`、2026-08-20新設、2026-09-09にSupabase Free環境での保存を確認済み）
 
 `/analyze`の正常レスポンス生成後、分析履歴をPostgreSQL/Supabaseへ保存する準備コードを追加した。**分析履歴のDB保存はデフォルトでは無効**であり、この節の設定を何も行わなければ、以前のMVPと完全に同じ挙動になる（設計の詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)参照）。
+
+**2026-09-09、Supabase Free環境での保存を確認済み**: Supabase Freeプロジェクトを作成し、Supabase SQL Editorで下記migration SQLを実行して3テーブルを作成、Render backendに`DB_SAVE_ENABLED=true`・`DATABASE_URL`（SupabaseのPostgreSQL接続文字列）を設定した上でアプリから分析を実行し、`brands`/`analysis_runs`/`analysis_results`にそれぞれ1件ずつ保存されたことをSupabase Table Editorで確認した。Renderログに接続エラーは出ていない。保存結果は現時点でもSupabase Table Editorで確認する以外の手段がない（下記参照）。
 
 - **有効化条件**: 環境変数`DB_SAVE_ENABLED=true`かつ`DATABASE_URL`（PostgreSQL接続文字列）が設定されている場合のみ、DB接続・保存を試みる（`services/db_settings.py`の`load_db_settings()`/`is_db_save_configured()`）。**いずれか一方でも未設定なら、DB接続は一切試みない**（デフォルトは両方未設定＝off）。
 - **保存タイミングと内容**: `main.py`の`analyze()`が正常なレスポンスを組み立てた**後**に、`services/analysis_history_repository.py`の`save_analysis_history()`を呼ぶ。`brands`（ブランド名一致で既存行を再利用、なければ作成）→`analysis_runs`（`input_snapshot`＝リクエストのブランド名/urls/各種mode、`source_summary`＝`Document.sourceType`ごとの件数）→`analysis_results`（`result_json`＝`/analyze`が返すレスポンス全体、`meta_json`＝`meta`部分、`visibility_score`＝`summary.visibilityScore`）の順に1トランザクションで保存する。ChatGPT観測・AI Overview比較・Common Crawl補完も含め、レスポンス全体がそのまま`result_json`に含まれる（個別テーブルへの分解はまだ行っていない）。
 - **非ブロッキング**: DB保存に失敗しても（接続不可・クエリエラー・ドライバ未インストール等いずれも）、`/analyze`のレスポンスは失敗させない。`save_analysis_history()`自身が例外を外に出さずログに記録してNoneを返し、`main.py`側でも念のため二重にtry/exceptしている。既存のMVPの分析体験を壊さないための設計であり、DB保存は完全に非ブロッキング扱い。
 - **APIレスポンスschemaは変更していない**: 分析履歴が実際にDBへ保存された場合でも、`analysisRunId`のような識別子はレスポンスへ一切追加していない。フロント（`app/`）・Zodスキーマ（[app/lib/analysis-result-schema.ts](../app/lib/analysis-result-schema.ts)）はいずれも変更不要。
-- **migration SQL案**: `migrations/001_initial_analysis_history.sql`に`brands`/`analysis_runs`/`analysis_results`の3テーブルのDDL案がある。**このファイルはまだ実DBへ適用していない**（設計artifactのみ）。
+- **migration SQL案**: `migrations/001_initial_analysis_history.sql`に`brands`/`analysis_runs`/`analysis_results`の3テーブルのDDL案がある。**2026-09-09、Supabase SQL Editorで実行し、Supabase Free環境に3テーブルを作成済み**（アプリ側のmigration自動適用の仕組みはまだなく、SQL Editorへの手動貼り付け実行）。
 - **PostgreSQLドライバ**: `psycopg[binary]`（`requirements.txt`に追加済み）。
-- **本番環境での状態**: Render/Vercelの環境変数には`DB_SAVE_ENABLED`/`DATABASE_URL`のいずれもまだ設定していない——依頼者確認用ステージング環境を含め、現時点ではどの環境でもDB保存は動作しない。
-- **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」参照。
+- **DB保存を有効化する方法**: Render backendの環境変数に`DB_SAVE_ENABLED=true`・`DATABASE_URL`（SupabaseのPostgreSQL接続文字列）を設定する。**2026-09-09時点で、依頼者確認用ステージング環境のRender backendにはこの2つを設定済みで、実際にDB保存が動作することを確認している。**
+- **保存結果の確認方法**: 現時点ではSupabase Table Editorで各テーブルの行を直接確認する以外に手段がない——アプリの画面にもAPIレスポンスにも、保存が成功したかどうかを示す情報は一切出ない（`analysisRunId`等を返していないため）。
+- **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、保存済みデータを読み出すread API、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」「15. Supabase Free環境での実DB保存確認」参照。
 
 ## テスト
 
@@ -1209,7 +1212,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
-- PostgreSQL/Supabaseへの実DB接続（migration SQL案・DB保存準備コードは実装済み。詳細は上記「分析履歴のDB保存」参照。**Render/Vercelへの`DATABASE_URL`設定・実DBへのmigration適用・Supabaseプロジェクト作成はまだ行っていない**）
+- PostgreSQL/Supabaseの本格活用（**2026-09-09、Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）は確認済み**。詳細は上記「分析履歴のDB保存」参照。保存済みデータを読み出すread API・分析履歴の一覧・詳細閲覧UI・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化はいずれもまだ行っていない）
 - ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
 - Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 
