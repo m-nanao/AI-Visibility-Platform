@@ -677,9 +677,11 @@ Common Crawlで実際にDocument化できたページのURL一覧を、依頼者
 - **保存結果の確認方法**: Supabase Table Editorで各テーブルの行を直接確認するか、下記read API（`READ_HISTORY_ENABLED=true`時のみ）で確認する。両方とも無効・未設定の場合、アプリの画面にもAPIレスポンスにも保存成功有無を示す情報は一切出ない（`analysisRunId`等を返していないため）。
 - **今回のスコープ外**: pgvector導入、非同期job化、`input_urls`/`documents`/観測系の個別テーブル化、分析履歴の一覧・詳細閲覧UI、DB保存結果のフロント表示、RLS/ユーザー管理。詳細は[docs/19_minimum_db_migration_design.md](../docs/19_minimum_db_migration_design.md)「4. 初期実装で作らないテーブル」「13. 実装フェーズへ進む前の確認事項」「15. Supabase Free環境での実DB保存確認」参照。
 
-### 保存済み分析履歴を読むread API（`GET /analysis-runs` / `GET /analysis-runs/{id}`、2026-09-09新設）
+### 保存済み分析履歴を読むread API（`GET /analysis-runs` / `GET /analysis-runs/{id}`、2026-09-09新設、2026-09-10にSupabase実DBでの動作を確認済み）
 
 保存済み分析履歴を読むための最小read APIを実装した（設計は[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)参照）。**read APIはデフォルトでは無効**であり、この節の設定を何も行わなければ両エンドポイントとも503を返す。
+
+**2026-09-10、Supabase実DBでの動作を確認済み**: Render backendに`READ_HISTORY_ENABLED=true`を追加設定した状態で、Supabase実DBから`GET /analysis-runs`が200で返り`items`に保存済み分析が含まれること、一覧APIには`result`/`resultJson`が含まれないこと、`GET /analysis-runs/{id}`の詳細APIには`result`が含まれることを確認した。Renderログに接続エラーは出ていない。**現時点ではfrontendの履歴一覧UIは未実装**（下記参照）。
 
 - **有効化条件**: 環境変数`READ_HISTORY_ENABLED=true`かつ`DATABASE_URL`が設定されている場合のみ、DB接続を試みる（`services/db_settings.py`の`is_history_read_enabled()`）。**`DB_SAVE_ENABLED=true`だけではread APIは有効にならない**——保存はbackend内部処理だが、read APIは外部からアクセスされるため安全性の扱いが異なり、独立したフラグにしている（[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)「9. 認証未実装期間の公開範囲」参照）。
 - **`GET /analysis-runs`**（一覧）: `limit`（デフォルト20、最大100）・`offset`（デフォルト0）・`brand`・`status`のquery paramsに対応。`brands`/`analysis_runs`/`analysis_results`をjoinして`id`/`brandName`/`canonicalDomain`/`status`/`visibilityScore`/`sourceSummary`/`startedAt`/`completedAt`/`createdAt`を返す。**`result_json`全体は返さない**（`services/analysis_history_repository.py`の`list_analysis_runs()`）。
@@ -1229,7 +1231,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
-- PostgreSQL/Supabaseの本格活用（**2026-09-09、Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）に加え、保存済み履歴を読む最小read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）も実装済み**。詳細は上記「分析履歴のDB保存」「保存済み分析履歴を読むread API」参照。分析履歴の一覧・詳細閲覧UI・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化・認証/RLSはいずれもまだ行っていない）
+- PostgreSQL/Supabaseの本格活用（**Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）に加え、保存済み履歴を読む最小read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）の実装・実DB動作確認まで完了済み**（2026-09-10）。詳細は上記「分析履歴のDB保存」「保存済み分析履歴を読むread API」参照。分析履歴の一覧・詳細閲覧UI・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化・認証/RLSはいずれもまだ行っていない）
 - ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
 - Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 

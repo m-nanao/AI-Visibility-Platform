@@ -2,7 +2,7 @@
 
 **このドキュメントは設計メモであり、read API実装・DB query実装・frontend UI実装のいずれも含まない。** 今回のスコープはdocsのみ。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-09**
+**最終更新日: 2026-09-10**
 
 ## 1. このドキュメントの目的
 
@@ -335,6 +335,23 @@ read APIができた後、frontendでは履歴一覧UIを追加できる。
 - PostgreSQLドライバ: 新規追加なし（`feature/minimum-db-save-prep`で追加済みの`psycopg[binary]`をそのまま利用）。
 - `.env.example`に`READ_HISTORY_ENABLED=false`を追記。
 - テストは実DB接続なし（`psycopg`をmonkeypatchでモック、FastAPI routeは`main.repository_list_analysis_runs`/`main.repository_get_analysis_run`をmonkeypatch）で追加した（`backend/tests/test_db_settings.py`、`test_analysis_history_repository.py`、`test_main_analysis_history_read_api.py`）。
+
+## 16. Supabase実DB確認（2026-09-10追記）
+
+`docs/record-analysis-history-read-api-verification`で、上記15章の実装を使い、Supabase Free + Render backend環境で実際にread APIの動作を確認した。**手動確認のみで、コード変更は行っていない。**
+
+- Render backendに`READ_HISTORY_ENABLED=true`を追加設定済み。
+- `GET /analysis-runs`が200で返ることを確認した。
+- `items`に保存済み分析が含まれることを確認した。
+- **一覧APIには`result`/`resultJson`が含まれない**ことを確認した（設計どおり）。
+- `GET /analysis-runs/{analysis_run_id}`の詳細APIでは**`result`が含まれる**ことを確認した（設計どおり）。
+- Renderログに接続エラーは出ていない。
+
+**注意（現時点でもまだ対応していないこと）:**
+
+- 履歴一覧UIはまだ未実装。
+- 履歴詳細UIはまだ未実装。
+- `/analyze`レスポンスへの`analysisRunId`追加は今回も行っていない。
 
 ## 関連ドキュメント
 
