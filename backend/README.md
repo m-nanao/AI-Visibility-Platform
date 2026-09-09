@@ -690,7 +690,7 @@ Common Crawlで実際にDocument化できたページのURL一覧を、依頼者
 - **APIレスポンスschemaは変更していない**: この2エンドポイントの追加は`/analyze`のリクエスト/レスポンス形状に一切影響しない。`analysisRunId`は今回も`/analyze`のレスポンスへ追加していない。
 - **frontend UIは未実装**: 履歴一覧UI・履歴詳細UIはいずれも今回のスコープ外（`app/`側は無変更）。
 - **今回のスコープ外**: 認証/RLS、`analysisRunId`の`/analyze`レスポンス追加、削除API、検索・高度な絞り込み、正確なtotal件数の実装。詳細は[docs/20_analysis_history_read_api_design.md](../docs/20_analysis_history_read_api_design.md)「13. 初期実装でやること・やらないこと」参照。
-- **frontend履歴UI設計**: [docs/21_analysis_history_ui_design.md](../docs/21_analysis_history_ui_design.md)を参照。`/history`ページ案・既存分析結果コンポーネントの再利用方針・`READ_HISTORY_ENABLED=false`時の表示方針を整理済みだが、UI実装はまだ行っていない。
+- **frontend履歴一覧UI**: [docs/21_analysis_history_ui_design.md](../docs/21_analysis_history_ui_design.md)の設計に沿って、`app/history/page.tsx`＋`app/api/analysis-runs/route.ts`（このbackendの`GET /analysis-runs`への薄いプロキシ）として最小実装済み（2026-09-10、`feature/history-list-ui`）。一覧のみで、履歴詳細UI（`/history/[id]`）はまだ実装していない。frontend側の詳細は`../README.md`または上記docsを参照——このファイル（backend README）は引き続きbackend APIの仕様のみを扱う。
 
 ## テスト
 
@@ -1232,7 +1232,7 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - DataForSEOからのデータ収集・分析ロジックのバッチ化（`urls` による都度の取得とは別に、収集をバッチ化する）
 - 情報源（`analysis_sources`）の記録（現状は `meta.urlFetchResults` でURL単位の成否のみ）
 - robots.txt確認・アクセス負荷への配慮（レート制限等）
-- PostgreSQL/Supabaseの本格活用（**Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）に加え、保存済み履歴を読む最小read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）の実装・実DB動作確認まで完了済み**（2026-09-10）。詳細は上記「分析履歴のDB保存」「保存済み分析履歴を読むread API」参照。**frontend履歴一覧UIの設計は[docs/21_analysis_history_ui_design.md](../docs/21_analysis_history_ui_design.md)として整理済み**（2026-09-10）だが、分析履歴の一覧・詳細閲覧UI・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化・認証/RLSはいずれもまだ行っていない）
+- PostgreSQL/Supabaseの本格活用（**Supabase Free環境への実DB接続・最小保存（`brands`/`analysis_runs`/`analysis_results`）、保存済み履歴を読む最小read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）、およびfrontend履歴一覧UI（`/history`）の最小実装まで完了済み**（2026-09-10）。詳細は上記「分析履歴のDB保存」「保存済み分析履歴を読むread API」「frontend履歴一覧UI」参照。分析履歴の詳細閲覧UI（`/history/[id]`）・`analysisRunId`のAPIレスポンス追加・pgvector導入・非同期job化・観測系の個別テーブル化・認証/RLSはいずれもまだ行っていない）
 - ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
 - Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 

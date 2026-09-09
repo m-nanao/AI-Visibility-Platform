@@ -215,6 +215,18 @@ frontend側の取得方針:
 - Vercel側からread APIを呼ぶ方式は既存の`PYTHON_ANALYSIS_API_URL`に合わせるか
 - 認証未実装のため、staging運用前提でよいか
 
+## 14. 実装状況（2026-09-10更新）
+
+`feature/history-list-ui`で、本ドキュメントの設計に沿って履歴一覧UIの最小実装を追加した。**履歴詳細UI（`/history/[id]`）・`/analyze`レスポンスへの`analysisRunId`追加・backend変更はいずれも行っていない。**
+
+- `/history`ページ: `app/history/page.tsx`（"use client"、`app/page.tsx`と同じくclient componentがこの Next.js アプリ自身のRoute Handlerを`fetch`する構成）。
+- backend proxy route: `app/api/analysis-runs/route.ts`を新設し、`app/api/analyze/route.ts`と同じ`PYTHON_ANALYSIS_API_URL`利用方針に揃えた。Python APIが503を返した場合はそのエラーメッセージをそのまま転送し、その他の失敗は502として扱う。
+- 型・schema・表示ロジック: `app/lib/analysis-history.ts`（`AnalysisRunListItem`/`AnalysisRunListResponse`型、`HISTORY_PAGE_TITLE`等の表示文言定数、`getStatusLabel()`/`formatSourceSummary()`/`formatAnalysisRunListItem()`、`resolveHistoryFetchOutcome()`）と`app/lib/analysis-history-schema.ts`（Zod schema、`parseAnalysisRunListResponse()`）を新設。いずれも`app/lib/analysis-result-schema.ts`/`app/lib/meta-label.ts`と同じパターンに揃えた。
+- 表示項目: ブランド名・代表ドメイン・実行日時・ステータス（日本語ラベル）・可視性スコア・分析ソース概要。詳細リンクの代わりに「詳細は後続対応」という文言のみ表示する（詳細ページ未実装のため）。
+- `READ_HISTORY_ENABLED=false`等で503が返った場合は「分析履歴の読み込みは現在無効です。」＋`READ_HISTORY_ENABLED`に言及した補足を表示。空配列の場合は「保存済みの分析履歴はまだありません。」を表示し、両者を明確に区別する。
+- navigation: トップページ（`app/page.tsx`）のヘッダーに「分析履歴」リンクを追加、`/history`側にも「← 分析に戻る」リンクを追加。レイアウトの大きな変更はしていない。
+- テスト: このプロジェクトには`@testing-library/react`等のReactコンポーネント描画テスト基盤が存在しないため（既存の`app/lib/staging-banner.ts`と同じ制約）、表示文言・表示ロジック・view state解決を`app/lib/analysis-history.ts`/`app/lib/analysis-history-schema.ts`側の純粋関数として切り出し、`app/lib/analysis-history.test.ts`/`app/lib/analysis-history-schema.test.ts`で検証した（503→disabled、ネットワーク失敗/スキーマ不正→error、空配列→empty、非空→items、`result`/`resultJson`を前提にしないことを含む）。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
