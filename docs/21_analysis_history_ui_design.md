@@ -227,6 +227,26 @@ frontend側の取得方針:
 - navigation: トップページ（`app/page.tsx`）のヘッダーに「分析履歴」リンクを追加、`/history`側にも「← 分析に戻る」リンクを追加。レイアウトの大きな変更はしていない。
 - テスト: このプロジェクトには`@testing-library/react`等のReactコンポーネント描画テスト基盤が存在しないため（既存の`app/lib/staging-banner.ts`と同じ制約）、表示文言・表示ロジック・view state解決を`app/lib/analysis-history.ts`/`app/lib/analysis-history-schema.ts`側の純粋関数として切り出し、`app/lib/analysis-history.test.ts`/`app/lib/analysis-history-schema.test.ts`で検証した（503→disabled、ネットワーク失敗/スキーマ不正→error、空配列→empty、非空→items、`result`/`resultJson`を前提にしないことを含む）。
 
+## 15. 本番Vercel環境での動作確認（2026-09-10追記）
+
+`/history`履歴一覧UIは本番Vercel環境で表示確認済み。
+
+確認内容:
+
+- `READ_HISTORY_ENABLED=false`時、履歴データは表示されず、無効メッセージが表示される
+- backendの`/analysis-runs`はHTTP/2 503で返る（レスポンス本文: `{"error":"analysis history read API is not enabled"}`）
+- `READ_HISTORY_ENABLED=true`に一時変更した場合、保存済み履歴が`/history`に表示される
+- frontend → `/api/analysis-runs` → Render backend → Supabase の履歴取得フローを確認済み
+
+**注意:** `READ_HISTORY_ENABLED=true`のままにすると、認証未実装の現状では`/history`から保存済み履歴が誰でも表示される。依頼者確認や検証時のみ`true`にし、通常は`false`に戻す運用が安全。
+
+未実装として以下を残す:
+
+- 履歴詳細UI
+- `/analyze`レスポンスへの`analysisRunId`追加
+- 分析直後の履歴リンク
+- 認証/RLS
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
