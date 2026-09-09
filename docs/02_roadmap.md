@@ -101,12 +101,13 @@
   - 分析履歴read APIのSupabase実DB確認（`docs/record-analysis-history-read-api-verification`、2026-09-10。docsのみ・コード変更なし。Render backendに`READ_HISTORY_ENABLED=true`を追加設定し、Supabase実DBに対して`GET /analysis-runs`が200で返り`items`に保存済み分析が含まれること、一覧APIには`result`/`resultJson`が含まれないこと、`GET /analysis-runs/{analysis_run_id}`の詳細APIには`result`が含まれることを確認した。**Renderログに接続エラーなし。履歴一覧UI・履歴詳細UIはまだ未実装**）
   - 分析履歴UI設計メモ（`docs/analysis-history-ui-design`、2026-09-10。docsのみ・コード変更なし。新規[21_analysis_history_ui_design.md](./21_analysis_history_ui_design.md)を追加し、`/history`ページ案（表示項目: ブランド名/代表ドメイン/実行日時/ステータス/可視性スコア/分析ソース概要/詳細リンク、最新20件、`result_json`は一覧では扱わない）と、既存の`app/components/sections/`配下コンポーネント（`CooccurrenceRankingSection`等）の再利用方針を整理した。**初期実装は履歴一覧UIのみに絞り、履歴詳細UI（`/history/[id]`）は次の小タスクに分ける**方針を明記。read APIとの接続は既存の`PYTHON_ANALYSIS_API_URL`利用方針に揃える案とし、`READ_HISTORY_ENABLED=false`時（503）は「履歴0件」ではなく「履歴機能が無効」として表示する方針、`analysisRunId`は`/analyze`レスポンスへ今回も追加しない方針を明記した。**UI実装・frontend route追加・backend API変更・Zod schema変更はいずれも行っていない**）
   - 履歴一覧UIの最小実装（`feature/history-list-ui`、2026-09-10。上記設計に沿って`app/history/page.tsx`（"use client"、`app/page.tsx`と同じくこのNext.jsアプリ自身のRoute Handlerを`fetch`）を追加し、`app/api/analysis-runs/route.ts`（既存の`/api/analyze`と同じ`PYTHON_ANALYSIS_API_URL`利用方針でPython APIの`GET /analysis-runs`へプロキシ）・`app/lib/analysis-history.ts`（型・表示文言・`formatAnalysisRunListItem()`・`resolveHistoryFetchOutcome()`）・`app/lib/analysis-history-schema.ts`（Zod schema）を新設した。ブランド名・代表ドメイン・実行日時・ステータス（日本語ラベル）・可視性スコア・分析ソース概要を表示し、一覧では`result`/`resultJson`を一切扱わない。`READ_HISTORY_ENABLED=false`等の503時は履歴機能無効メッセージ、空配列時は空状態メッセージを表示し区別する。トップページヘッダーに「分析履歴」リンクを追加。**履歴詳細UI（`/history/[id]`）・`analysisRunId`の`/analyze`レスポンス追加・backend変更はいずれも行っていない**。テストは`@testing-library/react`等が未導入のため、表示ロジック・view state解決を純粋関数として切り出しユニットテストで検証した（22件追加）。**依頼者確認用ステージング環境でRender backendの`READ_HISTORY_ENABLED=true`が維持されたままこのfrontendがデプロイされると、認証なしで`/history`から保存済み分析履歴（ブランド名等）が閲覧可能になる点に注意**）
+  - `/history`履歴一覧UIの本番Vercel確認（`docs/record-history-list-ui-verification`、2026-09-10。docsのみ・コード変更なし。`READ_HISTORY_ENABLED=false`時は`/history`に履歴データが表示されず無効メッセージが表示されること、backendの`GET /analysis-runs`がHTTP/2 503（`{"error":"analysis history read API is not enabled"}`）で返ること、`READ_HISTORY_ENABLED=true`への一時変更時はfrontend→`/api/analysis-runs`→Render backend→Supabaseの取得フロー全体で保存済み履歴が`/history`に表示されることを本番Vercel環境で確認した。**認証未実装のため、通常運用では`READ_HISTORY_ENABLED=false`に戻すことが安全であると結論**）
 - **Next（次のステップ、優先順）**:
-  - 依頼者確認用ステージング環境で`READ_HISTORY_ENABLED=true`のまま`/history`を公開してよいかの判断
-  - 履歴詳細UI（`/history/[id]`）の設計・実装
-  - `analysisRunId`を`/analyze`レスポンスに含めるかの最終判断
-  - DB保存失敗時のユーザー向け表示を出すかどうかの検討
-- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、分析直後の履歴リンク、認証/RLS導入
+  - 履歴詳細UI設計
+  - 履歴詳細UIの最小実装
+  - 分析直後の履歴リンク検討
+  - 認証/RLS検討
+- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、`analysisRunId`の`/analyze`レスポンス追加
 
 目安: 2〜3週間
 
@@ -126,5 +127,5 @@
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
 | 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（最大3件取得）＋検証用UI selector＋共起語ノイズ対策＋取得ページ一覧表示まで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
-| 5 | PostgreSQL永続化 | 一部完了（Supabase Free環境で`brands`/`analysis_runs`/`analysis_results`への最小保存・read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）を実DBで確認済み、履歴一覧UI（`/history`）の最小実装も完了、2026-09-10。履歴詳細UI・pgvector・非同期job・観測系の個別テーブル化・認証/RLSは未着手） |
+| 5 | PostgreSQL永続化 | 一部完了（Supabase Free環境で`brands`/`analysis_runs`/`analysis_results`への最小保存・read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）を実DBで確認済み、履歴一覧UI（`/history`）の最小実装・本番Vercel環境での動作確認も完了、2026-09-10。履歴詳細UI・pgvector・非同期job・観測系の個別テーブル化・認証/RLSは未着手） |
 | 6 | プロダクション化 | 未着手 |
