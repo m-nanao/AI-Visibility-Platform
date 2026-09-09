@@ -98,11 +98,12 @@
   - Supabase Freeでの最小DB保存確認（`docs/record-supabase-save-verification`、2026-09-09。docsのみ・コード変更なし。Supabase Freeプロジェクトを作成してGitHub連携し、Supabase SQL Editorで`001_initial_analysis_history.sql`を実行して`brands`/`analysis_runs`/`analysis_results`の3テーブルを作成。Render backendに`DB_SAVE_ENABLED=true`・`DATABASE_URL`を設定し、アプリから分析を実行したところ3テーブルにそれぞれ1件ずつ保存されたことをSupabase Table Editorで確認した。**Renderログに接続エラーなし。APIレスポンスschemaは変更なし、`analysisRunId`はフロントへ返していない**。詳細は[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)「実装状況」参照）
   - 分析履歴 read API 設計メモ（`docs/analysis-history-read-api-design`、2026-09-09。docsのみ・コード変更なし。新規[20_analysis_history_read_api_design.md](./20_analysis_history_read_api_design.md)を追加し、保存済み分析履歴を読む`GET /analysis-runs`（一覧、`result_json`は含めない）・`GET /analysis-runs/{id}`（詳細、`result_json`を含む）の設計案を整理した。read APIは`DB_SAVE_ENABLED`とは別の環境変数`READ_HISTORY_ENABLED`（デフォルトoff）で制御する方針とし、**DB保存と履歴閲覧は安全性が異なる**（保存はbackend内部処理、閲覧APIは外部からアクセスされる）ことを明記。DB未設定時は一覧・詳細とも503、対象IDなしは404を推奨。認証未実装期間はstaging環境限定での利用を前提とし、public本番ではまだ有効化しない方針も明記。`analysisRunId`を`/analyze`レスポンスへ追加するかは論点を整理したのみで結論は出していない（A: 追加しない/B: `meta.analysisRunId: string | null`として追加、のどちらかを実装時に選ぶ）。**read API実装・DB query実装・frontend UI実装・`/analyze`schema変更はいずれも行っていない**）
   - 分析履歴 read API の最小実装（`feature/analysis-history-read-api`、2026-09-09。上記設計に沿って`GET /analysis-runs`・`GET /analysis-runs/{id}`を実装した。`backend/services/db_settings.py`に`READ_HISTORY_ENABLED`（デフォルトoff、`DB_SAVE_ENABLED`とは独立）を追加、`backend/services/analysis_history_repository.py`に`list_analysis_runs()`/`get_analysis_run()`を追加（保存処理と異なり失敗を握りつぶさず`AnalysisHistoryReadError`を送出）、`backend/main.py`に両エンドポイントを追加した。read無効・DB未設定・DB接続/クエリ失敗はいずれも503、対象IDなし（不正なUUID形式含む）は404、一覧は`result_json`を含まず詳細は含む。**APIレスポンスschema（`/analyze`）は変更していない、`analysisRunId`は今回も返していない、app/側UIは無変更、migration変更なし、PostgreSQLドライバの新規追加なし**。テストは実DB接続なし（`psycopg`・repository関数をmonkeypatchでモック）で追加した。Render/Vercel環境変数は変更していない）
+  - 分析履歴read APIのSupabase実DB確認（`docs/record-analysis-history-read-api-verification`、2026-09-10。docsのみ・コード変更なし。Render backendに`READ_HISTORY_ENABLED=true`を追加設定し、Supabase実DBに対して`GET /analysis-runs`が200で返り`items`に保存済み分析が含まれること、一覧APIには`result`/`resultJson`が含まれないこと、`GET /analysis-runs/{analysis_run_id}`の詳細APIには`result`が含まれることを確認した。**Renderログに接続エラーなし。履歴一覧UI・履歴詳細UIはまだ未実装**）
 - **Next（次のステップ、優先順）**:
-  - Supabase以外の環境（依頼者確認用ステージング等）で`READ_HISTORY_ENABLED=true`を検証するかどうかの判断
-  - `analysisRunId`を`/analyze`レスポンスに含めるか検討
-  - 履歴一覧UIの設計・実装
-  - DB保存失敗時のユーザー向け表示を出すかどうかの検討
+  - 履歴一覧UI設計
+  - 履歴詳細UI設計
+  - frontendからread APIを読むための導線設計
+  - `analysisRunId`を`/analyze`レスポンスに含めるかの最終判断
 - **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、履歴一覧UI、認証/RLS導入
 
 目安: 2〜3週間
@@ -123,5 +124,5 @@
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
 | 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（最大3件取得）＋検証用UI selector＋共起語ノイズ対策＋取得ページ一覧表示まで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
-| 5 | PostgreSQL永続化 | 一部完了（Supabase Free環境で`brands`/`analysis_runs`/`analysis_results`への最小保存とread API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）を確認済み、2026-09-09。履歴一覧UI・pgvector・非同期job・観測系の個別テーブル化・認証/RLSは未着手） |
+| 5 | PostgreSQL永続化 | 一部完了（Supabase Free環境で`brands`/`analysis_runs`/`analysis_results`への最小保存とread API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）を実DBで確認済み、2026-09-10。履歴一覧UI・履歴詳細UI・pgvector・非同期job・観測系の個別テーブル化・認証/RLSは未着手） |
 | 6 | プロダクション化 | 未着手 |
