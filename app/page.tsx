@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
 import { buildAnalyzeRequestBody } from "./lib/analysis-request";
@@ -87,9 +88,17 @@ export default function Home() {
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto max-w-5xl px-6 py-4">
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            LLMO / AI Visibility Platform
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
+              LLMO / AI Visibility Platform
+            </h1>
+            <Link
+              href="/history"
+              className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+            >
+              分析履歴
+            </Link>
+          </div>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             ブランドがAIサービス上でどのように認知されているかを分析します
           </p>
