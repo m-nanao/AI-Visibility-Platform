@@ -242,7 +242,7 @@ frontend側の取得方針:
 
 未実装として以下を残す:
 
-- 履歴詳細UI
+- 履歴詳細UI（設計メモは2026-09-10に[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)として整理済み。実装はまだ）
 - `/analyze`レスポンスへの`analysisRunId`追加
 - 分析直後の履歴リンク
 - 認証/RLS
