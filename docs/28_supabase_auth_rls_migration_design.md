@@ -1,6 +1,6 @@
 # Supabase Auth/RLS migration設計メモ
 
-**このドキュメント自体は設計メモである。5〜8章の方針に沿ったmigration SQL案（`backend/migrations/002_add_organizations_projects.sql`）は`feature/supabase-auth-rls-migration-sql`（2026-09-11、「19. 実装状況」参照）で追加済み。検証用Supabase projectでの実行確認も完了済み（2026-09-11、「20. 検証状況」参照）。002 migrationは本番Supabaseへも適用済み（2026-09-11、「21. 本番適用状況」参照）。新規保存時にdefault project_idを付与するbackend対応も完了済み（2026-09-11、「22. 新規保存時のdefault project_id付与」参照）。RLS有効化・`create policy`追加・`HISTORY_READ_TOKEN` gate削除・frontend/backend Auth実装はいずれも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。5〜8章の方針に沿ったmigration SQL案（`backend/migrations/002_add_organizations_projects.sql`）は`feature/supabase-auth-rls-migration-sql`（2026-09-11、「19. 実装状況」参照）で追加済み。検証用Supabase projectでの実行確認も完了済み（2026-09-11、「20. 検証状況」参照）。002 migrationは本番Supabaseへも適用済み（2026-09-11、「21. 本番適用状況」参照）。新規保存時にdefault project_idを付与するbackend対応も完了済み（2026-09-11、「22. 新規保存時のdefault project_id付与」参照）で、本番確認と既存null行の手動backfillも完了済み（2026-09-11、「23. 本番確認とbackfill完了」参照）。RLS有効化・`create policy`追加・`HISTORY_READ_TOKEN` gate削除・frontend/backend Auth実装はいずれも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -316,6 +316,24 @@ RLSについては、本番の`pg_class.relrowsecurity`確認SQLで対象6テー
 - 新規brand作成時は`brands.project_id`にdefault project_idを設定する。既存brandを再利用する場合、**`project_id`が既に設定されていればそのまま**（上書きしない）、`null`であれば`update`でdefault project_idを設定する（002適用直後の既存backfill済みbrandはこの分岐に該当しないが、将来別経路でproject_idなしのbrandが作られた場合の保険）。
 - `analysis_runs`のinsertには常に`project_id`（default project_id）を含める——新規analysis_runsの`project_id`が`null`になることはなくなった。
 - テスト: `backend/tests/test_analysis_history_repository.py`に6件追加（`get_default_project_id()`の成功/`None`、新規brand作成時のproject_id付与、既存brandのproject_id `null`時のbackfill、既存brandのproject_id保持（上書きなし）、default project不在時の保存スキップ）。既存の`_FakeCursor`ヘルパーをdefault project_id・既存brandのproject_idを表現できるよう拡張した。
+
+## 23. 本番確認とbackfill完了（2026-09-11更新）
+
+`feature/default-project-id-on-save`（commit `8fb49f9`）はmainへ反映済みで、本番で以下を確認した。
+
+- 新規保存時のdefault project_id付与は実装済みで、default projectが存在する場合、新規`brands` / `analysis_runs`に`project_id`が保存される。
+- default projectが存在しない場合、履歴保存はスキップされ、`/analyze`本体は継続する（本番では常にdefault projectが存在するため実際には未発生）。
+- 本番で新規分析を実行し、保存済み履歴リンク表示・履歴詳細表示が成功することを確認済み。
+- 新規分析実行後も`analysis_runs.project_id`が`null`の行が増えないことを確認済み。
+- **002適用直後に発生していた`analysis_runs.project_id`が`null`の1件は、本番Supabase SQL Editorでの手動backfillにより解消済み**（手動backfill SQLは[30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md)「19. 新規保存時のproject_id付与と手動backfill」参照）。backfill後、`analysis_runs.project_id is null`の件数・`brands.project_id is null`の件数はいずれも0。
+- このbackfillはSQL Editorでの手動実行のみで、**RLSのenable/disable・`create policy`追加・Supabase設定変更はいずれも行っていない。**
+
+未実装として以下を残す。
+
+- frontendログイン/route保護
+- backend JWT検証
+- RLS policy作成
+- RLS本格運用
 
 ## 関連ドキュメント
 

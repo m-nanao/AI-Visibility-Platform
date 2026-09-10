@@ -1,6 +1,6 @@
 # Supabase本番 002 migration適用手順書
 
-**この手順書に沿って、002 migrationは本番Supabaseへ適用済み（「18. 本番Supabase適用結果」参照）。新規保存時のdefault project_id付与も実装済み（「19. 新規保存時のproject_id付与と手動backfill」参照）——既存null行の手動backfillは本番未実行。RLS有効化・`create policy`追加は本番でも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書に沿って、002 migrationは本番Supabaseへ適用済み（「18. 本番Supabase適用結果」参照）。新規保存時のdefault project_id付与も実装・本番確認済みで、既存null行の手動backfillも完了済み（「19. 新規保存時のproject_id付与と手動backfill」参照）。RLS有効化・`create policy`追加は本番でも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -378,7 +378,19 @@ set project_id = (
 where project_id is null;
 ```
 
-**注意:** 本番で実行する場合は、事前に対象件数（`where project_id is null`のcount）を確認し、ユーザーの明示承認後に実行する。このタスクでは本番への手動backfillは実行していない。
+**注意:** 本番で実行する場合は、事前に対象件数（`where project_id is null`のcount）を確認し、ユーザーの明示承認後に実行する。
+
+**本番確認・backfill完了（2026-09-11追記）:** default project_id保存対応（`feature/default-project-id-on-save`、commit `8fb49f9`）はmainへ反映済み。本番で以下を確認した。
+
+- 新規分析を実行し、成功することを確認済み
+- 「保存済み履歴で開く」リンクが表示されることを確認済み
+- リンク先の履歴詳細が開けることを確認済み
+- 新規分析実行後も`analysis_runs.project_id`が`null`の行が増えないことを確認済み
+- 002適用直後に発生していた`analysis_runs.project_id`が`null`の1件は、上記の手動backfill SQLをユーザー確認のうえ本番Supabase SQL Editorで実行し補完済み
+- backfill後、`analysis_runs.project_id is null`の件数は0
+- backfill後、`brands.project_id is null`の件数も0
+
+このbackfillはSQL Editorでの手動実行のみであり、**RLSのenable/disable・`create policy`追加・Supabase設定変更はいずれも行っていない。**
 
 ## 関連ドキュメント
 
