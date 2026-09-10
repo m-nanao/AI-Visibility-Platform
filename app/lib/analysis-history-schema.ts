@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { AnalysisRunDetailResponse, AnalysisRunListResponse } from "./analysis-history";
+import type {
+  AnalysisRunComparisonResponse,
+  AnalysisRunDetailResponse,
+  AnalysisRunListResponse,
+} from "./analysis-history";
 
 /**
  * Mirrors backend/models.py's AnalysisRunListItem/AnalysisRunListResponse
@@ -114,6 +118,100 @@ export function parseAnalysisRunDetailResponse(
   const result = analysisRunDetailResponseSchema.safeParse(input);
   if (result.success) {
     return { success: true, data: result.data as AnalysisRunDetailResponse };
+  }
+
+  const reason = result.error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+
+  return { success: false, reason };
+}
+
+/**
+ * Mirrors backend/models.py's AnalysisRunComparison* models (GET
+ * /analysis-runs/{id}/comparison) — see
+ * docs/25_analysis_history_comparison_design.md "8. API設計案". Unlike
+ * the list/detail schemas above, `startedAt`/`visibilityScore` here
+ * use plain `.nullable()` rather than optionalFromPython(): the key is
+ * always present on this response, and `null` is a meaningful value
+ * (e.g. "no earlier run" for `previous`), not merely Pydantic's
+ * unset-optional-field serialization quirk.
+ */
+const analysisRunComparisonRunSummarySchema = z.object({
+  id: z.string(),
+  startedAt: z.string().nullable(),
+  visibilityScore: z.number().nullable(),
+});
+
+const analysisRunComparisonVisibilityScoreDiffSchema = z.object({
+  current: z.number().nullable(),
+  previous: z.number().nullable(),
+  delta: z.number().nullable(),
+});
+
+const cooccurrenceComparisonNewTermSchema = z.object({
+  term: z.string(),
+  rank: z.number(),
+  score: z.number(),
+});
+
+const cooccurrenceComparisonRemovedTermSchema = z.object({
+  term: z.string(),
+  rank: z.number(),
+  score: z.number(),
+});
+
+const cooccurrenceComparisonChangedTermSchema = z.object({
+  term: z.string(),
+  currentRank: z.number(),
+  previousRank: z.number(),
+  rankDelta: z.number(),
+  currentScore: z.number(),
+  previousScore: z.number(),
+  scoreDelta: z.number(),
+});
+
+const analysisRunComparisonCooccurrenceDiffSchema = z.object({
+  topN: z.number(),
+  newTerms: z.array(cooccurrenceComparisonNewTermSchema),
+  removedTerms: z.array(cooccurrenceComparisonRemovedTermSchema),
+  changedTerms: z.array(cooccurrenceComparisonChangedTermSchema),
+});
+
+const analysisRunComparisonImprovementsDiffSchema = z.object({
+  currentCount: z.number(),
+  previousCount: z.number(),
+  delta: z.number(),
+});
+
+const analysisRunComparisonDiffSchema = z.object({
+  visibilityScore: analysisRunComparisonVisibilityScoreDiffSchema,
+  cooccurrence: analysisRunComparisonCooccurrenceDiffSchema,
+  improvements: analysisRunComparisonImprovementsDiffSchema,
+});
+
+export const analysisRunComparisonResponseSchema = z.object({
+  current: analysisRunComparisonRunSummarySchema,
+  previous: analysisRunComparisonRunSummarySchema.nullable(),
+  diff: analysisRunComparisonDiffSchema.nullable(),
+  warnings: z.array(z.string()),
+});
+
+export type AnalysisRunComparisonParseResult =
+  | { success: true; data: AnalysisRunComparisonResponse }
+  | { success: false; reason: string };
+
+/**
+ * Validates an unknown value against the AnalysisRunComparisonResponse
+ * shape. On failure, `reason` contains only field paths and messages —
+ * never the offending values.
+ */
+export function parseAnalysisRunComparisonResponse(
+  input: unknown,
+): AnalysisRunComparisonParseResult {
+  const result = analysisRunComparisonResponseSchema.safeParse(input);
+  if (result.success) {
+    return { success: true, data: result.data as AnalysisRunComparisonResponse };
   }
 
   const reason = result.error.issues

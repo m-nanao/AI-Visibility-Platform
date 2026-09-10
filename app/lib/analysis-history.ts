@@ -7,6 +7,7 @@
 // (see app/lib/staging-banner.ts for the same pattern).
 
 import {
+  parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
   parseAnalysisRunListResponse,
 } from "./analysis-history-schema";
@@ -362,4 +363,217 @@ export function resolvePostAnalyzeHistoryLink(
   }
 
   return { path: buildHistoryDetailPath(analysisRunId) };
+}
+
+// --- History comparison (GET /analysis-runs/{id}/comparison,
+// docs/25_analysis_history_comparison_design.md) — a small "前回比較"
+// section on the existing /history/[id] page, not a new page. Mirrors
+// backend/models.py's AnalysisRunComparison* models exactly.
+
+/** One side (`current`/`previous`) of the comparison response. */
+export type AnalysisRunComparisonRunSummary = {
+  id: string;
+  startedAt: string | null;
+  visibilityScore: number | null;
+};
+
+export type CooccurrenceComparisonNewTerm = {
+  term: string;
+  rank: number;
+  score: number;
+};
+
+export type CooccurrenceComparisonRemovedTerm = {
+  term: string;
+  rank: number;
+  score: number;
+};
+
+/** `rankDelta`/`scoreDelta` are current-minus-previous — a negative
+ * `rankDelta` means the term's rank *improved* (see backend/models.py's
+ * CooccurrenceComparisonChangedTerm docstring). */
+export type CooccurrenceComparisonChangedTerm = {
+  term: string;
+  currentRank: number;
+  previousRank: number;
+  rankDelta: number;
+  currentScore: number;
+  previousScore: number;
+  scoreDelta: number;
+};
+
+export type AnalysisRunComparisonDiff = {
+  visibilityScore: {
+    current: number | null;
+    previous: number | null;
+    delta: number | null;
+  };
+  cooccurrence: {
+    topN: number;
+    newTerms: CooccurrenceComparisonNewTerm[];
+    removedTerms: CooccurrenceComparisonRemovedTerm[];
+    changedTerms: CooccurrenceComparisonChangedTerm[];
+  };
+  improvements: {
+    currentCount: number;
+    previousCount: number;
+    delta: number;
+  };
+};
+
+/** GET /analysis-runs/{id}/comparison — mirrors backend/models.py's
+ * AnalysisRunComparisonResponse. `previous`/`diff` are both null when
+ * the same brand has no earlier run yet; `warnings` explains why in
+ * that case (and separately flags provider-mode mismatches /
+ * incompatible saved results when a comparison was computed). */
+export type AnalysisRunComparisonResponse = {
+  current: AnalysisRunComparisonRunSummary;
+  previous: AnalysisRunComparisonRunSummary | null;
+  diff: AnalysisRunComparisonDiff | null;
+  warnings: string[];
+};
+
+/** Narrows AnalysisRunComparisonResponse for the "success" outcome
+ * below, where `previous`/`diff` are known to be non-null (that case
+ * is resolved as "noPrevious" instead — see
+ * resolveHistoryComparisonFetchOutcome()) — lets callers read
+ * `comparison.diff.*` without a redundant null check. */
+export type ResolvedAnalysisRunComparison = AnalysisRunComparisonResponse & {
+  previous: AnalysisRunComparisonRunSummary;
+  diff: AnalysisRunComparisonDiff;
+};
+
+export const HISTORY_COMPARISON_SECTION_TITLE = "前回比較";
+export const HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL = "可視性スコア";
+export const HISTORY_COMPARISON_COOCCURRENCE_LABEL = "共起語の変化";
+export const HISTORY_COMPARISON_COOCCURRENCE_NEW_LABEL = "新規";
+export const HISTORY_COMPARISON_COOCCURRENCE_REMOVED_LABEL = "消失";
+export const HISTORY_COMPARISON_COOCCURRENCE_CHANGED_LABEL = "変化";
+export const HISTORY_COMPARISON_IMPROVEMENTS_LABEL = "改善提案数";
+
+export const HISTORY_COMPARISON_NOT_FOUND_MESSAGE =
+  "比較対象の分析履歴が見つかりません。";
+export const HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE =
+  "比較できる過去履歴がまだありません。";
+export const HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE =
+  "前回比較を読み込めませんでした。";
+
+export type HistoryComparisonViewState =
+  | { kind: "loading" }
+  | { kind: "disabled"; message: string }
+  | { kind: "forbidden"; message: string }
+  | { kind: "notFound"; message: string }
+  | { kind: "noPrevious"; message: string }
+  | { kind: "error"; message: string }
+  | { kind: "success"; comparison: ResolvedAnalysisRunComparison };
+
+/**
+ * Turns a fetch() Response (or null, on a network-level failure) from
+ * /api/analysis-runs/{id}/comparison into a view state the "前回比較"
+ * section can render directly — mirrors resolveHistoryDetailFetchOutcome().
+ * A 200 response with `previous`/`diff` both null (the same brand has
+ * no earlier run yet) is deliberately resolved as "noPrevious" rather
+ * than "success", since there is nothing to diff.
+ *
+ * Failures here are meant to degrade gracefully: the caller (the
+ * /history/[id] page) must keep showing the rest of the history detail
+ * even when this resolves to "disabled"/"forbidden"/"notFound"/"error"
+ * (see docs/25_analysis_history_comparison_design.md "14. エラー・
+ * データ不足時の表示方針").
+ */
+export async function resolveHistoryComparisonFetchOutcome(
+  response: Response | null,
+): Promise<HistoryComparisonViewState> {
+  if (!response) {
+    return { kind: "error", message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === 503) {
+    return { kind: "disabled", message: HISTORY_DISABLED_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { kind: "notFound", message: HISTORY_COMPARISON_NOT_FOUND_MESSAGE };
+  }
+
+  if (!response.ok) {
+    return { kind: "error", message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  const parsed = parseAnalysisRunComparisonResponse(json);
+  if (!parsed.success) {
+    return { kind: "error", message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE };
+  }
+
+  if (parsed.data.previous === null || parsed.data.diff === null) {
+    return { kind: "noPrevious", message: HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE };
+  }
+
+  return {
+    kind: "success",
+    comparison: parsed.data as ResolvedAnalysisRunComparison,
+  };
+}
+
+/** Formats a delta as "+5" / "-7" / "±0" — shared by every "before →
+ * after（delta）" label below. */
+export function formatSignedDelta(delta: number): string {
+  if (delta > 0) return `+${delta}`;
+  if (delta < 0) return `${delta}`;
+  return "±0";
+}
+
+/** "86 → 91（+5）" — null when either side is missing (the caller
+ * shows a fallback message in that case; see
+ * docs/25_analysis_history_comparison_design.md "10. スコア比較の扱い"). */
+export function formatComparisonVisibilityScoreLabel(
+  diff: AnalysisRunComparisonDiff["visibilityScore"],
+): string | null {
+  if (diff.current === null || diff.previous === null || diff.delta === null) {
+    return null;
+  }
+  return `${diff.previous} → ${diff.current}（${formatSignedDelta(diff.delta)}）`;
+}
+
+/** "3 → 4（+1）" */
+export function formatComparisonImprovementsLabel(
+  diff: AnalysisRunComparisonDiff["improvements"],
+): string {
+  return `${diff.previousCount} → ${diff.currentCount}（${formatSignedDelta(diff.delta)}）`;
+}
+
+export function formatCooccurrenceNewTermLabel(
+  term: CooccurrenceComparisonNewTerm,
+): string {
+  return `${term.term}（${term.rank}位）`;
+}
+
+export function formatCooccurrenceRemovedTermLabel(
+  term: CooccurrenceComparisonRemovedTerm,
+): string {
+  return `${term.term}（${term.rank}位）`;
+}
+
+export function formatCooccurrenceChangedTermLabel(
+  term: CooccurrenceComparisonChangedTerm,
+): string {
+  return `${term.term}（${term.previousRank}位→${term.currentRank}位、スコア${term.previousScore}→${term.currentScore}）`;
+}
+
+/** Caps a comparison term list to a small number of entries for
+ * display — see docs/25_analysis_history_comparison_design.md "7. UI
+ * 設計案"「初期は全部を詳細テーブルにしなくてよい。上位数件のリスト
+ * でよい。」 */
+export const HISTORY_COMPARISON_TERM_DISPLAY_LIMIT = 5;
+
+export function limitComparisonTerms<T>(
+  terms: T[],
+  limit: number = HISTORY_COMPARISON_TERM_DISPLAY_LIMIT,
+): T[] {
+  return terms.slice(0, limit);
 }
