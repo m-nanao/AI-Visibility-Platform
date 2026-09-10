@@ -1,6 +1,6 @@
 # 履歴比較機能 設計メモ
 
-**このドキュメントは設計メモであり、backend実装・frontend実装・比較API追加・UI変更・DB schema変更・migration変更・env変更のいずれも含まない。** 今回のスコープはdocsのみ。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。8章の比較API案は`feature/history-comparison-api`（2026-09-10、「19. 実装状況」参照）で最小実装済み。frontend実装・UI変更・DB schema変更・migration変更・env変更はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -22,12 +22,12 @@
 - `analysisRunId`（[23_analysis_run_id_and_post_analyze_link_design.md](./23_analysis_run_id_and_post_analyze_link_design.md)参照）
 - 保存済み履歴リンク（分析結果画面の「保存済み履歴で開く」、同上docs/23参照）
 - `HISTORY_READ_TOKEN` gate（[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)参照）
+- 履歴比較API（`GET /analysis-runs/{id}/comparison`、`feature/history-comparison-api`、2026-09-10。「19. 実装状況」参照）
 
 **未実装:**
 
-- 履歴比較
-- 比較API
-- 比較UI
+- 比較UI（`/history/[id]`への前回比較セクション追加）
+- frontend proxy route
 - レポート出力
 - Supabase Auth/RLS本格対応
 
@@ -315,6 +315,16 @@ AI Overview / ChatGPT観測は、providerやmodeにより取得状況が変わ�
 - DB schema変更なしで進めてよいか
 - 共起語比較は上位10件でよいか
 - 長文diffや高度な意味比較は後回しでよいか
+
+## 19. 実装状況（2026-09-10更新）
+
+`feature/history-comparison-api`で、本ドキュメントの5〜11章の方針に沿って`GET /analysis-runs/{analysis_run_id}/comparison`を最小実装した。**frontend実装・frontend proxy route追加・`/history/[id]`への比較UI追加・DB schema変更・migration変更・`/analyze`変更・DB保存処理の変更はいずれも行っていない。**
+
+- repository: `backend/services/analysis_history_repository.py`に`get_previous_analysis_run_for_brand(analysis_run_id)`を新規追加。`analysis_runs`同士の自己結合1クエリで、指定idの`brand_id`・`created_at`より前に作成された同一ブランドの最新履歴を取得する（`brand_id`のみを比較キーとし、`canonical_domain`補助は今回は行わない、5章の方針どおり）。前回履歴がなければ`None`を返す。「current」自体の取得は既存の`get_analysis_run()`をそのまま再利用した（新規関数を追加していない）。
+- 比較ロジック: 新規`backend/services/analysis_history_comparison.py`に純粋関数`build_comparison_response(current, previous)`を追加し、DBアクセスと分離した。`visibilityScore`差分（`current`/`previous`/`delta`、片方欠損時は全て`null`）、共起語ランキング上位10件の`newTerms`/`removedTerms`/`changedTerms`（`rankDelta`/`scoreDelta`はcurrent-previous、順位改善時は`rankDelta`が負になる）、改善提案の件数差分（欠損時は0扱い）を算出する。`aiOverviewProvider.mode`が一致しない場合は`warnings`に注意文言を追加し、`result`自体が欠損/非dict（旧schema等）の場合も別の注意文言を追加する。
+- backend model: `backend/models.py`に`AnalysisRunComparisonResponse`/`AnalysisRunComparisonRunSummary`/`AnalysisRunComparisonDiff`/`AnalysisRunComparisonVisibilityScoreDiff`/`AnalysisRunComparisonCooccurrenceDiff`/`CooccurrenceComparisonNewTerm`/`CooccurrenceComparisonRemovedTerm`/`CooccurrenceComparisonChangedTerm`/`AnalysisRunComparisonImprovementsDiff`を追加。
+- backend route: `backend/main.py`に`GET /analysis-runs/{analysis_run_id}/comparison`を、既存の`GET /analysis-runs/{analysis_run_id}`より前に定義した（Starletteのルーティングはセグメント数で区別するため実害はないが、意図を明確にするため）。既存の`_check_history_read_access()`をそのまま適用し、`READ_HISTORY_ENABLED=false`/`DATABASE_URL`未設定/`HISTORY_READ_TOKEN`未設定はそれぞれ503、token不一致は403——他の2エンドポイントと完全に同じ挙動。currentが存在しない場合は404（previousの検索自体を行わない）、previousが存在しない場合は200で`previous: null`・`diff: null`・`warnings: ["比較できる過去履歴がまだありません。"]`を返す。
+- テスト: `backend/tests/test_analysis_history_comparison.py`に純粋ロジックのテストを16件追加（前回履歴なし・スコア差分の正負/ゼロ/欠損・共起語new/removed/changed・上位10件制限・改善提案件数・警告の各パターン）。`backend/tests/test_analysis_history_repository.py`に`get_previous_analysis_run_for_brand()`のテストを6件追加（不正UUID・前回なし・driver未インストール・`DATABASE_URL`未設定・クエリ失敗・成功時）。新規`backend/tests/test_main_analysis_history_comparison_api.py`にroute全体のテストを13件追加（503/403の各パターン・404・previousなし/ありの200・`/analyze`と既存詳細routeが無影響であることを含む）。
 
 ## 関連ドキュメント
 

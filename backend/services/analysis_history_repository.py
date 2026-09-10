@@ -36,6 +36,14 @@ calling either function — neither checks READ_HISTORY_ENABLED itself,
 only that DATABASE_URL is present (mirrors save_analysis_history() only
 checking configuration it owns).
 
+get_previous_analysis_run_for_brand() extends this read side to back
+GET /analysis-runs/{id}/comparison (see main.py and
+docs/25_analysis_history_comparison_design.md) — same
+non-swallowing/READ_HISTORY_ENABLED-is-the-caller's-job contract as
+the two functions above. The actual diff computation lives in
+services/analysis_history_comparison.py as pure functions, kept
+separate from this module's DB access.
+
 psycopg is imported at module level, guarded by try/except, so tests
 can monkeypatch this module's `psycopg` name directly instead of
 needing the real driver or a live database.
@@ -354,4 +362,67 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
         },
         "result": row[9],
         "meta": row[10],
+    }
+
+
+def get_previous_analysis_run_for_brand(analysis_run_id: str) -> dict[str, Any] | None:
+    """Returns the same brand's most recent analysis run started
+    before `analysis_run_id`'s own run, or None when there isn't one
+    yet (or when `analysis_run_id` itself doesn't exist) — backs
+    GET /analysis-runs/{id}/comparison (see
+    docs/25_analysis_history_comparison_design.md "5. 比較対象の選び
+    方"). `brand_id` is the only comparison key used in this initial
+    version; `canonical_domain` matching is deliberately not attempted.
+
+    A single self-join query finds the previous row directly from
+    `analysis_run_id`, so callers don't need to fetch the current run
+    first just to learn its brand_id/created_at.
+
+    A malformed (non-UUID) `analysis_run_id` is treated the same as
+    "no previous run" (returns None without attempting a query) —
+    mirrors get_analysis_run()'s handling. Callers separately confirm
+    `analysis_run_id` itself exists (e.g. via get_analysis_run()) to
+    distinguish a 404 from a genuinely first-ever run.
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    Does not itself check READ_HISTORY_ENABLED — callers must call
+    services.db_settings.is_history_read_enabled() first.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    database_url = _require_connectable()
+
+    query = """
+        select
+            prev.id,
+            prev.started_at,
+            res.result_json
+        from analysis_runs prev
+        join analysis_runs current_run on current_run.id = %s
+        left join analysis_results res on res.analysis_run_id = prev.id
+        where prev.brand_id = current_run.brand_id
+          and prev.created_at < current_run.created_at
+        order by prev.created_at desc
+        limit 1
+    """
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (analysis_run_id,))
+                row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to get previous analysis run from DB")
+        raise AnalysisHistoryReadError("failed to query analysis history") from exc
+
+    if row is None:
+        return None
+
+    return {
+        "id": str(row[0]),
+        "startedAt": row[1].isoformat() if row[1] is not None else None,
+        "result": row[2],
     }
