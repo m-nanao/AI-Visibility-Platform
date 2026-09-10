@@ -1239,5 +1239,6 @@ Next.js の `/api/analyze`（[../app/api/analyze/route.ts](../app/api/analyze/ro
 - ChatGPT観測（`chatgpt_provider.py`）の常時運用（現状はデフォルト`off`・1 analyzeあたり最大1回の手動/検証用途のみ。複数質問・DB保存・課金管理を伴う本番運用は対象外）
 - Claude / Geminiなど他社AIモデルへの同様の観測拡張、ChatGPT観測へのWeb検索（`web_search`ツール）・参照元付き回答の追加
 - レポート出力機能の設計は[docs/26_report_output_design.md](../docs/26_report_output_design.md)を参照。frontendの印刷向けHTMLレポートページ（`/history/[id]/report`）は`feature/report-html-page`（2026-09-11）で最小実装済みで、**backend側は既存の履歴詳細APIと比較APIをそのまま使い、新規API追加は行っていない**。レポート表示ページは本番環境で確認済み。`/history/[id]`から`/history/[id]/report`へ遷移し、保存済み履歴詳細・前回比較・改善提案を印刷向けHTMLとして表示する。印刷物/PDF側では操作UIが非表示になる（PDF自動生成・共有URL発行・Supabase Auth/RLS本格対応はまだ未実装）
+- Supabase Auth/RLS本格設計は[docs/27_supabase_auth_rls_design.md](../docs/27_supabase_auth_rls_design.md)を参照。現時点の`HISTORY_READ_TOKEN` gateはMVP向け簡易保護であり、複数ユーザー/複数プロジェクト運用にはSupabase Auth/RLSの導入が必要（**まだ実装ではない**）
 
 詳細タスクは [../docs/05_tasks.md](../docs/05_tasks.md) のPhase 4を参照。
