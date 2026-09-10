@@ -1,6 +1,6 @@
 # Supabase migration検証手順書
 
-**この手順書に沿って、002 migrationは検証用Supabase projectで実行確認済み（「19. 検証DBでの実行結果」参照）。まだ本番Supabaseへの適用ではない。RLS有効化もまだ行わない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書に沿って、002 migrationは検証用Supabase projectで実行確認済み（「19. 検証DBでの実行結果」参照）。検証DBでの成功後、002 migrationは本番Supabaseにも適用済み（[30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md)「18. 本番Supabase適用結果」参照）。本番ではRLS確認SQLで`relrowsecurity=true`だったが、`pg_policies`は0行——002 migration自体はRLS有効化SQLを含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
