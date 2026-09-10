@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseAnalysisRunDetailResponse } from "../../../lib/analysis-history-schema";
+import { HISTORY_READ_TOKEN_HEADER } from "../../../lib/analysis-history";
 
 /**
  * Thin proxy to the Python analysis API's GET /analysis-runs/{id},
@@ -13,11 +14,19 @@ import { parseAnalysisRunDetailResponse } from "../../../lib/analysis-history-sc
  *   app/lib/analysis-history.ts's resolveHistoryDetailFetchOutcome()).
  * - 503: history read is disabled or unconfigured — same meaning as
  *   the list endpoint (see app/api/analysis-runs/route.ts).
+ * - 403: the HISTORY_READ_TOKEN gate rejected the request — forwarded
+ *   as-is (see docs/24_auth_rls_history_access_design.md "7. backend
+ *   APIでのアクセス制御案").
  * - 404: no analysis run with this id exists — forwarded as-is from
  *   the Python API (backend/main.py's GET /analysis-runs/{id}).
  * - 502: the Python API responded with something else unexpected
  *   (non-2xx other than 404, invalid JSON, or a body that fails
  *   schema validation).
+ *
+ * Attaches HISTORY_READ_TOKEN (a server-side-only env var — never
+ * NEXT_PUBLIC_*) as the X-History-Read-Token header when set, so the
+ * browser never sees or sends it; when unset, the Python API's own
+ * "token is not configured" 503 is what the caller sees.
  */
 export async function GET(
   request: Request,
@@ -33,10 +42,16 @@ export async function GET(
     );
   }
 
+  const historyReadToken = process.env.HISTORY_READ_TOKEN;
+  const headers: HeadersInit = historyReadToken
+    ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken }
+    : {};
+
   let response: Response;
   try {
     response = await fetch(
       `${baseUrl.replace(/\/$/, "")}/analysis-runs/${encodeURIComponent(id)}`,
+      { headers },
     );
   } catch {
     console.warn("[analysis-runs/[id]] Python API request failed");
@@ -53,6 +68,15 @@ export async function GET(
         ? errorBody.error
         : "analysis history read API is not enabled";
     return NextResponse.json({ error: message }, { status: 503 });
+  }
+
+  if (response.status === 403) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : "analysis history read access denied";
+    return NextResponse.json({ error: message }, { status: 403 });
   }
 
   if (response.status === 404) {

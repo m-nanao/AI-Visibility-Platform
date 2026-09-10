@@ -1,6 +1,6 @@
 # 認証/RLS・履歴アクセス制御 設計メモ
 
-**このドキュメントは設計メモであり、backend実装・frontend実装・認証実装・RLS適用・env変更・DB schema変更・migration変更・UI変更・read API変更のいずれも含まない。** 今回のスコープはdocsのみ。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。7章のbackend token gate案は`feature/history-read-token-gate`（2026-09-10、「14. 実装状況」参照）で最小実装済み。Supabase Auth/RLS適用・DB schema変更・migration変更はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -21,10 +21,11 @@
 - `/history/[id]`詳細UI（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)参照）
 - `analysisRunId`（[23_analysis_run_id_and_post_analyze_link_design.md](./23_analysis_run_id_and_post_analyze_link_design.md)参照）
 - 保存済み履歴リンク（分析結果画面の「保存済み履歴で開く」、同上docs/23参照）
+- 履歴read API token gate（`HISTORY_READ_TOKEN`、`feature/history-read-token-gate`、2026-09-10。「14. 実装状況」参照）
 
 **未実装:**
 
-- 認証
+- Supabase Auth
 - RLS
 - ユーザー/プロジェクト単位の権限制御
 - 履歴共有設定
@@ -146,6 +147,17 @@ frontendでは、read APIが401/403/503を返した場合に状態別メッセ�
 - tokenはRender backendとVercel server-side routeの両方に設定する方針でよいか
 - 401/403表示を追加してよいか
 - Supabase Auth/RLSは後続フェーズでよいか
+
+## 14. 実装状況（2026-09-10更新）
+
+`feature/history-read-token-gate`で、本ドキュメントの7〜9章の方針に沿って履歴read APIへの`HISTORY_READ_TOKEN`によるtoken gateを最小実装した。**Supabase Auth・RLS適用・ユーザー/プロジェクト管理・DB schema変更・migration変更・`/analyze`変更はいずれも行っていない。**
+
+- backend設定: `backend/services/db_settings.py`の`DbSettings`に`history_read_token: str | None`を追加し、`HISTORY_READ_TOKEN`環境変数を空文字・未設定時は`None`として読み込む。新規`is_history_read_token_configured()`を`is_history_read_enabled()`とは独立した関数として追加（既存の`is_db_save_configured()`/`is_history_read_enabled()`が互いに独立している設計を踏襲）。
+- backend token検証: `backend/main.py`に`_check_history_read_access(request)`を追加し、`GET /analysis-runs`・`GET /analysis-runs/{analysis_run_id}`の冒頭で呼び出す。チェック順序と応答を意図的に区別できるようにした——`READ_HISTORY_ENABLED=false`→503「analysis history read API is not enabled」、`DATABASE_URL`未設定→503「analysis history read API is not configured」、`HISTORY_READ_TOKEN`未設定→503「analysis history read token is not configured」、`X-History-Read-Token`ヘッダーなし/不一致→403「analysis history read access denied」。token比較は`hmac.compare_digest()`を使用し、token値は応答・ログのいずれにも出さない。`/analyze`はtoken gate対象外で無変更。
+- frontend proxy route: `app/api/analysis-runs/route.ts`・`app/api/analysis-runs/[id]/route.ts`が`process.env.HISTORY_READ_TOKEN`（server-side環境変数、`NEXT_PUBLIC_*`ではない）を読み、設定されていれば`X-History-Read-Token`ヘッダーとしてbackendへのリクエストに付与する。ブラウザ（client component）には一切渡さない。backendからの403はそのまま403として転送する。
+- frontend UI: `app/lib/analysis-history.ts`の`HistoryViewState`/`AnalysisRunDetailViewState`に`"forbidden"`状態を追加し、`resolveHistoryFetchOutcome()`/`resolveHistoryDetailFetchOutcome()`が403を`{ kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE }`（「分析履歴を表示する権限がありません。」）に解決する。`app/history/page.tsx`・`app/history/[id]/page.tsx`は既存の`disabled`/`error`と同じメッセージ表示ブロックに`forbidden`を追加しただけで、新規UIコンポーネントは作っていない。
+- `.env.example`: `HISTORY_READ_TOKEN=`を追加し、Render backendとVercel server-side routeの両方に同じ値を設定する運用、`NEXT_PUBLIC_*`にしないことを明記。**実際の値は設定していない**（このタスクではenvの実設定・Render/Vercel設定変更は対象外）。
+- テスト: backend `tests/test_db_settings.py`に6件、`tests/test_main_analysis_history_read_api.py`に11件追加（503の3パターン区別、403の各パターン、token一致時の成功、token値が応答に含まれないこと、`/analyze`が無影響であることを含む）。frontend `app/lib/analysis-history.test.ts`に2件（list/detail双方の403→forbidden）、新規`app/api/analysis-runs/route.test.ts`・`app/api/analysis-runs/[id]/route.test.ts`に各5件（token付与・token未設定時の非付与・token非露出・403転送・既存503挙動の維持）を追加。
 
 ## 関連ドキュメント
 
