@@ -1,6 +1,6 @@
 # Supabase Auth/RLS migration設計メモ
 
-**このドキュメント自体は設計メモである。5〜8章の方針に沿ったmigration SQL案（`backend/migrations/002_add_organizations_projects.sql`）は`feature/supabase-auth-rls-migration-sql`（2026-09-11、「19. 実装状況」参照）で追加済み。本番Supabaseへの適用・RLS有効化・`HISTORY_READ_TOKEN` gate削除・frontend/backend Auth実装はいずれも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。5〜8章の方針に沿ったmigration SQL案（`backend/migrations/002_add_organizations_projects.sql`）は`feature/supabase-auth-rls-migration-sql`（2026-09-11、「19. 実装状況」参照）で追加済み。検証用Supabase projectでの実行確認も完了済み（2026-09-11、「20. 検証状況」参照）。本番Supabaseへの適用・RLS有効化・`HISTORY_READ_TOKEN` gate削除・frontend/backend Auth実装はいずれも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -289,9 +289,20 @@ RLSで事故が起きた場合:
 - RLS: `enable row level security`・`create policy`はいずれも含めていない（ファイルコメントで「RLS policyは後続migration（006）で追加予定」と明記）。
 - テスト: `backend/tests/test_migrations.py`に9件追加した（ファイル存在確認、3テーブル作成確認、`brands`/`analysis_runs`への`project_id`追加確認、default organization/project作成の記述確認、backfill UPDATE確認、index作成確認、RLS有効化/policy作成が含まれないことの確認、`project_id`のNOT NULL強制がないことの確認、既存テーブル/カラムのdrop・行のdeleteがないことの確認）。backend既存テストは無影響（`backend/main.py`/`backend/models.py`/`backend/services/`はいずれも無変更）。
 
+## 20. 検証状況（2026-09-11更新）
+
+002 migration SQL案は検証用Supabase projectで実行確認済み（手順は[29_supabase_migration_verification_guide.md](./29_supabase_migration_verification_guide.md)「19. 検証DBでの実行結果」参照）。**本番Supabaseにはまだ適用していない。**
+
+- `organizations` / `projects` / `organization_members`の作成、`brands.project_id` / `analysis_runs.project_id`追加を確認済み。
+- default organization / default projectがそれぞれ1件作成されることを確認済み。
+- `brands` / `analysis_runs`の`project_id is null`件数がbackfill後に0件になることを確認済み。
+- 002 migrationを2回実行しても重複しない冪等性を確認済み。
+- RLSは全対象テーブル（`organizations`/`projects`/`organization_members`/`brands`/`analysis_runs`/`analysis_results`）で無効の状態を確認済み。検証用project作成時の「Enable automatic RLS」設定により一時的に`relrowsecurity=true`になった事象があったが、これはmigration SQL自体の不備ではなくSupabase側のproject作成時の自動処理によるもの——検証DB上で明示的にdisableし、最終的に全テーブル`false`を確認した（詳細は[29_supabase_migration_verification_guide.md](./29_supabase_migration_verification_guide.md)「19. 検証DBでの実行結果」参照）。
+
 ## 関連ドキュメント
 
 - [18_db_persistence_design.md](./18_db_persistence_design.md) — DB保存・履歴管理の現行設計方針
 - [19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md) — 最小DB migration設計（`brands`/`analysis_runs`/`analysis_results`）
 - [24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md) — 認証/RLS・履歴アクセス制御設計（`HISTORY_READ_TOKEN` gate）
 - [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md) — Supabase Auth/RLS本格設計
+- [29_supabase_migration_verification_guide.md](./29_supabase_migration_verification_guide.md) — Supabase migration検証手順書（検証DBでの実行結果を含む）
