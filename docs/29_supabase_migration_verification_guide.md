@@ -1,6 +1,6 @@
 # Supabase migration検証手順書
 
-**このドキュメントは手順書である。まだ本番Supabaseへの適用ではない。RLS有効化もまだ行わない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書に沿って、002 migrationは検証用Supabase projectで実行確認済み（「19. 検証DBでの実行結果」参照）。まだ本番Supabaseへの適用ではない。RLS有効化もまだ行わない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -270,6 +270,39 @@ where relname in (
 2. 問題がなければ本番適用判断を行う
 3. 本番適用後、docsへ結果を反映する
 4. その後、frontendログイン/route保護設計へ進む
+
+## 19. 検証DBでの実行結果（2026-09-11追記）
+
+002 migrationは検証用Supabase projectで実行確認済み。
+
+確認内容:
+
+- `001_initial_analysis_history.sql`を適用済み
+- `002_add_organizations_projects.sql`を適用済み
+- `organizations` / `projects` / `organization_members`が作成された（テーブル数が6つに増加）
+- `brands.project_id` / `analysis_runs.project_id`が追加された
+- default organizationが1件作成された
+- default projectが1件作成された
+- `brands.project_id is null`の件数が0件
+- `analysis_runs.project_id is null`の件数が0件
+- RLSは全対象テーブル（`organizations`/`projects`/`organization_members`/`brands`/`analysis_runs`/`analysis_results`）で無効の状態を確認
+- 002 migrationを2回実行してもdefault organization / default project等が重複しない
+- 冪等性確認OK
+
+**automatic RLSについての注意:** 検証用project作成時にSupabaseの「Enable automatic RLS」がONだった影響で、一度`relrowsecurity=true`になる事象が確認された。002 migration自体はRLS有効化SQLを含まないため、これはSupabase側のproject作成時の自動処理によるものであり、migration SQLの不備ではない。検証目的に合わせて、検証DB上で以下を実行しRLSをdisableした。
+
+```sql
+alter table if exists public.organizations disable row level security;
+alter table if exists public.projects disable row level security;
+alter table if exists public.organization_members disable row level security;
+alter table if exists public.brands disable row level security;
+alter table if exists public.analysis_runs disable row level security;
+alter table if exists public.analysis_results disable row level security;
+```
+
+その後、8章の確認SQLで全テーブル`relrowsecurity = false`を確認した。**今後、002 migration検証用projectを新規作成する場合は、作成時に「Enable automatic RLS」をOFFにすることを推奨する**（本番Supabaseへの適用時も同様の確認が必要になる）。
+
+**本番Supabaseにはまだ適用していない。** RLS本番有効化・Supabase本番設定変更・Render/Vercel設定変更もいずれも行っていない。
 
 ## 関連ドキュメント
 
