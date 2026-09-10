@@ -1,6 +1,6 @@
 # Supabase本番 002 migration適用手順書
 
-**このドキュメントは手順書である。本番Supabaseへの適用はまだ行っていない。RLS有効化もまだ行わない。適用はユーザーの明示承認後に行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書に沿って、002 migrationは本番Supabaseへ適用済み（「18. 本番Supabase適用結果」参照）。RLS有効化・`create policy`追加は本番でも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -306,6 +306,46 @@ order by relname;
 4. 確認SQLと本番アプリ動作確認を行う
 5. 結果をdocsへ反映する
 6. 次にfrontendログイン/route保護設計へ進む
+
+## 18. 本番Supabase適用結果（2026-09-11追記）
+
+`002_add_organizations_projects.sql`は本番Supabaseへ適用済み。
+
+**適用前:**
+
+- `brands`: 1件
+- `analysis_runs`: 2件
+- `analysis_results`: 2件
+- `brands.project_id` / `analysis_runs.project_id`は未存在
+
+**適用後:**
+
+- `organizations` / `projects` / `organization_members`作成確認済み
+- `brands.project_id` / `analysis_runs.project_id`追加確認済み
+- default organizationが1件確認済み
+- default projectが1件確認済み
+- default organization / default projectの重複なし
+- 既存`brands.project_id`が`null`の件数は0
+- 既存`analysis_runs.project_id`が`null`の件数は0
+- 適用前後で既存件数は変化なし（`brands`1件・`analysis_runs`2件・`analysis_results`2件）
+- `/history`表示確認済み
+- `/history/[id]`表示確認済み
+- `/history/[id]/report`表示確認済み
+- 新規分析実行確認済み
+- 保存済み履歴リンク表示確認済み
+
+**RLS状態について:** RLS確認SQL（`pg_class.relrowsecurity`）では、対象6テーブル（`organizations`/`projects`/`organization_members`/`brands`/`analysis_runs`/`analysis_results`）すべてで`relrowsecurity = true`だった。ただし`pg_policies`確認SQLの結果は0行であり、具体的なRLS policyは作成されていない。**002 migration自体には`enable row level security` / `create policy`は含まれていない。** Supabase project側のautomatic RLS / dashboard設定の影響でRLSフラグが`true`になっている可能性が高い。現時点でアプリ動作には問題は確認されていない。**本番では自己判断で`disable row level security`は実行していない。`create policy`も追加していない。RLS本格運用はまだ開始していない。**
+
+**新規保存分のproject_idについて:** 002適用後に新規分析を1回実行したところ、分析保存・保存済み履歴リンク表示・履歴詳細表示はいずれも成功した。一方で、`runs_without_project = 1`になることを確認した。これは現時点のbackend保存処理がまだ新規保存時に`project_id`を明示保存しないためであり、想定内の挙動である。**今後、新規保存時にdefault project_idを入れる実装、および既にnullになった1件のbackfill対応が必要。**
+
+未実装として以下を残す。
+
+- 新規保存時の`project_id`付与
+- 既に`null`になった`analysis_runs`のbackfill
+- frontendログイン/route保護
+- backend JWT検証
+- RLS policy作成
+- RLS本格運用
 
 ## 関連ドキュメント
 
