@@ -1,0 +1,284 @@
+# Supabase Auth/RLS migration設計メモ
+
+**このドキュメントは設計メモである。まだ実装ではない。migrationファイルは今回作らない。実際のmigration追加・Supabase設定変更・RLS有効化は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+
+**最終更新日: 2026-09-11**
+
+## 1. このドキュメントの目的
+
+- Supabase Auth/RLS導入に向けたmigration設計メモである。
+- [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md)の本格設計を、DB変更手順として具体化することが目的である。
+- まだ実装ではない。
+- migrationファイルは今回作らない。
+
+## 2. 前提となる設計
+
+参照: [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md)
+
+前提:
+
+- 初期はorganization単位のアクセス制御から始める。
+- `project_id`を既存データへ追加する方針。
+- 既存データはdefault organization / default projectへ紐づける。
+- `HISTORY_READ_TOKEN` gateは移行期間中残す。
+- RLSは段階的に有効化する。
+
+## 3. 現在のDB状態
+
+現在の主要テーブル（`backend/migrations/001_initial_analysis_history.sql`）:
+
+- `brands`（`id`/`name`/`canonical_domain`/`created_at`/`updated_at`）
+- `analysis_runs`（`id`/`brand_id`/`status`/`input_snapshot`/`source_summary`/`started_at`/`completed_at`/`error_message`/`created_at`/`updated_at`）
+- `analysis_results`（`id`/`analysis_run_id`/`visibility_score`/`result_json`/`meta_json`/`created_at`）
+
+現在の特徴:
+
+- `user_id`がない
+- `organization_id`がない
+- `project_id`がない
+- 履歴readはbackend API + `HISTORY_READ_TOKEN` gateで保護
+- DBレベルのユーザー別制御は未実装
+
+## 4. migrationの基本方針
+
+既存データを壊さない非破壊migrationを優先する。
+
+方針:
+
+- まずNULL許容カラムとして追加する。
+- default organization / default projectを作る。
+- 既存データへ`project_id`をbackfillする。
+- アプリ側対応後にNOT NULL制約を検討する。
+- RLS policyはテストDBで検証してから本番へ適用する。
+- いきなり本番RLSを有効化しない。
+
+## 5. 追加テーブル案
+
+初期追加テーブル: `organizations` / `projects` / `organization_members`
+
+それぞれの役割:
+
+- **organizations**: チーム/会社/管理単位。複数projectを持つ。
+- **projects**: クライアントまたは分析対象グループ。`organization_id`を持つ。複数brandを持つ。
+- **organization_members**: `auth.users`と`organizations`の紐づけ。roleを持つ。
+
+推奨カラム案:
+
+```sql
+-- organizations
+id uuid primary key
+name text not null
+created_at timestamptz not null default now()
+updated_at timestamptz not null default now()
+
+-- projects
+id uuid primary key
+organization_id uuid not null references organizations(id)
+name text not null
+created_at timestamptz not null default now()
+updated_at timestamptz not null default now()
+
+-- organization_members
+organization_id uuid not null references organizations(id)
+user_id uuid not null references auth.users(id)
+role text not null
+created_at timestamptz not null default now()
+primary key (organization_id, user_id)
+```
+
+role候補: `owner` / `member`
+
+初期では`viewer` / `client_viewer`は後回し。
+
+## 6. 既存テーブルへの追加カラム案
+
+追加候補:
+
+- `brands.project_id uuid references projects(id)`
+- `analysis_runs.project_id uuid references projects(id)`
+
+**推奨:** 初期は`brands`と`analysis_runs`の両方に`project_id`を持たせる。
+
+理由:
+
+- brands経由で辿れる
+- analysis_runsにも直接project_idがあると履歴一覧・履歴詳細・比較APIで絞り込みやすい
+- 将来のレポート・共有・集計にも使いやすい
+
+**注意:** 最初はNULL許容で追加し、既存データbackfill後にNOT NULL化を検討する。
+
+## 7. default organization / default project の扱い
+
+既存データを失わずに移行するため、最初にdefault organizationとdefault projectを作る。
+
+仮名: `Default Organization` / `Default Project`
+
+用途:
+
+- 既存brandsをdefault projectに紐づける
+- 既存analysis_runsをdefault projectに紐づける
+- 移行直後も既存履歴を見られるようにする
+
+**注意:** 本格運用前に、default projectを正式なorganization/projectへ整理できるようにする。
+
+## 8. 既存データ移行方針
+
+手順案:
+
+1. `organizations`作成
+2. `projects`作成
+3. `organization_members`作成
+4. default organizationを作成
+5. default projectを作成
+6. `brands.project_id`をdefault projectでbackfill
+7. `analysis_runs.project_id`をdefault projectでbackfill
+8. 既存APIが`project_id`なしでも壊れないことを確認
+9. アプリ側で`project_id`を保存できるようにしてからNOT NULL化を検討
+
+## 9. RLS policy追加方針
+
+RLS policyは、ユーザーが所属するorganizationに紐づくproject配下のデータだけを扱えるようにする。
+
+初期対象:
+
+- `organizations`
+- `projects`
+- `organization_members`
+- `brands`
+- `analysis_runs`
+- `analysis_results`
+
+段階方針:
+
+- **Phase A**: RLS policy SQLを設計する。まだ本番では有効化しない。
+- **Phase B**: テストDBでRLS有効化。Supabase Auth userでselect/insert/updateを検証。
+- **Phase C**: backend/frontendがAuth対応してから本番で段階的に有効化。
+
+**注意:** RLS有効化後、service role keyを使う経路はRLSを迂回する可能性があるため、使用範囲を明確にする。
+
+## 10. 段階的migration案
+
+migrationを複数段に分ける。
+
+案:
+
+- **001**: 現在の初期履歴保存テーブル（実装済み、`backend/migrations/001_initial_analysis_history.sql`）
+- **002**: `organizations` / `projects` / `organization_members`追加
+- **003**: `brands.project_id` / `analysis_runs.project_id`追加
+- **004**: default organization / default project作成とbackfill
+- **005**: index追加
+- **006**: RLS policy追加
+- **007**: NOT NULL制約追加
+
+**注意:** 006と007は、アプリ側Auth対応後まで遅らせる。
+
+## 11. rollback方針
+
+本番DB migrationはrollbackしやすい順序で実施する。
+
+方針:
+
+- 追加テーブル・追加カラム中心の非破壊migrationにする
+- 既存カラム削除はしない
+- 既存データ削除はしない
+- backfill前にbackupを取る
+- RLS有効化前後で検証クエリを用意する
+
+RLSで事故が起きた場合:
+
+- 一時的にRLSを無効化して復旧する手順を用意する
+- ただし本番では無効化前に影響範囲を確認する
+
+## 12. 検証用DBで確認すること
+
+- migrationが最後まで成功する
+- 既存brandsがdefault projectに紐づく
+- 既存analysis_runsがdefault projectに紐づく
+- `GET /analysis-runs`が引き続き返る
+- `GET /analysis-runs/{id}`が引き続き返る
+- `GET /analysis-runs/{id}/comparison`が引き続き返る
+- `/history`が表示される
+- `/history/[id]`が表示される
+- `/history/[id]/report`が表示される
+- RLS有効化後、所属ユーザーだけがデータを見られる
+- 未所属ユーザーはデータを見られない
+
+## 13. 本番Supabase適用前チェックリスト
+
+- Supabase backup取得
+- migration SQLレビュー
+- RLS policyレビュー
+- service role keyの使用箇所確認
+- frontend env確認
+- backend env確認
+- stagingまたは検証DBで成功確認
+- 既存履歴の件数確認
+- rollback手順確認
+- 適用時間帯の決定
+
+## 14. セキュリティ上の注意
+
+- RLS policyをdashboard手作業だけで管理しない
+- service role keyをfrontendへ出さない
+- anon keyとservice role keyを混同しない
+- `HISTORY_READ_TOKEN`を`NEXT_PUBLIC_*`化しない
+- RLS有効化後に全件selectできないことを必ず確認する
+- default organizationに全データが集まるため、初期member追加は慎重に行う
+
+## 15. 初期実装でやること・やらないこと
+
+**やること:**
+
+- migration SQL案を作る
+- テストDBでmigrationを検証する
+- organization/project最小schemaを追加する
+- 既存データのbackfillを検証する
+- RLS policy SQL案を作る
+
+**やらないこと:**
+
+- 本番RLSを即時有効化
+- NOT NULL制約をいきなり追加
+- 既存`HISTORY_READ_TOKEN` gate削除
+- frontendにservice role keyを置く
+- 共有URL実装
+- PDF自動生成
+
+## 16. 推奨する実装順
+
+1. migration SQL案作成
+2. migrationテスト追加
+3. ローカル/検証DBでmigration実行
+4. 既存履歴APIの互換性確認
+5. RLS policy SQL案作成
+6. frontendログイン/route保護設計
+7. backend JWT検証設計
+8. staging確認
+9. 本番適用
+10. docs反映
+
+## 17. 今後の拡張候補
+
+- `project_members`
+- `client_viewer`
+- `report_shares`
+- `audit_logs`
+- `report_snapshots`
+- `subscription_plans`
+- organization invitations
+
+## 18. 実装前の確認事項
+
+- default organization / default project 名称は仮でよいか
+- 既存データをdefault projectへまとめてよいか
+- brandsとanalysis_runsの両方にproject_idを持たせてよいか
+- 初期ロールはowner/memberだけでよいか
+- RLS有効化はfrontend/backend Auth対応後まで遅らせてよいか
+- 本番適用前に検証用DBを用意するか
+
+## 関連ドキュメント
+
+- [18_db_persistence_design.md](./18_db_persistence_design.md) — DB保存・履歴管理の現行設計方針
+- [19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md) — 最小DB migration設計（`brands`/`analysis_runs`/`analysis_results`）
+- [24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md) — 認証/RLS・履歴アクセス制御設計（`HISTORY_READ_TOKEN` gate）
+- [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md) — Supabase Auth/RLS本格設計
