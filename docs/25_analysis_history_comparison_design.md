@@ -1,6 +1,6 @@
 # 履歴比較機能 設計メモ
 
-**このドキュメント自体は設計メモである。8章の比較API案は`feature/history-comparison-api`（2026-09-10、「19. 実装状況」参照）で、7章のUI案（`/history/[id]`への前回比較セクション追加）は`feature/history-comparison-ui`（2026-09-10、「20. 実装状況」参照）でそれぞれ最小実装済み。DB schema変更・migration変更・env変更・本番確認はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。8章の比較API案は`feature/history-comparison-api`（2026-09-10、「19. 実装状況」参照）で、7章のUI案（`/history/[id]`への前回比較セクション追加）は`feature/history-comparison-ui`（2026-09-10、「20. 実装状況」参照）でそれぞれ最小実装済み。履歴比較UIは本番Vercel + Render + Supabase構成での動作確認も完了済み（2026-09-10、「21. 本番環境での動作確認」参照）。DB schema変更・migration変更・env変更はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -24,11 +24,12 @@
 - `HISTORY_READ_TOKEN` gate（[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)参照）
 - 履歴比較API（`GET /analysis-runs/{id}/comparison`、`feature/history-comparison-api`、2026-09-10。「19. 実装状況」参照）
 - 比較UI（`/history/[id]`への前回比較セクション、frontend proxy route、`feature/history-comparison-ui`、2026-09-10。「20. 実装状況」参照）
+- 履歴比較UIの本番環境での動作確認（2026-09-10。「21. 本番環境での動作確認」参照）
 
 **未実装:**
 
-- 履歴比較の本番確認
 - 比較専用ページ・手動比較対象選択
+- スコア推移グラフ
 - レポート出力
 - Supabase Auth/RLS本格対応
 
@@ -337,6 +338,27 @@ AI Overview / ChatGPT観測は、providerやmodeにより取得状況が変わ�
 - 表示ロジック: `formatComparisonVisibilityScoreLabel()`（「86 → 91（+5）」形式、片方欠損時は`null`）、`formatComparisonImprovementsLabel()`（「3 → 4（+1）」形式）、`formatCooccurrenceNewTermLabel()`/`formatCooccurrenceRemovedTermLabel()`/`formatCooccurrenceChangedTermLabel()`（用語ごとの順位・スコア変化ラベル）、`limitComparisonTerms()`（表示件数を既定5件に制限）を追加。
 - `/history/[id]`ページ: 基本情報の下・`AnalysisDashboard`の上に`ComparisonSection`を追加した。詳細本体（`view`）とは独立した`useEffect`/`useState`で比較データを取得するため、**比較取得が失敗しても履歴詳細本体の表示は妨げられない**（`view.kind === "success"`かどうかとは無関係に動作する）。`loading`中は何も表示せず、それ以外の非successな状態では見出し「前回比較」の下にメッセージのみを表示する。`success`時は可視性スコア・共起語の新規/消失/変化・改善提案件数を表示し、backendからの`warnings`があれば注意文として表示する。
 - テスト: `app/lib/analysis-history.test.ts`に28件（`resolveHistoryComparisonFetchOutcome()`の各分岐、`formatSignedDelta()`/`formatComparisonVisibilityScoreLabel()`/`formatComparisonImprovementsLabel()`/共起語ラベル関数群/`limitComparisonTerms()`）、`app/lib/analysis-history-schema.test.ts`に6件（正常系・`previous`/`diff`が`null`・`current`の値が`null`・必須フィールド欠損・型不一致・`warnings`欠損）、新規`app/api/analysis-runs/[id]/comparison/route.test.ts`に11件（token付与・token非露出・403/503/404転送・`previous:null`のパススルー・成功時・schema検証失敗時の502）を追加。手動確認として、モックPython backendを立てて`/api/analysis-runs/{id}/comparison`が期待どおりのJSONを返すことを確認したが、実際のブラウザでの見た目の確認は本セッションの環境にブラウザ自動化ツールがないため未実施。
+
+## 21. 本番環境での動作確認（2026-09-10追記）
+
+履歴比較UIは本番環境で動作確認済み。
+
+確認内容:
+
+- `/history/[id]`で履歴詳細本体が表示される
+- 「前回比較」セクションが表示される
+- 前回履歴がある場合、`visibilityScore`差分・`cooccurrence`変化・`improvements`件数差分が表示される
+- 前回履歴がない場合、「比較できる過去履歴がまだありません。」が表示される
+- backend直アクセスはHTTP 403で拒否される
+- Vercel経由では比較データが表示される
+
+未実装として以下を残す:
+
+- 比較専用ページ
+- 手動比較対象選択
+- スコア推移グラフ
+- レポート出力
+- Supabase Auth/RLS本格対応
 
 ## 関連ドキュメント
 

@@ -115,9 +115,11 @@
   - 履歴比較機能の設計（`docs/analysis-history-comparison-design`、2026-09-10。docsのみ・コード変更なし。新規[25_analysis_history_comparison_design.md](./25_analysis_history_comparison_design.md)を追加し、**初期比較は同一ブランドの直近2件比較**（`brand_id`優先、`canonical_domain`補助）、比較項目（`visibilityScore`差分・共起語ランキング上位10件の変化・改善提案の件数変化を優先度高、AI Overview/ChatGPT観測の変化・Common Crawl補完件数の変化を優先度中）、UI案（`/history/[id]`への「前回比較」セクション追加を優先、比較専用ページは後続）、backend比較API案（`GET /analysis-runs/{analysis_run_id}/comparison`）、**DB schema変更不要**の方針、エラー・データ不足時の表示方針を整理した。**backend実装・frontend実装・比較API追加・UI変更・DB schema変更はいずれも行っていない**）
   - 履歴比較APIの最小実装（`feature/history-comparison-api`、2026-09-10。`GET /analysis-runs/{analysis_run_id}/comparison`を追加し、既存の`get_analysis_run()`で現在の履歴、新規`get_previous_analysis_run_for_brand()`（自己結合1クエリ）で同一ブランドの直近前回履歴を取得。新規`backend/services/analysis_history_comparison.py`の純粋関数`build_comparison_response()`が`visibilityScore`差分・共起語ランキング上位10件のnew/removed/changed（`rankDelta`/`scoreDelta`はcurrent-previous、順位改善時は`rankDelta`が負）・改善提案の件数差分を算出。既存read API 2本と同じ`HISTORY_READ_TOKEN`gate（`_check_history_read_access()`）を適用し、currentなしは404、previousなしは200で`previous: null`・`diff: null`、provider mode不一致やresult欠損時は`warnings`に注意文言。**`/analyze`変更・DB保存処理の変更・DB schema変更・migration変更・frontend変更（proxy route含む）はいずれも行っていない**。backend 35件のテストを追加）
   - `/history/[id]`への前回比較セクション追加（`feature/history-comparison-ui`、2026-09-10。新規`app/api/analysis-runs/[id]/comparison/route.ts`が既存プロキシroute群と同じ方針で`HISTORY_READ_TOKEN`をserver-sideで付与しbackendへ転送、tokenはブラウザへ露出しない。`app/lib/analysis-history.ts`/`analysis-history-schema.ts`に型・schema・`resolveHistoryComparisonFetchOutcome()`・表示整形関数を追加。`/history/[id]`の基本情報下・`AnalysisDashboard`上に「前回比較」セクションを追加し、可視性スコア・共起語new/removed/changed・改善提案件数差分を表示、`previous`なし時は「比較できる過去履歴がまだありません。」を表示。**比較取得は詳細本体とは独立しており、失敗しても詳細本体の表示は妨げられない**。**backend比較API変更・DB schema変更・migration変更・`/analyze`変更・比較専用ページ・手動比較選択はいずれも行っていない**。frontend 45件のテストを追加）
+  - 履歴比較UIの本番確認（`docs/record-history-comparison-ui-verification`、2026-09-10。docsのみ・コード変更なし。本番Vercel + Render + Supabase構成で`/history/[id]`の履歴詳細本体と「前回比較」セクションを確認。**前回履歴がある場合は`visibilityScore`差分・`cooccurrence`変化・`improvements`件数差分が表示され、前回履歴がない場合は「比較できる過去履歴がまだありません。」が表示される**。**backend直アクセスは引き続きHTTP 403で拒否され、Vercel経由でのみ比較データが表示されることを再確認**）
 - **Next（次のステップ、優先順）**:
-  - 履歴比較の本番確認
-- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、レポート出力の設計、Supabase Auth/RLS本格設計
+  - レポート出力の設計
+  - Supabase Auth/RLS本格設計
+- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
 
 目安: 2〜3週間
 
