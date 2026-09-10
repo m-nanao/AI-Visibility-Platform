@@ -476,3 +476,78 @@ def test_get_analysis_run_success(monkeypatch):
         "meta": {"documentsSource": "web_fetch"},
     }
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
+
+
+# --- get_previous_analysis_run_for_brand: invalid id ------------------------
+
+
+def test_get_previous_analysis_run_for_brand_returns_none_for_invalid_uuid(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeReadPsycopg(_FakeReadCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.get_previous_analysis_run_for_brand("not-a-uuid")
+
+    assert result is None
+    # No DB connection should even be attempted for a malformed id.
+    assert fake_psycopg.connect_calls == []
+
+
+def test_get_previous_analysis_run_for_brand_returns_none_when_no_previous_run(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    assert repo.get_previous_analysis_run_for_brand(VALID_RUN_ID) is None
+
+
+# --- get_previous_analysis_run_for_brand: failure cases ---------------------
+
+
+def test_get_previous_analysis_run_for_brand_raises_when_driver_not_installed(monkeypatch):
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", None)
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.get_previous_analysis_run_for_brand(VALID_RUN_ID)
+
+
+def test_get_previous_analysis_run_for_brand_raises_when_database_url_missing(monkeypatch):
+    _configure_read_env(monkeypatch, url=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(_FakeReadCursor()))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.get_previous_analysis_run_for_brand(VALID_RUN_ID)
+
+
+def test_get_previous_analysis_run_for_brand_raises_on_query_failure(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(raise_on_execute=RuntimeError("connection refused"))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.get_previous_analysis_run_for_brand(VALID_RUN_ID)
+
+
+# --- get_previous_analysis_run_for_brand: success case ----------------------
+
+
+def test_get_previous_analysis_run_for_brand_success(monkeypatch):
+    _configure_read_env(monkeypatch)
+    previous_id = str(uuid.uuid4())
+    row = (previous_id, STARTED_AT, {"brandName": "サイボウズ"})
+    fake_cursor = _FakeReadCursor(fetchone_result=row)
+    fake_psycopg = _FakeReadPsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.get_previous_analysis_run_for_brand(VALID_RUN_ID)
+
+    assert result == {
+        "id": previous_id,
+        "startedAt": STARTED_AT.isoformat(),
+        "result": {"brandName": "サイボウズ"},
+    }
+    assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
+    query, params = fake_cursor.executed[0]
+    assert params == (VALID_RUN_ID,)
+    assert "brand_id" in query

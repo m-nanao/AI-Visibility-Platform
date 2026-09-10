@@ -91,6 +91,7 @@ from models import (
     AnalysisMeta,
     AnalysisResult,
     AnalysisRunBrand,
+    AnalysisRunComparisonResponse,
     AnalysisRunDetailResponse,
     AnalysisRunInfo,
     AnalysisRunListItem,
@@ -106,9 +107,11 @@ from models import (
     UrlFetchResult,
 )
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
+from services.analysis_history_comparison import build_comparison_response
 from services.analysis_history_repository import (
     AnalysisHistoryReadError,
     get_analysis_run as repository_get_analysis_run,
+    get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
     list_analysis_runs as repository_list_analysis_runs,
     save_analysis_history,
 )
@@ -774,6 +777,44 @@ def list_analysis_runs(
         items=[AnalysisRunListItem(**item) for item in items],
         limit=limit,
         offset=offset,
+    )
+
+
+@app.get(
+    "/analysis-runs/{analysis_run_id}/comparison",
+    response_model=AnalysisRunComparisonResponse,
+)
+def get_analysis_run_comparison(analysis_run_id: str, request: Request):
+    """Compares `analysis_run_id` against the same brand's immediately
+    preceding run — see docs/25_analysis_history_comparison_design.md.
+    Defined *before* GET /analysis-runs/{analysis_run_id} below so that
+    a request for .../comparison is never captured by the shorter
+    path's {analysis_run_id} parameter (Starlette's router already
+    disambiguates these by segment count, but the explicit ordering
+    keeps the intent obvious and matches this file's existing
+    most-specific-route-first convention).
+    """
+    access_denied = _check_history_read_access(request)
+    if access_denied is not None:
+        return access_denied
+
+    try:
+        current = repository_get_analysis_run(analysis_run_id)
+        if current is None:
+            return error_response("analysis run not found", status_code=404)
+
+        previous = repository_get_previous_analysis_run_for_brand(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    current_run = {
+        "id": current["id"],
+        "startedAt": current["run"]["startedAt"],
+        "result": current["result"],
+    }
+
+    return AnalysisRunComparisonResponse(
+        **build_comparison_response(current_run, previous)
     )
 
 

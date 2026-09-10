@@ -544,3 +544,81 @@ class AnalysisRunDetailResponse(BaseModel):
     run: AnalysisRunInfo
     result: dict[str, object]
     meta: dict[str, object] | None
+
+
+class AnalysisRunComparisonRunSummary(BaseModel):
+    """One side (`current`/`previous`) of GET
+    /analysis-runs/{id}/comparison — see
+    docs/25_analysis_history_comparison_design.md "8. API設計案".
+    `visibilityScore` is None when the saved result is missing or
+    doesn't have the expected `summary.visibilityScore` shape (see
+    services/analysis_history_comparison.py)."""
+
+    id: str
+    startedAt: str | None
+    visibilityScore: int | None
+
+
+class AnalysisRunComparisonVisibilityScoreDiff(BaseModel):
+    current: int | None
+    previous: int | None
+    delta: int | None
+
+
+class CooccurrenceComparisonNewTerm(BaseModel):
+    term: str
+    rank: int
+    score: int
+
+
+class CooccurrenceComparisonRemovedTerm(BaseModel):
+    term: str
+    rank: int
+    score: int
+
+
+class CooccurrenceComparisonChangedTerm(BaseModel):
+    """`rankDelta`/`scoreDelta` are current-minus-previous — a negative
+    `rankDelta` means the term's rank *improved* (moved to a
+    lower/better rank number), since rank 1 outranks rank 5."""
+
+    term: str
+    currentRank: int
+    previousRank: int
+    rankDelta: int
+    currentScore: int
+    previousScore: int
+    scoreDelta: int
+
+
+class AnalysisRunComparisonCooccurrenceDiff(BaseModel):
+    topN: int
+    newTerms: list[CooccurrenceComparisonNewTerm]
+    removedTerms: list[CooccurrenceComparisonRemovedTerm]
+    changedTerms: list[CooccurrenceComparisonChangedTerm]
+
+
+class AnalysisRunComparisonImprovementsDiff(BaseModel):
+    currentCount: int
+    previousCount: int
+    delta: int
+
+
+class AnalysisRunComparisonDiff(BaseModel):
+    visibilityScore: AnalysisRunComparisonVisibilityScoreDiff
+    cooccurrence: AnalysisRunComparisonCooccurrenceDiff
+    improvements: AnalysisRunComparisonImprovementsDiff
+
+
+class AnalysisRunComparisonResponse(BaseModel):
+    """GET /analysis-runs/{id}/comparison — see
+    docs/25_analysis_history_comparison_design.md. `previous`/`diff`
+    are both None when the same brand has no earlier run yet; in that
+    case `warnings` explains why (see
+    services/analysis_history_comparison.py's
+    INSUFFICIENT_HISTORY_WARNING)."""
+
+    current: AnalysisRunComparisonRunSummary
+    previous: AnalysisRunComparisonRunSummary | None
+    diff: AnalysisRunComparisonDiff | None
+    warnings: list[str]
