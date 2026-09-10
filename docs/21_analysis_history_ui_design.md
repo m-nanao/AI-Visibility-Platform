@@ -242,7 +242,7 @@ frontend側の取得方針:
 
 未実装として以下を残す:
 
-- ~~履歴詳細UI~~ → 設計（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)）に沿って`/history/[id]`として最小実装済み（2026-09-10、`feature/history-detail-ui`。詳細は同ファイル「16. 実装状況」参照）
+- ~~履歴詳細UI~~ → 設計（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)）に沿って`/history/[id]`として最小実装済み（2026-09-10、`feature/history-detail-ui`。詳細は同ファイル「16. 実装状況」参照）。**`/history/[id]`の履歴詳細UIも実装され、本番Vercel環境で確認済み**。一覧の「詳細を見る」から保存済み分析結果の詳細へ遷移できる（詳細は[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)「17. 本番Vercel環境での動作確認」参照）
 - `/analyze`レスポンスへの`analysisRunId`追加
 - 分析直後の履歴リンク
 - 認証/RLS
