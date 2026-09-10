@@ -112,11 +112,12 @@
   - 認証/RLS・履歴アクセス制御の設計（`docs/auth-rls-history-access-design`、2026-09-10。docsのみ・コード変更なし。新規[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)を追加し、現在のリスク（`READ_HISTORY_ENABLED=true`時の`/history`・`/history/[id]`公開、`analysisRunId`を知っていればアクセス可能）、短期運用方針（`READ_HISTORY_ENABLED=false`継続）、中期の認証方針（簡易パスコード/middleware/Supabase Auth/アカウント制の4候補）、Supabase RLSの検討事項（backendがservice role相当接続を使う限りRLS単独では不十分、`user_id`/`project_id`列追加が必要）、backend read APIへの`HISTORY_READ_TOKEN`によるtoken gate案（frontend proxy routeがserver-sideで付与、`NEXT_PUBLIC_*`にしない）、401/403表示案を整理した。**backend実装・frontend実装・認証実装・RLS適用・env変更はいずれも行っていない**）
   - 履歴read API token gateの最小実装（`feature/history-read-token-gate`、2026-09-10。`backend/services/db_settings.py`に`HISTORY_READ_TOKEN`（`is_history_read_token_configured()`、`READ_HISTORY_ENABLED`とは独立）を追加し、`backend/main.py`の`GET /analysis-runs`・`GET /analysis-runs/{id}`に`_check_history_read_access()`を追加。`READ_HISTORY_ENABLED=false`/`DATABASE_URL`未設定/`HISTORY_READ_TOKEN`未設定はそれぞれ異なるメッセージで503、`X-History-Read-Token`ヘッダーなし・不一致は403（`hmac.compare_digest()`で比較、token値は応答・ログに出さない）。frontendの`app/api/analysis-runs/route.ts`・`app/api/analysis-runs/[id]/route.ts`が`process.env.HISTORY_READ_TOKEN`をserver-sideでヘッダー付与し、ブラウザには露出しない。`app/lib/analysis-history.ts`に`"forbidden"`状態を追加し`/history`・`/history/[id]`が403時に権限なしメッセージを表示。`.env.example`に`HISTORY_READ_TOKEN=`を追加（実際の値は未設定）。**`/analyze`変更・Supabase Auth/RLS・DB schema変更・migration変更はいずれも行っていない**）
   - 履歴read API token gateの本番確認（`docs/record-history-token-gate-verification`、2026-09-10。docsのみ・コード変更なし。Render backendとVercel frontend server-side routeに同じ`HISTORY_READ_TOKEN`を設定し、`READ_HISTORY_ENABLED=true`の状態で、backend直アクセス（`https://llmo-analysis-api.onrender.com/analysis-runs`）がHTTP 403（`{"error":"analysis history read access denied"}`）で拒否されること、Vercel経由の`/history`（`https://ai-visibility-platform-eight.vercel.app/history`）では履歴一覧が表示されることを確認した。**Vercel server-side proxy routeがtokenを付与してbackendへアクセスできている**——`HISTORY_READ_TOKEN`はブラウザへ露出させない・`NEXT_PUBLIC_*`にしない方針を継続。**これはMVP向けの簡易token gateであり、Supabase Auth/RLSやユーザー/プロジェクト単位の権限制御はまだ未実装**）
+  - 履歴比較機能の設計（`docs/analysis-history-comparison-design`、2026-09-10。docsのみ・コード変更なし。新規[25_analysis_history_comparison_design.md](./25_analysis_history_comparison_design.md)を追加し、**初期比較は同一ブランドの直近2件比較**（`brand_id`優先、`canonical_domain`補助）、比較項目（`visibilityScore`差分・共起語ランキング上位10件の変化・改善提案の件数変化を優先度高、AI Overview/ChatGPT観測の変化・Common Crawl補完件数の変化を優先度中）、UI案（`/history/[id]`への「前回比較」セクション追加を優先、比較専用ページは後続）、backend比較API案（`GET /analysis-runs/{analysis_run_id}/comparison`）、**DB schema変更不要**の方針、エラー・データ不足時の表示方針を整理した。**backend実装・frontend実装・比較API追加・UI変更・DB schema変更はいずれも行っていない**）
 - **Next（次のステップ、優先順）**:
-  - 履歴比較の設計
-  - レポート出力の設計
-  - Supabase Auth/RLS本格設計
-- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
+  - 履歴比較APIの最小実装
+  - `/history/[id]`への前回比較セクション追加
+  - 履歴比較の本番確認
+- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、レポート出力の設計、Supabase Auth/RLS本格設計
 
 目安: 2〜3週間
 
