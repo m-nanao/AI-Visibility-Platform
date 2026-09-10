@@ -70,6 +70,7 @@ only by sending `commonCrawlMode`/`commonCrawlDomain` directly in the
 POST body.
 """
 
+import hmac
 import logging
 from collections import Counter
 from datetime import datetime, timezone
@@ -123,7 +124,7 @@ from services.cooccurrence import (
     compute_cooccurrence_ranking_from_documents,
     get_tokenizer_mode,
 )
-from services.db_settings import is_history_read_enabled
+from services.db_settings import load_db_settings
 from services.document_chunker import chunk_documents
 from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
@@ -699,23 +700,68 @@ def analyze(payload: AnalyzeRequest):
 # /analyze above: no request/response field of /analyze is touched by
 # anything below (AnalysisResult.analysisRunId is set above, inside the
 # /analyze handler itself — nothing here adds to it). Gated by
-# READ_HISTORY_ENABLED (services/db_settings.py's
-# is_history_read_enabled()) — a flag independent of DB_SAVE_ENABLED,
-# since saving is an internal write with no external caller while these
-# two endpoints are reachable by anyone who can call this service.
+# READ_HISTORY_ENABLED (a flag independent of DB_SAVE_ENABLED, since
+# saving is an internal write with no external caller while these two
+# endpoints are reachable by anyone who can call this service) *and*,
+# on top of that, a shared-secret HISTORY_READ_TOKEN required in the
+# X-History-Read-Token header — see
+# docs/24_auth_rls_history_access_design.md "7. backend APIでのアクセ
+# ス制御案". READ_HISTORY_ENABLED=true alone still isn't enough to
+# serve a request.
+HISTORY_READ_TOKEN_HEADER = "X-History-Read-Token"
 HISTORY_READ_NOT_CONFIGURED_MESSAGE = "analysis history read API is not enabled"
+HISTORY_READ_DB_NOT_CONFIGURED_MESSAGE = "analysis history read API is not configured"
+HISTORY_READ_TOKEN_NOT_CONFIGURED_MESSAGE = "analysis history read token is not configured"
+HISTORY_READ_ACCESS_DENIED_MESSAGE = "analysis history read access denied"
 HISTORY_READ_FAILED_MESSAGE = "failed to read analysis history"
+
+
+def _check_history_read_access(request: Request) -> JSONResponse | None:
+    """Returns an error JSONResponse if this request must not proceed,
+    or None once every gate has passed. Checked first thing by both
+    read API endpoints below.
+
+    Order matters for the message returned (each case is deliberately
+    distinguishable so an operator can tell *why* a request was
+    rejected from the response alone, without needing server logs):
+    READ_HISTORY_ENABLED=false -> 503 (feature off) -> DATABASE_URL
+    unset -> 503 (misconfigured) -> HISTORY_READ_TOKEN unset -> 503
+    (misconfigured — an operator must opt in to a token, not just to
+    READ_HISTORY_ENABLED) -> header missing/mismatched -> 403.
+
+    The token comparison uses hmac.compare_digest() to avoid a timing
+    side-channel; neither the configured nor the provided token is ever
+    included in a response body or logged.
+    """
+    settings = load_db_settings()
+
+    if not settings.read_history_enabled:
+        return error_response(HISTORY_READ_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    if settings.database_url is None:
+        return error_response(HISTORY_READ_DB_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    if settings.history_read_token is None:
+        return error_response(HISTORY_READ_TOKEN_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    provided_token = request.headers.get(HISTORY_READ_TOKEN_HEADER, "")
+    if not provided_token or not hmac.compare_digest(provided_token, settings.history_read_token):
+        return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    return None
 
 
 @app.get("/analysis-runs", response_model=AnalysisRunListResponse)
 def list_analysis_runs(
+    request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     brand: str | None = None,
     status: str | None = None,
 ):
-    if not is_history_read_enabled():
-        return error_response(HISTORY_READ_NOT_CONFIGURED_MESSAGE, status_code=503)
+    access_denied = _check_history_read_access(request)
+    if access_denied is not None:
+        return access_denied
 
     try:
         items = repository_list_analysis_runs(
@@ -732,9 +778,10 @@ def list_analysis_runs(
 
 
 @app.get("/analysis-runs/{analysis_run_id}", response_model=AnalysisRunDetailResponse)
-def get_analysis_run(analysis_run_id: str):
-    if not is_history_read_enabled():
-        return error_response(HISTORY_READ_NOT_CONFIGURED_MESSAGE, status_code=503)
+def get_analysis_run(analysis_run_id: str, request: Request):
+    access_denied = _check_history_read_access(request)
+    if access_denied is not None:
+        return access_denied
 
     try:
         detail = repository_get_analysis_run(analysis_run_id)

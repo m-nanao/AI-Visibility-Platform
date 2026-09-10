@@ -9,10 +9,15 @@ services/dataforseo_settings.py).
 
 Unlike services/common_crawl_settings.py, DATABASE_URL is a credential
 (a Postgres connection string commonly embeds a password) — never log
-or repr() it. Only save_enabled is safe to log.
+or repr() it. Only save_enabled is safe to log. The same applies to
+HISTORY_READ_TOKEN below.
 
 See docs/19_minimum_db_migration_design.md for the migration/table
-design this feeds into (services/analysis_history_repository.py).
+design this feeds into (services/analysis_history_repository.py), and
+docs/24_auth_rls_history_access_design.md for why the read API also
+needs a shared-secret gate (HISTORY_READ_TOKEN) on top of
+READ_HISTORY_ENABLED — READ_HISTORY_ENABLED alone doesn't stop anyone
+who can reach this service from reading saved history.
 """
 
 import logging
@@ -38,6 +43,10 @@ class DbSettings:
     # is_history_read_enabled()'s docstring for why DB_SAVE_ENABLED
     # alone must never turn on the read API.
     read_history_enabled: bool
+    # Shared secret the read API requires in the X-History-Read-Token
+    # header — see is_history_read_token_configured() and main.py's
+    # _check_history_read_access(). Never log or include in a response.
+    history_read_token: str | None
 
 
 def _resolve_save_enabled() -> bool:
@@ -55,19 +64,26 @@ def _resolve_database_url() -> str | None:
     return raw or None
 
 
+def _resolve_history_read_token() -> str | None:
+    raw = os.environ.get("HISTORY_READ_TOKEN", "").strip()
+    return raw or None
+
+
 def load_db_settings() -> DbSettings:
-    """Reads DB_SAVE_ENABLED/READ_HISTORY_ENABLED/DATABASE_URL env vars
-    fresh on every call (mirrors load_common_crawl_settings() and
-    friends elsewhere in this codebase), so a test or an operator
-    changing the environment takes effect on the next request without a
-    restart. Defaults to save_enabled=False/read_history_enabled=False —
-    neither DB persistence nor the read API activates unless explicitly
-    turned on.
+    """Reads DB_SAVE_ENABLED/READ_HISTORY_ENABLED/DATABASE_URL/
+    HISTORY_READ_TOKEN env vars fresh on every call (mirrors
+    load_common_crawl_settings() and friends elsewhere in this
+    codebase), so a test or an operator changing the environment takes
+    effect on the next request without a restart. Defaults to
+    save_enabled=False/read_history_enabled=False/history_read_token=None
+    — neither DB persistence nor the read API activates unless
+    explicitly turned on.
     """
     return DbSettings(
         save_enabled=_resolve_save_enabled(),
         database_url=_resolve_database_url(),
         read_history_enabled=_resolve_read_history_enabled(),
+        history_read_token=_resolve_history_read_token(),
     )
 
 
@@ -96,3 +112,20 @@ def is_history_read_enabled(settings: DbSettings | None = None) -> bool:
     """
     settings = settings or load_db_settings()
     return settings.read_history_enabled and settings.database_url is not None
+
+
+def is_history_read_token_configured(settings: DbSettings | None = None) -> bool:
+    """True only when HISTORY_READ_TOKEN is set to a non-blank value.
+
+    Checked by main.py's read API endpoints *in addition to*
+    is_history_read_enabled() — READ_HISTORY_ENABLED=true alone is not
+    enough to serve requests; an operator must also configure a token,
+    so the read API can never be reachable by anyone who can simply
+    guess an analysis_run_id (see
+    docs/24_auth_rls_history_access_design.md "7. backend APIでの
+    アクセス制御案"). Independent of is_db_save_configured()/
+    is_history_read_enabled() the same way those two are independent of
+    each other.
+    """
+    settings = settings or load_db_settings()
+    return settings.history_read_token is not None

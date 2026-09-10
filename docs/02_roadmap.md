@@ -110,11 +110,10 @@
   - 分析結果画面への「保存済み履歴で開く」リンク追加（`feature/post-analyze-history-link`、2026-09-10。`app/lib/analysis-history.ts`に`resolvePostAnalyzeHistoryLink()`を追加し、既存の`AnalysisDashboard.tsx`に`analysisRunId`が存在する場合のみリンクを表示（`null`/`undefined`/空文字時は非表示、警告も出さない、自動遷移なし）。`READ_HISTORY_ENABLED`の状態はfrontendで判定せず、無効表示はリンク先の`/history/[id]`に任せる。**backend・`/history`関連UI・read APIはいずれも変更していない**）
   - 分析直後の「保存済み履歴で開く」リンクの本番確認（`docs/record-post-analyze-history-link-verification`、2026-09-10。docsのみ・コード変更なし。本番Vercel画面から`/analyze`を実行し、DB保存成功時に`analysisRunId`が返り、分析結果画面にリンクが表示され、リンク先`/history/{analysisRunId}`で`READ_HISTORY_ENABLED=false`時は無効メッセージ・`true`時は保存済み詳細が表示されることを確認した。**認証未実装のため、通常は`READ_HISTORY_ENABLED=false`運用が安全**）
   - 認証/RLS・履歴アクセス制御の設計（`docs/auth-rls-history-access-design`、2026-09-10。docsのみ・コード変更なし。新規[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)を追加し、現在のリスク（`READ_HISTORY_ENABLED=true`時の`/history`・`/history/[id]`公開、`analysisRunId`を知っていればアクセス可能）、短期運用方針（`READ_HISTORY_ENABLED=false`継続）、中期の認証方針（簡易パスコード/middleware/Supabase Auth/アカウント制の4候補）、Supabase RLSの検討事項（backendがservice role相当接続を使う限りRLS単独では不十分、`user_id`/`project_id`列追加が必要）、backend read APIへの`HISTORY_READ_TOKEN`によるtoken gate案（frontend proxy routeがserver-sideで付与、`NEXT_PUBLIC_*`にしない）、401/403表示案を整理した。**backend実装・frontend実装・認証実装・RLS適用・env変更はいずれも行っていない**）
+  - 履歴read API token gateの最小実装（`feature/history-read-token-gate`、2026-09-10。`backend/services/db_settings.py`に`HISTORY_READ_TOKEN`（`is_history_read_token_configured()`、`READ_HISTORY_ENABLED`とは独立）を追加し、`backend/main.py`の`GET /analysis-runs`・`GET /analysis-runs/{id}`に`_check_history_read_access()`を追加。`READ_HISTORY_ENABLED=false`/`DATABASE_URL`未設定/`HISTORY_READ_TOKEN`未設定はそれぞれ異なるメッセージで503、`X-History-Read-Token`ヘッダーなし・不一致は403（`hmac.compare_digest()`で比較、token値は応答・ログに出さない）。frontendの`app/api/analysis-runs/route.ts`・`app/api/analysis-runs/[id]/route.ts`が`process.env.HISTORY_READ_TOKEN`をserver-sideでヘッダー付与し、ブラウザには露出しない。`app/lib/analysis-history.ts`に`"forbidden"`状態を追加し`/history`・`/history/[id]`が403時に権限なしメッセージを表示。`.env.example`に`HISTORY_READ_TOKEN=`を追加（実際の値は未設定）。**`/analyze`変更・Supabase Auth/RLS・DB schema変更・migration変更はいずれも行っていない**）
 - **Next（次のステップ、優先順）**:
-  - 履歴read API token gateの最小実装
-  - frontend proxy routeからのtoken付与
-  - 401/403表示対応
-  - 本番確認
+  - 本番確認（Render backend・Vercel server-side routeへの`HISTORY_READ_TOKEN`設定を含む）
+  - 認証/RLS本格対応の検討
 - **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、Supabase Auth/RLSの本格設計、履歴比較の設計、レポート出力の設計
 
 目安: 2〜3週間

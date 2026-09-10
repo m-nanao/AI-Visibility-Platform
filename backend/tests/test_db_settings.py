@@ -2,11 +2,12 @@ from services.db_settings import (
     load_db_settings,
     is_db_save_configured,
     is_history_read_enabled,
+    is_history_read_token_configured,
 )
 
 
 def _clear_db_env(monkeypatch):
-    for name in ("DB_SAVE_ENABLED", "DATABASE_URL", "READ_HISTORY_ENABLED"):
+    for name in ("DB_SAVE_ENABLED", "DATABASE_URL", "READ_HISTORY_ENABLED", "HISTORY_READ_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -17,8 +18,10 @@ def test_defaults_are_disabled(monkeypatch):
     assert settings.save_enabled is False
     assert settings.database_url is None
     assert settings.read_history_enabled is False
+    assert settings.history_read_token is None
     assert is_db_save_configured(settings) is False
     assert is_history_read_enabled(settings) is False
+    assert is_history_read_token_configured(settings) is False
 
 
 def test_save_enabled_true(monkeypatch):
@@ -119,4 +122,48 @@ def test_db_save_enabled_alone_does_not_enable_history_read(monkeypatch):
     monkeypatch.setenv("DB_SAVE_ENABLED", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/db")
     assert is_db_save_configured() is True
+    assert is_history_read_enabled() is False
+
+
+# --- HISTORY_READ_TOKEN / is_history_read_token_configured ----------------
+
+
+def test_history_read_token_is_read_verbatim(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("HISTORY_READ_TOKEN", "some-shared-secret")
+    assert load_db_settings().history_read_token == "some-shared-secret"
+
+
+def test_history_read_token_is_stripped(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("HISTORY_READ_TOKEN", "  some-shared-secret  ")
+    assert load_db_settings().history_read_token == "some-shared-secret"
+
+
+def test_blank_history_read_token_is_none(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("HISTORY_READ_TOKEN", "   ")
+    assert load_db_settings().history_read_token is None
+
+
+def test_is_history_read_token_configured_false_when_unset(monkeypatch):
+    _clear_db_env(monkeypatch)
+    assert is_history_read_token_configured() is False
+
+
+def test_is_history_read_token_configured_true_when_set(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("HISTORY_READ_TOKEN", "some-shared-secret")
+    assert is_history_read_token_configured() is True
+
+
+def test_is_history_read_token_configured_independent_of_read_history_enabled(monkeypatch):
+    """HISTORY_READ_TOKEN is a separate gate from READ_HISTORY_ENABLED —
+    setting one does not imply the other (main.py's
+    _check_history_read_access() requires both)."""
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("HISTORY_READ_TOKEN", "some-shared-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/db")
+    # READ_HISTORY_ENABLED still unset.
+    assert is_history_read_token_configured() is True
     assert is_history_read_enabled() is False

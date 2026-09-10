@@ -5,6 +5,7 @@ import {
   HISTORY_DETAIL_NOT_FOUND_MESSAGE,
   HISTORY_DISABLED_MESSAGE,
   HISTORY_EMPTY_STATE_TEXT,
+  HISTORY_FORBIDDEN_MESSAGE,
   HISTORY_GENERIC_ERROR_MESSAGE,
   HISTORY_LIST_DETAIL_LINK_TEXT,
   HISTORY_PAGE_TITLE,
@@ -128,13 +129,21 @@ describe("resolveHistoryFetchOutcome", () => {
     }
   });
 
+  it("returns a forbidden view when the response is 403 (HISTORY_READ_TOKEN gate rejected the request)", async () => {
+    const outcome = await resolveHistoryFetchOutcome(
+      jsonResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE });
+  });
+
   it("returns an error view when the network request itself failed (response is null)", async () => {
     const outcome = await resolveHistoryFetchOutcome(null);
 
     expect(outcome).toEqual({ kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE });
   });
 
-  it("returns an error view for a non-503 failure status", async () => {
+  it("returns an error view for a non-503/403 failure status", async () => {
     const outcome = await resolveHistoryFetchOutcome(
       jsonResponse({ error: "something went wrong" }, 502),
     );
@@ -251,6 +260,14 @@ describe("resolveHistoryDetailFetchOutcome", () => {
     if (outcome.kind === "disabled") {
       expect(outcome.message).toBe(HISTORY_DISABLED_MESSAGE);
     }
+  });
+
+  it("returns a forbidden view when the response is 403 (HISTORY_READ_TOKEN gate rejected the request)", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE });
   });
 
   it("returns a notFound view when the response is 404", async () => {

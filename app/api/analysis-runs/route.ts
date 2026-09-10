@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseAnalysisRunListResponse } from "../../lib/analysis-history-schema";
+import { HISTORY_READ_TOKEN_HEADER } from "../../lib/analysis-history";
 
 // Mirrors backend/services/analysis_history_repository.py's
 // DEFAULT_LIST_LIMIT (20) and offset default (0) — kept in sync
@@ -17,13 +18,21 @@ const DEFAULT_OFFSET = "0";
  * - 503: history read is disabled or unconfigured — either because
  *   PYTHON_ANALYSIS_API_URL itself is unset here, or because the
  *   Python API returned 503 (READ_HISTORY_ENABLED=false, DATABASE_URL
- *   unset, or a DB connection/query failure — see
- *   backend/main.py's GET /analysis-runs). The Python API's own
+ *   unset, HISTORY_READ_TOKEN unset, or a DB connection/query failure —
+ *   see backend/main.py's GET /analysis-runs). The Python API's own
  *   `error` message is forwarded as-is; it is always a short, safe,
  *   hardcoded string (see backend/services/analysis_history_repository.py),
  *   never raw connection details.
+ * - 403: the HISTORY_READ_TOKEN gate rejected the request (see
+ *   docs/24_auth_rls_history_access_design.md "7. backend APIでの
+ *   アクセス制御案") — forwarded as-is.
  * - 502: the Python API responded with something else unexpected
  *   (non-2xx, invalid JSON, or a body that fails schema validation).
+ *
+ * Attaches HISTORY_READ_TOKEN (a server-side-only env var — never
+ * NEXT_PUBLIC_*) as the X-History-Read-Token header when set, so the
+ * browser never sees or sends it; when unset, the Python API's own
+ * "token is not configured" 503 is what the caller sees.
  */
 export async function GET(request: Request) {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
@@ -38,10 +47,16 @@ export async function GET(request: Request) {
   const limit = searchParams.get("limit") ?? DEFAULT_LIMIT;
   const offset = searchParams.get("offset") ?? DEFAULT_OFFSET;
 
+  const historyReadToken = process.env.HISTORY_READ_TOKEN;
+  const headers: HeadersInit = historyReadToken
+    ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken }
+    : {};
+
   let response: Response;
   try {
     response = await fetch(
       `${baseUrl.replace(/\/$/, "")}/analysis-runs?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
+      { headers },
     );
   } catch {
     console.warn("[analysis-runs] Python API request failed");
@@ -58,6 +73,15 @@ export async function GET(request: Request) {
         ? errorBody.error
         : "analysis history read API is not enabled";
     return NextResponse.json({ error: message }, { status: 503 });
+  }
+
+  if (response.status === 403) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : "analysis history read access denied";
+    return NextResponse.json({ error: message }, { status: 403 });
   }
 
   if (!response.ok) {

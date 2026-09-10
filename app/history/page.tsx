@@ -68,7 +68,9 @@ export default function HistoryPage() {
           </p>
         )}
 
-        {(view.kind === "disabled" || view.kind === "error") && (
+        {(view.kind === "disabled" ||
+          view.kind === "forbidden" ||
+          view.kind === "error") && (
           <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
             <p>{view.message}</p>
             {view.kind === "disabled" && (

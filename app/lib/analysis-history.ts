@@ -58,6 +58,20 @@ export const HISTORY_DISABLED_DETAIL =
 export const HISTORY_GENERIC_ERROR_MESSAGE =
   "分析履歴を読み込めませんでした。時間をおいて再度お試しください。";
 
+// Shown when the Python API returns 403 — the HISTORY_READ_TOKEN gate
+// rejected the request (see docs/24_auth_rls_history_access_design.md
+// "7. backend APIでのアクセス制御案"). Reused for both the list and
+// detail pages, same as HISTORY_DISABLED_MESSAGE above.
+export const HISTORY_FORBIDDEN_MESSAGE = "分析履歴を表示する権限がありません。";
+
+// Header this app's own /api/analysis-runs* Route Handlers attach when
+// proxying to the Python API, from the server-side-only
+// process.env.HISTORY_READ_TOKEN — never sent to or read from the
+// browser (see app/api/analysis-runs/route.ts /
+// app/api/analysis-runs/[id]/route.ts). Must match backend/main.py's
+// HISTORY_READ_TOKEN_HEADER exactly.
+export const HISTORY_READ_TOKEN_HEADER = "X-History-Read-Token";
+
 const STATUS_LABELS: Record<string, string> = {
   completed: "完了",
   partial: "一部完了",
@@ -111,6 +125,7 @@ export function formatAnalysisRunListItem(
 export type HistoryViewState =
   | { kind: "loading" }
   | { kind: "disabled"; message: string; detail: string }
+  | { kind: "forbidden"; message: string }
   | { kind: "error"; message: string }
   | { kind: "empty" }
   | { kind: "items"; items: AnalysisRunListItem[] };
@@ -135,6 +150,10 @@ export async function resolveHistoryFetchOutcome(
       message: HISTORY_DISABLED_MESSAGE,
       detail: HISTORY_DISABLED_DETAIL,
     };
+  }
+
+  if (response.status === 403) {
+    return { kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE };
   }
 
   if (!response.ok) {
@@ -255,6 +274,7 @@ export function formatAnalysisRunDetailBasicInfo(
 export type AnalysisRunDetailViewState =
   | { kind: "loading" }
   | { kind: "disabled"; message: string; detail: string }
+  | { kind: "forbidden"; message: string }
   | { kind: "notFound"; message: string }
   | { kind: "incompatible"; message: string }
   | { kind: "error"; message: string }
@@ -281,6 +301,10 @@ export async function resolveHistoryDetailFetchOutcome(
       message: HISTORY_DISABLED_MESSAGE,
       detail: HISTORY_DISABLED_DETAIL,
     };
+  }
+
+  if (response.status === 403) {
+    return { kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE };
   }
 
   if (response.status === 404) {

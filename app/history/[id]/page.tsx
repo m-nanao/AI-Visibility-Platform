@@ -70,6 +70,7 @@ export default function HistoryDetailPage() {
         )}
 
         {(view.kind === "disabled" ||
+          view.kind === "forbidden" ||
           view.kind === "notFound" ||
           view.kind === "incompatible" ||
           view.kind === "error") && (
