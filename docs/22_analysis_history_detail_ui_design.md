@@ -245,6 +245,28 @@ frontend側の取得方針:
 - 戻る導線: 詳細ページのヘッダーに「← 分析履歴一覧へ戻る」リンク（`/history`）を追加。
 - テスト: `@testing-library/react`等が未導入のため（既存制約）、`formatAnalysisRunDetailBasicInfo()`・`resolveHistoryDetailFetchOutcome()`・`buildHistoryDetailPath()`等の純粋関数を`app/lib/analysis-history.test.ts`/`app/lib/analysis-history-schema.test.ts`でユニットテストした（19件追加、503/404/incompatible/error/success各分岐、`result`検証の独立性を含む）。
 
+## 17. 本番Vercel環境での動作確認（2026-09-11追記）
+
+`/history/[id]`履歴詳細UIは本番Vercel環境で表示確認済み。
+
+確認内容:
+
+- `READ_HISTORY_ENABLED=false`時、履歴詳細データは表示されず、無効メッセージが表示される
+- `READ_HISTORY_ENABLED=true`に一時変更した場合、保存済み分析結果の詳細内容が`/history/[id]`に表示される
+- 一覧の「詳細を見る」から`/history/{id}`に遷移できる
+- 保存済み`result`は既存`AnalysisDashboard`で再表示される
+- frontend → `/api/analysis-runs/[id]` → Render backend → Supabase の詳細取得フローを確認済み
+
+**注意:** `READ_HISTORY_ENABLED=true`のままにすると、認証未実装の現状では`/history`および`/history/[id]`から保存済み履歴が表示可能になる。依頼者確認や検証時のみ`true`にし、通常は`false`に戻す運用が安全。
+
+未実装として以下を残す:
+
+- `/analyze`レスポンスへの`analysisRunId`追加
+- 分析直後の履歴リンク
+- 認証/RLS
+- 履歴削除/編集
+- 比較表示
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

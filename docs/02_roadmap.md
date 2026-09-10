@@ -104,9 +104,12 @@
   - `/history`履歴一覧UIの本番Vercel確認（`docs/record-history-list-ui-verification`、2026-09-10。docsのみ・コード変更なし。`READ_HISTORY_ENABLED=false`時は`/history`に履歴データが表示されず無効メッセージが表示されること、backendの`GET /analysis-runs`がHTTP/2 503（`{"error":"analysis history read API is not enabled"}`）で返ること、`READ_HISTORY_ENABLED=true`への一時変更時はfrontend→`/api/analysis-runs`→Render backend→Supabaseの取得フロー全体で保存済み履歴が`/history`に表示されることを本番Vercel環境で確認した。**認証未実装のため、通常運用では`READ_HISTORY_ENABLED=false`に戻すことが安全であると結論**）
   - 履歴詳細UI設計メモ（`docs/analysis-history-detail-ui-design`、2026-09-10。docsのみ・コード変更なし。新規[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)を追加し、`/history/[id]`ページ案・`GET /analysis-runs/{id}`との接続方針（既存の`/api/analysis-runs`プロキシ方針に揃える）・既存分析結果コンポーネント（`BrandSummarySection`等）の再利用方針・保存済み`result_json`をスナップショットとして扱う方針・503/404/schema validation失敗時の表示方針・一覧の「詳細は後続対応」を「詳細を見る」リンクに置き換える導線案を整理した。**`analysisRunId`を`/analyze`レスポンスへ追加しない初期方針は履歴一覧UI設計を踏襲**。**UI実装・frontend route追加・backend API変更・Zod schema変更はいずれも行っていない**）
   - 履歴詳細UIの最小実装（`feature/history-detail-ui`、2026-09-10。上記設計に沿って`app/history/[id]/page.tsx`（"use client"、`useParams()`でid取得）を追加し、`app/api/analysis-runs/[id]/route.ts`（既存の`/api/analysis-runs`と同じ`PYTHON_ANALYSIS_API_URL`利用方針、503/404はそのまま転送、その他は502）を新設した。`app/lib/analysis-history.ts`/`app/lib/analysis-history-schema.ts`に`AnalysisRunDetailResponse`型・Zod schema・`resolveHistoryDetailFetchOutcome()`を追加し、**`result`はenvelope schemaでは緩いオブジェクトとして受け、`AnalysisResult`としての妥当性は既存の`parseAnalysisResult()`で別途検証する2段階方式**にした（envelope正常・`result`のみ古い形式の場合を「incompatible」として区別）。**新規コンポーネントを作らず既存の`app/components/AnalysisDashboard.tsx`をそのまま再利用**。一覧の「詳細は後続対応」を「詳細を見る」リンクに置き換えた。**`/analyze`レスポンスschemaは変更していない、`analysisRunId`は今回も返していない、backend変更なし、migration変更なし**。テストは純粋関数として切り出しユニットテストで検証した（19件追加）。Render/Vercel環境変数は変更していない）
+  - `/history/[id]`履歴詳細UIの本番Vercel確認（`docs/record-history-detail-ui-verification`、2026-09-10。docsのみ・コード変更なし。`READ_HISTORY_ENABLED=false`時は`/history/[id]`に履歴詳細データが表示されず無効メッセージが表示されること、`READ_HISTORY_ENABLED=true`への一時変更時は一覧の「詳細を見る」から`/history/{id}`へ遷移し保存済み分析結果の詳細内容が表示されること、保存済み`result`が既存の`AnalysisDashboard`で再表示されること、frontend→`/api/analysis-runs/[id]`→Render backend→Supabaseの詳細取得フロー全体を本番Vercel環境で確認した。**認証未実装のため、通常運用では`READ_HISTORY_ENABLED=false`に戻すことが安全であると結論**）
 - **Next（次のステップ、優先順）**:
-  - 分析直後の履歴リンク検討
+  - `/analyze`レスポンスへの`analysisRunId`追加の設計
+  - 分析直後の「履歴で開く」リンク設計
   - 認証/RLS検討
+  - 履歴比較/レポート出力検討
 - **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、`analysisRunId`の`/analyze`レスポンス追加
 
 目安: 2〜3週間
@@ -127,5 +130,5 @@
 | 2 | フロント・API結合 | 一部完了（`/api/analyze`をAnalysisResult形状で結合済み。テスト・エラーハンドリング強化は未着手） |
 | 3 | Common Crawl / DataForSEO連携 | DataForSEOはSandbox/Live接続まで実装済み（[11_architecture_v1.md](./11_architecture_v1.md)参照）。Common Crawlは設計（[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)）＋settings/Index API client＋WARC fetch/HTML extraction service＋`Document[]`変換service＋`/analyze`統合（最大3件取得）＋検証用UI selector＋共起語ノイズ対策＋取得ページ一覧表示まで実装済み（2026-07-28）。表示名・説明文の依頼者確認は未着手 |
 | 4 | Python分析API | 一部完了（FastAPI雛形・`/analyze`・`/health`・Next.js連携とフォールバックは実装済み。実データ分析ロジックは未着手） |
-| 5 | PostgreSQL永続化 | 一部完了（Supabase Free環境で`brands`/`analysis_runs`/`analysis_results`への最小保存・read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）を実DBで確認済み、履歴一覧UI（`/history`）・履歴詳細UI（`/history/[id]`）の最小実装も完了、2026-09-10。pgvector・非同期job・観測系の個別テーブル化・認証/RLSは未着手） |
+| 5 | PostgreSQL永続化 | 一部完了（Supabase Free環境で`brands`/`analysis_runs`/`analysis_results`への最小保存・read API（`GET /analysis-runs`/`GET /analysis-runs/{id}`、`READ_HISTORY_ENABLED`デフォルトoff）を実DBで確認済み、履歴一覧UI（`/history`）・履歴詳細UI（`/history/[id]`）の最小実装、および両UIの本番Vercel環境での動作確認も完了、2026-09-10。pgvector・非同期job・観測系の個別テーブル化・認証/RLSは未着手） |
 | 6 | プロダクション化 | 未着手 |
