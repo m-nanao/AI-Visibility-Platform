@@ -1,6 +1,6 @@
 # レポート出力機能 設計メモ
 
-**このドキュメント自体は設計メモである。5〜11章の方針に沿って、印刷向けHTMLレポートページ（`/history/[id]/report`）と`/history/[id]`への「レポート表示」リンクは`feature/report-html-page`（2026-09-11、「20. 実装状況」参照）で最小実装済み。backend API追加・DB schema変更・migration変更はいずれも行っていない。PDF自動生成・共有URL発行・レポート保存はまだ未実装で、本番確認もまだ未実施。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。5〜11章の方針に沿って、印刷向けHTMLレポートページ（`/history/[id]/report`）と`/history/[id]`への「レポート表示」リンクは`feature/report-html-page`（2026-09-11、「20. 実装状況」参照）で最小実装済み。backend API追加・DB schema変更・migration変更はいずれも行っていない。レポート表示ページは本番Vercel + Render + Supabase構成での動作確認も完了済み（2026-09-11、「21. 本番環境での動作確認」参照）。PDF自動生成・共有URL発行・レポート保存はまだ未実装。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -362,6 +362,35 @@
 - 表示整形: `app/lib/analysis-history.ts`に`REPORT_PAGE_TITLE`/`REPORT_LINK_TEXT`/`REPORT_SECTION_TITLES`/`buildHistoryReportPath()`/`resolveReportDetailMessage()`/`resolveReportComparisonMessage()`/`limitReportCooccurrenceTerms()`（上位10件）/`REPORT_AI_OVERVIEW_EMPTY_MESSAGE`/`REPORT_NOTES`/`REPORT_PRINT_BUTTON_LABEL`/`printReport()`を追加した。優先度・センチメント・トレンドのラベル表示は新規に作らず、既存の`app/lib/badge-styles.ts`（`priorityStyles`/`sentimentStyles`/`trendStyles`）をそのまま再利用している。
 - Common Crawl補完状況は今回のレポートには含めていない（7章の「含める項目」には挙げているが、初期実装は過度に凝らない方針のため今回は見送った——次のタスクで追加を検討）。
 - テスト: `app/lib/analysis-history.test.ts`に18件追加（`buildHistoryReportPath()`・`resolveReportDetailMessage()`の403/503/その他分岐・`resolveReportComparisonMessage()`の403/503/前回履歴なし/その他分岐・`limitReportCooccurrenceTerms()`・`REPORT_PRINT_BUTTON_LABEL`・`printReport()`が`window.print()`を呼ぶこと）。コンポーネントレンダリングを直接検証するテストライブラリは引き続き未導入のため、ページ自体のJSX描画は純粋関数テストではカバーしていない（既存の`/history`・`/history/[id]`と同じ方針）。手動でのブラウザ確認は本タスクでは実施していない。
+
+## 21. 本番環境での動作確認（2026-09-11追記）
+
+レポート表示ページは本番Vercel + Render + Supabase構成で動作確認済み。
+
+確認内容:
+
+- `/history/[id]`に「レポート表示」リンクが表示される
+- 「レポート表示」リンクから`/history/[id]/report`に遷移できる
+- レポートページでブランド名・公式ドメイン・分析日時が表示される
+- `visibilityScore`・ブランド概要が表示される
+- 共起語ランキング・文脈分析が表示される
+- AI Overview / ChatGPT観測セクションが表示される
+- 前回比較が表示される
+- 前回履歴なしの場合のメッセージが表示される
+- 改善提案が表示される
+- 「PDF保存 / 印刷」ボタンが表示される
+- 印刷物/PDF側では操作UIが非表示になる
+- backend直アクセスはHTTP 403で拒否される
+- Vercel経由ではレポートが表示される
+
+未実装として以下を残す。
+
+- PDF自動生成
+- PDFファイル保存
+- 共有URL発行
+- メール送信
+- レポートテンプレート管理
+- Supabase Auth/RLS本格対応
 
 ## 関連ドキュメント
 
