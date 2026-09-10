@@ -1,6 +1,6 @@
 # Supabase本番 002 migration適用手順書
 
-**この手順書に沿って、002 migrationは本番Supabaseへ適用済み（「18. 本番Supabase適用結果」参照）。RLS有効化・`create policy`追加は本番でも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書に沿って、002 migrationは本番Supabaseへ適用済み（「18. 本番Supabase適用結果」参照）。新規保存時のdefault project_id付与も実装済み（「19. 新規保存時のproject_id付与と手動backfill」参照）——既存null行の手動backfillは本番未実行。RLS有効化・`create policy`追加は本番でも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -336,16 +336,49 @@ order by relname;
 
 **RLS状態について:** RLS確認SQL（`pg_class.relrowsecurity`）では、対象6テーブル（`organizations`/`projects`/`organization_members`/`brands`/`analysis_runs`/`analysis_results`）すべてで`relrowsecurity = true`だった。ただし`pg_policies`確認SQLの結果は0行であり、具体的なRLS policyは作成されていない。**002 migration自体には`enable row level security` / `create policy`は含まれていない。** Supabase project側のautomatic RLS / dashboard設定の影響でRLSフラグが`true`になっている可能性が高い。現時点でアプリ動作には問題は確認されていない。**本番では自己判断で`disable row level security`は実行していない。`create policy`も追加していない。RLS本格運用はまだ開始していない。**
 
-**新規保存分のproject_idについて:** 002適用後に新規分析を1回実行したところ、分析保存・保存済み履歴リンク表示・履歴詳細表示はいずれも成功した。一方で、`runs_without_project = 1`になることを確認した。これは現時点のbackend保存処理がまだ新規保存時に`project_id`を明示保存しないためであり、想定内の挙動である。**今後、新規保存時にdefault project_idを入れる実装、および既にnullになった1件のbackfill対応が必要。**
+**新規保存分のproject_idについて:** 002適用後に新規分析を1回実行したところ、分析保存・保存済み履歴リンク表示・履歴詳細表示はいずれも成功した。一方で、`runs_without_project = 1`になることを確認した。これは当時のbackend保存処理がまだ新規保存時に`project_id`を明示保存しないためであり、想定内の挙動だった。**この点は`feature/default-project-id-on-save`（2026-09-11、「19. 新規保存時のproject_id付与と手動backfill」参照）で解消済み。**
 
 未実装として以下を残す。
 
-- 新規保存時の`project_id`付与
-- 既に`null`になった`analysis_runs`のbackfill
+- 既に`null`になった`analysis_runs`1件のbackfill（本番未実行、手動SQLは下記19章参照）
 - frontendログイン/route保護
 - backend JWT検証
 - RLS policy作成
 - RLS本格運用
+
+## 19. 新規保存時のproject_id付与と手動backfill（2026-09-11追記）
+
+`feature/default-project-id-on-save`で、`save_analysis_history()`が新規保存時にdefault project_idを`brands.project_id` / `analysis_runs.project_id`へ付与するよう対応した（詳細は[28_supabase_auth_rls_migration_design.md](./28_supabase_auth_rls_migration_design.md)「22. 新規保存時のdefault project_id付与」参照）。default projectが見つからない場合は保存自体をスキップし、`/analyze`本体は失敗させない。**DB schema変更・migration追加・RLS変更はいずれも行っていない。**
+
+この実装により、今後の新規保存では`project_id`が`null`になることはなくなる。ただし、本番適用直後に発生した1件（「18. 本番Supabase適用結果」参照）は既に保存済みのため、この実装だけでは解消されず、手動backfillが必要。
+
+**手動backfill SQL案:**
+
+```sql
+update analysis_runs
+set project_id = (
+  select p.id
+  from projects p
+  join organizations o on o.id = p.organization_id
+  where p.slug = 'default'
+    and o.slug = 'default'
+  limit 1
+)
+where project_id is null;
+
+update brands
+set project_id = (
+  select p.id
+  from projects p
+  join organizations o on o.id = p.organization_id
+  where p.slug = 'default'
+    and o.slug = 'default'
+  limit 1
+)
+where project_id is null;
+```
+
+**注意:** 本番で実行する場合は、事前に対象件数（`where project_id is null`のcount）を確認し、ユーザーの明示承認後に実行する。このタスクでは本番への手動backfillは実行していない。
 
 ## 関連ドキュメント
 
