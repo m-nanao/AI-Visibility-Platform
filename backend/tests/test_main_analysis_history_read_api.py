@@ -225,10 +225,13 @@ def test_detail_success_includes_result(monkeypatch):
 # --- /analyze schema is untouched by this feature ---------------------------
 
 
-def test_analyze_response_still_has_no_analysis_run_id(monkeypatch):
+def test_analyze_response_analysis_run_id_unaffected_by_read_api(monkeypatch):
     """Belt-and-suspenders alongside
-    tests/test_main_analysis_history.py's equivalent check — this task
-    adds a read API but must not touch /analyze's response shape."""
+    tests/test_main_analysis_history.py's equivalent checks — the read
+    API added by this test file must not affect result.analysisRunId
+    (added separately by docs/23_analysis_run_id_and_post_analyze_link_design.md's
+    implementation). Without DB save configured, it's present and null,
+    and it's never duplicated onto `meta`."""
     monkeypatch.delenv("DB_SAVE_ENABLED", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("READ_HISTORY_ENABLED", raising=False)
@@ -237,5 +240,5 @@ def test_analyze_response_still_has_no_analysis_run_id(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert "analysisRunId" not in body
+    assert body["analysisRunId"] is None
     assert "analysisRunId" not in body.get("meta", {})

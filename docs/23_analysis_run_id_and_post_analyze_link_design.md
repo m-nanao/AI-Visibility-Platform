@@ -1,6 +1,6 @@
 # analysisRunId追加と分析直後リンク 設計メモ
 
-**このドキュメントは設計メモであり、`/analyze`レスポンスschema変更・frontend実装・backend実装・Zod schema変更・UI変更・認証/RLS実装のいずれも含まない。** 今回のスコープはdocsのみ。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。`/analyze`レスポンスへの`analysisRunId`追加・frontend schema変更は`feature/analysis-run-id-response`（2026-09-10）で実装済み——詳細は「14. 実装状況」参照。分析結果画面へのリンク表示・UI変更・認証/RLS実装はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -20,11 +20,12 @@
 - `/history`履歴一覧UI（[21_analysis_history_ui_design.md](./21_analysis_history_ui_design.md)参照）
 - `/history/[id]`履歴詳細UI（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)参照）
 - 上記いずれも本番Vercel環境での動作確認済み
+- `/analyze`レスポンスへの`analysisRunId`追加（`feature/analysis-run-id-response`、2026-09-10。「14. 実装状況」参照）
 
 **未実装:**
 
-- `/analyze`レスポンスへの`analysisRunId`追加
-- 分析直後の履歴リンク
+- 分析結果画面への「保存済み履歴で開く」リンク表示
+- 分析直後の自動遷移
 - 認証/RLS
 
 ## 3. analysisRunIdが必要になる理由
@@ -177,6 +178,16 @@ frontendの`AnalysisResult`型/Zod schemaに`analysisRunId?: string | null`を�
 - `READ_HISTORY_ENABLED=false`時はリンク先の無効表示に任せてよいか
 - 自動遷移ではなく手動リンクでよいか
 - 認証/RLSはまだ実装しない方針でよいか
+
+## 14. 実装状況（2026-09-10更新）
+
+`feature/analysis-run-id-response`で、本ドキュメントの4〜7章の方針に沿って`/analyze`レスポンスへの`analysisRunId`追加を実装した。**分析結果画面へのリンク表示・`/history`関連UI変更・read API変更・認証/RLS実装はいずれも行っていない。**
+
+- backend: `backend/services/analysis_history_repository.py`の`save_analysis_history()`は元々保存成功時に`AnalysisHistorySaveResult(analysis_run_id, brand_id)`を返す実装になっていたため、この関数自体の変更は不要だった。`backend/main.py`の`/analyze`ハンドラが、DB保存呼び出し後に`history_result`の有無から`result.analysisRunId`を設定するよう変更（保存成功時は`history_result.analysis_run_id`、保存無効・`DATABASE_URL`未設定・保存失敗のいずれも`None`）。
+- backend model: `backend/models.py`の`AnalysisResult`に`analysisRunId: str | None = None`を追加（既存フィールドは無変更、default Noneなので`services/mock_analysis.py`等の既存呼び出し箇所は変更不要）。
+- frontend型: `app/lib/types.ts`の`AnalysisResult`に`analysisRunId?: string | null`を追加。
+- frontend schema: `app/lib/analysis-result-schema.ts`の`analysisResultSchema`に`analysisRunId: z.string().uuid().nullable().optional()`を追加。他のPython-null-vs-undefinedフィールドと異なり、`analysisRunId`はnullをundefinedへ正規化せずそのまま保持する（TSの`string | null`型に合わせるため）。UUID形式チェックを行うため、不正な文字列はschema validation失敗として扱う。
+- テスト: backend `tests/test_main_analysis_history.py`に保存成功時（UUIDが入る）・`DB_SAVE_ENABLED=false`時・`DATABASE_URL`未設定時（いずれも`null`）のテストを追加、既存の`test_analyze_response_schema_has_no_analysis_run_id_field`は本タスクの目的そのものと矛盾するため更新。`tests/test_main_analysis_history_read_api.py`の同趣旨テストも合わせて更新。frontend `app/lib/analysis-result-schema.test.ts`に、`analysisRunId`なし（互換性）・`null`・有効なUUID・不正なUUID文字列（reject）の4パターンを追加。
 
 ## 関連ドキュメント
 

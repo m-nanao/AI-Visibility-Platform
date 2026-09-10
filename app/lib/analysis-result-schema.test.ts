@@ -239,4 +239,51 @@ describe("parseAnalysisResult", () => {
       expect(result.reason).not.toContain("42");
     }
   });
+
+  // analysisRunId (docs/23_analysis_run_id_and_post_analyze_link_design.md)
+
+  it("accepts an AnalysisResult without analysisRunId (older saved results predating this field)", () => {
+    const valid = buildDummyAnalysis("OpenAI");
+    expect("analysisRunId" in valid).toBe(false);
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.analysisRunId).toBeUndefined();
+    }
+  });
+
+  it("accepts analysisRunId: null (DB save disabled/unconfigured/failed)", () => {
+    const valid = { ...buildDummyAnalysis("OpenAI"), analysisRunId: null };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // Unlike other optional fields, null is preserved (not
+      // normalized to undefined) to match `analysisRunId?: string | null`.
+      expect(result.data.analysisRunId).toBeNull();
+    }
+  });
+
+  it("accepts analysisRunId as a valid UUID string (DB save succeeded)", () => {
+    const analysisRunId = "550e8400-e29b-41d4-a716-446655440000";
+    const valid = { ...buildDummyAnalysis("OpenAI"), analysisRunId };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.analysisRunId).toBe(analysisRunId);
+    }
+  });
+
+  it("rejects a non-UUID analysisRunId string", () => {
+    const invalid = { ...buildDummyAnalysis("OpenAI"), analysisRunId: "not-a-uuid" };
+
+    const result = parseAnalysisResult(invalid);
+
+    expect(result.success).toBe(false);
+  });
 });

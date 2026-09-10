@@ -320,4 +320,10 @@ export interface AnalysisResult {
   aiOverviewComparison: AIOverviewComparisonItem[];
   improvements: ImprovementSuggestion[];
   meta: AnalysisMeta;
+  // The saved analysis_runs.id when this analysis was persisted to the
+  // DB, or null/undefined when DB save is disabled/unconfigured/failed,
+  // or absent on older saved results predating this field (see
+  // docs/23_analysis_run_id_and_post_analyze_link_design.md). Not yet
+  // used to render a link — that's a later task.
+  analysisRunId?: string | null;
 }
