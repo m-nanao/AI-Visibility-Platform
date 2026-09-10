@@ -1,0 +1,168 @@
+# Frontend Route Protection Design
+
+**このドキュメントは設計メモである。まだ実装ではない。frontend/backend実装・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+
+**最終更新日: 2026-09-11**
+
+## 1. 目的
+
+- 履歴一覧・履歴詳細・レポート表示画面（`/history`系）のfrontend route保護方針を整理する設計メモである。
+- Supabase Auth / RLS / project単位権限へ進む前に、最低限の露出対策として何をすべきかを整理することが目的である。
+- まだ実装ではない。
+
+## 2. 現状
+
+実装・本番確認済み:
+
+- Supabaseへの分析履歴保存（`brands` / `analysis_runs` / `analysis_results`）
+- 002 migration本番適用済み（`organizations` / `projects` / `organization_members`、`project_id`列）
+- default project_id保存対応も本番確認済み（`analysis_runs.project_id` / `brands.project_id`の`null`は0件）
+- `HISTORY_READ_TOKEN` gate（backend read APIへの共有シークレットによる保護、[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)参照）
+- `/history`・`/history/[id]`・`/history/[id]/report`のUI実装・本番確認
+
+**訂正・補足（重要）:** 本タスクの依頼文は「frontendにアクセスできる人には`/history`系ページが表示される可能性がある」という前提だったが、実際には**この依頼者確認用ステージング環境には、サイト全体を対象とする既存の簡易パスコードゲートが既に存在する**（[proxy.ts](../proxy.ts)、`STAGING_ACCESS_CODE`環境変数、[09_deployment.md](./09_deployment.md)「簡易パスコードガード」参照）。
+
+- `STAGING_ACCESS_CODE`がVercelに設定されている場合、`/staging-login`と`/api/staging-auth`を除く**全ページ・全APIルート**が未認証アクセス時に`/staging-login`へリダイレクト（APIは401）される——`/history`系も対象外にはなっていない。
+- ただしこれは**サイト全体に一律にかかる単一の共有パスコード**であり、ユーザー単位・プロジェクト単位の制御ではない。ログイン状態やユーザー識別も持たない。
+- また、この保護は「`STAGING_ACCESS_CODE`が設定されているステージング環境である間だけ」有効という前提付きの暫定策であり、将来的に独自ドメイン・一般公開に移行した場合はこのゲート自体を見直す必要がある（[09_deployment.md](./09_deployment.md)「環境の位置づけ」参照）。
+
+つまり、現状のリスクは「frontendに全く保護がない」ではなく、「**サイト全体の暫定的な共有パスコード以外に、`/history`系ページ専用の・ユーザー単位の保護がまだない**」という状態である。以降の整理はこの正確な前提に基づく。
+
+## 3. 現状のリスク
+
+- `HISTORY_READ_TOKEN` gateは**backend APIへの直接アクセス**を保護するものであり、frontendのserver-side proxy route（`app/api/analysis-runs/*`）はこのtokenを自動的に付与してbackendへ代理アクセスする。したがって、frontend側の`/history`・`/history/[id]`・`/history/[id]/report`ページ自体にアクセスできる人には、そこに表示される履歴データが見えてしまう。
+- 上記2章の既存`STAGING_ACCESS_CODE`ゲートが設定されていれば、この経路は現状すでに塞がれている。ただし、以下の限界がある。
+  - 単一の共有パスコードであり、閲覧者ごとの制御ができない（誰か1人にパスコードが漏れれば全員が見える）。
+  - `STAGING_ACCESS_CODE`が未設定の環境（ローカル開発、あるいは将来この変数を設定しないデプロイ）では無効化される——[proxy.ts](../proxy.ts)は「未設定ならゲートしない」設計になっている。
+  - ユーザー・プロジェクト単位のアクセス制御には使えない（Supabase Auth/RLSへ進む際の土台にはならない）。
+- そのため、**履歴画面・レポート画面には、共有パスコードとは別の、より目的に合ったアクセス制御が中長期的に必要**——最終的にはSupabase Auth + RLSによるユーザー/プロジェクト単位の制御が本命だが、それまでの間の暫定策も検討に値する。
+
+## 4. 保護対象route
+
+最低限、以下を保護対象として整理する。
+
+- `/history`
+- `/history/[id]`
+- `/history/[id]/report`
+
+将来対象（今回の設計スコープ外だが、同じ考え方が及ぶ範囲として記録）:
+
+- `/analyze`の分析結果画面に表示される「保存済み履歴で開く」リンク自体は保護不要（リンク先の`/history/[id]`側で保護されれば十分）
+- `/api/analysis-runs`
+- `/api/analysis-runs/[id]`
+- `/api/analysis-runs/[id]/comparison`
+
+## 5. 段階的な保護方針
+
+### 5.1 Phase A: 簡易route保護
+
+**目的:**
+
+- 依頼者確認中・開発中に履歴画面が不用意に見えないようにする。
+- 既存の`STAGING_ACCESS_CODE`方式（[proxy.ts](../proxy.ts)）を再利用する候補、または`/history`系専用の追加ゲートを検討する候補の両方を比較する。
+
+**特徴:**
+
+- 実装が軽い。
+- 本格的なユーザー管理ではない。
+- RLSとは連動しない。
+- 1社/社内確認用としては暫定的に有効。
+
+**選択肢:**
+
+- **案A-1（推奨）**: 既存の`STAGING_ACCESS_CODE`サイト全体ゲートをそのまま踏襲する。追加実装は不要——現状の依頼者確認用ステージング環境では既にこの方式で保護されている。ただし前述のとおり、これは環境変数が設定されている間だけの暫定策である点を明記して運用する。
+- **案A-2**: `/history`系routeだけを対象にした専用の簡易ゲート（例: 別のpasscode、または`HISTORY_READ_TOKEN`とは別の閲覧用token）を追加する。サイト全体ゲートとは独立して管理でき、将来サイト全体の公開範囲が広がっても履歴画面だけを絞り込める柔軟性がある。ただし新たな実装・新たなsecretの追加が必要。
+
+対象:
+
+- `/history`
+- `/history/[id]`
+- `/history/[id]/report`
+
+### 5.2 Phase B: Supabase Authログイン
+
+**目的:**
+
+- メール/パスワード、magic link等でログイン制御する。
+- `user_id`を取得できる状態にする。
+
+**特徴:**
+
+- frontend routeでログイン必須にできる。
+- 将来backend JWT検証 / RLSと接続できる。
+- project単位権限の土台になる（[27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md)「6. 想定ユーザーと権限」参照）。
+
+### 5.3 Phase C: backend JWT検証 + RLS
+
+**目的:**
+
+- frontendだけでなくbackend APIでもユーザー権限を検証する。
+- `project_id` / `organization_members`に基づく閲覧制御を行う。
+- `HISTORY_READ_TOKEN` gateから本格認証へ移行する。
+
+**特徴:**
+
+- 本番向け。
+- 複数クライアント/複数project対応。
+- Supabase RLS policyと連動（[28_supabase_auth_rls_migration_design.md](./28_supabase_auth_rls_migration_design.md)「9. RLS policy追加方針」参照）。
+
+## 6. 推奨実装順序
+
+1. frontend route保護の暫定実装（Phase A）
+2. Supabase Auth導入設計（Phase B設計）
+3. backend JWT検証設計（Phase C設計）
+4. RLS policy SQL案作成
+5. 検証DBでRLS policyテスト
+6. 本番適用
+
+## 7. 次の実装候補
+
+**推奨:** まずは`/history`・`/history/[id]`・`/history/[id]/report`を、既存の`STAGING_ACCESS_CODE`（案A-1）またはそれに準じた簡易認証（案A-2）で保護する（暫定route保護、Phase A）。
+
+理由:
+
+- すでに履歴データが本番DBに保存されている。
+- `HISTORY_READ_TOKEN`だけではfrontend route訪問者を制限できない。
+- Supabase Auth/RLS本格実装の前に、最低限の露出対策ができる。
+- 案A-1（既存ゲートの活用）であれば追加実装なしで即座に運用方針を確定できる。
+
+## 8. セキュリティ注意点
+
+- `HISTORY_READ_TOKEN`をブラウザへ露出しない。
+- `NEXT_PUBLIC_`付きenvにsecretを置かない。
+- frontend route保護だけをもって本格的な権限管理とは見なさない。
+- Supabase Auth導入前はユーザー単位/プロジェクト単位の厳密制御はできない。
+- RLS policy作成前に本番で不用意にRLSを変更しない。
+- 現在の本番では`relrowsecurity=true`だが`pg_policies=0行`であることを踏まえて慎重に進める（[30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md)「18. 本番Supabase適用結果」参照——`relrowsecurity=true`はSupabase project側のautomatic RLS設定による可能性が高く、002 migration自体はRLSを有効化していない。この状態のまま`create policy`なしでRLSに依存した設計を組まない）。
+
+## 9. 対象外
+
+- `app/`の実装変更
+- middleware追加
+- login UI追加
+- Supabase Auth設定
+- backend JWT検証（実装）
+- RLS policy SQL作成
+- migration追加
+- Supabase設定変更
+- Render/Vercel設定変更
+- `HISTORY_READ_TOKEN` gate変更
+- 本番SQL実行
+
+## 10. 完了条件
+
+- `docs/31_frontend_route_protection_design.md`が作成されている
+- 現状の`HISTORY_READ_TOKEN` gateの役割と限界が明記されている
+- `/history` / `/history/[id]` / `/history/[id]/report`が保護対象として整理されている
+- 暫定route保護、Supabase Auth、backend JWT + RLSの段階方針が整理されている
+- 次の実装候補が「履歴画面・レポート画面の暫定route保護」として整理されている
+- secretを`NEXT_PUBLIC_`に置かない注意が明記されている
+- RLSを本番で不用意に変更しない注意が明記されている
+
+## 関連ドキュメント
+
+- [09_deployment.md](./09_deployment.md) — 公開手順（`STAGING_ACCESS_CODE`による簡易パスコードガードの実装詳細）
+- [24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md) — 認証/RLS・履歴アクセス制御設計（`HISTORY_READ_TOKEN` gate）
+- [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md) — Supabase Auth/RLS本格設計
+- [28_supabase_auth_rls_migration_design.md](./28_supabase_auth_rls_migration_design.md) — Supabase Auth/RLS migration設計
+- [30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md) — 002 migration本番適用結果（RLS状態を含む）
