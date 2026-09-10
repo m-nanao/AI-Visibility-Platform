@@ -109,11 +109,13 @@
   - `/analyze`レスポンスへの`analysisRunId`追加（`feature/analysis-run-id-response`、2026-09-10。上記設計に沿って`backend/models.py`の`AnalysisResult`に`analysisRunId: str | None = None`を追加し、`backend/main.py`がDB保存成功時のみ`analysis_runs.id`を設定（保存無効・`DATABASE_URL`未設定・保存失敗時はnull、DB保存の成否で`/analyze`自体は失敗させない）。frontendの`AnalysisResult`型/Zod schemaにも`analysisRunId?: string | null`を追加し、古い保存済みresult（フィールドなし）も引き続きparse可能。**分析結果画面への「保存済み履歴で開く」リンク表示・`/history`関連UI・read APIはいずれも変更していない**）
   - 分析結果画面への「保存済み履歴で開く」リンク追加（`feature/post-analyze-history-link`、2026-09-10。`app/lib/analysis-history.ts`に`resolvePostAnalyzeHistoryLink()`を追加し、既存の`AnalysisDashboard.tsx`に`analysisRunId`が存在する場合のみリンクを表示（`null`/`undefined`/空文字時は非表示、警告も出さない、自動遷移なし）。`READ_HISTORY_ENABLED`の状態はfrontendで判定せず、無効表示はリンク先の`/history/[id]`に任せる。**backend・`/history`関連UI・read APIはいずれも変更していない**）
   - 分析直後の「保存済み履歴で開く」リンクの本番確認（`docs/record-post-analyze-history-link-verification`、2026-09-10。docsのみ・コード変更なし。本番Vercel画面から`/analyze`を実行し、DB保存成功時に`analysisRunId`が返り、分析結果画面にリンクが表示され、リンク先`/history/{analysisRunId}`で`READ_HISTORY_ENABLED=false`時は無効メッセージ・`true`時は保存済み詳細が表示されることを確認した。**認証未実装のため、通常は`READ_HISTORY_ENABLED=false`運用が安全**）
+  - 認証/RLS・履歴アクセス制御の設計（`docs/auth-rls-history-access-design`、2026-09-10。docsのみ・コード変更なし。新規[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)を追加し、現在のリスク（`READ_HISTORY_ENABLED=true`時の`/history`・`/history/[id]`公開、`analysisRunId`を知っていればアクセス可能）、短期運用方針（`READ_HISTORY_ENABLED=false`継続）、中期の認証方針（簡易パスコード/middleware/Supabase Auth/アカウント制の4候補）、Supabase RLSの検討事項（backendがservice role相当接続を使う限りRLS単独では不十分、`user_id`/`project_id`列追加が必要）、backend read APIへの`HISTORY_READ_TOKEN`によるtoken gate案（frontend proxy routeがserver-sideで付与、`NEXT_PUBLIC_*`にしない）、401/403表示案を整理した。**backend実装・frontend実装・認証実装・RLS適用・env変更はいずれも行っていない**）
 - **Next（次のステップ、優先順）**:
-  - 認証/RLS検討
-  - 履歴比較の設計
-  - レポート出力の設計
-- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
+  - 履歴read API token gateの最小実装
+  - frontend proxy routeからのtoken付与
+  - 401/403表示対応
+  - 本番確認
+- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化、Supabase Auth/RLSの本格設計、履歴比較の設計、レポート出力の設計
 
 目安: 2〜3週間
 
