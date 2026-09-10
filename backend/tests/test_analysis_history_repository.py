@@ -22,8 +22,15 @@ class _FakeJsonb:
 
 
 class _FakeCursor:
-    def __init__(self, existing_brand_id=None):
+    def __init__(
+        self,
+        existing_brand_id=None,
+        existing_brand_project_id=None,
+        default_project_id="default-project-id",
+    ):
         self.existing_brand_id = existing_brand_id
+        self.existing_brand_project_id = existing_brand_project_id
+        self.default_project_id = default_project_id
         self.queries = []
         self._last_query = ""
 
@@ -39,8 +46,14 @@ class _FakeCursor:
 
     def fetchone(self):
         q = self._last_query.strip().lower()
-        if q.startswith("select id from brands"):
-            return (self.existing_brand_id,) if self.existing_brand_id else None
+        if "from projects p" in q:
+            return (self.default_project_id,) if self.default_project_id else None
+        if q.startswith("select id, project_id from brands"):
+            return (
+                (self.existing_brand_id, self.existing_brand_project_id)
+                if self.existing_brand_id
+                else None
+            )
         if "insert into brands" in q:
             return ("new-brand-id",)
         if "insert into analysis_runs" in q:
@@ -159,6 +172,114 @@ def test_success_reuses_existing_brand(monkeypatch):
     assert insert_brand_queries == []
 
 
+def test_success_creates_new_brand_with_default_project_id(monkeypatch):
+    """New brand/analysis_run rows are created with the default
+    project's id — see
+    docs/28_supabase_auth_rls_migration_design.md "21. 本番適用状況"."""
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(existing_brand_id=None, default_project_id="default-project-id")
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save()
+
+    assert result is not None
+    _, brand_params = next(
+        (q, p) for q, p in fake_cursor.queries if "insert into brands" in q.lower()
+    )
+    assert brand_params == ("サイボウズ", None, "default-project-id")
+    _, run_params = next(
+        (q, p) for q, p in fake_cursor.queries if "insert into analysis_runs" in q.lower()
+    )
+    # (brand_id, project_id, status, ...) — project_id is the 2nd param.
+    assert run_params[1] == "default-project-id"
+
+
+def test_existing_brand_without_project_id_is_backfilled(monkeypatch):
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(
+        existing_brand_id="existing-brand-id",
+        existing_brand_project_id=None,
+        default_project_id="default-project-id",
+    )
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save()
+
+    assert result is not None
+    update_queries = [
+        (q, p) for q, p in fake_cursor.queries if "update brands" in q.lower()
+    ]
+    assert len(update_queries) == 1
+    _, update_params = update_queries[0]
+    assert update_params == ("default-project-id", "existing-brand-id")
+
+
+def test_existing_brand_with_project_id_is_not_overwritten(monkeypatch):
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(
+        existing_brand_id="existing-brand-id",
+        existing_brand_project_id="some-other-project-id",
+        default_project_id="default-project-id",
+    )
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save()
+
+    assert result is not None
+    update_queries = [q for q, _ in fake_cursor.queries if "update brands" in q.lower()]
+    assert update_queries == []
+
+
+def test_skips_when_default_project_is_missing(monkeypatch):
+    """When migration 002 hasn't created a default organization/project
+    yet, the save is skipped entirely rather than writing rows with no
+    project_id."""
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(existing_brand_id=None, default_project_id=None)
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    assert _call_save() is None
+    insert_queries = [
+        q
+        for q, _ in fake_cursor.queries
+        if "insert into brands" in q.lower() or "insert into analysis_runs" in q.lower()
+    ]
+    assert insert_queries == []
+
+
+# --- get_default_project_id() ----------------------------------------------
+
+
+def test_get_default_project_id_returns_id_when_found():
+    class _Cursor:
+        def execute(self, query, params=None):
+            pass
+
+        def fetchone(self):
+            return ("project-id-123",)
+
+    assert repo.get_default_project_id(_Cursor()) == "project-id-123"
+
+
+def test_get_default_project_id_returns_none_when_missing():
+    class _Cursor:
+        def execute(self, query, params=None):
+            pass
+
+        def fetchone(self):
+            return None
+
+    assert repo.get_default_project_id(_Cursor()) is None
+
+
 def test_none_source_summary_and_meta_are_passed_through_as_none(monkeypatch):
     _configure_env(monkeypatch, enabled="true")
     fake_cursor = _FakeCursor(existing_brand_id=None)
@@ -172,10 +293,10 @@ def test_none_source_summary_and_meta_are_passed_through_as_none(monkeypatch):
     _, run_params = next(
         (q, p) for q, p in fake_cursor.queries if "insert into analysis_runs" in q.lower()
     )
-    # (brand_id, status, Jsonb(input_snapshot), source_summary) — the
-    # 4th positional param must stay a plain None (real SQL NULL), not
-    # a wrapped Jsonb(None).
-    assert run_params[3] is None
+    # (brand_id, project_id, status, Jsonb(input_snapshot), source_summary)
+    # — the 5th positional param must stay a plain None (real SQL
+    # NULL), not a wrapped Jsonb(None).
+    assert run_params[4] is None
 
 
 # --- failure cases ---------------------------------------------------------

@@ -94,6 +94,30 @@ def _maybe_jsonb(value: dict[str, Any] | None):
     return None if value is None else Jsonb(value)
 
 
+def get_default_project_id(cur) -> str | None:
+    """Looks up the default project's id (organizations.slug = 'default',
+    projects.slug = 'default') using an already-open cursor — see
+    docs/28_supabase_auth_rls_migration_design.md "7. default
+    organization / default project の扱い" and
+    backend/migrations/002_add_organizations_projects.sql.
+
+    Returns None when no such row exists (e.g. migration 002 hasn't
+    been applied to this database yet) rather than raising, so callers
+    can decide how to degrade — save_analysis_history() below skips
+    the save entirely in that case."""
+    cur.execute(
+        """
+        select p.id
+        from projects p
+        join organizations o on o.id = p.organization_id
+        where p.slug = 'default' and o.slug = 'default'
+        limit 1
+        """
+    )
+    row = cur.fetchone()
+    return str(row[0]) if row is not None else None
+
+
 def save_analysis_history(
     *,
     brand_name: str,
@@ -131,38 +155,65 @@ def save_analysis_history(
     try:
         with psycopg.connect(settings.database_url, connect_timeout=5) as conn:
             with conn.cursor() as cur:
+                # default project (organizations/projects with
+                # slug='default', see backend/migrations/002_add_organizations_projects.sql)
+                # is required for the project_id columns below. If it
+                # doesn't exist yet (e.g. migration 002 hasn't been
+                # applied to this database), skip the save entirely
+                # rather than writing new brands/analysis_runs rows
+                # with no project_id — see
+                # docs/28_supabase_auth_rls_migration_design.md "21.
+                # 本番適用状況" for why this is preferred over saving
+                # without a project_id.
+                default_project_id = get_default_project_id(cur)
+                if default_project_id is None:
+                    logger.warning(
+                        "default project (organizations.slug='default', "
+                        "projects.slug='default') not found; skipping analysis history save"
+                    )
+                    return None
+
                 # Brand: reuse an existing row by exact name match if
                 # one exists (simple get), otherwise create one — see
                 # docs/19_minimum_db_migration_design.md "5. brands
                 # テーブル案", which explicitly says not to enforce
-                # strict dedup here.
+                # strict dedup here. An existing brand that already has
+                # a project_id is left untouched; one with project_id
+                # still null (e.g. from before this backfill existed)
+                # is assigned the default project.
                 cur.execute(
-                    "select id from brands where name = %s order by created_at desc limit 1",
+                    "select id, project_id from brands where name = %s order by created_at desc limit 1",
                     (brand_name,),
                 )
                 row = cur.fetchone()
                 if row is not None:
-                    brand_id = row[0]
+                    brand_id, brand_project_id = row
+                    if brand_project_id is None:
+                        cur.execute(
+                            "update brands set project_id = %s where id = %s",
+                            (default_project_id, brand_id),
+                        )
                 else:
                     cur.execute(
                         """
-                        insert into brands (name, canonical_domain)
-                        values (%s, %s)
+                        insert into brands (name, canonical_domain, project_id)
+                        values (%s, %s, %s)
                         returning id
                         """,
-                        (brand_name, canonical_domain),
+                        (brand_name, canonical_domain, default_project_id),
                     )
                     brand_id = cur.fetchone()[0]
 
                 cur.execute(
                     """
                     insert into analysis_runs
-                        (brand_id, status, input_snapshot, source_summary, completed_at)
-                    values (%s, %s, %s, %s, now())
+                        (brand_id, project_id, status, input_snapshot, source_summary, completed_at)
+                    values (%s, %s, %s, %s, %s, now())
                     returning id
                     """,
                     (
                         brand_id,
+                        default_project_id,
                         status,
                         Jsonb(input_snapshot),
                         _maybe_jsonb(source_summary),
