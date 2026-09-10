@@ -416,6 +416,13 @@ class AnalysisResult(BaseModel):
     aiOverviewComparison: list[AIOverviewComparisonItem]
     improvements: list[ImprovementSuggestion]
     meta: AnalysisMeta
+    # The saved analysis_runs.id when this analysis was persisted to
+    # the DB, or None when DB save is disabled/unconfigured/failed (see
+    # main.py's /analyze handler and
+    # docs/23_analysis_run_id_and_post_analyze_link_design.md). A DB
+    # save failure never fails /analyze itself — this field is simply
+    # None in that case, same as when saving is off entirely.
+    analysisRunId: str | None = None
 
 
 class AnalyzeRequest(BaseModel):

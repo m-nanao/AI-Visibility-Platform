@@ -188,6 +188,12 @@ export const analysisResultSchema = z.object({
   aiOverviewComparison: z.array(aiOverviewComparisonItemSchema),
   improvements: z.array(improvementSuggestionSchema),
   meta: analysisMetaSchema,
+  // Unlike the other optional fields above, null is preserved (not
+  // collapsed to undefined) to match AnalysisResult's `string | null`
+  // type — see docs/23_analysis_run_id_and_post_analyze_link_design.md
+  // "7. frontend schema / 型の変更方針". Absent entirely on older saved
+  // results predating this field, which parses the same as null.
+  analysisRunId: z.string().uuid().nullable().optional(),
 });
 
 export type AnalysisResultParseResult =

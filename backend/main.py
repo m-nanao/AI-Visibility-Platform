@@ -657,10 +657,10 @@ def analyze(payload: AnalyzeRequest):
     # save_analysis_history() itself never raises — but the call is
     # still wrapped here as a second layer of defense, so a bug in that
     # module can never turn into a failed /analyze response. The
-    # created analysisRunId is deliberately not added to the response
-    # (no API schema change in this task — see
-    # docs/19_minimum_db_migration_design.md "13. 実装フェーズへ進む前
-    # の確認事項").
+    # created analysis_runs.id is surfaced as result.analysisRunId when
+    # (and only when) the save succeeds — null otherwise (disabled,
+    # unconfigured, or failed) — see
+    # docs/23_analysis_run_id_and_post_analyze_link_design.md.
     try:
         history_result = save_analysis_history(
             brand_name=brand_name,
@@ -686,6 +686,9 @@ def analyze(payload: AnalyzeRequest):
         "analysis history save %s",
         "succeeded" if history_result is not None else "skipped or failed",
     )
+    result.analysisRunId = (
+        history_result.analysis_run_id if history_result is not None else None
+    )
 
     return result
 
@@ -694,8 +697,9 @@ def analyze(payload: AnalyzeRequest):
 # /analysis-runs/{id}) — see
 # docs/20_analysis_history_read_api_design.md. Entirely separate from
 # /analyze above: no request/response field of /analyze is touched by
-# anything below (no analysisRunId is added to AnalysisResult/
-# AnalysisMeta). Gated by READ_HISTORY_ENABLED (services/db_settings.py's
+# anything below (AnalysisResult.analysisRunId is set above, inside the
+# /analyze handler itself — nothing here adds to it). Gated by
+# READ_HISTORY_ENABLED (services/db_settings.py's
 # is_history_read_enabled()) — a flag independent of DB_SAVE_ENABLED,
 # since saving is an internal write with no external caller while these
 # two endpoints are reachable by anyone who can call this service.
