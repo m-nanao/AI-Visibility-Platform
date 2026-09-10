@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
+  HISTORY_COMPARISON_NOT_FOUND_MESSAGE,
+  HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE,
   HISTORY_DETAIL_GENERIC_ERROR_MESSAGE,
   HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
   HISTORY_DETAIL_NOT_FOUND_MESSAGE,
@@ -12,13 +15,25 @@ import {
   buildHistoryDetailPath,
   formatAnalysisRunDetailBasicInfo,
   formatAnalysisRunListItem,
+  formatComparisonImprovementsLabel,
+  formatComparisonVisibilityScoreLabel,
+  formatCooccurrenceChangedTermLabel,
+  formatCooccurrenceNewTermLabel,
+  formatCooccurrenceRemovedTermLabel,
+  formatSignedDelta,
   formatSourceSummary,
   getStatusLabel,
+  limitComparisonTerms,
+  resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
   resolvePostAnalyzeHistoryLink,
 } from "./analysis-history";
-import type { AnalysisRunDetailResponse, AnalysisRunListItem } from "./analysis-history";
+import type {
+  AnalysisRunComparisonResponse,
+  AnalysisRunDetailResponse,
+  AnalysisRunListItem,
+} from "./analysis-history";
 import { buildDummyAnalysis } from "./dummy-data";
 
 const SAMPLE_ITEM: AnalysisRunListItem = {
@@ -358,5 +373,243 @@ describe("resolvePostAnalyzeHistoryLink", () => {
 
     expect(link).toEqual({ path: buildHistoryDetailPath("has space") });
     expect(link?.path).toBe("/history/has%20space");
+  });
+});
+
+// --- History comparison (docs/25_analysis_history_comparison_design.md) ---
+
+function jsonComparisonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+const SAMPLE_COMPARISON: AnalysisRunComparisonResponse = {
+  current: {
+    id: "11111111-1111-1111-1111-111111111111",
+    startedAt: "2026-09-10T00:00:00+09:00",
+    visibilityScore: 91,
+  },
+  previous: {
+    id: "22222222-2222-2222-2222-222222222222",
+    startedAt: "2026-09-01T00:00:00+09:00",
+    visibilityScore: 86,
+  },
+  diff: {
+    visibilityScore: { current: 91, previous: 86, delta: 5 },
+    cooccurrence: {
+      topN: 10,
+      newTerms: [{ term: "ChatGPT", rank: 3, score: 12 }],
+      removedTerms: [{ term: "広告", rank: 7, score: 5 }],
+      changedTerms: [
+        {
+          term: "SEO",
+          currentRank: 2,
+          previousRank: 5,
+          rankDelta: -3,
+          currentScore: 18,
+          previousScore: 12,
+          scoreDelta: 6,
+        },
+      ],
+    },
+    improvements: { currentCount: 4, previousCount: 3, delta: 1 },
+  },
+  warnings: [],
+};
+
+describe("resolveHistoryComparisonFetchOutcome", () => {
+  it("returns a disabled view when the response is 503", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse({ error: "analysis history read API is not enabled" }, 503),
+    );
+
+    expect(outcome).toEqual({ kind: "disabled", message: HISTORY_DISABLED_MESSAGE });
+  });
+
+  it("returns a forbidden view when the response is 403", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE });
+  });
+
+  it("returns a notFound view when the response is 404", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({
+      kind: "notFound",
+      message: HISTORY_COMPARISON_NOT_FOUND_MESSAGE,
+    });
+  });
+
+  it("returns an error view when the network request itself failed (response is null)", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(null);
+
+    expect(outcome).toEqual({
+      kind: "error",
+      message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
+    });
+  });
+
+  it("returns an error view for a non-503/403/404 failure status", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse({ error: "something went wrong" }, 502),
+    );
+
+    expect(outcome).toEqual({
+      kind: "error",
+      message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
+    });
+  });
+
+  it("returns an error view when the body fails schema validation", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse({ not: "valid" }, 200),
+    );
+
+    expect(outcome).toEqual({
+      kind: "error",
+      message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
+    });
+  });
+
+  it("returns a noPrevious view when previous/diff are both null", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse({
+        current: SAMPLE_COMPARISON.current,
+        previous: null,
+        diff: null,
+        warnings: ["比較できる過去履歴がまだありません。"],
+      }),
+    );
+
+    expect(outcome).toEqual({
+      kind: "noPrevious",
+      message: HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE,
+    });
+  });
+
+  it("returns a success view with the parsed comparison when previous/diff are present", async () => {
+    const outcome = await resolveHistoryComparisonFetchOutcome(
+      jsonComparisonResponse(SAMPLE_COMPARISON),
+    );
+
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.comparison.diff.visibilityScore.delta).toBe(5);
+    }
+  });
+});
+
+describe("formatSignedDelta", () => {
+  it("formats a positive delta with a leading +", () => {
+    expect(formatSignedDelta(5)).toBe("+5");
+  });
+
+  it("formats a negative delta as-is (already has a minus sign)", () => {
+    expect(formatSignedDelta(-7)).toBe("-7");
+  });
+
+  it("formats a zero delta as ±0", () => {
+    expect(formatSignedDelta(0)).toBe("±0");
+  });
+});
+
+describe("formatComparisonVisibilityScoreLabel", () => {
+  it("formats previous → current（delta）", () => {
+    expect(
+      formatComparisonVisibilityScoreLabel({ current: 91, previous: 86, delta: 5 }),
+    ).toBe("86 → 91（+5）");
+  });
+
+  it("formats a negative delta", () => {
+    expect(
+      formatComparisonVisibilityScoreLabel({ current: 84, previous: 91, delta: -7 }),
+    ).toBe("91 → 84（-7）");
+  });
+
+  it("formats a zero delta", () => {
+    expect(
+      formatComparisonVisibilityScoreLabel({ current: 86, previous: 86, delta: 0 }),
+    ).toBe("86 → 86（±0）");
+  });
+
+  it("returns null when current is missing", () => {
+    expect(
+      formatComparisonVisibilityScoreLabel({ current: null, previous: 86, delta: null }),
+    ).toBeNull();
+  });
+
+  it("returns null when previous is missing", () => {
+    expect(
+      formatComparisonVisibilityScoreLabel({ current: 91, previous: null, delta: null }),
+    ).toBeNull();
+  });
+});
+
+describe("formatComparisonImprovementsLabel", () => {
+  it("formats previous → current（delta）", () => {
+    expect(
+      formatComparisonImprovementsLabel({ currentCount: 4, previousCount: 3, delta: 1 }),
+    ).toBe("3 → 4（+1）");
+  });
+
+  it("formats a negative delta", () => {
+    expect(
+      formatComparisonImprovementsLabel({ currentCount: 1, previousCount: 3, delta: -2 }),
+    ).toBe("3 → 1（-2）");
+  });
+});
+
+describe("cooccurrence comparison term labels", () => {
+  it("formats a new term with its rank", () => {
+    expect(formatCooccurrenceNewTermLabel({ term: "ChatGPT", rank: 3, score: 12 })).toBe(
+      "ChatGPT（3位）",
+    );
+  });
+
+  it("formats a removed term with its (previous) rank", () => {
+    expect(formatCooccurrenceRemovedTermLabel({ term: "広告", rank: 7, score: 5 })).toBe(
+      "広告（7位）",
+    );
+  });
+
+  it("formats a changed term with rank and score movement", () => {
+    const label = formatCooccurrenceChangedTermLabel({
+      term: "SEO",
+      currentRank: 2,
+      previousRank: 5,
+      rankDelta: -3,
+      currentScore: 18,
+      previousScore: 12,
+      scoreDelta: 6,
+    });
+
+    expect(label).toBe("SEO（5位→2位、スコア12→18）");
+  });
+});
+
+describe("limitComparisonTerms", () => {
+  it("caps a list to the default display limit", () => {
+    const terms = Array.from({ length: 11 }, (_, i) => `term${i}`);
+
+    expect(limitComparisonTerms(terms)).toHaveLength(5);
+  });
+
+  it("respects a custom limit", () => {
+    const terms = ["a", "b", "c"];
+
+    expect(limitComparisonTerms(terms, 2)).toEqual(["a", "b"]);
+  });
+
+  it("returns the full list when it is shorter than the limit", () => {
+    const terms = ["a", "b"];
+
+    expect(limitComparisonTerms(terms)).toEqual(["a", "b"]);
   });
 });

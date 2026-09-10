@@ -1,6 +1,6 @@
 # 履歴比較機能 設計メモ
 
-**このドキュメント自体は設計メモである。8章の比較API案は`feature/history-comparison-api`（2026-09-10、「19. 実装状況」参照）で最小実装済み。frontend実装・UI変更・DB schema変更・migration変更・env変更はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。8章の比較API案は`feature/history-comparison-api`（2026-09-10、「19. 実装状況」参照）で、7章のUI案（`/history/[id]`への前回比較セクション追加）は`feature/history-comparison-ui`（2026-09-10、「20. 実装状況」参照）でそれぞれ最小実装済み。DB schema変更・migration変更・env変更・本番確認はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -23,11 +23,12 @@
 - 保存済み履歴リンク（分析結果画面の「保存済み履歴で開く」、同上docs/23参照）
 - `HISTORY_READ_TOKEN` gate（[24_auth_rls_history_access_design.md](./24_auth_rls_history_access_design.md)参照）
 - 履歴比較API（`GET /analysis-runs/{id}/comparison`、`feature/history-comparison-api`、2026-09-10。「19. 実装状況」参照）
+- 比較UI（`/history/[id]`への前回比較セクション、frontend proxy route、`feature/history-comparison-ui`、2026-09-10。「20. 実装状況」参照）
 
 **未実装:**
 
-- 比較UI（`/history/[id]`への前回比較セクション追加）
-- frontend proxy route
+- 履歴比較の本番確認
+- 比較専用ページ・手動比較対象選択
 - レポート出力
 - Supabase Auth/RLS本格対応
 
@@ -325,6 +326,17 @@ AI Overview / ChatGPT観測は、providerやmodeにより取得状況が変わ�
 - backend model: `backend/models.py`に`AnalysisRunComparisonResponse`/`AnalysisRunComparisonRunSummary`/`AnalysisRunComparisonDiff`/`AnalysisRunComparisonVisibilityScoreDiff`/`AnalysisRunComparisonCooccurrenceDiff`/`CooccurrenceComparisonNewTerm`/`CooccurrenceComparisonRemovedTerm`/`CooccurrenceComparisonChangedTerm`/`AnalysisRunComparisonImprovementsDiff`を追加。
 - backend route: `backend/main.py`に`GET /analysis-runs/{analysis_run_id}/comparison`を、既存の`GET /analysis-runs/{analysis_run_id}`より前に定義した（Starletteのルーティングはセグメント数で区別するため実害はないが、意図を明確にするため）。既存の`_check_history_read_access()`をそのまま適用し、`READ_HISTORY_ENABLED=false`/`DATABASE_URL`未設定/`HISTORY_READ_TOKEN`未設定はそれぞれ503、token不一致は403——他の2エンドポイントと完全に同じ挙動。currentが存在しない場合は404（previousの検索自体を行わない）、previousが存在しない場合は200で`previous: null`・`diff: null`・`warnings: ["比較できる過去履歴がまだありません。"]`を返す。
 - テスト: `backend/tests/test_analysis_history_comparison.py`に純粋ロジックのテストを16件追加（前回履歴なし・スコア差分の正負/ゼロ/欠損・共起語new/removed/changed・上位10件制限・改善提案件数・警告の各パターン）。`backend/tests/test_analysis_history_repository.py`に`get_previous_analysis_run_for_brand()`のテストを6件追加（不正UUID・前回なし・driver未インストール・`DATABASE_URL`未設定・クエリ失敗・成功時）。新規`backend/tests/test_main_analysis_history_comparison_api.py`にroute全体のテストを13件追加（503/403の各パターン・404・previousなし/ありの200・`/analyze`と既存詳細routeが無影響であることを含む）。
+
+## 20. 実装状況（2026-09-10更新）
+
+`feature/history-comparison-ui`で、本ドキュメントの7章（案A）の方針に沿って`/history/[id]`に「前回比較」セクションを追加した。**backend比較API変更・DB schema変更・migration変更・`/analyze`変更・比較専用ページ・手動比較対象選択のいずれも行っていない。本番確認はまだ行っていない。**
+
+- frontend proxy route: 新規`app/api/analysis-runs/[id]/comparison/route.ts`を追加し、既存の`app/api/analysis-runs/[id]/route.ts`と全く同じ方針（`process.env.HISTORY_READ_TOKEN`をserver-sideで読み`X-History-Read-Token`ヘッダーとして付与、backendの503/403/404はそのまま転送、tokenはブラウザへ一切渡さない）で`GET /analysis-runs/{id}/comparison`へプロキシする。
+- 型/schema: `app/lib/analysis-history.ts`に`AnalysisRunComparisonResponse`/`AnalysisRunComparisonRunSummary`/`AnalysisRunComparisonDiff`等の型を追加（backend/models.pyのAnalysisRunComparison*モデルと厳密に一致、`rank`/`score`等は非nullable、`visibilityScore`のみnullable）。`app/lib/analysis-history-schema.ts`に対応するZod schema（`parseAnalysisRunComparisonResponse()`）を追加。
+- 取得ロジック: `resolveHistoryComparisonFetchOutcome()`が503→`disabled`、403→`forbidden`、404→`notFound`、ネットワーク失敗/schema失敗→`error`、`previous`/`diff`がともに`null`→`noPrevious`、それ以外→`success`を返す。`success`時は`previous`/`diff`が非nullであることが型レベルでも保証される`ResolvedAnalysisRunComparison`型を使う（`AnalysisRunComparisonResponse & { previous: ...; diff: ... }`）。
+- 表示ロジック: `formatComparisonVisibilityScoreLabel()`（「86 → 91（+5）」形式、片方欠損時は`null`）、`formatComparisonImprovementsLabel()`（「3 → 4（+1）」形式）、`formatCooccurrenceNewTermLabel()`/`formatCooccurrenceRemovedTermLabel()`/`formatCooccurrenceChangedTermLabel()`（用語ごとの順位・スコア変化ラベル）、`limitComparisonTerms()`（表示件数を既定5件に制限）を追加。
+- `/history/[id]`ページ: 基本情報の下・`AnalysisDashboard`の上に`ComparisonSection`を追加した。詳細本体（`view`）とは独立した`useEffect`/`useState`で比較データを取得するため、**比較取得が失敗しても履歴詳細本体の表示は妨げられない**（`view.kind === "success"`かどうかとは無関係に動作する）。`loading`中は何も表示せず、それ以外の非successな状態では見出し「前回比較」の下にメッセージのみを表示する。`success`時は可視性スコア・共起語の新規/消失/変化・改善提案件数を表示し、backendからの`warnings`があれば注意文として表示する。
+- テスト: `app/lib/analysis-history.test.ts`に28件（`resolveHistoryComparisonFetchOutcome()`の各分岐、`formatSignedDelta()`/`formatComparisonVisibilityScoreLabel()`/`formatComparisonImprovementsLabel()`/共起語ラベル関数群/`limitComparisonTerms()`）、`app/lib/analysis-history-schema.test.ts`に6件（正常系・`previous`/`diff`が`null`・`current`の値が`null`・必須フィールド欠損・型不一致・`warnings`欠損）、新規`app/api/analysis-runs/[id]/comparison/route.test.ts`に11件（token付与・token非露出・403/503/404転送・`previous:null`のパススルー・成功時・schema検証失敗時の502）を追加。手動確認として、モックPython backendを立てて`/api/analysis-runs/{id}/comparison`が期待どおりのJSONを返すことを確認したが、実際のブラウザでの見た目の確認は本セッションの環境にブラウザ自動化ツールがないため未実施。
 
 ## 関連ドキュメント
 

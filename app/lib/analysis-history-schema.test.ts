@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
   parseAnalysisRunListResponse,
 } from "./analysis-history-schema";
@@ -223,6 +224,126 @@ describe("parseAnalysisRunDetailResponse", () => {
     };
 
     const result = parseAnalysisRunDetailResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+});
+
+function validComparisonResponseWithPrevious() {
+  return {
+    current: {
+      id: "11111111-1111-1111-1111-111111111111",
+      startedAt: "2026-09-10T00:00:00+09:00",
+      visibilityScore: 91,
+    },
+    previous: {
+      id: "22222222-2222-2222-2222-222222222222",
+      startedAt: "2026-09-01T00:00:00+09:00",
+      visibilityScore: 86,
+    },
+    diff: {
+      visibilityScore: { current: 91, previous: 86, delta: 5 },
+      cooccurrence: {
+        topN: 10,
+        newTerms: [{ term: "ChatGPT", rank: 3, score: 12 }],
+        removedTerms: [{ term: "広告", rank: 7, score: 5 }],
+        changedTerms: [
+          {
+            term: "SEO",
+            currentRank: 2,
+            previousRank: 5,
+            rankDelta: -3,
+            currentScore: 18,
+            previousScore: 12,
+            scoreDelta: 6,
+          },
+        ],
+      },
+      improvements: { currentCount: 4, previousCount: 3, delta: 1 },
+    },
+    warnings: [],
+  };
+}
+
+describe("parseAnalysisRunComparisonResponse", () => {
+  it("accepts a well-formed response with a previous run", () => {
+    const result = parseAnalysisRunComparisonResponse(validComparisonResponseWithPrevious());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.current.visibilityScore).toBe(91);
+      expect(result.data.previous?.visibilityScore).toBe(86);
+      expect(result.data.diff?.visibilityScore.delta).toBe(5);
+      expect(result.data.diff?.cooccurrence.changedTerms[0].rankDelta).toBe(-3);
+    }
+  });
+
+  it("accepts previous:null and diff:null (no earlier run for this brand yet)", () => {
+    const noPrevious = {
+      current: {
+        id: "11111111-1111-1111-1111-111111111111",
+        startedAt: "2026-09-10T00:00:00+09:00",
+        visibilityScore: 91,
+      },
+      previous: null,
+      diff: null,
+      warnings: ["比較できる過去履歴がまだありません。"],
+    };
+
+    const result = parseAnalysisRunComparisonResponse(noPrevious);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.previous).toBeNull();
+      expect(result.data.diff).toBeNull();
+      expect(result.data.warnings).toEqual(["比較できる過去履歴がまだありません。"]);
+    }
+  });
+
+  it("accepts current.startedAt/visibilityScore: null (a run whose result is missing/incompatible)", () => {
+    const withNullSummary = {
+      ...validComparisonResponseWithPrevious(),
+      current: { id: "11111111-1111-1111-1111-111111111111", startedAt: null, visibilityScore: null },
+    };
+
+    const result = parseAnalysisRunComparisonResponse(withNullSummary);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.current.startedAt).toBeNull();
+      expect(result.data.current.visibilityScore).toBeNull();
+    }
+  });
+
+  it("rejects a response missing required fields", () => {
+    const invalid = { current: { id: "11111111-1111-1111-1111-111111111111" } };
+
+    const result = parseAnalysisRunComparisonResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a response with the wrong field types", () => {
+    const invalid = {
+      ...validComparisonResponseWithPrevious(),
+      diff: {
+        ...validComparisonResponseWithPrevious().diff,
+        visibilityScore: { current: "91", previous: 86, delta: 5 },
+      },
+    };
+
+    const result = parseAnalysisRunComparisonResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a response missing warnings", () => {
+    const invalid = {
+      ...validComparisonResponseWithPrevious(),
+      warnings: undefined,
+    };
+
+    const result = parseAnalysisRunComparisonResponse(invalid);
 
     expect(result.success).toBe(false);
   });
