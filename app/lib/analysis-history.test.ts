@@ -15,6 +15,7 @@ import {
   getStatusLabel,
   resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
+  resolvePostAnalyzeHistoryLink,
 } from "./analysis-history";
 import type { AnalysisRunDetailResponse, AnalysisRunListItem } from "./analysis-history";
 import { buildDummyAnalysis } from "./dummy-data";
@@ -309,5 +310,36 @@ describe("resolveHistoryDetailFetchOutcome", () => {
     // app/lib/analysis-history-schema.test.ts's equivalent check on
     // the list side).
     expect(SAMPLE_DETAIL).toHaveProperty("result");
+  });
+});
+
+describe("resolvePostAnalyzeHistoryLink", () => {
+  it("returns a /history/{id} path when analysisRunId is a saved id", () => {
+    const link = resolvePostAnalyzeHistoryLink("11111111-1111-1111-1111-111111111111");
+
+    expect(link).toEqual({ path: "/history/11111111-1111-1111-1111-111111111111" });
+  });
+
+  it("returns null when analysisRunId is null (DB save disabled/unconfigured/failed)", () => {
+    expect(resolvePostAnalyzeHistoryLink(null)).toBeNull();
+  });
+
+  it("returns null when analysisRunId is undefined (older saved results predating this field)", () => {
+    expect(resolvePostAnalyzeHistoryLink(undefined)).toBeNull();
+  });
+
+  it("returns null when analysisRunId is an empty string", () => {
+    expect(resolvePostAnalyzeHistoryLink("")).toBeNull();
+  });
+
+  it("URL-encodes the analysisRunId via buildHistoryDetailPath", () => {
+    // analysisRunId is expected to be a UUID and never need encoding in
+    // practice, but the link generation reuses buildHistoryDetailPath()
+    // rather than string-concatenating the path, so this stays correct
+    // even if that assumption is ever wrong.
+    const link = resolvePostAnalyzeHistoryLink("has space");
+
+    expect(link).toEqual({ path: buildHistoryDetailPath("has space") });
+    expect(link?.path).toBe("/history/has%20space");
   });
 });

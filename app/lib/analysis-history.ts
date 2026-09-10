@@ -304,3 +304,38 @@ export async function resolveHistoryDetailFetchOutcome(
 
   return { kind: "success", detail: parsed.data, result: resultParsed.data };
 }
+
+// --- Post-analyze "open in history" link (analysis result screen,
+// docs/23_analysis_run_id_and_post_analyze_link_design.md "8. 分析結果
+// 画面のリンク表示方針") ---
+
+export const POST_ANALYZE_HISTORY_LINK_TEXT = "保存済み履歴で開く";
+export const POST_ANALYZE_HISTORY_LINK_HELPER_TEXT =
+  "この分析結果は履歴に保存されています。";
+
+export type PostAnalyzeHistoryLink = {
+  path: string;
+};
+
+/**
+ * Decides whether the analysis result screen should show an "open in
+ * history" link, from AnalysisResult.analysisRunId alone. Returns null
+ * for null/undefined/empty-string analysisRunId (DB save disabled,
+ * unconfigured, or failed — see docs/23_analysis_run_id_and_post_analyze_link_design.md
+ * "6. DB保存成功・失敗時の扱い") — the screen shows nothing in that
+ * case, not a warning (per that doc's "3. analysisRunIdがない場合").
+ *
+ * Deliberately does not know about READ_HISTORY_ENABLED — when it's
+ * false, the link still renders but the linked /history/[id] page
+ * shows its own existing disabled message (see that doc's "9.
+ * READ_HISTORY_ENABLED=false時の扱い").
+ */
+export function resolvePostAnalyzeHistoryLink(
+  analysisRunId: string | null | undefined,
+): PostAnalyzeHistoryLink | null {
+  if (!analysisRunId) {
+    return null;
+  }
+
+  return { path: buildHistoryDetailPath(analysisRunId) };
+}

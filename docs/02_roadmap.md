@@ -107,9 +107,10 @@
   - `/history/[id]`履歴詳細UIの本番Vercel確認（`docs/record-history-detail-ui-verification`、2026-09-10。docsのみ・コード変更なし。`READ_HISTORY_ENABLED=false`時は`/history/[id]`に履歴詳細データが表示されず無効メッセージが表示されること、`READ_HISTORY_ENABLED=true`への一時変更時は一覧の「詳細を見る」から`/history/{id}`へ遷移し保存済み分析結果の詳細内容が表示されること、保存済み`result`が既存の`AnalysisDashboard`で再表示されること、frontend→`/api/analysis-runs/[id]`→Render backend→Supabaseの詳細取得フロー全体を本番Vercel環境で確認した。**認証未実装のため、通常運用では`READ_HISTORY_ENABLED=false`に戻すことが安全であると結論**）
   - `analysisRunId`追加と分析直後リンクの設計（`docs/analysis-run-id-post-analyze-link-design`、2026-09-10。docsのみ・コード変更なし。新規[23_analysis_run_id_and_post_analyze_link_design.md](./23_analysis_run_id_and_post_analyze_link_design.md)を追加し、`/analyze`レスポンスに`analysisRunId?: string | null`を追加する方針（DB保存成功時のみUUID、`DB_SAVE_ENABLED=false`・`DATABASE_URL`未設定・DB保存失敗時はnull、分析自体の成否とは分離）・frontend schema/型への追加方針・分析結果画面での「保存済み履歴で開く」リンク表示方針（`analysisRunId`がある場合のみ表示、`READ_HISTORY_ENABLED=false`時の無効表示は既存の`/history/[id]`に任せる）・認証/RLS未実装期間の注意点（IDを知っていれば詳細を開ける可能性）を整理した。**`/analyze`レスポンスschema変更・frontend実装・backend実装・Zod schema変更はいずれも行っていない**）
   - `/analyze`レスポンスへの`analysisRunId`追加（`feature/analysis-run-id-response`、2026-09-10。上記設計に沿って`backend/models.py`の`AnalysisResult`に`analysisRunId: str | None = None`を追加し、`backend/main.py`がDB保存成功時のみ`analysis_runs.id`を設定（保存無効・`DATABASE_URL`未設定・保存失敗時はnull、DB保存の成否で`/analyze`自体は失敗させない）。frontendの`AnalysisResult`型/Zod schemaにも`analysisRunId?: string | null`を追加し、古い保存済みresult（フィールドなし）も引き続きparse可能。**分析結果画面への「保存済み履歴で開く」リンク表示・`/history`関連UI・read APIはいずれも変更していない**）
+  - 分析結果画面への「保存済み履歴で開く」リンク追加（`feature/post-analyze-history-link`、2026-09-10。`app/lib/analysis-history.ts`に`resolvePostAnalyzeHistoryLink()`を追加し、既存の`AnalysisDashboard.tsx`に`analysisRunId`が存在する場合のみリンクを表示（`null`/`undefined`/空文字時は非表示、警告も出さない、自動遷移なし）。`READ_HISTORY_ENABLED`の状態はfrontendで判定せず、無効表示はリンク先の`/history/[id]`に任せる。**backend・`/history`関連UI・read APIはいずれも変更していない**）
 - **Next（次のステップ、優先順）**:
-  - 分析結果画面への「保存済み履歴で開く」リンク追加
   - 認証/RLS検討
+  - 履歴比較/レポート出力検討
 - **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
 
 目安: 2〜3週間

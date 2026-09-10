@@ -1,6 +1,6 @@
 # analysisRunId追加と分析直後リンク 設計メモ
 
-**このドキュメント自体は設計メモである。`/analyze`レスポンスへの`analysisRunId`追加・frontend schema変更は`feature/analysis-run-id-response`（2026-09-10）で実装済み——詳細は「14. 実装状況」参照。分析結果画面へのリンク表示・UI変更・認証/RLS実装はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。`/analyze`レスポンスへの`analysisRunId`追加・frontend schema変更は`feature/analysis-run-id-response`（2026-09-10、「14. 実装状況」参照）、分析結果画面への「保存済み履歴で開く」リンク表示は`feature/post-analyze-history-link`（2026-09-10、「15. 実装状況」参照）でそれぞれ実装済み。認証/RLS実装はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -21,10 +21,10 @@
 - `/history/[id]`履歴詳細UI（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)参照）
 - 上記いずれも本番Vercel環境での動作確認済み
 - `/analyze`レスポンスへの`analysisRunId`追加（`feature/analysis-run-id-response`、2026-09-10。「14. 実装状況」参照）
+- 分析結果画面への「保存済み履歴で開く」リンク表示（`feature/post-analyze-history-link`、2026-09-10。「15. 実装状況」参照）
 
 **未実装:**
 
-- 分析結果画面への「保存済み履歴で開く」リンク表示
 - 分析直後の自動遷移
 - 認証/RLS
 
@@ -188,6 +188,16 @@ frontendの`AnalysisResult`型/Zod schemaに`analysisRunId?: string | null`を�
 - frontend型: `app/lib/types.ts`の`AnalysisResult`に`analysisRunId?: string | null`を追加。
 - frontend schema: `app/lib/analysis-result-schema.ts`の`analysisResultSchema`に`analysisRunId: z.string().uuid().nullable().optional()`を追加。他のPython-null-vs-undefinedフィールドと異なり、`analysisRunId`はnullをundefinedへ正規化せずそのまま保持する（TSの`string | null`型に合わせるため）。UUID形式チェックを行うため、不正な文字列はschema validation失敗として扱う。
 - テスト: backend `tests/test_main_analysis_history.py`に保存成功時（UUIDが入る）・`DB_SAVE_ENABLED=false`時・`DATABASE_URL`未設定時（いずれも`null`）のテストを追加、既存の`test_analyze_response_schema_has_no_analysis_run_id_field`は本タスクの目的そのものと矛盾するため更新。`tests/test_main_analysis_history_read_api.py`の同趣旨テストも合わせて更新。frontend `app/lib/analysis-result-schema.test.ts`に、`analysisRunId`なし（互換性）・`null`・有効なUUID・不正なUUID文字列（reject）の4パターンを追加。
+
+## 15. 実装状況（2026-09-10更新）
+
+`feature/post-analyze-history-link`で、本ドキュメントの8〜9章の方針に沿って分析結果画面への「保存済み履歴で開く」リンク表示を実装した。**backend変更・`/history`関連UI変更・read API変更・認証/RLS実装・自動遷移はいずれも行っていない。**
+
+- リンク生成ロジック: `app/lib/analysis-history.ts`に`resolvePostAnalyzeHistoryLink(analysisRunId)`を追加。`analysisRunId`が`null`・`undefined`・空文字のいずれかの場合は`null`を返し（呼び出し側は何も表示しない）、それ以外の場合は既存の`buildHistoryDetailPath()`を再利用して`{ path: "/history/{encodedId}" }`を返す。表示文言は同ファイルの`POST_ANALYZE_HISTORY_LINK_TEXT`（「保存済み履歴で開く」）・`POST_ANALYZE_HISTORY_LINK_HELPER_TEXT`（「この分析結果は履歴に保存されています。」）として定数化。
+- 表示箇所: `app/components/AnalysisDashboard.tsx`（トップページ`/`と履歴詳細`/history/[id]`の両方で使われている既存コンポーネント）の先頭、`BrandSummarySection`の直前に、`result.analysisRunId`を`resolvePostAnalyzeHistoryLink()`に渡した結果が非nullの場合のみ補足文＋リンクを表示する。新しいpropは追加せず、既存の`result: AnalysisResult`から直接読む。
+- `/history/[id]`で表示した場合の扱い: 保存済み`result_json`は`analysisRunId`が未確定の時点（DB保存呼び出し前）でスナップショットされるため、常に`analysisRunId: null`のまま保存される——履歴詳細を開いたときに同じ結果への自己参照リンクが出ることは（現状の実装上）ない。将来`result_json`に確定後の`analysisRunId`を含めるよう変更した場合は、この前提が崩れる点に注意。
+- `READ_HISTORY_ENABLED=false`時の扱い: frontendはこの環境変数の状態を判定・取得しない。リンクは`analysisRunId`の有無だけで表示し、無効時の挙動は遷移先の`/history/[id]`の既存表示（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)参照）にそのまま任せる。
+- テスト: `app/lib/analysis-history.test.ts`に`resolvePostAnalyzeHistoryLink()`のテストを5件追加（UUIDでリンク生成される／`null`で`null`／`undefined`で`null`／空文字で`null`／`buildHistoryDetailPath()`によるURLエンコードが効くこと）。コンポーネント描画テスト基盤がないため（既存制約）、JSX自体の描画確認は`npm run build`のTypeScript検証と、開発サーバーでの`/api/analyze`手動確認（dummyフォールバックデータには`analysisRunId`がなくリンクが出ないことを確認）にとどめた。
 
 ## 関連ドキュメント
 
