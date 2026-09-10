@@ -6,7 +6,12 @@
 // React component-rendering library, which this project doesn't have
 // (see app/lib/staging-banner.ts for the same pattern).
 
-import { parseAnalysisRunListResponse } from "./analysis-history-schema";
+import {
+  parseAnalysisRunDetailResponse,
+  parseAnalysisRunListResponse,
+} from "./analysis-history-schema";
+import { parseAnalysisResult } from "./analysis-result-schema";
+import type { AnalysisResult } from "./types";
 
 /** One row of GET /analysis-runs's `items` — mirrors
  * backend/models.py's AnalysisRunListItem. Deliberately excludes
@@ -147,4 +152,155 @@ export async function resolveHistoryFetchOutcome(
   }
 
   return { kind: "items", items: parsed.data.items };
+}
+
+/** Link text for a list row's "view detail" link — replaces the
+ * earlier "詳細は後続対応" placeholder now that
+ * docs/22_analysis_history_detail_ui_design.md's detail page is
+ * implemented (see app/history/page.tsx / app/history/[id]/page.tsx).
+ */
+export const HISTORY_LIST_DETAIL_LINK_TEXT = "詳細を見る";
+
+/** Builds the /history/{id} path for a list row's detail link.
+ * `encodeURIComponent` guards against an id containing characters
+ * that would otherwise be interpreted as path segments. */
+export function buildHistoryDetailPath(id: string): string {
+  return `/history/${encodeURIComponent(id)}`;
+}
+
+// --- Detail page (GET /analysis-runs/{id}, docs/22_analysis_history_detail_ui_design.md) ---
+
+export const HISTORY_DETAIL_PAGE_TITLE = "分析履歴の詳細";
+export const HISTORY_DETAIL_BACK_LINK_TEXT = "分析履歴一覧へ戻る";
+
+export const HISTORY_DETAIL_NOT_FOUND_MESSAGE =
+  "指定された分析履歴が見つかりません。";
+
+// Shown when the saved result_json no longer matches the current
+// AnalysisResult shape (see app/lib/analysis-result-schema.ts) — a
+// distinct outcome from a network/schema-envelope failure, since the
+// envelope itself (brand/run info) parsed fine (see
+// docs/22_analysis_history_detail_ui_design.md "9. 保存済み
+// result_jsonの扱い").
+export const HISTORY_DETAIL_INCOMPATIBLE_MESSAGE =
+  "保存済み分析結果の形式が現在の表示形式と一致しません。";
+
+export const HISTORY_DETAIL_GENERIC_ERROR_MESSAGE =
+  "分析履歴の詳細を読み込めませんでした。時間をおいて再度お試しください。";
+
+/** One row of GET /analysis-runs/{id}'s `brand` — mirrors
+ * backend/models.py's AnalysisRunBrand. */
+export type AnalysisRunBrand = {
+  id: string;
+  name: string;
+  canonicalDomain?: string;
+};
+
+/** GET /analysis-runs/{id}'s `run` — mirrors backend/models.py's
+ * AnalysisRunInfo. Unlike AnalysisRunListItem, `inputSnapshot` is
+ * always present (it's a required field on the backend model) and
+ * there is no `createdAt` here. */
+export type AnalysisRunInfo = {
+  status: string;
+  inputSnapshot: Record<string, unknown>;
+  sourceSummary?: Record<string, number>;
+  startedAt?: string;
+  completedAt?: string;
+};
+
+/** GET /analysis-runs/{id} — mirrors backend/models.py's
+ * AnalysisRunDetailResponse. `result` is kept as a loose
+ * `Record<string, unknown>` (the raw, saved result_json) rather than
+ * `AnalysisResult` — see app/lib/analysis-history-schema.ts's module
+ * doc for why it's validated separately. */
+export type AnalysisRunDetailResponse = {
+  id: string;
+  brand: AnalysisRunBrand;
+  run: AnalysisRunInfo;
+  result: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+};
+
+export type AnalysisRunDetailBasicInfoDisplay = {
+  brandNameLabel: string;
+  canonicalDomainLabel?: string;
+  statusLabel: string;
+  startedAtLabel: string;
+  sourceSummaryLabel?: string;
+  visibilityScoreLabel?: string;
+};
+
+/** Formats the "basic info" shown above the reused AnalysisDashboard —
+ * sourced from `brand`/`run` (always available once the envelope
+ * parses) plus `result.summary.visibilityScore` when `result` itself
+ * parsed as a valid AnalysisResult (omitted otherwise, e.g. in the
+ * "incompatible" outcome). */
+export function formatAnalysisRunDetailBasicInfo(
+  detail: AnalysisRunDetailResponse,
+  result?: AnalysisResult,
+): AnalysisRunDetailBasicInfoDisplay {
+  return {
+    brandNameLabel: detail.brand.name,
+    canonicalDomainLabel: detail.brand.canonicalDomain,
+    statusLabel: getStatusLabel(detail.run.status),
+    startedAtLabel: detail.run.startedAt ?? "実行日時不明",
+    sourceSummaryLabel: formatSourceSummary(detail.run.sourceSummary),
+    visibilityScoreLabel:
+      result && typeof result.summary.visibilityScore === "number"
+        ? `可視性スコア ${result.summary.visibilityScore}`
+        : undefined,
+  };
+}
+
+export type AnalysisRunDetailViewState =
+  | { kind: "loading" }
+  | { kind: "disabled"; message: string; detail: string }
+  | { kind: "notFound"; message: string }
+  | { kind: "incompatible"; message: string }
+  | { kind: "error"; message: string }
+  | { kind: "success"; detail: AnalysisRunDetailResponse; result: AnalysisResult };
+
+/**
+ * Turns a fetch() Response (or null, on a network-level failure) from
+ * /api/analysis-runs/{id} into a view state the detail page can render
+ * directly — mirrors resolveHistoryFetchOutcome() above. Distinguishes
+ * "not found" (404) from "disabled" (503) from a saved result that no
+ * longer validates as the current AnalysisResult shape ("incompatible")
+ * from any other failure ("error").
+ */
+export async function resolveHistoryDetailFetchOutcome(
+  response: Response | null,
+): Promise<AnalysisRunDetailViewState> {
+  if (!response) {
+    return { kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === 503) {
+    return {
+      kind: "disabled",
+      message: HISTORY_DISABLED_MESSAGE,
+      detail: HISTORY_DISABLED_DETAIL,
+    };
+  }
+
+  if (response.status === 404) {
+    return { kind: "notFound", message: HISTORY_DETAIL_NOT_FOUND_MESSAGE };
+  }
+
+  if (!response.ok) {
+    return { kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  const parsed = parseAnalysisRunDetailResponse(json);
+  if (!parsed.success) {
+    return { kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE };
+  }
+
+  const resultParsed = parseAnalysisResult(parsed.data.result);
+  if (!resultParsed.success) {
+    return { kind: "incompatible", message: HISTORY_DETAIL_INCOMPATIBLE_MESSAGE };
+  }
+
+  return { kind: "success", detail: parsed.data, result: resultParsed.data };
 }

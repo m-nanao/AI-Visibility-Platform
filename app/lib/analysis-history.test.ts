@@ -1,15 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  HISTORY_DETAIL_GENERIC_ERROR_MESSAGE,
+  HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
+  HISTORY_DETAIL_NOT_FOUND_MESSAGE,
   HISTORY_DISABLED_MESSAGE,
   HISTORY_EMPTY_STATE_TEXT,
   HISTORY_GENERIC_ERROR_MESSAGE,
+  HISTORY_LIST_DETAIL_LINK_TEXT,
   HISTORY_PAGE_TITLE,
+  buildHistoryDetailPath,
+  formatAnalysisRunDetailBasicInfo,
   formatAnalysisRunListItem,
   formatSourceSummary,
   getStatusLabel,
+  resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
 } from "./analysis-history";
-import type { AnalysisRunListItem } from "./analysis-history";
+import type { AnalysisRunDetailResponse, AnalysisRunListItem } from "./analysis-history";
+import { buildDummyAnalysis } from "./dummy-data";
 
 const SAMPLE_ITEM: AnalysisRunListItem = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -161,5 +169,145 @@ describe("resolveHistoryFetchOutcome", () => {
 
   it("empty-state text is distinct from the disabled message (0 items vs. read API off)", () => {
     expect(HISTORY_EMPTY_STATE_TEXT).not.toBe(HISTORY_DISABLED_MESSAGE);
+  });
+});
+
+describe("buildHistoryDetailPath", () => {
+  it("builds a /history/{id} path", () => {
+    expect(buildHistoryDetailPath("11111111-1111-1111-1111-111111111111")).toBe(
+      "/history/11111111-1111-1111-1111-111111111111",
+    );
+  });
+
+  it("encodes characters that would otherwise be interpreted as path segments", () => {
+    expect(buildHistoryDetailPath("a/b")).toBe("/history/a%2Fb");
+  });
+});
+
+describe("HISTORY_LIST_DETAIL_LINK_TEXT", () => {
+  it("replaces the earlier 'detail is a future task' placeholder", () => {
+    expect(HISTORY_LIST_DETAIL_LINK_TEXT).toBe("詳細を見る");
+  });
+});
+
+const SAMPLE_DETAIL: AnalysisRunDetailResponse = {
+  id: "11111111-1111-1111-1111-111111111111",
+  brand: {
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "サイボウズ",
+    canonicalDomain: "cybozu.co.jp",
+  },
+  run: {
+    status: "completed",
+    inputSnapshot: { brandName: "サイボウズ" },
+    sourceSummary: { web_fetch: 1, common_crawl: 3 },
+    startedAt: "2026-09-09T00:00:00+09:00",
+    completedAt: "2026-09-09T00:00:10+09:00",
+  },
+  result: buildDummyAnalysis("サイボウズ") as unknown as Record<string, unknown>,
+  meta: { documentsSource: "development_sample" },
+};
+
+function jsonDetailResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("formatAnalysisRunDetailBasicInfo", () => {
+  it("formats brand/run info and visibilityScore from a parsed result", () => {
+    const parsedResult = buildDummyAnalysis("サイボウズ");
+    const display = formatAnalysisRunDetailBasicInfo(SAMPLE_DETAIL, parsedResult);
+
+    expect(display.brandNameLabel).toBe("サイボウズ");
+    expect(display.canonicalDomainLabel).toBe("cybozu.co.jp");
+    expect(display.statusLabel).toBe("完了");
+    expect(display.startedAtLabel).toBe("2026-09-09T00:00:00+09:00");
+    expect(display.sourceSummaryLabel).toBe("web_fetch: 1 / common_crawl: 3");
+    expect(display.visibilityScoreLabel).toBe(
+      `可視性スコア ${parsedResult.summary.visibilityScore}`,
+    );
+  });
+
+  it("omits visibilityScoreLabel when no parsed result is given (e.g. incompatible outcome)", () => {
+    const display = formatAnalysisRunDetailBasicInfo(SAMPLE_DETAIL);
+
+    expect(display.visibilityScoreLabel).toBeUndefined();
+    // Brand/run-derived fields are still available independent of `result`.
+    expect(display.brandNameLabel).toBe("サイボウズ");
+    expect(display.statusLabel).toBe("完了");
+  });
+});
+
+describe("resolveHistoryDetailFetchOutcome", () => {
+  it("returns a disabled view when the response is 503", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse({ error: "analysis history read API is not enabled" }, 503),
+    );
+
+    expect(outcome.kind).toBe("disabled");
+    if (outcome.kind === "disabled") {
+      expect(outcome.message).toBe(HISTORY_DISABLED_MESSAGE);
+    }
+  });
+
+  it("returns a notFound view when the response is 404", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({ kind: "notFound", message: HISTORY_DETAIL_NOT_FOUND_MESSAGE });
+  });
+
+  it("returns an error view when the network request itself failed (response is null)", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(null);
+
+    expect(outcome).toEqual({ kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns an error view for a non-503/404 failure status", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse({ error: "something went wrong" }, 502),
+    );
+
+    expect(outcome).toEqual({ kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns an error view when the envelope fails schema validation", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse({ not: "valid" }, 200),
+    );
+
+    expect(outcome).toEqual({ kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns an incompatible view when result doesn't match the current AnalysisResult shape", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse({ ...SAMPLE_DETAIL, result: { some: "old shape" } }, 200),
+    );
+
+    expect(outcome).toEqual({
+      kind: "incompatible",
+      message: HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
+    });
+  });
+
+  it("returns a success view with the parsed detail and result when everything validates", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(jsonDetailResponse(SAMPLE_DETAIL, 200));
+
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.detail.brand.name).toBe("サイボウズ");
+      expect(outcome.result.brandName).toBe("サイボウズ");
+    }
+  });
+
+  it("never assumes result/resultJson is present on the list schema (list and detail are independent)", () => {
+    // Sanity check that the detail fixture actually carries a `result`
+    // field the list schema never has (see
+    // app/lib/analysis-history-schema.test.ts's equivalent check on
+    // the list side).
+    expect(SAMPLE_DETAIL).toHaveProperty("result");
   });
 });

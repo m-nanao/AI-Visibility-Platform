@@ -242,7 +242,7 @@ frontend側の取得方針:
 
 未実装として以下を残す:
 
-- 履歴詳細UI（設計メモは2026-09-10に[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)として整理済み。実装はまだ）
+- ~~履歴詳細UI~~ → 設計（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)）に沿って`/history/[id]`として最小実装済み（2026-09-10、`feature/history-detail-ui`。詳細は同ファイル「16. 実装状況」参照）
 - `/analyze`レスポンスへの`analysisRunId`追加
 - 分析直後の履歴リンク
 - 認証/RLS
