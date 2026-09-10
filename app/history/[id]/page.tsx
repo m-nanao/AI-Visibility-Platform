@@ -15,6 +15,8 @@ import {
   HISTORY_DETAIL_BACK_LINK_TEXT,
   HISTORY_DETAIL_PAGE_TITLE,
   HISTORY_LOADING_TEXT,
+  REPORT_LINK_TEXT,
+  buildHistoryReportPath,
   formatAnalysisRunDetailBasicInfo,
   formatComparisonImprovementsLabel,
   formatComparisonVisibilityScoreLabel,
@@ -131,7 +133,7 @@ export default function HistoryDetailPage() {
 
         {view.kind === "success" && (
           <>
-            <BasicInfo detail={view.detail} result={view.result} />
+            <BasicInfo id={id} detail={view.detail} result={view.result} />
             <div className="mt-6">
               <ComparisonSection view={comparisonView} />
             </div>
@@ -146,9 +148,11 @@ export default function HistoryDetailPage() {
 }
 
 function BasicInfo({
+  id,
   detail,
   result,
 }: {
+  id: string | undefined;
   detail: Extract<AnalysisRunDetailViewState, { kind: "success" }>["detail"];
   result: Extract<AnalysisRunDetailViewState, { kind: "success" }>["result"];
 }) {
@@ -174,6 +178,16 @@ function BasicInfo({
         {display.visibilityScoreLabel && <span>{display.visibilityScoreLabel}</span>}
         {display.sourceSummaryLabel && <span>{display.sourceSummaryLabel}</span>}
       </div>
+      {id && (
+        <div className="mt-3">
+          <Link
+            href={buildHistoryReportPath(id)}
+            className="text-sm text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
+          >
+            {REPORT_LINK_TEXT} →
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
