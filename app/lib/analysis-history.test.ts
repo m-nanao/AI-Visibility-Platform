@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
   HISTORY_COMPARISON_NOT_FOUND_MESSAGE,
@@ -12,7 +12,12 @@ import {
   HISTORY_GENERIC_ERROR_MESSAGE,
   HISTORY_LIST_DETAIL_LINK_TEXT,
   HISTORY_PAGE_TITLE,
+  REPORT_COMPARISON_UNAVAILABLE_MESSAGE,
+  REPORT_DETAIL_UNAVAILABLE_MESSAGE,
+  REPORT_LINK_TEXT,
+  REPORT_PRINT_BUTTON_LABEL,
   buildHistoryDetailPath,
+  buildHistoryReportPath,
   formatAnalysisRunDetailBasicInfo,
   formatAnalysisRunListItem,
   formatComparisonImprovementsLabel,
@@ -24,15 +29,21 @@ import {
   formatSourceSummary,
   getStatusLabel,
   limitComparisonTerms,
+  limitReportCooccurrenceTerms,
+  printReport,
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
   resolvePostAnalyzeHistoryLink,
+  resolveReportComparisonMessage,
+  resolveReportDetailMessage,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
   AnalysisRunDetailResponse,
+  AnalysisRunDetailViewState,
   AnalysisRunListItem,
+  HistoryComparisonViewState,
 } from "./analysis-history";
 import { buildDummyAnalysis } from "./dummy-data";
 
@@ -611,5 +622,173 @@ describe("limitComparisonTerms", () => {
     const terms = ["a", "b"];
 
     expect(limitComparisonTerms(terms)).toEqual(["a", "b"]);
+  });
+});
+
+// --- Report page (docs/26_report_output_design.md) ---
+
+describe("REPORT_LINK_TEXT", () => {
+  it("is the Japanese link text shown on /history/[id]", () => {
+    expect(REPORT_LINK_TEXT).toBe("レポート表示");
+  });
+});
+
+describe("buildHistoryReportPath", () => {
+  it("builds a /history/{id}/report path", () => {
+    expect(buildHistoryReportPath("11111111-1111-1111-1111-111111111111")).toBe(
+      "/history/11111111-1111-1111-1111-111111111111/report",
+    );
+  });
+
+  it("URL-encodes the id", () => {
+    expect(buildHistoryReportPath("has space")).toBe("/history/has%20space/report");
+  });
+});
+
+describe("resolveReportDetailMessage", () => {
+  type NonTerminalDetailView = Exclude<
+    AnalysisRunDetailViewState,
+    { kind: "loading" } | { kind: "success" }
+  >;
+
+  it("passes through the forbidden message as-is (403)", () => {
+    const view: NonTerminalDetailView = { kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE };
+    expect(resolveReportDetailMessage(view)).toBe(HISTORY_FORBIDDEN_MESSAGE);
+  });
+
+  it("passes through the disabled message as-is (503)", () => {
+    const view: NonTerminalDetailView = {
+      kind: "disabled",
+      message: HISTORY_DISABLED_MESSAGE,
+      detail: "some detail",
+    };
+    expect(resolveReportDetailMessage(view)).toBe(HISTORY_DISABLED_MESSAGE);
+  });
+
+  it("falls back to the generic report-unavailable message for notFound", () => {
+    const view: NonTerminalDetailView = {
+      kind: "notFound",
+      message: HISTORY_DETAIL_NOT_FOUND_MESSAGE,
+    };
+    expect(resolveReportDetailMessage(view)).toBe(REPORT_DETAIL_UNAVAILABLE_MESSAGE);
+  });
+
+  it("falls back to the generic report-unavailable message for incompatible", () => {
+    const view: NonTerminalDetailView = {
+      kind: "incompatible",
+      message: HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
+    };
+    expect(resolveReportDetailMessage(view)).toBe(REPORT_DETAIL_UNAVAILABLE_MESSAGE);
+  });
+
+  it("falls back to the generic report-unavailable message for a generic error", () => {
+    const view: NonTerminalDetailView = {
+      kind: "error",
+      message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE,
+    };
+    expect(resolveReportDetailMessage(view)).toBe(REPORT_DETAIL_UNAVAILABLE_MESSAGE);
+  });
+});
+
+describe("resolveReportComparisonMessage", () => {
+  type NonTerminalComparisonView = Exclude<
+    HistoryComparisonViewState,
+    { kind: "loading" } | { kind: "success" }
+  >;
+
+  it("passes through the forbidden message as-is (403)", () => {
+    const view: NonTerminalComparisonView = {
+      kind: "forbidden",
+      message: HISTORY_FORBIDDEN_MESSAGE,
+    };
+    expect(resolveReportComparisonMessage(view)).toBe(HISTORY_FORBIDDEN_MESSAGE);
+  });
+
+  it("passes through the disabled message as-is (503)", () => {
+    const view: NonTerminalComparisonView = {
+      kind: "disabled",
+      message: HISTORY_DISABLED_MESSAGE,
+    };
+    expect(resolveReportComparisonMessage(view)).toBe(HISTORY_DISABLED_MESSAGE);
+  });
+
+  it("passes through the no-previous-history message as-is", () => {
+    const view: NonTerminalComparisonView = {
+      kind: "noPrevious",
+      message: HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE,
+    };
+    expect(resolveReportComparisonMessage(view)).toBe(HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE);
+  });
+
+  it("falls back to the report-specific comparison-unavailable message for notFound", () => {
+    const view: NonTerminalComparisonView = {
+      kind: "notFound",
+      message: HISTORY_COMPARISON_NOT_FOUND_MESSAGE,
+    };
+    expect(resolveReportComparisonMessage(view)).toBe(REPORT_COMPARISON_UNAVAILABLE_MESSAGE);
+  });
+
+  it("falls back to the report-specific comparison-unavailable message for a generic error", () => {
+    const view: NonTerminalComparisonView = {
+      kind: "error",
+      message: HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
+    };
+    expect(resolveReportComparisonMessage(view)).toBe(REPORT_COMPARISON_UNAVAILABLE_MESSAGE);
+  });
+});
+
+describe("limitReportCooccurrenceTerms", () => {
+  it("caps to the default display limit of 10", () => {
+    const terms = Array.from({ length: 15 }, (_, i) => ({
+      keyword: `term${i}`,
+      count: i,
+      trend: "flat" as const,
+    }));
+
+    expect(limitReportCooccurrenceTerms(terms)).toHaveLength(10);
+  });
+
+  it("respects a custom limit", () => {
+    const terms = [
+      { keyword: "a", count: 3, trend: "up" as const },
+      { keyword: "b", count: 2, trend: "flat" as const },
+      { keyword: "c", count: 1, trend: "down" as const },
+    ];
+
+    expect(limitReportCooccurrenceTerms(terms, 2)).toEqual([terms[0], terms[1]]);
+  });
+
+  it("returns the full list when it is shorter than the limit", () => {
+    const terms = [{ keyword: "a", count: 1, trend: "flat" as const }];
+
+    expect(limitReportCooccurrenceTerms(terms)).toEqual(terms);
+  });
+});
+
+describe("REPORT_PRINT_BUTTON_LABEL", () => {
+  it("is the Japanese print/PDF-save button label", () => {
+    expect(REPORT_PRINT_BUTTON_LABEL).toBe("PDF保存 / 印刷");
+  });
+});
+
+describe("printReport", () => {
+  // This project's vitest run doesn't use a jsdom environment (no
+  // `window` global exists by default in these tests, same as the
+  // rest of this file), so `window.print` is stubbed via vi.stubGlobal
+  // rather than assumed to already exist.
+  let printSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    printSpy = vi.fn();
+    vi.stubGlobal("window", { print: printSpy });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("calls window.print()", () => {
+    printReport();
+    expect(printSpy).toHaveBeenCalledTimes(1);
   });
 });

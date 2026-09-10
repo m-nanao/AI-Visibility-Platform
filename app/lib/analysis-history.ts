@@ -12,7 +12,7 @@ import {
   parseAnalysisRunListResponse,
 } from "./analysis-history-schema";
 import { parseAnalysisResult } from "./analysis-result-schema";
-import type { AnalysisResult } from "./types";
+import type { AnalysisResult, CooccurrenceKeyword } from "./types";
 
 /** One row of GET /analysis-runs's `items` — mirrors
  * backend/models.py's AnalysisRunListItem. Deliberately excludes
@@ -576,4 +576,124 @@ export function limitComparisonTerms<T>(
   limit: number = HISTORY_COMPARISON_TERM_DISPLAY_LIMIT,
 ): T[] {
   return terms.slice(0, limit);
+}
+
+// --- Report page (/history/[id]/report, docs/26_report_output_design.md)
+// — a print-oriented HTML page built from the same two endpoints as
+// /history/[id] (GET /analysis-runs/{id} and its /comparison), reusing
+// resolveHistoryDetailFetchOutcome()/resolveHistoryComparisonFetchOutcome()
+// above rather than adding any new API. No backend change, no new
+// frontend proxy route — see that doc's "11. frontend実装方針".
+
+export const REPORT_PAGE_TITLE = "分析レポート";
+export const REPORT_LINK_TEXT = "レポート表示";
+export const REPORT_BACK_TO_DETAIL_LINK_TEXT = "履歴詳細へ戻る";
+
+export const REPORT_SECTION_TITLES = {
+  summary: "サマリー",
+  webContext: "Web上の文脈",
+  aiObservation: "AI回答側の観測",
+  comparison: "前回比較",
+  improvements: "改善提案",
+  notes: "注意事項",
+} as const;
+
+/** Builds the /history/{id}/report path for the "レポート表示" link on
+ * the history detail page. Mirrors buildHistoryDetailPath() above. */
+export function buildHistoryReportPath(id: string): string {
+  return `/history/${encodeURIComponent(id)}/report`;
+}
+
+// Shown instead of the whole report when the history detail itself
+// couldn't be fetched (see docs/26_report_output_design.md "15. エラー・
+// データ不足時の表示方針"「履歴詳細が取得できない場合」) — a report
+// can't be built at all without its underlying detail. The more
+// specific forbidden/disabled reasons (403/503) are shown as-is since
+// they're already the exact wording that section calls for; every
+// other failure (not found / incompatible saved result / network
+// error) falls back to this generic message rather than surfacing
+// detail-page wording that doesn't apply to a report ("この履歴は見
+// つかりません" etc. would be confusing framed as a report).
+export const REPORT_DETAIL_UNAVAILABLE_MESSAGE = "レポートを表示できません。";
+
+/** Resolves the message to show in place of the whole report when the
+ * underlying history detail fetch didn't succeed. Only meant to be
+ * called for a non-loading, non-success AnalysisRunDetailViewState. */
+export function resolveReportDetailMessage(
+  view: Exclude<AnalysisRunDetailViewState, { kind: "loading" } | { kind: "success" }>,
+): string {
+  if (view.kind === "forbidden" || view.kind === "disabled") {
+    return view.message;
+  }
+  return REPORT_DETAIL_UNAVAILABLE_MESSAGE;
+}
+
+// Shown for the report's "前回比較" section specifically (distinct from
+// REPORT_DETAIL_UNAVAILABLE_MESSAGE above) when the comparison fetch
+// itself failed for a reason other than "no previous run yet" — see
+// docs/26_report_output_design.md "15. エラー・データ不足時の表示方針"
+// 「比較データが取得できない場合」. A comparison failure never removes
+// the rest of the report (see docs/25_analysis_history_comparison_design.md
+// "14. エラー・データ不足時の表示方針", the same policy this report page
+// follows).
+export const REPORT_COMPARISON_UNAVAILABLE_MESSAGE = "前回比較は表示できません。";
+
+/** Resolves the message to show in the report's "前回比較" section when
+ * the comparison fetch didn't resolve to "success". Distinguishes
+ * "no previous run yet" (its own exact wording, HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE)
+ * from every other failure (REPORT_COMPARISON_UNAVAILABLE_MESSAGE),
+ * while still surfacing the shared 403/503 wording as-is. Only meant
+ * to be called for a non-loading, non-success HistoryComparisonViewState. */
+export function resolveReportComparisonMessage(
+  view: Exclude<HistoryComparisonViewState, { kind: "loading" } | { kind: "success" }>,
+): string {
+  if (view.kind === "forbidden" || view.kind === "disabled" || view.kind === "noPrevious") {
+    return view.message;
+  }
+  return REPORT_COMPARISON_UNAVAILABLE_MESSAGE;
+}
+
+/** How many top cooccurrenceRanking entries the report's "Web上の文脈"
+ * section shows — kept small so the printed page stays readable (see
+ * docs/26_report_output_design.md "7. レポートに含める項目"). */
+export const REPORT_COOCCURRENCE_DISPLAY_LIMIT = 10;
+
+export function limitReportCooccurrenceTerms(
+  terms: CooccurrenceKeyword[],
+  limit: number = REPORT_COOCCURRENCE_DISPLAY_LIMIT,
+): CooccurrenceKeyword[] {
+  return terms.slice(0, limit);
+}
+
+// Shown in the report's "AI回答側の観測" section when
+// aiOverviewComparison is empty — covers both AI Overview mode being
+// off/unavailable and ChatGPT observation mode being off, without
+// trying to distinguish which (see docs/26_report_output_design.md
+// "15. エラー・データ不足時の表示方針" — this report keeps the two
+// specific messages listed there merged into one, per that doc's
+// "ただし、初期実装なので過度に凝らない" framing for this task).
+export const REPORT_AI_OVERVIEW_EMPTY_MESSAGE =
+  "AI Overview / ChatGPT観測データはありません。";
+
+// Fixed disclaimer text for the report's "注意事項" section (see
+// docs/26_report_output_design.md "9. レポート構成案"「8. 注意事項」).
+// Kept as plain data here (not JSX) so it's covered by the same
+// unit-testing approach as the rest of this file.
+export const REPORT_NOTES: string[] = [
+  "本レポートは公開Web情報をもとに、生成AIにどのように認知されやすいかを推定したものであり、特定のAIモデルの学習内容を完全に再現するものではありません。",
+  "実際の生成AIの内部的な学習状態・重み付けを保証するものではありません。",
+  "前回比較は、AI Overview取得モード等のprovider設定が前回と異なる場合、単純な比較には注意が必要です。",
+];
+
+export const REPORT_PRINT_BUTTON_LABEL = "PDF保存 / 印刷";
+
+/** Triggers the browser's native print dialog — the only way this
+ * initial report page produces a PDF (ブラウザの印刷機能でPDF保存、see
+ * docs/26_report_output_design.md "6. 初期出力形式"). No server-side
+ * PDF generation, no new backend endpoint. Wrapped as its own function
+ * so the "print" action is unit-testable without a component-rendering
+ * library — see app/components/ReportPrintButton.tsx for the button
+ * that calls it. */
+export function printReport(): void {
+  window.print();
 }

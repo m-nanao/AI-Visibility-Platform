@@ -1,8 +1,8 @@
 # レポート出力機能 設計メモ
 
-**このドキュメントは設計メモである。まだ実装ではない。実際のbackend/frontend変更は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。5〜11章の方針に沿って、印刷向けHTMLレポートページ（`/history/[id]/report`）と`/history/[id]`への「レポート表示」リンクは`feature/report-html-page`（2026-09-11、「20. 実装状況」参照）で最小実装済み。backend API追加・DB schema変更・migration変更はいずれも行っていない。PDF自動生成・共有URL発行・レポート保存はまだ未実装で、本番確認もまだ未実施。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-10**
+**最終更新日: 2026-09-11**
 
 ## 1. このドキュメントの目的
 
@@ -349,6 +349,19 @@
 - DB schema変更なしでよいか
 - PDF自動生成は後回しでよいか
 - 共有URL発行は後回しでよいか
+
+## 20. 実装状況（2026-09-11更新）
+
+`feature/report-html-page`で、本ドキュメントの5〜11章の方針に沿って印刷向けHTMLレポートページを最小実装した。**backend変更・backend API追加・DB schema変更・migration変更・`/analyze`変更はいずれも行っていない。本番確認はまだ行っていない。**
+
+- ページ: 新規`app/history/[id]/report/page.tsx`を追加。`app/history/[id]/page.tsx`と同じパターン（`useParams()`でid取得、`GET /api/analysis-runs/{id}`と`GET /api/analysis-runs/{id}/comparison`をそれぞれ独立した`useEffect`/`useState`で取得）で、既存のfrontend proxy routeをそのまま再利用する（新規proxy routeは追加していない）。`resolveHistoryDetailFetchOutcome()`/`resolveHistoryComparisonFetchOutcome()`も既存のものをそのまま再利用した。
+- 導線: `/history/[id]`の基本情報カード内に「レポート表示」リンク（`REPORT_LINK_TEXT`、`buildHistoryReportPath(id)`）を追加した。
+- レポート構成: 9章の構成案に沿って、表紙/ヘッダー・サマリー・Web上の文脈（共起語ランキング上位10件＋文脈分析）・AI回答側の観測（`aiOverviewComparison`、0件時は「AI Overview / ChatGPT観測データはありません。」）・前回比較・改善提案（優先度バッジ付き）・注意事項（固定3文）の7セクションで構成した。`AnalysisDashboard`をそのまま埋め込まず、レポート向けに再構成している。
+- エラー表示: 履歴詳細の取得が成功しなかった場合はレポート全体の代わりに`resolveReportDetailMessage()`が返すメッセージを表示する——403/503はそれぞれ既存の「分析履歴を表示する権限がありません。」「分析履歴の読み込みは現在無効です。」をそのまま表示し、それ以外（404・保存済みresultの形式不一致・ネットワークエラー）は新設の`REPORT_DETAIL_UNAVAILABLE_MESSAGE`（「レポートを表示できません。」）にまとめている。前回比較は`resolveReportComparisonMessage()`が同様に403/503/前回履歴なし（「比較できる過去履歴がまだありません。」）をそのまま表示し、それ以外は新設の`REPORT_COMPARISON_UNAVAILABLE_MESSAGE`（「前回比較は表示できません。」）にまとめる——**比較取得が失敗してもレポート本体の表示は妨げられない**（`/history/[id]`の「前回比較」セクションと同じ方針）。
+- 印刷: 新規`app/components/ReportPrintButton.tsx`（`"use client"`の小さなボタンcomponent）が`app/lib/analysis-history.ts`に追加した`printReport()`（`window.print()`を呼ぶだけの関数）を呼ぶ。ボタン自体はTailwindの`print:hidden`で印刷時に非表示にし、ページ側でも見出し直下のヘッダー全体（戻るリンク・印刷ボタン）を`print:hidden`にしている。
+- 表示整形: `app/lib/analysis-history.ts`に`REPORT_PAGE_TITLE`/`REPORT_LINK_TEXT`/`REPORT_SECTION_TITLES`/`buildHistoryReportPath()`/`resolveReportDetailMessage()`/`resolveReportComparisonMessage()`/`limitReportCooccurrenceTerms()`（上位10件）/`REPORT_AI_OVERVIEW_EMPTY_MESSAGE`/`REPORT_NOTES`/`REPORT_PRINT_BUTTON_LABEL`/`printReport()`を追加した。優先度・センチメント・トレンドのラベル表示は新規に作らず、既存の`app/lib/badge-styles.ts`（`priorityStyles`/`sentimentStyles`/`trendStyles`）をそのまま再利用している。
+- Common Crawl補完状況は今回のレポートには含めていない（7章の「含める項目」には挙げているが、初期実装は過度に凝らない方針のため今回は見送った——次のタスクで追加を検討）。
+- テスト: `app/lib/analysis-history.test.ts`に18件追加（`buildHistoryReportPath()`・`resolveReportDetailMessage()`の403/503/その他分岐・`resolveReportComparisonMessage()`の403/503/前回履歴なし/その他分岐・`limitReportCooccurrenceTerms()`・`REPORT_PRINT_BUTTON_LABEL`・`printReport()`が`window.print()`を呼ぶこと）。コンポーネントレンダリングを直接検証するテストライブラリは引き続き未導入のため、ページ自体のJSX描画は純粋関数テストではカバーしていない（既存の`/history`・`/history/[id]`と同じ方針）。手動でのブラウザ確認は本タスクでは実施していない。
 
 ## 関連ドキュメント
 
