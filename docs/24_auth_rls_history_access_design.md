@@ -1,6 +1,6 @@
 # 認証/RLS・履歴アクセス制御 設計メモ
 
-**このドキュメント自体は設計メモである。7章のbackend token gate案は`feature/history-read-token-gate`（2026-09-10、「14. 実装状況」参照）で最小実装済み。Supabase Auth/RLS適用・DB schema変更・migration変更はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。7章のbackend token gate案は`feature/history-read-token-gate`（2026-09-10、「14. 実装状況」参照）で最小実装済みで、本番環境での動作確認も完了済み（「15. 本番環境での動作確認」参照）。Supabase Auth/RLS適用・DB schema変更・migration変更はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -22,6 +22,7 @@
 - `analysisRunId`（[23_analysis_run_id_and_post_analyze_link_design.md](./23_analysis_run_id_and_post_analyze_link_design.md)参照）
 - 保存済み履歴リンク（分析結果画面の「保存済み履歴で開く」、同上docs/23参照）
 - 履歴read API token gate（`HISTORY_READ_TOKEN`、`feature/history-read-token-gate`、2026-09-10。「14. 実装状況」参照）
+- 履歴read API token gateの本番環境での動作確認（2026-09-10。「15. 本番環境での動作確認」参照）
 
 **未実装:**
 
@@ -158,6 +159,30 @@ frontendでは、read APIが401/403/503を返した場合に状態別メッセ�
 - frontend UI: `app/lib/analysis-history.ts`の`HistoryViewState`/`AnalysisRunDetailViewState`に`"forbidden"`状態を追加し、`resolveHistoryFetchOutcome()`/`resolveHistoryDetailFetchOutcome()`が403を`{ kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE }`（「分析履歴を表示する権限がありません。」）に解決する。`app/history/page.tsx`・`app/history/[id]/page.tsx`は既存の`disabled`/`error`と同じメッセージ表示ブロックに`forbidden`を追加しただけで、新規UIコンポーネントは作っていない。
 - `.env.example`: `HISTORY_READ_TOKEN=`を追加し、Render backendとVercel server-side routeの両方に同じ値を設定する運用、`NEXT_PUBLIC_*`にしないことを明記。**実際の値は設定していない**（このタスクではenvの実設定・Render/Vercel設定変更は対象外）。
 - テスト: backend `tests/test_db_settings.py`に6件、`tests/test_main_analysis_history_read_api.py`に11件追加（503の3パターン区別、403の各パターン、token一致時の成功、token値が応答に含まれないこと、`/analyze`が無影響であることを含む）。frontend `app/lib/analysis-history.test.ts`に2件（list/detail双方の403→forbidden）、新規`app/api/analysis-runs/route.test.ts`・`app/api/analysis-runs/[id]/route.test.ts`に各5件（token付与・token未設定時の非付与・token非露出・403転送・既存503挙動の維持）を追加。
+
+## 15. 本番環境での動作確認（2026-09-10追記）
+
+履歴read API token gateは本番環境で動作確認済み。
+
+確認内容:
+
+- Render backendとVercel frontend server-side routeに同じ`HISTORY_READ_TOKEN`を設定
+- `READ_HISTORY_ENABLED=true`の状態で確認
+- backend直アクセス（`https://llmo-analysis-api.onrender.com/analysis-runs`）では`GET /analysis-runs`がHTTP 403を返す
+- レスポンス本文は`{"error":"analysis history read access denied"}`
+- Vercel経由の`/history`（`https://ai-visibility-platform-eight.vercel.app/history`）では履歴一覧が表示される
+- Vercel server-side proxy route（`app/api/analysis-runs/route.ts`）がtokenを付与してbackendへアクセスできている
+- tokenなしのbackend直アクセスでは履歴データは返らない
+
+**注意:**
+
+- `HISTORY_READ_TOKEN`はブラウザへ露出させない。
+- `NEXT_PUBLIC_*`にはしない。
+- Render backendとVercel server-side routeに同じ値を設定する。
+
+また、以下も明記する。
+
+これはMVP向けの簡易token gateであり、Supabase Auth/RLSやユーザー/プロジェクト単位の権限制御はまだ未実装。
 
 ## 関連ドキュメント
 
