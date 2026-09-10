@@ -1,6 +1,6 @@
 # Supabase Auth/RLS migration設計メモ
 
-**このドキュメントは設計メモである。まだ実装ではない。migrationファイルは今回作らない。実際のmigration追加・Supabase設定変更・RLS有効化は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。5〜8章の方針に沿ったmigration SQL案（`backend/migrations/002_add_organizations_projects.sql`）は`feature/supabase-auth-rls-migration-sql`（2026-09-11、「19. 実装状況」参照）で追加済み。本番Supabaseへの適用・RLS有効化・`HISTORY_READ_TOKEN` gate削除・frontend/backend Auth実装はいずれも行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -275,6 +275,19 @@ RLSで事故が起きた場合:
 - 初期ロールはowner/memberだけでよいか
 - RLS有効化はfrontend/backend Auth対応後まで遅らせてよいか
 - 本番適用前に検証用DBを用意するか
+
+## 19. 実装状況（2026-09-11更新）
+
+`feature/supabase-auth-rls-migration-sql`で、本ドキュメントの5〜8章の方針に沿ってmigration SQL案を追加した。**本番Supabaseへの適用・Supabase設定変更・RLS有効化・`HISTORY_READ_TOKEN` gate削除・frontend/backend Auth実装はいずれも行っていない。**
+
+- migrationファイル: 新規`backend/migrations/002_add_organizations_projects.sql`を追加した。`001_initial_analysis_history.sql`と同様、実DBには適用していない設計成果物である旨をファイル冒頭のコメントに明記した。
+- 追加テーブル: `organizations`（`id`/`name`/`slug` unique/`created_at`/`updated_at`）、`projects`（`id`/`organization_id`/`name`/`slug`/`created_at`/`updated_at`、`unique (organization_id, slug)`）、`organization_members`（`organization_id`/`user_id references auth.users(id)`/`role`/`created_at`、`role`は`check (role in ('owner', 'member'))`）。6章の推奨どおり**案B（slug列でunique制約）**を採用し、default organization/projectを冪等に参照できるようにした。`organization_members.user_id`は`auth.users(id)`を参照するため、実際のSupabaseプロジェクト上でのみ意味を持つ（ローカル/CI環境のプレーンなPostgreSQLでは`auth`スキーマが存在しない点をファイル冒頭コメントに明記）。
+- 既存テーブルへの追加: `brands.project_id`/`analysis_runs.project_id`を`uuid references projects(id) on delete set null`としてNULL許容で追加した（`on delete cascade`ではなく`on delete set null`——projectが削除されても既存のbrand/analysis_runは残す）。NOT NULL制約は追加していない。
+- default organization / default project: slug`'default'`で`insert ... on conflict (slug) do nothing`により冪等に作成する。`organizations.slug = 'default'`かつ`projects.slug = 'default'`という組み合わせで一意に特定できる。
+- backfill: `brands`/`analysis_runsの`project_id is null`の行のみを対象に、上記default projectのidを`update ... set project_id = (select ...) where project_id is null`で設定する。再実行しても対象が残っていなければ何もしない。
+- index追加: `idx_projects_organization_id`/`idx_organization_members_user_id`/`idx_brands_project_id`/`idx_analysis_runs_project_id`/`idx_analysis_runs_project_created_at`の5つを追加した。
+- RLS: `enable row level security`・`create policy`はいずれも含めていない（ファイルコメントで「RLS policyは後続migration（006）で追加予定」と明記）。
+- テスト: `backend/tests/test_migrations.py`に9件追加した（ファイル存在確認、3テーブル作成確認、`brands`/`analysis_runs`への`project_id`追加確認、default organization/project作成の記述確認、backfill UPDATE確認、index作成確認、RLS有効化/policy作成が含まれないことの確認、`project_id`のNOT NULL強制がないことの確認、既存テーブル/カラムのdrop・行のdeleteがないことの確認）。backend既存テストは無影響（`backend/main.py`/`backend/models.py`/`backend/services/`はいずれも無変更）。
 
 ## 関連ドキュメント
 
