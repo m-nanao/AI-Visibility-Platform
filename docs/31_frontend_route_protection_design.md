@@ -1,6 +1,6 @@
 # Frontend Route Protection Design
 
-**このドキュメントは設計メモである。まだ実装ではない。frontend/backend実装・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。frontend/backend実装・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -158,6 +158,28 @@
 - 次の実装候補が「履歴画面・レポート画面の暫定route保護」として整理されている
 - secretを`NEXT_PUBLIC_`に置かない注意が明記されている
 - RLSを本番で不用意に変更しない注意が明記されている
+
+## 11. 本番確認結果（2026-09-11追記）
+
+`STAGING_ACCESS_CODE`による簡易パスコードゲートが、`/history`系routeにも実際に適用されていることを本番Vercelで確認済み。
+
+シークレットウィンドウで以下routeへ直接アクセスした。
+
+- `/history`
+- `/history/[id]`
+- `/history/[id]/report`
+
+結果:
+
+- すべて`/staging-login`へリダイレクトされた
+- パスコード入力後は、すべて内容を確認できた
+- 履歴一覧、履歴詳細、レポート表示は通常どおり動作した
+
+**注意:**
+
+- この確認により、暫定的な履歴画面・レポート画面の露出対策は既存`STAGING_ACCESS_CODE`ゲートで成立していることが確認できた。
+- ただし、これは単一共有パスコードによる暫定保護であり、ユーザー単位・project単位の本格権限管理ではない。
+- Supabase Auth、backend JWT検証、RLS policyは引き続き未実装。
 
 ## 関連ドキュメント
 
