@@ -1,6 +1,6 @@
 # analysisRunId追加と分析直後リンク 設計メモ
 
-**このドキュメント自体は設計メモである。`/analyze`レスポンスへの`analysisRunId`追加・frontend schema変更は`feature/analysis-run-id-response`（2026-09-10、「14. 実装状況」参照）、分析結果画面への「保存済み履歴で開く」リンク表示は`feature/post-analyze-history-link`（2026-09-10、「15. 実装状況」参照）でそれぞれ実装済み。認証/RLS実装はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメント自体は設計メモである。`/analyze`レスポンスへの`analysisRunId`追加・frontend schema変更は`feature/analysis-run-id-response`（2026-09-10、「14. 実装状況」参照）、分析結果画面への「保存済み履歴で開く」リンク表示は`feature/post-analyze-history-link`（2026-09-10、「15. 実装状況」参照）でそれぞれ実装済み。このリンクは本番Vercel環境での表示確認も完了済み（「16. 本番Vercel環境での動作確認」参照）。認証/RLS実装はまだ含まない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-10**
 
@@ -198,6 +198,20 @@ frontendの`AnalysisResult`型/Zod schemaに`analysisRunId?: string | null`を�
 - `/history/[id]`で表示した場合の扱い: 保存済み`result_json`は`analysisRunId`が未確定の時点（DB保存呼び出し前）でスナップショットされるため、常に`analysisRunId: null`のまま保存される——履歴詳細を開いたときに同じ結果への自己参照リンクが出ることは（現状の実装上）ない。将来`result_json`に確定後の`analysisRunId`を含めるよう変更した場合は、この前提が崩れる点に注意。
 - `READ_HISTORY_ENABLED=false`時の扱い: frontendはこの環境変数の状態を判定・取得しない。リンクは`analysisRunId`の有無だけで表示し、無効時の挙動は遷移先の`/history/[id]`の既存表示（[22_analysis_history_detail_ui_design.md](./22_analysis_history_detail_ui_design.md)参照）にそのまま任せる。
 - テスト: `app/lib/analysis-history.test.ts`に`resolvePostAnalyzeHistoryLink()`のテストを5件追加（UUIDでリンク生成される／`null`で`null`／`undefined`で`null`／空文字で`null`／`buildHistoryDetailPath()`によるURLエンコードが効くこと）。コンポーネント描画テスト基盤がないため（既存制約）、JSX自体の描画確認は`npm run build`のTypeScript検証と、開発サーバーでの`/api/analyze`手動確認（dummyフォールバックデータには`analysisRunId`がなくリンクが出ないことを確認）にとどめた。
+
+## 16. 本番Vercel環境での動作確認（2026-09-10追記）
+
+分析直後の「保存済み履歴で開く」リンクは本番Vercel環境で表示確認済み。
+
+確認内容:
+
+- `/analyze`実行後、DB保存成功時に`analysisRunId`が返る
+- 分析結果画面に「保存済み履歴で開く」リンクが表示される
+- リンク先は`/history/{analysisRunId}`
+- `READ_HISTORY_ENABLED=false`時はリンク先で無効メッセージが表示される
+- `READ_HISTORY_ENABLED=true`時は保存済み詳細を確認できる
+
+**注意:** 認証/RLS未実装のため、`READ_HISTORY_ENABLED=true`のままにすると`/history`と`/history/[id]`から保存済み履歴が表示可能になる。通常は`READ_HISTORY_ENABLED=false`運用が安全。
 
 ## 関連ドキュメント
 
