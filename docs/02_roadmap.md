@@ -116,10 +116,13 @@
   - 履歴比較APIの最小実装（`feature/history-comparison-api`、2026-09-10。`GET /analysis-runs/{analysis_run_id}/comparison`を追加し、既存の`get_analysis_run()`で現在の履歴、新規`get_previous_analysis_run_for_brand()`（自己結合1クエリ）で同一ブランドの直近前回履歴を取得。新規`backend/services/analysis_history_comparison.py`の純粋関数`build_comparison_response()`が`visibilityScore`差分・共起語ランキング上位10件のnew/removed/changed（`rankDelta`/`scoreDelta`はcurrent-previous、順位改善時は`rankDelta`が負）・改善提案の件数差分を算出。既存read API 2本と同じ`HISTORY_READ_TOKEN`gate（`_check_history_read_access()`）を適用し、currentなしは404、previousなしは200で`previous: null`・`diff: null`、provider mode不一致やresult欠損時は`warnings`に注意文言。**`/analyze`変更・DB保存処理の変更・DB schema変更・migration変更・frontend変更（proxy route含む）はいずれも行っていない**。backend 35件のテストを追加）
   - `/history/[id]`への前回比較セクション追加（`feature/history-comparison-ui`、2026-09-10。新規`app/api/analysis-runs/[id]/comparison/route.ts`が既存プロキシroute群と同じ方針で`HISTORY_READ_TOKEN`をserver-sideで付与しbackendへ転送、tokenはブラウザへ露出しない。`app/lib/analysis-history.ts`/`analysis-history-schema.ts`に型・schema・`resolveHistoryComparisonFetchOutcome()`・表示整形関数を追加。`/history/[id]`の基本情報下・`AnalysisDashboard`上に「前回比較」セクションを追加し、可視性スコア・共起語new/removed/changed・改善提案件数差分を表示、`previous`なし時は「比較できる過去履歴がまだありません。」を表示。**比較取得は詳細本体とは独立しており、失敗しても詳細本体の表示は妨げられない**。**backend比較API変更・DB schema変更・migration変更・`/analyze`変更・比較専用ページ・手動比較選択はいずれも行っていない**。frontend 45件のテストを追加）
   - 履歴比較UIの本番確認（`docs/record-history-comparison-ui-verification`、2026-09-10。docsのみ・コード変更なし。本番Vercel + Render + Supabase構成で`/history/[id]`の履歴詳細本体と「前回比較」セクションを確認。**前回履歴がある場合は`visibilityScore`差分・`cooccurrence`変化・`improvements`件数差分が表示され、前回履歴がない場合は「比較できる過去履歴がまだありません。」が表示される**。**backend直アクセスは引き続きHTTP 403で拒否され、Vercel経由でのみ比較データが表示されることを再確認**）
+  - レポート出力機能の設計（`docs/report-output-design`、2026-09-10。docsのみ・コード変更なし。新規[26_report_output_design.md](./26_report_output_design.md)を追加し、`/history/[id]`から`/history/[id]/report`への導線、初期出力形式（印刷向けHTMLページ＋ブラウザの印刷機能によるPDF保存、`window.print()`）、レポートに含める項目（ブランド名・可視性スコア・共起語ランキング・文脈分析・改善提案・AI Overview/ChatGPT観測・前回比較等）と含めない項目（生JSON・token・API key・DATABASE_URL等）、PDF生成方式の比較（案A: 印刷向けHTML/案B: frontend PDF生成/案C: backend PDF生成、**初期は案A推奨**）、frontend実装方針（`app/history/[id]/report/page.tsx`案、既存proxy route再利用）、backend実装方針（**初期はAPI追加なし**、既存read/comparison APIを使用）、セキュリティ注意（`HISTORY_READ_TOKEN`を`NEXT_PUBLIC_*`にしない・reportページがbackendへ直接アクセスしない）を整理した。**backend実装・frontend実装・API追加・UI追加・DB schema変更・migration変更はいずれも行っていない**）
 - **Next（次のステップ、優先順）**:
-  - レポート出力の設計
+  - レポート表示ページの最小実装
+  - `/history/[id]`へのレポート表示リンク追加
+  - レポート出力の本番確認
   - Supabase Auth/RLS本格設計
-- **Later（将来）**: Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
+- **Later（将来）**: サーバー側PDF生成、レポートPDF保存、共有URL発行、Supabase Auth/RLS本格設計、Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
 
 目安: 2〜3週間
 
