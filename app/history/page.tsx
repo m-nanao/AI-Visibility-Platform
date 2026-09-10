@@ -7,6 +7,8 @@ import {
   HISTORY_PAGE_DESCRIPTION,
   HISTORY_EMPTY_STATE_TEXT,
   HISTORY_LOADING_TEXT,
+  HISTORY_LIST_DETAIL_LINK_TEXT,
+  buildHistoryDetailPath,
   formatAnalysisRunListItem,
   resolveHistoryFetchOutcome,
 } from "../lib/analysis-history";
@@ -14,9 +16,9 @@ import type { HistoryViewState } from "../lib/analysis-history";
 
 // Client component fetching this Next.js app's own Route Handler
 // (app/api/analysis-runs/route.ts), same pattern as app/page.tsx
-// fetching /api/analyze. Detail pages (/history/[id]) are out of scope
-// for this task — see docs/21_analysis_history_ui_design.md "11. 初期
-// 実装でやること・やらないこと".
+// fetching /api/analyze. Detail pages (/history/[id]) are implemented
+// in app/history/[id]/page.tsx — see
+// docs/22_analysis_history_detail_ui_design.md.
 export default function HistoryPage() {
   const [view, setView] = useState<HistoryViewState>({ kind: "loading" });
 
@@ -114,9 +116,12 @@ export default function HistoryPage() {
                       <span>{display.sourceSummaryLabel}</span>
                     )}
                   </div>
-                  <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
-                    詳細は後続対応
-                  </p>
+                  <Link
+                    href={buildHistoryDetailPath(item.id)}
+                    className="mt-2 inline-block text-xs text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+                  >
+                    {HISTORY_LIST_DETAIL_LINK_TEXT}
+                  </Link>
                 </li>
               );
             })}

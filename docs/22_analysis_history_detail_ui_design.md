@@ -230,6 +230,21 @@ frontend側の取得方針:
 - `analysisRunId`追加はまだ行わない方針でよいか
 - 認証未実装のため、`READ_HISTORY_ENABLED=true`時は検証時のみ使う運用でよいか
 
+## 16. 実装状況（2026-09-10更新）
+
+`feature/history-detail-ui`で、本ドキュメントの設計に沿って履歴詳細UIの最小実装を追加した。**`/analyze`レスポンスへの`analysisRunId`追加・backend変更・migration変更・認証/RLS実装はいずれも行っていない。**
+
+- `/history/[id]`ページ: `app/history/[id]/page.tsx`（"use client"、`next/navigation`の`useParams()`でidを取得し、`app/history/page.tsx`と同じくこのNext.jsアプリ自身のRoute Handlerを`fetch`する構成）。
+- backend proxy route: `app/api/analysis-runs/[id]/route.ts`を新設し、`app/api/analysis-runs/route.ts`と同じ`PYTHON_ANALYSIS_API_URL`利用方針・エラー整形方針に揃えた。Python APIの503はそのまま転送、404もそのまま転送、その他の失敗は502として扱う。
+- 型・schema: `app/lib/analysis-history.ts`に`AnalysisRunBrand`/`AnalysisRunInfo`/`AnalysisRunDetailResponse`型、`app/lib/analysis-history-schema.ts`に対応するZod schema（`parseAnalysisRunDetailResponse()`）を追加。**`result`はenvelope schemaでは緩い`Record<string, unknown>`として受け、`AnalysisResult`としての妥当性は`app/lib/analysis-result-schema.ts`の既存`parseAnalysisResult()`で別途検証する**——2段階検証により、envelope自体は正常でも`result`が古い形式で互換性がない場合を「incompatible」として区別できる。
+- 詳細取得ロジック: `resolveHistoryDetailFetchOutcome()`（`app/lib/analysis-history.ts`）が503→`disabled`、404→`notFound`、envelope schema失敗またはネットワーク失敗→`error`、`result`のAnalysisResult検証失敗→`incompatible`、すべて成功→`success`（`detail`と検証済み`result`の両方を保持）を返す。
+- 基本情報表示: `formatAnalysisRunDetailBasicInfo()`がブランド名・代表ドメイン・ステータス（日本語ラベル）・実行日時・分析ソース概要を`brand`/`run`から、可視性スコアを検証済み`result.summary.visibilityScore`から組み立てる（`result`が検証できない場合は可視性スコアのみ省略）。
+- 既存分析結果コンポーネントの再利用: 新しいコンポーネントを作らず、既存の`app/components/AnalysisDashboard.tsx`（トップページの分析結果表示と全く同じコンポーネント）にそのまま検証済み`result`を渡している。
+- 一覧からの導線: `app/history/page.tsx`の「詳細は後続対応」を`buildHistoryDetailPath(id)`（`/history/{id}`、`encodeURIComponent`でエンコード）へのリンク「詳細を見る」に置き換えた。
+- エラー表示: 503は履歴一覧UIと同じ無効メッセージ、404は「指定された分析履歴が見つかりません。」、schema validation失敗（`result`のみ）は「保存済み分析結果の形式が現在の表示形式と一致しません。」、その他は「分析履歴の詳細を読み込めませんでした。時間をおいて再度お試しください。」を表示する。
+- 戻る導線: 詳細ページのヘッダーに「← 分析履歴一覧へ戻る」リンク（`/history`）を追加。
+- テスト: `@testing-library/react`等が未導入のため（既存制約）、`formatAnalysisRunDetailBasicInfo()`・`resolveHistoryDetailFetchOutcome()`・`buildHistoryDetailPath()`等の純粋関数を`app/lib/analysis-history.test.ts`/`app/lib/analysis-history-schema.test.ts`でユニットテストした（19件追加、503/404/incompatible/error/success各分岐、`result`検証の独立性を含む）。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
