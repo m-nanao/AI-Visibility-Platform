@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、Supabase Authのaccess tokenを取得できる状態）は`feature/supabase-auth-frontend-login`（2026-09-11、[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)参照）で実装済みだが、そのaccess tokenをbackendへ送る処理はまだ実装していない（4章「想定リクエスト形式」参照）。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。ただしAPIへの組み込みはまだ行っておらず、既存の`GET /analysis-runs`系3本の許可条件（`HISTORY_READ_TOKEN`のみ）は変更していない。Supabase Auth設定変更・RLS変更・migration追加・env追加（本番Render設定）は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、Supabase Authのaccess tokenを取得できる状態）は`feature/supabase-auth-frontend-login`（2026-09-11、[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)参照）で実装済みだが、そのaccess tokenをbackendへ送る処理はまだ実装していない（4章「想定リクエスト形式」参照）。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**いずれもAPIへは組み込んでおらず**、既存の`GET /analysis-runs`系3本の許可条件（`HISTORY_READ_TOKEN`のみ）は変更していない。Supabase Auth設定変更・RLS変更・migration追加・env追加（本番Render設定）は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -218,7 +218,7 @@ limit 1;
 ## 13. 次の実装候補
 
 1. frontendからのaccess token送信実装
-2. project権限判定の実装（`organization_members`照会）とAPIへの組み込み
+2. project権限判定helperのAPIへの組み込み（`services/project_access.py`を`main.py`から呼ぶ）
 3. `HISTORY_READ_TOKEN`との移行期間運用（Phase 2以降）
 4. RLS policyの検証DBテスト（[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)参照）
 5. 本番Render env設定（`AUTH_JWT_ENABLED`/`SUPABASE_JWKS_URL`等）
@@ -234,6 +234,19 @@ limit 1;
 - **既存API**: `GET /analysis-runs`系3本の許可条件は変更していない——`AUTH_JWT_ENABLED=true`にして`Authorization: Bearer`headerを送っても、`HISTORY_READ_TOKEN`が正しくなければ引き続き403になることをテストで確認済み（`backend/tests/test_main_analysis_history_read_api.py`に2件追加）。
 - **テスト**: `backend/tests/test_auth_settings.py`（12件）・`backend/tests/test_jwt_auth.py`（22件）を新規追加。ローカル生成したRSA鍵ペアで固定JWKS/JWTを作り、外部ネットワークアクセスなしで正常系・署名不正・期限切れ・issuer/audience不一致・sub欠落・JWKS取得失敗・不明kidを検証し、tokenやAuthorizationヘッダー値が例外messageに含まれないことも確認した。
 - **今回未実装（引き続き別タスク）**: APIへのJWT検証組み込み、frontendからのaccess token送信、project権限判定、`HISTORY_READ_TOKEN`との移行期間運用、RLS policy実行・enable/disable、migration追加、Supabase設定変更、Render/Vercelでの実際のenv設定。
+
+## 15. project権限判定の実装状況（2026-09-11追記）
+
+`feature/backend-project-access-helpers`（2026-09-11）で、9章「project権限判定」で整理したSQL方針に沿ったhelper moduleを追加した。**APIへの組み込みは行っていない**——既存の`GET /analysis-runs`系3本の許可条件は`HISTORY_READ_TOKEN`のみのまま変更していない。
+
+- **新規`backend/services/project_access.py`**: 既に開いたDB connectionを受け取る3関数を追加。
+  - `can_user_access_project(conn, user_id, project_id) -> bool`: `organization_members` ⋈ `projects`（`organization_id`結合）で`user_id`の所属を確認する。
+  - `can_user_access_analysis_run(conn, user_id, analysis_run_id) -> bool`: `analysis_runs` ⋈ `projects`（`project_id`結合）⋈ `organization_members`（`organization_id`結合）で確認する。`analysis_runs.project_id`が`null`の行は、この内部結合が成立しないため自動的に`False`になる。
+  - `get_accessible_project_ids(conn, user_id) -> list[str]`: `user_id`が所属する組織が持つ全project idを、作成日時昇順で返す。
+  - いずれも`user_id`/`project_id`/`analysis_run_id`が空文字の場合はDBに問い合わせず`False`または`[]`を返す。DBエラー時は専用の`ProjectAccessError`を送出する（`AnalysisHistoryReadError`と同じ設計）。
+- **`backend/services/analysis_history_repository.py`への追加**: `list_analysis_runs()`に任意の`project_ids: list[str] | None = None`パラメータを追加した。`None`（デフォルト）は既存どおり全件、`[]`はDB接続すら行わず空配列を即返す、値がある場合は`ar.project_id in (%s, ...)`条件をparameterized queryで追加する。**呼び出し側（`main.py`）はこのパラメータをまだ渡していない**——既存の`GET /analysis-runs`の挙動・レスポンスは完全に不変。`get_analysis_run()`・comparison用の関数には、単一IDの権限判定は`can_user_access_analysis_run()`側の責務とする方針のため、今回は変更を加えていない。
+- **テスト**: `backend/tests/test_project_access.py`（17件、FakeConnection/FakeCursorのみで完結、実DB・monkeypatch不要）、`backend/tests/test_analysis_history_repository.py`に`project_ids`関連4件を追加。既存の`GET /analysis-runs`系テスト（`HISTORY_READ_TOKEN`gate関連含む）はすべて無変更で通過することを確認した。
+- **今回未実装（引き続き別タスク）**: `main.py`からのこれらhelperの呼び出し、frontendからのaccess token送信、`HISTORY_READ_TOKEN`との移行期間運用、RLS policy実行・enable/disable、migration追加、Supabase/Render/Vercel設定変更。
 
 ## 関連ドキュメント
 

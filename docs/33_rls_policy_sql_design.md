@@ -1,6 +1,6 @@
 # RLS Policy SQL Design
 
-**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みだが、これはRLS policyの代替ではなく、まだどのAPIにも組み込んでいない——詳細は「14. アプリ層での同等チェックの追加」参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -265,9 +265,14 @@ drop policy if exists "members can select analysis results in their projects" on
 
 ## 13. 次の実装候補
 
-- Supabase Auth導入設計、または実装方針の整理
-- backend JWT検証の実装（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)に沿った実装）
-- 上記の実装後、本SQL案を検証DBで実行し、9章のテストケースを確認する
+- 本SQL案を検証DBで実行し、9章のテストケースを確認する
+- `backend/services/project_access.py`（14章参照）のAPIへの組み込み
+
+## 14. アプリ層での同等チェックの追加（2026-09-11追記）
+
+`feature/backend-project-access-helpers`（2026-09-11）で、本ドキュメントの3章「基本権限モデル」と同じテーブル関係（`organization_members` ⋈ `projects` ⋈ `analysis_runs`）を使ったアプリケーション層（backend Python）のアクセス可否判定helperを追加した——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「15. project権限判定の実装状況」を参照。
+
+**これはRLS policyの代替ではない。** `backend/services/project_access.py`はbackendのDB接続（RLSをbypassしうる、8章参照）上で明示的にSQLを実行するアプリケーション層のチェックであり、DB自体がRLS policyなしで無防備である状態（2章参照）を変えるものではない。RLS policyの本番適用（5〜7章）は引き続き別タスクであり、今回のhelperはまだどのAPIエンドポイントにも組み込んでいない。
 
 ## 関連ドキュメント
 
