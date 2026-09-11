@@ -1,8 +1,8 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を含むJWT検証用envを有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示を確認済み**——詳細は「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照。**ただしJWT/project権限判定経路が実際に優先利用されることの本格確認はまだ完了していない**（frontend proxyが両方のheaderを送る場合、`HISTORY_READ_TOKEN`が優先されるため）。既存の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を含むJWT検証用envを有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示を確認済み**——詳細は「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照。**`Authorization: Bearer`がある場合はJWT/project権限判定経路を優先し、`HISTORY_READ_TOKEN`へfallbackしない移行実装は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み**——詳細は「20. JWTがある場合にJWT/project権限判定を優先する移行実装」参照（実ブラウザでの本番確認自体はまだ別タスク）。`Authorization`headerがない場合の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-11**
+**最終更新日: 2026-09-12**
 
 ## 1. 目的
 
@@ -368,6 +368,74 @@ Render再デプロイ後、本番Vercelで以下を確認済み。
 
 - JWTがある場合にJWT/project権限判定を優先する移行実装（もしくはHISTORY_READ_TOKENを送らない検証方法の確立）
 - JWT/project権限判定経路の本番確認
+- RLS policyの検証DBテスト
+- RLS policy本番適用
+
+## 20. JWTがある場合にJWT/project権限判定を優先する移行実装（2026-09-12追記）
+
+`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で、19章の「未完了」として残っていた優先順位の入れ替えを実装した。**backendのみの変更であり、frontend変更・migration変更・RLS変更・Supabase/Render/Vercel設定変更はいずれも行っていない。**
+
+### 変更内容（`_resolve_history_access()`の解決順序）
+
+18章で導入した解決順序を、以下のとおり入れ替えた。
+
+**変更前（18章時点）:**
+
+1. `HISTORY_READ_TOKEN`header正しい → `mode="history_token"`（`Authorization`headerの有無に関わらず優先）
+2. それ以外で`AUTH_JWT_ENABLED=true`かつ`Authorization: Bearer`あり → JWT検証 → `mode="jwt"`
+3. どちらもなし → 403
+
+**変更後（本タスク）:**
+
+1. `AUTH_JWT_ENABLED=true`かつ`Authorization`headerがある（空文字でない） → JWT経路が最優先。`HISTORY_READ_TOKEN`が同時に正しく付いていても一切参照しない。
+   - Bearer形式不正・JWT署名不正・期限切れ・issuer/audience不一致・subなし → 401（**`HISTORY_READ_TOKEN`へのfallbackなし**）
+   - `SUPABASE_JWKS_URL`未設定・JWKS取得失敗 → 503（**`HISTORY_READ_TOKEN`へのfallbackなし**）
+   - project権限判定中のDBエラー → 503（**`HISTORY_READ_TOKEN`へのfallbackなし**）
+   - JWT検証成功 → `get_accessible_project_ids()`でproject scopingし`mode="jwt"`
+2. それ以外（`AUTH_JWT_ENABLED=false`、または`Authorization`headerが存在しない） → `X-History-Read-Token`header正しい → `mode="history_token"`（従来どおり、project制限なし）
+3. どちらもなし → 403（従来どおり）
+
+「JWTがあるのに壊れている」場合に`HISTORY_READ_TOKEN`へ静かにfallbackすると、frontend proxyが両headerを送り続ける限りJWT経路の不具合が本番で検出できなくなる——これが優先順位を入れ替えた理由である（19章で指摘した「JWT経路の本番動作が未検証」という課題への対応）。
+
+### 挙動まとめ
+
+| `AUTH_JWT_ENABLED` | `Authorization` | `HISTORY_READ_TOKEN` | 結果 |
+|---|---|---|---|
+| false | あり/なし | 正しい | `mode="history_token"`（従来どおり、JWTは一切参照しない） |
+| false | あり/なし | 不正/なし | 403 |
+| true | あり（正しいJWT） | あり/なし | `mode="jwt"`（project scoping適用、`HISTORY_READ_TOKEN`は無視） |
+| true | あり（不正なJWT） | 正しい | 401（fallbackしない） |
+| true | あり（正しいJWT、JWKS未設定） | 正しい | 503（fallbackしない） |
+| true | なし | 正しい | `mode="history_token"`（従来どおり） |
+| true | なし | 不正/なし | 403 |
+
+### `mode="jwt"`のproject権限判定（既存実装を維持）
+
+- 一覧: `get_accessible_project_ids(conn, user_id)`の結果を`list_analysis_runs(project_ids=...)`に渡す（18章と同じ）。
+- 詳細: `can_user_access_analysis_run(conn, user_id, analysis_run_id)`が`False`なら403（18章と同じ）。
+- comparison: 現在のrunへのアクセス確認後、前回runは現在のrunと同じ`project_id`に限定（18章と同じ）。
+
+JWT検証成功だけでは全履歴を許可しない方針（9章・18章）は変更していない。
+
+### `HISTORY_READ_TOKEN` gateの維持
+
+`HISTORY_READ_TOKEN` gate自体は削除していない——`Authorization`headerが存在しない場合（未ログイン経路、内部呼び出し等）の互換fallbackとして引き続き機能する。
+
+### テスト
+
+`backend/tests/test_main_analysis_history_read_api.py`に以下を追加・更新した。
+
+- `test_list_jwt_takes_precedence_over_history_read_token_when_both_present`（旧`test_list_history_read_token_takes_precedence_over_jwt`を優先順位反転に合わせて置き換え）
+- `test_list_returns_401_for_invalid_jwt_even_with_history_read_token_present`
+- `test_list_returns_503_when_jwt_unconfigured_even_with_history_read_token_present`
+- `test_list_history_token_mode_when_auth_jwt_enabled_but_no_authorization_header`
+- `test_list_returns_403_when_auth_jwt_enabled_and_no_credentials_at_all`
+
+既存のJWT関連テスト（project scoping・403アクセス拒否判定・comparison境界・token非漏洩等）はそのまま通過することを確認した。バックエンド全体で896件成功（追加前892件）。
+
+### 今回未実装（引き続き別タスク）
+
+- JWT/project権限判定経路の本番確認（frontendが両headerを送るため、本番でJWT経路が実際に使われることは今回の実装で保証されたが、実ブラウザでの確認はまだ行っていない）
 - RLS policyの検証DBテスト
 - RLS policy本番適用
 

@@ -2,9 +2,11 @@
 /analysis-runs/{id}/comparison (see main.py,
 docs/20_analysis_history_read_api_design.md), including the
 HISTORY_READ_TOKEN gate added on top of READ_HISTORY_ENABLED (see
-docs/24_auth_rls_history_access_design.md) and the JWT verification +
+docs/24_auth_rls_history_access_design.md), the JWT verification +
 project-access wiring added on top of that (see
-docs/32_backend_jwt_verification_design.md "16"/"17").
+docs/32_backend_jwt_verification_design.md "16"/"17"), and the
+JWT-takes-precedence-when-present migration (see docs/32
+"20").
 
 These tests never touch a real database — main.repository_list_analysis_runs
 / main.repository_get_analysis_run are monkeypatched at the main module
@@ -516,14 +518,77 @@ def test_detail_returns_503_when_jwt_enabled_but_jwks_not_configured(monkeypatch
     assert "error" in response.json()
 
 
-# --- AUTH_JWT_ENABLED=true, HISTORY_READ_TOKEN still takes precedence -----
+# --- AUTH_JWT_ENABLED=true, Authorization present: JWT now takes ----------
+# --- precedence over HISTORY_READ_TOKEN (docs/32 "20") --------------------
 
 
-def test_list_history_read_token_takes_precedence_over_jwt(monkeypatch):
-    """A correct HISTORY_READ_TOKEN must grant the same unrestricted,
-    unfiltered access as before this task, even when AUTH_JWT_ENABLED
-    is on and an Authorization header is also present — this is what
-    keeps the existing frontend proxy's requests working unchanged."""
+def test_list_jwt_takes_precedence_over_history_read_token_when_both_present(monkeypatch):
+    """When AUTH_JWT_ENABLED is on and the request carries both a
+    correct HISTORY_READ_TOKEN and an Authorization header, the JWT
+    path must be used (and the request must be project-scoped) —
+    HISTORY_READ_TOKEN is only ever consulted when there is no
+    Authorization header at all. This is what lets the frontend
+    proxy's real production requests (which send both headers)
+    actually exercise the JWT/project-access path."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+    _mock_jwt_dependencies(monkeypatch, project_ids=["project-1"])
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    headers = {**_auth_headers(), **_jwt_headers()}
+    response = client.get("/analysis-runs", headers=headers)
+
+    assert response.status_code == 200
+    # project_ids is present and reflects the JWT-derived membership —
+    # proof the JWT/project-access path ran rather than the
+    # unrestricted history_token path.
+    assert calls[0]["project_ids"] == ["project-1"]
+
+
+def test_list_returns_401_for_invalid_jwt_even_with_history_read_token_present(monkeypatch):
+    """An invalid JWT must not fall back to a correct, simultaneously
+    present HISTORY_READ_TOKEN — a broken JWT path must surface as an
+    error, not silently degrade to the legacy gate."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+
+    def raise_invalid(token, settings):
+        raise JWTAuthError("invalid_signature", "token signature is invalid")
+
+    monkeypatch.setattr(main, "verify_supabase_jwt", raise_invalid)
+
+    headers = {**_auth_headers(), **_jwt_headers()}
+    response = client.get("/analysis-runs", headers=headers)
+
+    assert response.status_code == 401
+
+
+def test_list_returns_503_when_jwt_unconfigured_even_with_history_read_token_present(monkeypatch):
+    """A misconfigured JWT path (SUPABASE_JWKS_URL unset) must not fall
+    back to a correct, simultaneously present HISTORY_READ_TOKEN — a
+    server misconfiguration must be visible as 503, not masked by the
+    legacy gate."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+    monkeypatch.delenv("SUPABASE_JWKS_URL", raising=False)
+
+    headers = {**_auth_headers(), **_jwt_headers()}
+    response = client.get("/analysis-runs", headers=headers)
+
+    assert response.status_code == 503
+
+
+# --- AUTH_JWT_ENABLED=true, no Authorization header: HISTORY_READ_TOKEN ---
+# --- fallback is preserved -------------------------------------------------
+
+
+def test_list_history_token_mode_when_auth_jwt_enabled_but_no_authorization_header(monkeypatch):
+    """With no Authorization header at all, AUTH_JWT_ENABLED=true must
+    not change anything — a correct HISTORY_READ_TOKEN still grants
+    the same unrestricted, unfiltered access as before this task."""
     _enable_read_env(monkeypatch)
     monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
     verify_calls = []
@@ -537,14 +602,25 @@ def test_list_history_read_token_takes_precedence_over_jwt(monkeypatch):
         main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
     )
 
-    headers = {**_auth_headers(), **_jwt_headers()}
-    response = client.get("/analysis-runs", headers=headers)
+    response = client.get("/analysis-runs", headers=_auth_headers())
 
     assert response.status_code == 200
     assert verify_calls == []
     # No project_ids key at all — identical call shape to the existing
     # history_token path (see test_list_success_default_query_params).
     assert calls[0] == {"limit": 20, "offset": 0, "brand": None, "status": None}
+
+
+def test_list_returns_403_when_auth_jwt_enabled_and_no_credentials_at_all(monkeypatch):
+    """AUTH_JWT_ENABLED=true with neither an Authorization header nor a
+    HISTORY_READ_TOKEN header must still be denied (403), same as
+    before this task."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+
+    response = client.get("/analysis-runs")
+
+    assert response.status_code == 403
 
 
 # --- AUTH_JWT_ENABLED=true, valid JWT: list is project-scoped --------------
