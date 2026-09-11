@@ -266,6 +266,7 @@ def list_analysis_runs(
     offset: int = 0,
     brand: str | None = None,
     status: str | None = None,
+    project_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Returns saved analysis run summaries (brands ⋈ analysis_runs ⋈
     analysis_results), newest first — see
@@ -277,10 +278,27 @@ def list_analysis_runs(
     regardless of what's passed in — defense in depth alongside
     main.py's own FastAPI query validation.
 
+    `project_ids` is optional groundwork for
+    services.project_access.get_accessible_project_ids() (see
+    docs/32_backend_jwt_verification_design.md "9. project権限判定") —
+    no caller passes it yet, and the existing HISTORY_READ_TOKEN-gated
+    callers in main.py are unaffected. `None` (the default) means "no
+    project filter, return everything" (today's behavior, unchanged).
+    An explicit `[]` means "no accessible projects" and short-circuits
+    to `[]` without touching the DB at all, since an `IN ()` clause
+    with no values is either a SQL error or always-false depending on
+    the driver — better to never construct one. A non-empty list adds
+    an `ar.project_id in (...)` condition with each id passed as its
+    own parameterized placeholder (never interpolated into the query
+    string).
+
     Raises AnalysisHistoryReadError on any connection/query failure.
     Does not itself check READ_HISTORY_ENABLED — callers must call
     services.db_settings.is_history_read_enabled() first.
     """
+    if project_ids is not None and len(project_ids) == 0:
+        return []
+
     database_url = _require_connectable()
 
     limit = max(1, min(limit, MAX_LIST_LIMIT))
@@ -294,6 +312,10 @@ def list_analysis_runs(
     if status is not None:
         conditions.append("ar.status = %s")
         params.append(status)
+    if project_ids is not None:
+        placeholders = ", ".join(["%s"] * len(project_ids))
+        conditions.append(f"ar.project_id in ({placeholders})")
+        params.extend(project_ids)
     where_clause = f"where {' and '.join(conditions)}" if conditions else ""
 
     query = f"""

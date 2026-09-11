@@ -503,6 +503,67 @@ def test_list_analysis_runs_no_filters_omits_where_clause(monkeypatch):
     assert len(params) == 2
 
 
+# --- list_analysis_runs: project_ids (groundwork for
+# services.project_access.get_accessible_project_ids(), not called by
+# any HISTORY_READ_TOKEN-gated caller yet) --------------------------------
+
+
+def test_list_analysis_runs_project_ids_none_is_unfiltered(monkeypatch):
+    """The default (no project_ids argument at all) must behave
+    exactly as before this parameter existed."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs()
+
+    query, _ = fake_cursor.executed[0]
+    assert "project_id" not in query.lower()
+
+
+def test_list_analysis_runs_project_ids_empty_list_short_circuits(monkeypatch):
+    """An explicit empty list means "no accessible projects" and must
+    return [] without attempting a DB connection at all."""
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeReadPsycopg(_FakeReadCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.list_analysis_runs(project_ids=[])
+
+    assert result == []
+    assert fake_psycopg.connect_calls == []
+
+
+def test_list_analysis_runs_project_ids_adds_in_clause(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(project_ids=["project-1", "project-2"])
+
+    query, params = fake_cursor.executed[0]
+    assert "ar.project_id in (%s, %s)" in query
+    assert params[0] == "project-1"
+    assert params[1] == "project-2"
+    # limit/offset still come last.
+    assert params[-2] == repo.DEFAULT_LIST_LIMIT
+    assert params[-1] == 0
+
+
+def test_list_analysis_runs_project_ids_combines_with_other_filters(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(brand="サイボウズ", project_ids=["project-1"])
+
+    query, params = fake_cursor.executed[0]
+    assert "b.name = %s" in query
+    assert "ar.project_id in (%s)" in query
+    assert params[0] == "サイボウズ"
+    assert params[1] == "project-1"
+
+
 # --- get_analysis_run: invalid id / not found -----------------------------
 
 
