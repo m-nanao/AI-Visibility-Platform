@@ -1,6 +1,6 @@
 # RLS Policy SQL Design
 
-**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済みで、**本番Vercel/RenderでJWT/project権限判定経路を実際に通った履歴表示を確認済み**——詳細は「16. JWTがある場合の優先化」「17. JWT/project権限判定経路の本番確認」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。RLS policyの本番適用は引き続き別タスクである。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済みで、**本番Vercel/RenderでJWT/project権限判定経路を実際に通った履歴表示を確認済み**——詳細は「16. JWTがある場合の優先化」「17. JWT/project権限判定経路の本番確認」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。**RLS policyの検証DB向け実行手順（drop policy if exists付きSQL・検証データ作成手順・検証クエリの複数案・期待結果・rollback SQL・本番適用前チェックリスト）は`docs/rls-verification-runbook`（2026-09-12）で[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)として整備済み**——詳細は「18. 検証DB向けRunbookの整備」参照。**検証DBへの実際のSQL実行・本番適用はいずれもまだ行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-12**
 
@@ -292,6 +292,21 @@ drop policy if exists "members can select analysis results in their projects" on
 
 **ただし、これはアプリケーション層の認可であり、RLS policyの本番適用はまだ行っていない。** RLSはDB層の追加防御として、検証DBでpolicy挙動を確認してから本番適用を判断する（9章「検証DBテスト方針」参照）。backendのproject権限判定が本番で動作していることは、RLS policyが不要であることを意味しない——backendの`DATABASE_URL`接続はRLSをbypassしうる（8章参照）ため、DB層の防御は依然として別レイヤーの課題として残る。
 
+## 18. 検証DB向けRunbookの整備（2026-09-12追記）
+
+`docs/rls-verification-runbook`（2026-09-12、docsのみ・コード変更なし）で、9章「検証DBテスト方針」・10章「本番適用前チェック」・11章「ロールバック方針」の内容を、実際に検証DBで手を動かせる粒度の手順書として[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)にまとめた。
+
+整備した内容:
+
+- 5章の`create policy`SQLに`drop policy if exists`を前置した、再実行しやすいSQL（対象6テーブル分）。
+- テストユーザーA/B・organization A/B・project A/B・brand/run/resultの検証データ作成手順（`auth.users`の作成はSupabase Dashboard/Auth APIが必要で、SQLだけでは完結しない旨を明記）。
+- `auth.uid()`を直接切り替えられないSQL Editorの制約を踏まえた検証方法3案（推奨: Dashboard/Auth API経由でログインしREST APIから確認、SQL Editorでのpolicy構文確認、将来の検証スクリプト案）。
+- user A/B・未所属ユーザー・未認証状態それぞれの期待結果の表。
+- policy単位のrollback SQL、RLS disable SQL、検証データ削除SQL。
+- 本番適用前チェックリスト（本番`project_id is null`件数の再確認、backend接続roleのRLS bypass確認、`HISTORY_READ_TOKEN` fallbackとの関係確認、rollback準備、本番適用後に確認する画面一覧を含む）。
+
+**今回、検証DBへの実際のSQL実行・本番Supabaseへの適用のいずれも行っていない。** RLS policyがbackendアプリケーション層のJWT/project権限判定の代替ではなく、DB層の追加防御であることは[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)「11. RLSの位置づけの再確認」に改めて明記した。
+
 ## 関連ドキュメント
 
 - [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md) — Supabase Auth/RLS本格設計
@@ -300,3 +315,4 @@ drop policy if exists "members can select analysis results in their projects" on
 - [30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md) — 002 migration本番適用結果（本番RLS状態を含む）
 - [31_frontend_route_protection_design.md](./31_frontend_route_protection_design.md) — frontend route保護設計
 - [32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md) — backend JWT検証設計
+- [35_rls_verification_runbook.md](./35_rls_verification_runbook.md) — RLS policy検証DB Runbook（実行手順・検証データ作成・検証クエリ・期待結果・rollback・本番適用前チェックリスト）
