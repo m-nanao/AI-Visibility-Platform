@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。まだ実装ではない。backend/frontend実装・Supabase Auth設定変更・RLS変更・migration追加・env追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。まだ実装ではない。frontendログイン（Email + Password、Supabase Authのaccess tokenを取得できる状態）は`feature/supabase-auth-frontend-login`（2026-09-11、[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)参照）で実装済みだが、そのaccess tokenをbackendへ送る処理はまだ実装していない（4章「想定リクエスト形式」参照）。backend実装・Supabase Auth設定変更・RLS変更・migration追加・env追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 

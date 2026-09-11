@@ -1,6 +1,6 @@
 # Frontend Route Protection Design
 
-**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。frontend/backend実装・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。Phase B（Supabase Authログイン）のfrontend実装は`feature/supabase-auth-frontend-login`（2026-09-11）で完了済み——詳細は「12. Phase B実装状況」参照。backend実装（Phase C）・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -181,6 +181,14 @@
 - ただし、これは単一共有パスコードによる暫定保護であり、ユーザー単位・project単位の本格権限管理ではない。
 - Supabase Auth、backend JWT検証、RLS policyは引き続き未実装。
 
+## 12. Phase B実装状況（2026-09-11追記）
+
+5.2章のPhase B（Supabase Authログイン）のfrontend実装を`feature/supabase-auth-frontend-login`（2026-09-11）で完了した。設計・実装内容の詳細は[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「15. 実装状況（frontendログイン）」を参照。
+
+- `/history`・`/history/[id]`・`/history/[id]/report`は`app/history/layout.tsx`経由の`AuthGuard`でSupabase Auth session必須になった。
+- 既存の`STAGING_ACCESS_CODE`ゲート（本章「5.1 Phase A」）は変更していない——有効な環境では「`/staging-login`→`/login`（今回追加）→`/history`」の二段階になる。
+- Phase C（backend JWT検証 + RLS）はまだ未実装。frontend proxy routeは引き続き`HISTORY_READ_TOKEN`でbackendへアクセスしており、Supabase access tokenをbackendへ送る処理は今回実装していない。
+
 ## 関連ドキュメント
 
 - [09_deployment.md](./09_deployment.md) — 公開手順（`STAGING_ACCESS_CODE`による簡易パスコードガードの実装詳細）
@@ -188,3 +196,4 @@
 - [27_supabase_auth_rls_design.md](./27_supabase_auth_rls_design.md) — Supabase Auth/RLS本格設計
 - [28_supabase_auth_rls_migration_design.md](./28_supabase_auth_rls_migration_design.md) — Supabase Auth/RLS migration設計
 - [30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md) — 002 migration本番適用結果（RLS状態を含む）
+- [34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md) — Supabase Auth導入設計（frontendログインの実装状況を含む）

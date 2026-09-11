@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import LogoutButton from "../components/LogoutButton";
 import {
   HISTORY_PAGE_TITLE,
   HISTORY_PAGE_DESCRIPTION,
@@ -45,19 +46,22 @@ export default function HistoryPage() {
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto max-w-5xl px-6 py-4">
-          <Link
-            href="/"
-            className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
-          >
-            ← 分析に戻る
-          </Link>
-          <h1 className="mt-2 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            {HISTORY_PAGE_TITLE}
-          </h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            {HISTORY_PAGE_DESCRIPTION}
-          </p>
+        <div className="mx-auto flex max-w-5xl items-start justify-between px-6 py-4">
+          <div>
+            <Link
+              href="/"
+              className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+            >
+              ← 分析に戻る
+            </Link>
+            <h1 className="mt-2 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
+              {HISTORY_PAGE_TITLE}
+            </h1>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              {HISTORY_PAGE_DESCRIPTION}
+            </p>
+          </div>
+          <LogoutButton />
         </div>
       </header>
 
