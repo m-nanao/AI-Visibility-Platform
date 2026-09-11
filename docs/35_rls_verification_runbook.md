@@ -1,6 +1,6 @@
 # RLS Policy 検証DB Runbook
 
-**この手順書は、[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)のselect policy SQL案を検証DBで実行するための実務手順書である。本番Supabaseへの適用は含まない。検証DBへの実際のSQL実行もこのタスクでは行っていない——今回はdocsとSQL案の整備のみである。** RLS policyはbackendアプリケーション層のJWT検証＋project権限判定（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)）の代替ではなく、DB層に追加する防御層として扱う。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書は、[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)のselect policy SQL案を検証DBで実行するための実務手順書である。本番Supabaseへの適用は含まない。** **この手順書に沿った検証DBでの基本テストが`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bの分離を確認済み。詳細は「12. 検証DBでの基本テスト結果」参照。`analysis_runs`/`analysis_results`のREST可視性確認・rollback SQL実行・本番適用はいずれもまだ行っていない。RLS policyはbackendアプリケーション層のJWT検証＋project権限判定（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)）の代替ではなく、DB層に追加する防御層として扱う。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-12**
 
@@ -337,6 +337,48 @@ delete from public.organizations where id in ('<org-a-id>', '<org-b-id>');
   - DB層（RLS）: `auth.uid()`をもとに、DBそのものが行単位でアクセスを制限する。本番未適用。
 - backendが`DATABASE_URL`経由でRLSをbypassする権限を持つ接続を使う限り、RLS policyを本番適用しても、backend経由のアクセス制御は引き続きアプリケーション層が実質的に担う（docs/33「8. backend接続 / service roleの扱い」参照）。RLSは、それとは独立した「万一アプリケーション層のチェックに不備があった場合のDB側の最終防御」および「将来client-sideから直接Supabaseへアクセスする設計に切り替えた場合の実効的な制御」として位置づける。
 - 本番適用の判断は、本Runbookでの検証DB確認結果と10章のチェックリストがすべて揃った段階で、別途ユーザーの明示承認を得てから行う。
+
+## 12. 検証DBでの基本テスト結果（2026-09-12追記）
+
+`docs/record-rls-verification-basic-results`（2026-09-12、docsのみ・コード変更なし）で、本Runbookの手順に沿って02_migration検証用Supabase projectでselect policyの基本テストを実施した。
+
+**検証DBの初期状態:**
+
+- 対象6テーブル（`organizations`/`organization_members`/`projects`/`brands`/`analysis_runs`/`analysis_results`）はすべて存在。
+- RLSは当初6テーブルすべてdisabled。
+- `brands.project_id is null` / `analysis_runs.project_id is null`はいずれも0件。
+- 既存データはほぼ空の状態から開始。
+
+**検証データ:** 4章の手順に沿って、organization A（`rls-test-org-a`）/ B（`rls-test-org-b`）、project A（`rls-test-project-a`）/ B（`rls-test-project-b`）、user A2（`rls-user-a2@example.com`）/ user B（`rls-user-b@example.com`）、brand（RLS Test Brand A/B）、analysis_run・analysis_resultをA/Bで分離して作成した。user A2はorganization Aのみに`owner`として所属、user Bはorganization Bのみに`owner`として所属する。
+
+**適用したpolicy:** 6章のSQL案に沿った6テーブル分のselect policyを検証DBに適用した。加えて、`organization_members`の自己参照による再帰を避けるためのhelper function `public.is_org_member(uuid)`を作成し、policyから呼び出す構成にした（6章「organization_membersの自己参照について」で言及していた対応策を実際に採用したもの）。`authenticated`roleへselect権限をgrantし、`anon`roleへはselect権限をgrantしていない。
+
+**確認結果（7章「方法A」に沿ってログイン→JWT取得→REST APIで確認）:**
+
+| 実行者 | 確認したテーブル | 結果 |
+|---|---|---|
+| user A2 | `organizations` | `rls-test-org-a`のみ返る |
+| user A2 | `projects` | `rls-test-project-a`のみ返る |
+| user A2 | `brands` | `RLS Test Brand A`のみ返る |
+| user B | `organizations` | `rls-test-org-b`のみ返る |
+| user B | `projects` | `rls-test-project-b`のみ返る |
+| user B | `brands` | `RLS Test Brand B`のみ返る |
+| 未認証 | `organizations` | `permission denied`（`anon`roleにselect権限をgrantしていないため） |
+
+- `pg_policies`でselect policyが6件登録されていることを確認した。
+- `organization_members`の再帰エラーは発生しなかった（helper function経由の構成による）。
+- user A2/BともにB側/A側のデータへのアクセス・漏えいは確認されなかった。
+
+**未認証アクセスの扱いについて:** 未認証アクセスの期待値は「空配列」または「permission denied」のいずれも許容する。今回の検証DBでは`anon`roleにSELECT権限をgrantしていないため`permission denied`となったが、いずれにせよ未認証状態でデータが読めていないことが確認できていれば安全側としてOKと判断する。
+
+**未確認として以下を残す。**
+
+- `analysis_runs` / `analysis_results`のREST可視性確認（user A2/Bそれぞれで、同様にA側/B側のみ見えることの確認）
+- rollback SQL（9章）の検証DBでの実行確認
+- RLS本番適用判断
+- 本番DBへの適用（引き続き別タスク）
+
+**本番DBへは今回もRLS policyを適用していない。** 検証DBへの操作のみであり、本番Supabase・Render・Vercelの設定変更はいずれも行っていない。
 
 ## 関連ドキュメント
 
