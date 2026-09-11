@@ -714,19 +714,26 @@ def analyze(payload: AnalyzeRequest):
 # endpoints are reachable by anyone who can call this service) *and*,
 # on top of that, one of two authorization paths — see
 # _resolve_history_access() below and
-# docs/32_backend_jwt_verification_design.md "8. HISTORY_READ_TOKEN
-# からの移行方針" (Phase 2: JWT併用):
+# docs/32_backend_jwt_verification_design.md "20. JWT/project権限判定
+# の優先化" (the priority these two paths are checked in):
 #
-# 1. the existing shared-secret HISTORY_READ_TOKEN in the
-#    X-History-Read-Token header (docs/24_auth_rls_history_access_design.md
-#    "7. backend APIでのアクセス制御案") — unrestricted, exactly as
-#    before this task. The current frontend proxy always sends this,
-#    so today's production traffic is unaffected.
-# 2. AUTH_JWT_ENABLED=true and a Supabase Auth access token in
-#    Authorization: Bearer — verified, then always scoped to the
-#    caller's accessible projects via services.project_access.py. A
-#    JWT is *never* sufficient on its own to see any history; project
-#    scoping is mandatory whenever this path is taken.
+# 1. AUTH_JWT_ENABLED=true and an Authorization header is present —
+#    a Supabase Auth access token in Authorization: Bearer is
+#    verified, then always scoped to the caller's accessible projects
+#    via services.project_access.py. A JWT is *never* sufficient on
+#    its own to see any history; project scoping is mandatory
+#    whenever this path is taken. This path is authoritative whenever
+#    it applies: a broken/expired JWT or a JWT-verification
+#    misconfiguration surfaces as 401/503 and never falls back to
+#    HISTORY_READ_TOKEN, even if that header is also present and
+#    correct.
+# 2. Otherwise (AUTH_JWT_ENABLED=false, or no Authorization header at
+#    all), the existing shared-secret HISTORY_READ_TOKEN in the
+#    X-History-Read-Token header
+#    (docs/24_auth_rls_history_access_design.md "7. backend APIでの
+#    アクセス制御案") — unrestricted, exactly as before this feature
+#    existed. An unauthenticated caller (no Authorization header) can
+#    only ever take this path.
 #
 # READ_HISTORY_ENABLED=true alone still isn't enough to serve a
 # request either way.
@@ -757,15 +764,16 @@ class HistoryAccessContext:
 
     mode="history_token": the existing X-History-Read-Token gate
     passed. Behaves exactly as before this feature existed — no
-    project scoping, `user_id`/`project_ids` are both None. Takes
-    precedence over any Authorization header present (see
-    _resolve_history_access()'s docstring), so today's production
-    traffic (the frontend proxy always sends this header) is
-    unaffected by this task.
+    project scoping, `user_id`/`project_ids` are both None. Only
+    reached when AUTH_JWT_ENABLED=false, or the request has no
+    Authorization header at all (see _resolve_history_access()'s
+    docstring) — a request that also carries an Authorization header
+    while AUTH_JWT_ENABLED=true takes the JWT path below instead,
+    regardless of whether HISTORY_READ_TOKEN is also present/correct.
 
-    mode="jwt": a valid Supabase Auth JWT was presented instead (and
-    HISTORY_READ_TOKEN was absent/incorrect). `user_id` is always set;
-    `project_ids` is the caller's accessible project id list from
+    mode="jwt": a valid Supabase Auth JWT was presented (with
+    AUTH_JWT_ENABLED=true). `user_id` is always set; `project_ids` is
+    the caller's accessible project id list from
     services.project_access.get_accessible_project_ids() — this can be
     an empty list, meaning "no accessible projects". Callers must
     always apply `project_ids` as a filter (or an explicit membership
@@ -782,30 +790,38 @@ def _resolve_history_access(request: Request) -> HistoryAccessContext | JSONResp
     proceed, or a JSONResponse to return immediately otherwise. Checked
     first thing by all three read API endpoints below — supersedes the
     old _check_history_read_access() (same READ_HISTORY_ENABLED/
-    DATABASE_URL/HISTORY_READ_TOKEN checks, now also resolving a JWT
-    when the token gate doesn't pass).
+    DATABASE_URL/HISTORY_READ_TOKEN checks, now also resolving a JWT).
 
-    Resolution order:
+    Resolution order (see docs/32_backend_jwt_verification_design.md
+    "20. JWT/project権限判定の優先化" for the migration this
+    implements):
     1. READ_HISTORY_ENABLED=false -> 503 (feature off) -> DATABASE_URL
        unset -> 503 (misconfigured) -> HISTORY_READ_TOKEN unset -> 503
        (misconfigured) — identical to before this task, regardless of
        AUTH_JWT_ENABLED or any Authorization header.
-    2. X-History-Read-Token header correct -> mode="history_token",
-       unrestricted — identical to before this task. Checked before
-       any JWT, so a request that happens to carry both a correct
-       token and an Authorization header still gets the simple,
-       unrestricted path (this is what the current frontend proxy
-       sends).
-    3. Otherwise, only when AUTH_JWT_ENABLED=true and an
-       Authorization: Bearer header is present: parse and verify the
-       JWT (services/jwt_auth.py), then resolve the caller's
-       accessible projects (services/project_access.py) ->
-       mode="jwt". A malformed Authorization header or a JWT that
-       fails verification for any reason -> 401, except when this
-       server itself can't verify any JWT right now
-       (SUPABASE_JWKS_URL unset, or its JWKS endpoint unreachable) ->
-       503, and a DB failure while resolving accessible projects ->
-       503 (fails closed — never silently proceeds unrestricted).
+    2. AUTH_JWT_ENABLED=true and an Authorization header is present
+       (non-empty) -> the JWT path is authoritative and
+       HISTORY_READ_TOKEN is *not* consulted at all, even if the
+       header is also present and correct: parse and verify the JWT
+       (services/jwt_auth.py), then resolve the caller's accessible
+       projects (services/project_access.py) -> mode="jwt". A
+       malformed Authorization header or a JWT that fails
+       verification for any reason -> 401, except when this server
+       itself can't verify any JWT right now (SUPABASE_JWKS_URL
+       unset, or its JWKS endpoint unreachable) -> 503, and a DB
+       failure while resolving accessible projects -> 503 (fails
+       closed). None of these failures ever fall back to
+       HISTORY_READ_TOKEN — a present-but-broken JWT must surface as
+       an error, not silently degrade to the legacy path, or a
+       production JWT/project-access regression would be
+       undetectable as long as the frontend also keeps sending
+       HISTORY_READ_TOKEN.
+    3. Otherwise (AUTH_JWT_ENABLED=false, or no Authorization header
+       at all) -> X-History-Read-Token header correct ->
+       mode="history_token", unrestricted — identical to before this
+       task. This is the only path a request with no Authorization
+       header (e.g. an unauthenticated caller, or an internal/legacy
+       caller) can take.
     4. Otherwise (no usable credentials of either kind) -> 403,
        identical to before this task.
 
@@ -825,12 +841,9 @@ def _resolve_history_access(request: Request) -> HistoryAccessContext | JSONResp
     if settings.history_read_token is None:
         return error_response(HISTORY_READ_TOKEN_NOT_CONFIGURED_MESSAGE, status_code=503)
 
-    provided_token = request.headers.get(HISTORY_READ_TOKEN_HEADER, "")
-    if provided_token and hmac.compare_digest(provided_token, settings.history_read_token):
-        return HistoryAccessContext(mode="history_token")
-
     auth_settings = load_auth_settings()
     authorization_header = request.headers.get(AUTHORIZATION_HEADER)
+
     if auth_settings.jwt_enabled and authorization_header:
         try:
             token = extract_bearer_token(authorization_header)
@@ -850,6 +863,10 @@ def _resolve_history_access(request: Request) -> HistoryAccessContext | JSONResp
         return HistoryAccessContext(
             mode="jwt", user_id=authenticated_user.user_id, project_ids=project_ids
         )
+
+    provided_token = request.headers.get(HISTORY_READ_TOKEN_HEADER, "")
+    if provided_token and hmac.compare_digest(provided_token, settings.history_read_token):
+        return HistoryAccessContext(mode="history_token")
 
     return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
 

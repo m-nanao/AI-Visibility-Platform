@@ -1,6 +1,6 @@
 # RLS Policy SQL Design
 
-**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。RLS policyの本番適用は引き続き別タスクである。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み——詳細は「16. JWTがある場合の優先化」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。RLS policyの本番適用は引き続き別タスクである。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-12**
 
@@ -276,9 +276,15 @@ drop policy if exists "members can select analysis results in their projects" on
 
 ## 15. backend履歴APIへの接続（2026-09-12追記）
 
-`feature/backend-history-api-jwt-project-access`（2026-09-12）で、14章のhelperを実際に`GET /analysis-runs`系3本のAPIエンドポイントへ接続した。`AUTH_JWT_ENABLED=true`かつ`Authorization: Bearer <Supabase access token>`があり、`HISTORY_READ_TOKEN`が正しくない場合のみ、`can_user_access_project()`/`can_user_access_analysis_run()`/`get_accessible_project_ids()`がリクエストごとに呼ばれ、`user_id`が所属するprojectのデータのみを返すようになった。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「18. backend履歴APIへのJWT検証＋project権限判定の接続」を参照。
+`feature/backend-history-api-jwt-project-access`（2026-09-12）で、14章のhelperを実際に`GET /analysis-runs`系3本のAPIエンドポイントへ接続した。当初の実装では、`AUTH_JWT_ENABLED=true`かつ`Authorization: Bearer <Supabase access token>`があり、`HISTORY_READ_TOKEN`が正しくない場合のみ`can_user_access_project()`/`can_user_access_analysis_run()`/`get_accessible_project_ids()`が呼ばれる優先順位だった（この優先順位は16章で入れ替えられている——本章の記述は当時の実装状況の記録として残す）。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「18. backend履歴APIへのJWT検証＋project権限判定の接続」を参照。
 
 **これでも本質は変わらない——依然としてアプリ層のチェックであり、RLS policyの代替ではない。** DB自体は引き続きRLS policyなしの状態のまま（2章参照）であり、`HISTORY_READ_TOKEN`gate経由（backendのDB接続を直接使う既存経路）は今回のアプリ層チェックの影響を一切受けない。RLS policy本番適用は引き続き未実施。
+
+## 16. JWTがある場合の優先化（2026-09-12追記）
+
+`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で、15章の優先順位を入れ替えた——`AUTH_JWT_ENABLED=true`かつ`Authorization`headerがある場合はJWT/project権限判定経路が最優先になり、`HISTORY_READ_TOKEN`が正しくても参照しない。`HISTORY_READ_TOKEN`は`Authorization`headerがない場合の互換fallbackとしてのみ残る。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「20. JWTがある場合にJWT/project権限判定を優先する移行実装」を参照。
+
+**これもRLS policyの代替ではない点は変わらない。** アプリ層のチェックがより厳格な優先順位になっただけであり、DB自体は引き続きRLS policyなしの状態のまま（2章参照）。RLS policy本番適用は引き続き未実施。
 
 ## 関連ドキュメント
 
