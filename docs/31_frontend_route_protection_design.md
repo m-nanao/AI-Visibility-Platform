@@ -1,6 +1,6 @@
 # Frontend Route Protection Design
 
-**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。Phase B（Supabase Authログイン）のfrontend実装は`feature/supabase-auth-frontend-login`（2026-09-11）で完了済み——詳細は「12. Phase B実装状況」参照。frontend proxyからbackendへのSupabase access token転送も`feature/frontend-proxy-forward-auth-token`（2026-09-11）で追加済み——詳細は「13. frontend proxyからのaccess token転送追加」参照。backend実装（Phase C）・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。Phase B（Supabase Authログイン）のfrontend実装は`feature/supabase-auth-frontend-login`（2026-09-11）で完了済み——詳細は「12. Phase B実装状況」参照。frontend proxyからbackendへのSupabase access token転送も`feature/frontend-proxy-forward-auth-token`（2026-09-11）で追加済み——詳細は「13. frontend proxyからのaccess token転送追加」参照。`@supabase/ssr`導入によるcookieベースsession移行後も、`/login`・`/history`系・ログアウトの動作は本番Vercelで再確認済み（「12. Phase B実装状況」追記参照）。backend実装（Phase C）・Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -189,10 +189,11 @@
 - 既存の`STAGING_ACCESS_CODE`ゲート（本章「5.1 Phase A」）は変更していない——有効な環境では「`/staging-login`→`/login`（今回追加）→`/history`」の二段階になる。
 - Phase C（backend JWT検証 + RLS）はまだ未実装。frontend proxy routeは引き続き`HISTORY_READ_TOKEN`でbackendへアクセスしており、Supabase access tokenをbackendへ送る処理は今回実装していない。
 - **Phase Bのfrontend実装は本番Vercelで確認済み（2026-09-11）**——本番Vercelに`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`を設定し、Supabase側でユーザーを作成したうえで、`/login`でのEmail + Passwordログイン、ログイン後の`/history`への遷移、`/history`・`/history/[id]`・`/history/[id]/report`の表示、ログアウトを確認した。`STAGING_ACCESS_CODE`が有効な環境では、未認証時に`/staging-login`、通過後にSupabase Auth未ログインなら`/login`へ進む二段階保護になることも確認済み（詳細は[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「16. 本番環境での動作確認」参照）。
+- **`@supabase/ssr`導入によるcookieベースsessionへの移行後も、本番で再確認済み（2026-09-11）**——`feature/frontend-proxy-forward-auth-token`（commit `b1d0270`）のmain反映後、`/login`・既存ユーザーでのログイン・ログイン後の`/history`遷移・`/history`/`/history/[id]`/`/history/[id]/report`の表示・ログアウト・ログアウト後に`/history`へ直接アクセスすると`/login`に戻されること（`AuthGuard`保護の継続）を本番Vercelで確認した。sessionの保存方式変更（`localStorage`→cookie）によるhistory配下の保護機能への悪影響がないことを確認済み（詳細は[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「20. cookie session化後の本番動作確認」参照）。
 
 ## 13. frontend proxyからのaccess token転送追加（2026-09-11追記）
 
-`feature/frontend-proxy-forward-auth-token`（2026-09-11）で、Phase Bで挙げていた「Supabase access tokenをbackendへ送る処理は今回実装していない」を解消し、frontend proxy route（`/api/analysis-runs`・`/api/analysis-runs/[id]`・`/api/analysis-runs/[id]/comparison`）がSupabase access tokenを`Authorization: Bearer <token>`としてbackendへ転送するようになった。**既存の`STAGING_ACCESS_CODE`ゲート・`HISTORY_READ_TOKEN`headerはいずれも変更していない**。backend側はこのheaderをまだ検証条件に使っていない（Phase Cは引き続き未実装）。詳細は[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「19. frontend→backend access token転送の追加」を参照。
+`feature/frontend-proxy-forward-auth-token`（2026-09-11）で、Phase Bで挙げていた「Supabase access tokenをbackendへ送る処理は今回実装していない」を解消し、frontend proxy route（`/api/analysis-runs`・`/api/analysis-runs/[id]`・`/api/analysis-runs/[id]/comparison`）がSupabase access tokenを`Authorization: Bearer <token>`としてbackendへ転送するようになった。**既存の`STAGING_ACCESS_CODE`ゲート・`HISTORY_READ_TOKEN`headerはいずれも変更していない**。backend側はこのheaderをまだ検証条件に使っていない（Phase Cは引き続き未実装）。main反映後の本番動作確認結果は上記「12. Phase B実装状況」の追記、および[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「19. frontend→backend access token転送の追加」「20. cookie session化後の本番動作確認」を参照。
 
 ## 関連ドキュメント
 
