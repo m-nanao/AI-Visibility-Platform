@@ -1,8 +1,8 @@
 # Frontend Route Protection Design
 
-**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。Phase B（Supabase Authログイン）のfrontend実装は`feature/supabase-auth-frontend-login`（2026-09-11）で完了済み——詳細は「12. Phase B実装状況」参照。frontend proxyからbackendへのSupabase access token転送も`feature/frontend-proxy-forward-auth-token`（2026-09-11）で追加済み——詳細は「13. frontend proxyからのaccess token転送追加」参照。`@supabase/ssr`導入によるcookieベースsession移行後も、`/login`・`/history`系・ログアウトの動作は本番Vercelで再確認済み（「12. Phase B実装状況」追記参照）。**Phase C（backend JWT検証 + RLS）もbackend実装・本番Render env有効化（`AUTH_JWT_ENABLED=true`）まで進んでおり、既存`HISTORY_READ_TOKEN`互換経路での本番表示確認は完了済み——ただしJWT/project権限判定経路が実際に優先利用されることの本格確認・RLS policy本番適用はまだ完了していない**（詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「18」「19」参照）。Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。5〜7章で整理した既存`STAGING_ACCESS_CODE`ゲート（Phase A案A-1）が`/history`系routeを実際に保護していることは本番Vercelで確認済み（2026-09-11、「11. 本番確認結果」参照）。Phase B（Supabase Authログイン）のfrontend実装は`feature/supabase-auth-frontend-login`（2026-09-11）で完了済み——詳細は「12. Phase B実装状況」参照。frontend proxyからbackendへのSupabase access token転送も`feature/frontend-proxy-forward-auth-token`（2026-09-11）で追加済み——詳細は「13. frontend proxyからのaccess token転送追加」参照。`@supabase/ssr`導入によるcookieベースsession移行後も、`/login`・`/history`系・ログアウトの動作は本番Vercelで再確認済み（「12. Phase B実装状況」追記参照）。**Phase C（backend JWT検証 + RLS）も、backend実装・本番Render env有効化（`AUTH_JWT_ENABLED=true`）・`Authorization`headerがある場合にJWT/project権限判定を優先する移行実装まで完了しており、本番でJWT/project権限判定経路を実際に通った履歴表示を確認済み**——詳細は「14. backend JWT/project権限判定との併用状況」参照。**RLS policy本番適用はまだ完了していない**（詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「18」「19」「20」「21」参照）。Supabase Auth設定変更・RLS変更・migration追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-11**
+**最終更新日: 2026-09-12**
 
 ## 1. 目的
 
@@ -194,6 +194,14 @@
 ## 13. frontend proxyからのaccess token転送追加（2026-09-11追記）
 
 `feature/frontend-proxy-forward-auth-token`（2026-09-11）で、Phase Bで挙げていた「Supabase access tokenをbackendへ送る処理は今回実装していない」を解消し、frontend proxy route（`/api/analysis-runs`・`/api/analysis-runs/[id]`・`/api/analysis-runs/[id]/comparison`）がSupabase access tokenを`Authorization: Bearer <token>`としてbackendへ転送するようになった。**既存の`STAGING_ACCESS_CODE`ゲート・`HISTORY_READ_TOKEN`headerはいずれも変更していない**。backend側はこのheaderをまだ検証条件に使っていない（Phase Cは引き続き未実装）。main反映後の本番動作確認結果は上記「12. Phase B実装状況」の追記、および[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「19. frontend→backend access token転送の追加」「20. cookie session化後の本番動作確認」を参照。
+
+## 14. backend JWT/project権限判定との併用状況（2026-09-12追記）
+
+Phase C（backend JWT検証 + RLS）は、`feature/backend-history-api-jwt-project-access`（backend履歴APIへの接続）・本番Render env有効化（`AUTH_JWT_ENABLED=true`）・`feature/prefer-jwt-project-access-for-history-api`（`Authorization`headerがある場合はJWT/project権限判定を優先する移行）を経て、`docs/record-jwt-project-access-production-verification`（2026-09-12）で本番動作を確認した。
+
+- **現状の構成**: frontendは13章のとおり`Authorization: Bearer <Supabase access token>`をbackendへ転送し、AuthGuard（12章）が`/history`系配下をSupabase Auth session必須で保護する。backendは`AUTH_JWT_ENABLED=true`かつ`Authorization`headerがある場合、JWT検証＋project権限判定を優先し、`HISTORY_READ_TOKEN`へfallbackしない（詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「20」参照）。frontendのAuthGuardによる保護とbackendのJWT/project権限判定は、それぞれ別レイヤー（UXレベルのroute保護／API呼び出しごとの認可）として併用されている。
+- **本番確認結果**: JWT優先化後も、本番Vercelで`/login`でのログイン、`/history`・`/history/[id]`・`/history/[id]/report`の表示、ログアウト、ログアウト後に`/history`へ直接アクセスすると`/login`に戻ることを確認済み。この経路はbackend側のJWT/project権限判定を実際に通っている（詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「21. JWT/project権限判定経路の本番確認」参照）。
+- **残る限界**: `HISTORY_READ_TOKEN`は`Authorization`headerがない場合の互換fallbackとして維持されている。RLS policyは本番未適用のまま——backend JWT/project権限判定が動作していることは、DB層の追加防御（RLS）が不要であることを意味しない。
 
 ## 関連ドキュメント
 

@@ -1,6 +1,6 @@
 # Supabase Auth Introduction Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）も`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「18. project権限判定helperの追加」参照。frontend proxyからbackendへのSupabase access token転送（`Authorization: Bearer <token>`）は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——ブラウザ側のsession保存方式を`@supabase/ssr`のcookieベースへ変更した。詳細は「19. frontend→backend access token転送の追加」参照。cookieベースへの変更後も、本番Vercelでのログイン・履歴表示・ログアウトの動作確認済み——詳細は「20. cookie session化後の本番動作確認」参照。**backend側でJWT検証とproject権限判定を`GET /analysis-runs`系3本のAPIへ実際に接続する作業も`feature/backend-history-api-jwt-project-access`（2026-09-12）で完了済み**——詳細は「21. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示確認も完了済み**（詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照）。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行実装は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み**——詳細は「22. JWTがある場合の優先化」参照（実ブラウザでの本番確認自体は別タスク）。`Authorization`headerがない場合の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy本番適用は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）も`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「18. project権限判定helperの追加」参照。frontend proxyからbackendへのSupabase access token転送（`Authorization: Bearer <token>`）は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——ブラウザ側のsession保存方式を`@supabase/ssr`のcookieベースへ変更した。詳細は「19. frontend→backend access token転送の追加」参照。cookieベースへの変更後も、本番Vercelでのログイン・履歴表示・ログアウトの動作確認済み——詳細は「20. cookie session化後の本番動作確認」参照。**backend側でJWT検証とproject権限判定を`GET /analysis-runs`系3本のAPIへ実際に接続する作業も`feature/backend-history-api-jwt-project-access`（2026-09-12）で完了済み**——詳細は「21. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示確認も完了済み**（詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照）。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行実装は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み**——詳細は「22. JWTがある場合の優先化」参照。**この移行実装のmain反映後、Supabase Authログインからbackend JWT/project権限判定を通った履歴表示までを実際に本番Vercelで確認済み**——詳細は「23. JWT/project権限判定経路の本番確認」参照。`Authorization`headerがない場合の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy本番適用は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-12**
 
@@ -327,7 +327,20 @@ Supabase Auth frontendログイン（`feature/supabase-auth-frontend-login`、co
 - `HISTORY_READ_TOKEN` gateは削除していない——`Authorization`headerがない場合の互換fallbackとして残る。
 - backendのみの変更であり、frontend実装・Supabase設定・migration・RLS・Render/Vercel設定はいずれも変更していない。
 
-これにより、既存frontend proxyが送る本番トラフィックが実際にJWT/project権限判定経路を通るようになった（本番での実ブラウザ確認自体は別タスク）。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「20. JWTがある場合にJWT/project権限判定を優先する移行実装」を参照。
+これにより、既存frontend proxyが送る本番トラフィックが実際にJWT/project権限判定経路を通るようになった。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「20. JWTがある場合にJWT/project権限判定を優先する移行実装」を参照。
+
+## 23. JWT/project権限判定経路の本番確認（2026-09-12追記）
+
+`docs/record-jwt-project-access-production-verification`（2026-09-12、docsのみ・コード変更なし）で、22章の移行実装をmain反映後、本番Vercelで以下を確認した。
+
+- `/login`でログインできる
+- `/history`が表示できる
+- `/history/[id]`が表示できる
+- `/history/[id]/report`が表示できる
+- ログアウトできる
+- ログアウト後、`/history`へ直接アクセスすると`/login`に戻る
+
+Supabase Authログイン後、frontend proxyがSupabase access tokenをbackendへ転送し、backendでJWT検証・project権限判定を通った状態で`/history`・`/history/[id]`・`/history/[id]/report`が表示できることを本番確認済みである。**`HISTORY_READ_TOKEN`は`Authorization`headerがない場合の互換fallbackとして維持されており、RLS policyはまだ本番適用していない。** 確認内容の詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「21. JWT/project権限判定経路の本番確認」を参照。
 
 ## 関連ドキュメント
 
