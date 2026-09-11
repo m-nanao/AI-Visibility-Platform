@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。既存の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更・Render env設定は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を含むJWT検証用envを有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示を確認済み**——詳細は「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照。**ただしJWT/project権限判定経路が実際に優先利用されることの本格確認はまだ完了していない**（frontend proxyが両方のheaderを送る場合、`HISTORY_READ_TOKEN`が優先されるため）。既存の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -329,6 +329,47 @@ frontend proxyからbackendへSupabase access tokenを`Authorization: Bearer <to
 - migration追加・変更
 - Supabase/Render/Vercel設定変更（本番でAUTH_JWT_ENABLED/SUPABASE_JWKS_URL等を有効化するには別途Render env設定が必要）
 - frontend実装変更
+
+## 19. AUTH_JWT_ENABLED=true の本番有効化と互換確認（2026-09-12追記）
+
+18章で接続したJWT検証＋project権限判定を、本番Renderで実際に有効化した。
+
+**設定済み:**
+
+- `AUTH_JWT_ENABLED=true`
+- `AUTH_PROVIDER=supabase`
+- `SUPABASE_JWKS_URL`
+- `SUPABASE_JWT_ISSUER`
+- `SUPABASE_JWT_AUDIENCE`
+
+**設定していない:**
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_JWT_SECRET`
+
+Render再デプロイ後、本番Vercelで以下を確認済み。
+
+- `/login`でログインできる
+- `/history`が表示できる
+- `/history/[id]`が表示できる
+- `/history/[id]/report`が表示できる
+- ログアウトできる
+- ログアウト後、`/history`へ直接アクセスすると`/login`に戻る
+
+**重要な補足:** 現在のbackend実装（18章の`_resolve_history_access()`）では、frontend proxyが`X-History-Read-Token`と`Authorization: Bearer`の両方を送る場合、`X-History-Read-Token`が正しければそちらが優先され、project scopingなしの既存互換経路が使われる。既存のfrontend proxy（`app/api/analysis-runs/*`）は現在も`HISTORY_READ_TOKEN`を常に送信しているため、**今回の本番確認は主に以下を確認したものである**。
+
+- `AUTH_JWT_ENABLED=true`にしても既存の履歴表示が壊れないこと
+- 既存`HISTORY_READ_TOKEN` gateとの互換性が維持されていること
+- Supabase Auth frontendログインとcookie session化が引き続き本番で動作すること
+
+一方で、**JWT経由のproject権限判定が実際に優先利用され、正しくproject単位のデータ絞り込みが機能することは、まだ完全には確認していない**——今回の確認だけでは`HISTORY_READ_TOKEN`優先経路を通っている可能性が高く、JWT/project権限判定経路そのものの本番動作は未検証のまま残る。
+
+**未完了として以下を残す。**
+
+- JWTがある場合にJWT/project権限判定を優先する移行実装（もしくはHISTORY_READ_TOKENを送らない検証方法の確立）
+- JWT/project権限判定経路の本番確認
+- RLS policyの検証DBテスト
+- RLS policy本番適用
 
 ## 関連ドキュメント
 
