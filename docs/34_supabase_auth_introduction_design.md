@@ -1,6 +1,6 @@
 # Supabase Auth Introduction Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）も`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「18. project権限判定helperの追加」参照。frontend proxyからbackendへのSupabase access token転送（`Authorization: Bearer <token>`）は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——ブラウザ側のsession保存方式を`@supabase/ssr`のcookieベースへ変更した。詳細は「19. frontend→backend access token転送の追加」参照。**backend APIへの組み込みはいずれも未実施**。RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）も`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「18. project権限判定helperの追加」参照。frontend proxyからbackendへのSupabase access token転送（`Authorization: Bearer <token>`）は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——ブラウザ側のsession保存方式を`@supabase/ssr`のcookieベースへ変更した。詳細は「19. frontend→backend access token転送の追加」参照。cookieベースへの変更後も、本番Vercelでのログイン・履歴表示・ログアウトの動作確認済み——詳細は「20. cookie session化後の本番動作確認」参照。**backend APIへの組み込みはいずれも未実施**。RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -289,6 +289,21 @@ Supabase Auth frontendログイン（`feature/supabase-auth-frontend-login`、co
 - **3つのproxy route**（`/api/analysis-runs`・`/api/analysis-runs/[id]`・`/api/analysis-runs/[id]/comparison`）が、取得できた場合のみ`Authorization: Bearer <token>`をbackendへ追加する。**既存の`X-History-Read-Token`headerは変更なく維持**。
 - **backend側はこのheaderをまだ検証していない**——`HISTORY_READ_TOKEN`が引き続き唯一の許可条件であり、JWTだけで履歴APIを許可する変更は行っていない。
 - 詳細・テスト内容は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「16. frontend→backend access token転送の実装状況」を参照。
+
+## 20. cookie session化後の本番動作確認（2026-09-11追記）
+
+`feature/frontend-proxy-forward-auth-token`（commit `b1d0270`）のmain反映後、`@supabase/ssr`導入によるcookieベースsessionへの移行後も、本番Vercelで以下を実ブラウザで確認済み。
+
+- `/login`にアクセスできる
+- 既存ユーザーでEmail + Passwordログインできる
+- ログイン後`/history`に遷移する
+- `/history`が表示できる
+- `/history/[id]`が表示できる
+- `/history/[id]/report`が表示できる
+- ログアウトできる
+- ログアウト後、`/history`へ直接アクセスすると`/login`に戻される（`AuthGuard`による保護が引き続き機能している）
+
+これにより、sessionの保存方式を`localStorage`からcookieへ変更したことによるログイン機能・route保護機能への悪影響がないことを確認した。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「17. frontend→backend access token転送の本番確認」を参照。
 
 ## 関連ドキュメント
 
