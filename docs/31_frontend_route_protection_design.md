@@ -188,6 +188,7 @@
 - `/history`・`/history/[id]`・`/history/[id]/report`は`app/history/layout.tsx`経由の`AuthGuard`でSupabase Auth session必須になった。
 - 既存の`STAGING_ACCESS_CODE`ゲート（本章「5.1 Phase A」）は変更していない——有効な環境では「`/staging-login`→`/login`（今回追加）→`/history`」の二段階になる。
 - Phase C（backend JWT検証 + RLS）はまだ未実装。frontend proxy routeは引き続き`HISTORY_READ_TOKEN`でbackendへアクセスしており、Supabase access tokenをbackendへ送る処理は今回実装していない。
+- **Phase Bのfrontend実装は本番Vercelで確認済み（2026-09-11）**——本番Vercelに`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`を設定し、Supabase側でユーザーを作成したうえで、`/login`でのEmail + Passwordログイン、ログイン後の`/history`への遷移、`/history`・`/history/[id]`・`/history/[id]/report`の表示、ログアウトを確認した。`STAGING_ACCESS_CODE`が有効な環境では、未認証時に`/staging-login`、通過後にSupabase Auth未ログインなら`/login`へ進む二段階保護になることも確認済み（詳細は[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)「16. 本番環境での動作確認」参照）。
 
 ## 関連ドキュメント
 

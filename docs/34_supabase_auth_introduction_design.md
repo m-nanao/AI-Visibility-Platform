@@ -1,6 +1,6 @@
 # Supabase Auth Introduction Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。Supabase Auth設定変更・ユーザー作成・backend実装（JWT検証・project権限判定）・RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend実装（JWT検証・project権限判定）・RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -237,6 +237,27 @@ SUPABASE_JWT_AUDIENCE=
 - **HISTORY_READ_TOKEN gateとの関係**: 7章で整理した想定どおり、backend JWT検証は未実装のため、frontend proxy route（`app/api/analysis-runs/*`）は引き続き`HISTORY_READ_TOKEN`をserver-sideで付与してbackendへアクセスする。Supabase access tokenをbackendへ送る処理は今回実装していない。
 - **env未設定時の扱い**: 9章の推奨どおり、build時に落とすのではなく、`/login`・`/history`系ページが「Supabase Authの設定が未完了です。NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY を設定してください。」を表示する方式にした。`npm run build`はenv未設定でも成功することを確認済み。
 - **今回未実装（引き続き別タスク）**: backend実装（JWT検証・project権限判定）、Supabase Auth本番設定変更、Supabaseユーザー作成、`organization_members`への本番ユーザー追加、RLS policy実行・enable/disable、migration追加、実際のVercel/Render env設定。
+
+## 16. 本番環境での動作確認（2026-09-11追記）
+
+Supabase Auth frontendログイン（`feature/supabase-auth-frontend-login`、commit `067d6aa`）はmainへ反映済み。本番Vercelに`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`を設定済みで、Supabase側でユーザーを作成し、Email + Password方式で本番ログインを確認済みである。
+
+確認済み:
+
+- `/login`でログインできる
+- ログイン後`/history`に遷移する
+- `/history`が表示される
+- `/history/[id]`が表示される
+- `/history/[id]/report`が表示される
+- ログアウトできる
+
+未実装として以下を残す。
+
+- backend JWT検証
+- backend project権限判定
+- RLS policy本番適用
+- `HISTORY_READ_TOKEN`からJWTへの移行
+- `STAGING_ACCESS_CODE`の開発/ステージング専用化
 
 ## 関連ドキュメント
 
