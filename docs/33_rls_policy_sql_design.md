@@ -1,6 +1,6 @@
 # RLS Policy SQL Design
 
-**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み——詳細は「16. JWTがある場合の優先化」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。RLS policyの本番適用は引き続き別タスクである。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済みで、**本番Vercel/RenderでJWT/project権限判定経路を実際に通った履歴表示を確認済み**——詳細は「16. JWTがある場合の優先化」「17. JWT/project権限判定経路の本番確認」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。RLS policyの本番適用は引き続き別タスクである。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-12**
 
@@ -285,6 +285,12 @@ drop policy if exists "members can select analysis results in their projects" on
 `feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で、15章の優先順位を入れ替えた——`AUTH_JWT_ENABLED=true`かつ`Authorization`headerがある場合はJWT/project権限判定経路が最優先になり、`HISTORY_READ_TOKEN`が正しくても参照しない。`HISTORY_READ_TOKEN`は`Authorization`headerがない場合の互換fallbackとしてのみ残る。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「20. JWTがある場合にJWT/project権限判定を優先する移行実装」を参照。
 
 **これもRLS policyの代替ではない点は変わらない。** アプリ層のチェックがより厳格な優先順位になっただけであり、DB自体は引き続きRLS policyなしの状態のまま（2章参照）。RLS policy本番適用は引き続き未実施。
+
+## 17. JWT/project権限判定経路の本番確認（2026-09-12追記）
+
+`docs/record-jwt-project-access-production-verification`（2026-09-12、docsのみ・コード変更なし）で、backend側のJWT検証＋project権限判定（14〜16章）が本番で実際に動作することを確認した。**backend履歴APIでは、JWT検証後のuser_idに基づくproject権限判定経路が本番確認済みである。** 確認内容の詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「21. JWT/project権限判定経路の本番確認」を参照。
+
+**ただし、これはアプリケーション層の認可であり、RLS policyの本番適用はまだ行っていない。** RLSはDB層の追加防御として、検証DBでpolicy挙動を確認してから本番適用を判断する（9章「検証DBテスト方針」参照）。backendのproject権限判定が本番で動作していることは、RLS policyが不要であることを意味しない——backendの`DATABASE_URL`接続はRLSをbypassしうる（8章参照）ため、DB層の防御は依然として別レイヤーの課題として残る。
 
 ## 関連ドキュメント
 

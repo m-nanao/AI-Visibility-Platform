@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を含むJWT検証用envを有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示を確認済み**——詳細は「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照。**`Authorization: Bearer`がある場合はJWT/project権限判定経路を優先し、`HISTORY_READ_TOKEN`へfallbackしない移行実装は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み**——詳細は「20. JWTがある場合にJWT/project権限判定を優先する移行実装」参照（実ブラウザでの本番確認自体はまだ別タスク）。`Authorization`headerがない場合の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。**本番Renderで`AUTH_JWT_ENABLED=true`を含むJWT検証用envを有効化し、既存`HISTORY_READ_TOKEN`互換経路での本番表示を確認済み**——詳細は「19. AUTH_JWT_ENABLED=true の本番有効化と互換確認」参照。**`Authorization: Bearer`がある場合はJWT/project権限判定経路を優先し、`HISTORY_READ_TOKEN`へfallbackしない移行実装は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済み**——詳細は「20. JWTがある場合にJWT/project権限判定を優先する移行実装」参照。**この移行実装のmain反映後、本番VercelでJWT/project権限判定経路を通った状態での履歴表示を実際に確認済み**——詳細は「21. JWT/project権限判定経路の本番確認」参照。`Authorization`headerがない場合の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-12**
 
@@ -438,6 +438,39 @@ JWT検証成功だけでは全履歴を許可しない方針（9章・18章）�
 - JWT/project権限判定経路の本番確認（frontendが両headerを送るため、本番でJWT経路が実際に使われることは今回の実装で保証されたが、実ブラウザでの確認はまだ行っていない）
 - RLS policyの検証DBテスト
 - RLS policy本番適用
+
+## 21. JWT/project権限判定経路の本番確認（2026-09-12追記）
+
+`docs/record-jwt-project-access-production-verification`（2026-09-12、docsのみ・コード変更なし）で、20章の移行実装（`feature/prefer-jwt-project-access-for-history-api`）がmainへ反映された後の本番Vercel動作を確認した。
+
+**本番環境の状態（確認時点）:**
+
+- Renderで`AUTH_JWT_ENABLED=true`・`AUTH_PROVIDER=supabase`・`SUPABASE_JWKS_URL`・`SUPABASE_JWT_ISSUER`・`SUPABASE_JWT_AUDIENCE`設定済み。
+- Supabase Auth userをdefault organizationの`organization_members`に`owner`として登録済み。
+- RLS policyは未適用。
+- `SUPABASE_SERVICE_ROLE_KEY`・`SUPABASE_JWT_SECRET`は未使用。
+
+**確認済み:**
+
+- `/login`でログインできる
+- `/history`が表示できる
+- `/history/[id]`が表示できる
+- `/history/[id]/report`が表示できる
+- ログアウトできる
+- ログアウト後、`/history`へ直接アクセスすると`/login`に戻る
+
+**この確認から言えること:** frontend proxyは`Authorization: Bearer <Supabase access token>`をbackendへ転送しており、`AUTH_JWT_ENABLED=true`のためbackendでは20章の優先順位どおりJWT経路が優先される。したがって、今回の本番確認により、**JWT検証とuser_idに基づくproject権限判定を実際に通った状態で履歴一覧・詳細・レポートが表示できることを確認した**——19章時点で残っていた「JWT/project権限判定経路が実際に優先利用されることの本格確認」がこれで解消された。
+
+**`HISTORY_READ_TOKEN` fallbackについて:** 20章の移行実装どおり、`Authorization`headerがない場合の互換fallbackとして`HISTORY_READ_TOKEN` gateは引き続き維持されている。gate自体の削除・仕様変更は今回も行っていない。
+
+**RLS policyについて:** 今回確認したのはアプリケーション層（backend）のJWT検証＋project権限判定のみであり、RLS policyは引き続き未適用（[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)参照）。
+
+**残課題として以下を残す。**
+
+- RLS policyの検証DBテスト
+- RLS policy本番適用判断
+- 複数organization / 複数project運用の整理
+- project作成・招待UIは未実装
 
 ## 関連ドキュメント
 
