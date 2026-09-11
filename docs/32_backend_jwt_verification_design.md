@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。まだ実装ではない。frontendログイン（Email + Password、Supabase Authのaccess tokenを取得できる状態）は`feature/supabase-auth-frontend-login`（2026-09-11、[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)参照）で実装済みだが、そのaccess tokenをbackendへ送る処理はまだ実装していない（4章「想定リクエスト形式」参照）。backend実装・Supabase Auth設定変更・RLS変更・migration追加・env追加は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、Supabase Authのaccess tokenを取得できる状態）は`feature/supabase-auth-frontend-login`（2026-09-11、[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)参照）で実装済みだが、そのaccess tokenをbackendへ送る処理はまだ実装していない（4章「想定リクエスト形式」参照）。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。ただしAPIへの組み込みはまだ行っておらず、既存の`GET /analysis-runs`系3本の許可条件（`HISTORY_READ_TOKEN`のみ）は変更していない。Supabase Auth設定変更・RLS変更・migration追加・env追加（本番Render設定）は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -217,14 +217,23 @@ limit 1;
 
 ## 13. 次の実装候補
 
-1. RLS policy SQL案作成（[28_supabase_auth_rls_migration_design.md](./28_supabase_auth_rls_migration_design.md)参照）
-2. Supabase Auth導入設計または実装方針整理
-3. backend JWT検証の実装（Phase 2）
-4. frontendからのaccess token送信実装
-5. `HISTORY_READ_TOKEN`との移行期間運用
-6. project権限判定の実装
-7. 本番確認
-8. docs反映
+1. frontendからのaccess token送信実装
+2. project権限判定の実装（`organization_members`照会）とAPIへの組み込み
+3. `HISTORY_READ_TOKEN`との移行期間運用（Phase 2以降）
+4. RLS policyの検証DBテスト（[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)参照）
+5. 本番Render env設定（`AUTH_JWT_ENABLED`/`SUPABASE_JWKS_URL`等）
+6. 本番確認
+
+## 14. 実装状況（2026-09-11追記）
+
+`feature/backend-jwt-verification`（2026-09-11）で、5章の候補A（JWKS方式）に沿ったJWT検証moduleを追加した。**APIへの組み込みは行っていない**（7章「推奨A」に沿い、次タスクでproject権限判定とあわせて組み込む）。
+
+- **設定読み取り**: `backend/services/auth_settings.py`。`AUTH_JWT_ENABLED`（デフォルトfalse）/`AUTH_PROVIDER`（デフォルト`supabase`）/`SUPABASE_JWKS_URL`/`SUPABASE_JWT_ISSUER`/`SUPABASE_JWT_AUDIENCE`を読む`load_auth_settings()`と、`AUTH_JWT_ENABLED=true`かつ`SUPABASE_JWKS_URL`設定済みの場合のみ`True`を返す`is_jwt_verification_configured()`を追加した。
+- **JWT検証**: `backend/services/jwt_auth.py`。`extract_bearer_token()`が`Authorization: Bearer <token>`（大文字小文字を区別する`Bearer`のみ許可）からtokenを取り出し、`verify_supabase_jwt()`がJWKS URLから公開鍵セットを取得（`get_supabase_jwks()`、httpx使用）し、`kid`が一致する鍵でRS256/ES256署名を検証、`exp`/`sub`を必須claim、`issuer`/`audience`は設定済みの場合のみ検証する。成功時は`AuthenticatedUser(user_id, provider, email)`を返し、失敗時は`JWTAuthError`（`reason`に`missing_header`/`invalid_header`/`not_configured`/`jwks_fetch_failed`/`unknown_key`/`invalid_signature`/`expired`/`invalid_issuer`/`invalid_audience`/`missing_subject`/`invalid_token`のいずれかを設定、tokenやclaim値そのものは例外messageに含めない）を送出する。
+- **依存追加**: `PyJWT[crypto]>=2.9,<3.0`（`cryptography`を含む）を`backend/requirements.txt`へ追加。
+- **既存API**: `GET /analysis-runs`系3本の許可条件は変更していない——`AUTH_JWT_ENABLED=true`にして`Authorization: Bearer`headerを送っても、`HISTORY_READ_TOKEN`が正しくなければ引き続き403になることをテストで確認済み（`backend/tests/test_main_analysis_history_read_api.py`に2件追加）。
+- **テスト**: `backend/tests/test_auth_settings.py`（12件）・`backend/tests/test_jwt_auth.py`（22件）を新規追加。ローカル生成したRSA鍵ペアで固定JWKS/JWTを作り、外部ネットワークアクセスなしで正常系・署名不正・期限切れ・issuer/audience不一致・sub欠落・JWKS取得失敗・不明kidを検証し、tokenやAuthorizationヘッダー値が例外messageに含まれないことも確認した。
+- **今回未実装（引き続き別タスク）**: APIへのJWT検証組み込み、frontendからのaccess token送信、project権限判定、`HISTORY_READ_TOKEN`との移行期間運用、RLS policy実行・enable/disable、migration追加、Supabase設定変更、Render/Vercelでの実際のenv設定。
 
 ## 関連ドキュメント
 

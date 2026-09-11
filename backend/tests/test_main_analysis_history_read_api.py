@@ -389,3 +389,39 @@ def test_analyze_unaffected_by_history_read_token_gate(monkeypatch):
     response = client.post("/analyze", json={"brandName": "サイボウズ"})
 
     assert response.status_code == 200
+
+
+# --- services/auth_settings.py / services/jwt_auth.py are not wired in ----
+
+
+def test_list_still_requires_history_read_token_when_auth_jwt_enabled(monkeypatch):
+    """Phase 1 of docs/32_backend_jwt_verification_design.md ("8.
+    HISTORY_READ_TOKENからの移行方針") — services/jwt_auth.py exists but
+    is not called by any endpoint yet. Setting AUTH_JWT_ENABLED=true and
+    sending an Authorization: Bearer header (even one this backend
+    can't actually verify, since no JWKS is configured either) must not
+    change GET /analysis-runs's behavior at all: HISTORY_READ_TOKEN is
+    still the only thing checked, and a request without it is still
+    denied."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+
+    response = client.get(
+        "/analysis-runs", headers={"Authorization": "Bearer some.jwt.token"}
+    )
+
+    assert response.status_code == 403
+    assert "error" in response.json()
+
+
+def test_detail_still_requires_history_read_token_when_auth_jwt_enabled(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+
+    response = client.get(
+        "/analysis-runs/11111111-1111-1111-1111-111111111111",
+        headers={"Authorization": "Bearer some.jwt.token"},
+    )
+
+    assert response.status_code == 403
+    assert "error" in response.json()

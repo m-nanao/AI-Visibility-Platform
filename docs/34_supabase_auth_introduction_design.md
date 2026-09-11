@@ -1,6 +1,6 @@
 # Supabase Auth Introduction Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend実装（JWT検証・project権限判定）・RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定・RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -258,6 +258,15 @@ Supabase Auth frontendログイン（`feature/supabase-auth-frontend-login`、co
 - RLS policy本番適用
 - `HISTORY_READ_TOKEN`からJWTへの移行
 - `STAGING_ACCESS_CODE`の開発/ステージング専用化
+
+## 17. backend JWT検証moduleの追加（2026-09-11追記）
+
+`feature/backend-jwt-verification`（2026-09-11）で、backend JWT検証module（`backend/services/auth_settings.py`・`backend/services/jwt_auth.py`）を追加した。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」を参照。
+
+- JWKS方式（候補A）でSupabase Auth access tokenを検証し、`user_id`（`sub`claim）を取得できる。
+- **既存の`GET /analysis-runs`系3本APIへはまだ組み込んでいない**——`HISTORY_READ_TOKEN`のみが引き続き許可条件であり、`AUTH_JWT_ENABLED=true`にしてAuthorization headerを送っても履歴APIの許可条件は変わらない（テストで確認済み）。
+- 初期値は`AUTH_JWT_ENABLED=false`。本番Render env設定はまだ行っていない。
+- project権限判定（`organization_members`照会）は未実装のため、次タスクでAPIへの組み込みとあわせて行う方針。
 
 ## 関連ドキュメント
 
