@@ -260,6 +260,27 @@ def _require_connectable() -> str:
     return database_url
 
 
+def get_connection():
+    """Opens a short-lived DB connection for callers outside this
+    module (main.py) that need to pass an already-open connection to
+    services.project_access.py's access-control helpers — those take a
+    connection rather than a database_url, one level up from
+    get_default_project_id()'s cursor-taking style above.
+
+    Raises AnalysisHistoryReadError if the psycopg driver isn't
+    installed or DATABASE_URL isn't configured (via
+    _require_connectable()). A genuine connection failure (DB
+    unreachable, auth failure, etc.) raises whatever psycopg itself
+    raises when the returned object is entered via `with` — callers
+    should wrap their `with get_connection() as conn:` block in a
+    broad `except Exception` and treat any failure the same way (503),
+    mirroring how list_analysis_runs()/get_analysis_run() already
+    handle connection failures.
+    """
+    database_url = _require_connectable()
+    return psycopg.connect(database_url, connect_timeout=5)
+
+
 def list_analysis_runs(
     *,
     limit: int = DEFAULT_LIST_LIMIT,
@@ -375,6 +396,15 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
     "not found" (returns None without attempting a query) rather than
     raising or reaching the DB with an invalid value.
 
+    The returned dict also includes a top-level `"projectId"` (the
+    run's `analysis_runs.project_id`, or `None` for a legacy row saved
+    before that column was populated) — used by main.py's
+    JWT-authenticated comparison path to keep the previous run lookup
+    within the same project (see
+    docs/32_backend_jwt_verification_design.md "project境界"). It is
+    never included in any API response model (main.py picks fields out
+    of this dict by name rather than unpacking it wholesale).
+
     Raises AnalysisHistoryReadError on any other connection/query
     failure. Does not itself check READ_HISTORY_ENABLED — callers must
     call services.db_settings.is_history_read_enabled() first.
@@ -398,7 +428,8 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
             ar.started_at,
             ar.completed_at,
             res.result_json,
-            res.meta_json
+            res.meta_json,
+            ar.project_id
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -435,10 +466,13 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
         },
         "result": row[9],
         "meta": row[10],
+        "projectId": str(row[11]) if row[11] is not None else None,
     }
 
 
-def get_previous_analysis_run_for_brand(analysis_run_id: str) -> dict[str, Any] | None:
+def get_previous_analysis_run_for_brand(
+    analysis_run_id: str, *, project_id: str | None = None
+) -> dict[str, Any] | None:
     """Returns the same brand's most recent analysis run started
     before `analysis_run_id`'s own run, or None when there isn't one
     yet (or when `analysis_run_id` itself doesn't exist) — backs
@@ -450,6 +484,17 @@ def get_previous_analysis_run_for_brand(analysis_run_id: str) -> dict[str, Any] 
     A single self-join query finds the previous row directly from
     `analysis_run_id`, so callers don't need to fetch the current run
     first just to learn its brand_id/created_at.
+
+    `project_id`, when given, additionally restricts the previous run
+    to `prev.project_id = project_id` — used by main.py's
+    JWT-authenticated comparison path so a comparison can never surface
+    a previous run from a different project than the one the caller
+    was already authorized to see for the current run (see
+    docs/32_backend_jwt_verification_design.md "project境界"; a brand
+    is expected to belong to one project, but this filter is a second,
+    explicit line of defense rather than relying on that assumption
+    alone). `None` (the default) keeps the existing brand-only
+    matching, unchanged for the HISTORY_READ_TOKEN path.
 
     A malformed (non-UUID) `analysis_run_id` is treated the same as
     "no previous run" (returns None without attempting a query) —
@@ -468,7 +513,13 @@ def get_previous_analysis_run_for_brand(analysis_run_id: str) -> dict[str, Any] 
 
     database_url = _require_connectable()
 
-    query = """
+    params: list[Any] = [analysis_run_id]
+    project_filter = ""
+    if project_id is not None:
+        project_filter = "and prev.project_id = %s"
+        params.append(project_id)
+
+    query = f"""
         select
             prev.id,
             prev.started_at,
@@ -478,6 +529,7 @@ def get_previous_analysis_run_for_brand(analysis_run_id: str) -> dict[str, Any] 
         left join analysis_results res on res.analysis_run_id = prev.id
         where prev.brand_id = current_run.brand_id
           and prev.created_at < current_run.created_at
+          {project_filter}
         order by prev.created_at desc
         limit 1
     """
@@ -485,7 +537,7 @@ def get_previous_analysis_run_for_brand(analysis_run_id: str) -> dict[str, Any] 
     try:
         with psycopg.connect(database_url, connect_timeout=5) as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (analysis_run_id,))
+                cur.execute(query, tuple(params))
                 row = cur.fetchone()
     except Exception as exc:
         logger.exception("Failed to get previous analysis run from DB")

@@ -621,6 +621,7 @@ def test_get_analysis_run_raises_on_query_failure(monkeypatch):
 def test_get_analysis_run_success(monkeypatch):
     _configure_read_env(monkeypatch)
     brand_id = str(uuid.uuid4())
+    project_id = str(uuid.uuid4())
     row = (
         VALID_RUN_ID,
         brand_id,
@@ -633,6 +634,7 @@ def test_get_analysis_run_success(monkeypatch):
         COMPLETED_AT,
         {"brandName": "サイボウズ", "meta": {}},
         {"documentsSource": "web_fetch"},
+        project_id,
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -656,8 +658,37 @@ def test_get_analysis_run_success(monkeypatch):
         },
         "result": {"brandName": "サイボウズ", "meta": {}},
         "meta": {"documentsSource": "web_fetch"},
+        "projectId": project_id,
     }
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
+
+
+def test_get_analysis_run_project_id_is_none_for_legacy_row(monkeypatch):
+    """A row saved before project_id existed (or otherwise never
+    backfilled) must surface as projectId=None rather than raising or
+    stringifying a NULL."""
+    _configure_read_env(monkeypatch)
+    brand_id = str(uuid.uuid4())
+    row = (
+        VALID_RUN_ID,
+        brand_id,
+        "サイボウズ",
+        "cybozu.co.jp",
+        "completed",
+        {"brandName": "サイボウズ"},
+        {"web_fetch": 1},
+        STARTED_AT,
+        COMPLETED_AT,
+        {"brandName": "サイボウズ", "meta": {}},
+        {"documentsSource": "web_fetch"},
+        None,
+    )
+    fake_cursor = _FakeReadCursor(fetchone_result=row)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    result = repo.get_analysis_run(VALID_RUN_ID)
+
+    assert result["projectId"] is None
 
 
 # --- get_previous_analysis_run_for_brand: invalid id ------------------------
@@ -733,3 +764,24 @@ def test_get_previous_analysis_run_for_brand_success(monkeypatch):
     query, params = fake_cursor.executed[0]
     assert params == (VALID_RUN_ID,)
     assert "brand_id" in query
+    assert "project_id" not in query
+
+
+def test_get_previous_analysis_run_for_brand_applies_project_id_filter(monkeypatch):
+    """project_id, when given, both appears in the query and is passed
+    as its own parameter — used by main.py's JWT-authenticated
+    comparison path to keep the previous run within the same project
+    as the current one (see docs/32_backend_jwt_verification_design.md
+    "project境界")."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    result = repo.get_previous_analysis_run_for_brand(
+        VALID_RUN_ID, project_id="project-1"
+    )
+
+    assert result is None
+    query, params = fake_cursor.executed[0]
+    assert "prev.project_id = %s" in query
+    assert params == (VALID_RUN_ID, "project-1")

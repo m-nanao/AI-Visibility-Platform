@@ -1,8 +1,8 @@
 # RLS Policy SQL Design
 
-**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みだが、これはRLS policyの代替ではなく、まだどのAPIにも組み込んでいない——詳細は「14. アプリ層での同等チェックの追加」参照。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。RLS policyの本番適用は引き続き別タスクである。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-11**
+**最終更新日: 2026-09-12**
 
 ## 1. 目的
 
@@ -273,6 +273,12 @@ drop policy if exists "members can select analysis results in their projects" on
 `feature/backend-project-access-helpers`（2026-09-11）で、本ドキュメントの3章「基本権限モデル」と同じテーブル関係（`organization_members` ⋈ `projects` ⋈ `analysis_runs`）を使ったアプリケーション層（backend Python）のアクセス可否判定helperを追加した——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「15. project権限判定の実装状況」を参照。
 
 **これはRLS policyの代替ではない。** `backend/services/project_access.py`はbackendのDB接続（RLSをbypassしうる、8章参照）上で明示的にSQLを実行するアプリケーション層のチェックであり、DB自体がRLS policyなしで無防備である状態（2章参照）を変えるものではない。RLS policyの本番適用（5〜7章）は引き続き別タスクであり、今回のhelperはまだどのAPIエンドポイントにも組み込んでいない。
+
+## 15. backend履歴APIへの接続（2026-09-12追記）
+
+`feature/backend-history-api-jwt-project-access`（2026-09-12）で、14章のhelperを実際に`GET /analysis-runs`系3本のAPIエンドポイントへ接続した。`AUTH_JWT_ENABLED=true`かつ`Authorization: Bearer <Supabase access token>`があり、`HISTORY_READ_TOKEN`が正しくない場合のみ、`can_user_access_project()`/`can_user_access_analysis_run()`/`get_accessible_project_ids()`がリクエストごとに呼ばれ、`user_id`が所属するprojectのデータのみを返すようになった。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「18. backend履歴APIへのJWT検証＋project権限判定の接続」を参照。
+
+**これでも本質は変わらない——依然としてアプリ層のチェックであり、RLS policyの代替ではない。** DB自体は引き続きRLS policyなしの状態のまま（2章参照）であり、`HISTORY_READ_TOKEN`gate経由（backendのDB接続を直接使う既存経路）は今回のアプリ層チェックの影響を一切受けない。RLS policy本番適用は引き続き未実施。
 
 ## 関連ドキュメント
 
