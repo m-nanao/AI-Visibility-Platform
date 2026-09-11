@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { parseAnalysisRunComparisonResponse } from "../../../../lib/analysis-history-schema";
 import { HISTORY_READ_TOKEN_HEADER } from "../../../../lib/analysis-history";
+import { getServerSupabaseAccessToken } from "../../../../lib/supabase/server";
 
 /**
  * Thin proxy to the Python analysis API's GET /analysis-runs/{id}/comparison,
@@ -26,7 +27,15 @@ import { HISTORY_READ_TOKEN_HEADER } from "../../../../lib/analysis-history";
  * Attaches HISTORY_READ_TOKEN (a server-side-only env var — never
  * NEXT_PUBLIC_*) as the X-History-Read-Token header when set, so the
  * browser never sees or sends it; when unset, the Python API's own
- * "token is not configured" 503 is what the caller sees.
+ * "token is not configured" 503 is what the caller sees. This remains
+ * the only header the Python API actually checks — see
+ * app/api/analysis-runs/route.ts's docstring for why the Authorization
+ * header below doesn't change this route's behavior yet.
+ *
+ * Also attaches the caller's Supabase Auth access token (if a session
+ * cookie is present) as `Authorization: Bearer <token>` — see
+ * app/lib/supabase/server.ts. Never logged, never included in this
+ * route's own response, never put in a URL.
  */
 export async function GET(
   request: Request,
@@ -43,9 +52,11 @@ export async function GET(
   }
 
   const historyReadToken = process.env.HISTORY_READ_TOKEN;
-  const headers: HeadersInit = historyReadToken
-    ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken }
-    : {};
+  const accessToken = await getServerSupabaseAccessToken(request);
+  const headers: HeadersInit = {
+    ...(historyReadToken ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken } : {}),
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
 
   let response: Response;
   try {

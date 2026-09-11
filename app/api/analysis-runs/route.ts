@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { parseAnalysisRunListResponse } from "../../lib/analysis-history-schema";
 import { HISTORY_READ_TOKEN_HEADER } from "../../lib/analysis-history";
+import { getServerSupabaseAccessToken } from "../../lib/supabase/server";
 
 // Mirrors backend/services/analysis_history_repository.py's
 // DEFAULT_LIST_LIMIT (20) and offset default (0) — kept in sync
@@ -32,7 +33,18 @@ const DEFAULT_OFFSET = "0";
  * Attaches HISTORY_READ_TOKEN (a server-side-only env var — never
  * NEXT_PUBLIC_*) as the X-History-Read-Token header when set, so the
  * browser never sees or sends it; when unset, the Python API's own
- * "token is not configured" 503 is what the caller sees.
+ * "token is not configured" 503 is what the caller sees. This remains
+ * the only header the Python API's GET /analysis-runs actually checks
+ * (see backend/main.py's _check_history_read_access()) — the
+ * Authorization header below is forwarded ahead of the backend
+ * actually verifying JWTs against it (docs/32_backend_jwt_verification_design.md
+ * "15. project権限判定の実装状況"), so its presence or absence changes
+ * nothing about this route's behavior yet.
+ *
+ * Also attaches the caller's Supabase Auth access token (if a session
+ * cookie is present) as `Authorization: Bearer <token>` — see
+ * app/lib/supabase/server.ts. Never logged, never included in this
+ * route's own response, never put in a URL.
  */
 export async function GET(request: Request) {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
@@ -48,9 +60,11 @@ export async function GET(request: Request) {
   const offset = searchParams.get("offset") ?? DEFAULT_OFFSET;
 
   const historyReadToken = process.env.HISTORY_READ_TOKEN;
-  const headers: HeadersInit = historyReadToken
-    ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken }
-    : {};
+  const accessToken = await getServerSupabaseAccessToken(request);
+  const headers: HeadersInit = {
+    ...(historyReadToken ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken } : {}),
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
 
   let response: Response;
   try {

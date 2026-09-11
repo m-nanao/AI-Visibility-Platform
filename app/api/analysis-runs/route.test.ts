@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const getServerSupabaseAccessTokenMock = vi.fn<() => Promise<string | null>>();
+
+vi.mock("../../lib/supabase/server", () => ({
+  getServerSupabaseAccessToken: () => getServerSupabaseAccessTokenMock(),
+}));
+
 import { GET } from "./route";
 
 function makeRequest(query = ""): Request {
@@ -12,6 +19,7 @@ describe("GET /api/analysis-runs", () => {
 
   beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    getServerSupabaseAccessTokenMock.mockReset().mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -110,5 +118,67 @@ describe("GET /api/analysis-runs", () => {
 
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "analysis history read API is not enabled" });
+  });
+
+  // --- Supabase access token forwarding (frontend proxy -> backend) --------
+
+  it("attaches Authorization: Bearer <token> when a Supabase access token is available", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    getServerSupabaseAccessTokenMock.mockResolvedValue("supabase-access-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: null }), {
+          status: 200,
+        }),
+      );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest());
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.get("Authorization")).toBe("Bearer supabase-access-token");
+    // HISTORY_READ_TOKEN must still be sent alongside it.
+    expect(headers.get("X-History-Read-Token")).toBe("shared-secret-token");
+  });
+
+  it("sends no Authorization header when there is no Supabase access token", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    getServerSupabaseAccessTokenMock.mockResolvedValue(null);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: null }), {
+          status: 200,
+        }),
+      );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest());
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.has("Authorization")).toBe(false);
+    // HISTORY_READ_TOKEN gate must be unaffected either way.
+    expect(headers.get("X-History-Read-Token")).toBe("shared-secret-token");
+  });
+
+  it("never includes the Supabase access token in the response returned to the caller", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    getServerSupabaseAccessTokenMock.mockResolvedValue("supabase-access-token");
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: null }), {
+        status: 200,
+      }),
+    );
+
+    const response = await GET(makeRequest());
+    const text = await response.text();
+
+    expect(text).not.toContain("supabase-access-token");
   });
 });

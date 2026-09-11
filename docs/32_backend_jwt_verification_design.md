@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、Supabase Authのaccess tokenを取得できる状態）は`feature/supabase-auth-frontend-login`（2026-09-11、[34_supabase_auth_introduction_design.md](./34_supabase_auth_introduction_design.md)参照）で実装済みだが、そのaccess tokenをbackendへ送る処理はまだ実装していない（4章「想定リクエスト形式」参照）。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**いずれもAPIへは組み込んでおらず**、既存の`GET /analysis-runs`系3本の許可条件（`HISTORY_READ_TOKEN`のみ）は変更していない。Supabase Auth設定変更・RLS変更・migration追加・env追加（本番Render設定）は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**いずれもbackend APIへは組み込んでおらず**、既存の`GET /analysis-runs`系3本の許可条件（`HISTORY_READ_TOKEN`のみ）は変更していない。Supabase Auth設定変更・RLS変更・migration追加・env追加（本番Render設定）は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -247,6 +247,17 @@ limit 1;
 - **`backend/services/analysis_history_repository.py`への追加**: `list_analysis_runs()`に任意の`project_ids: list[str] | None = None`パラメータを追加した。`None`（デフォルト）は既存どおり全件、`[]`はDB接続すら行わず空配列を即返す、値がある場合は`ar.project_id in (%s, ...)`条件をparameterized queryで追加する。**呼び出し側（`main.py`）はこのパラメータをまだ渡していない**——既存の`GET /analysis-runs`の挙動・レスポンスは完全に不変。`get_analysis_run()`・comparison用の関数には、単一IDの権限判定は`can_user_access_analysis_run()`側の責務とする方針のため、今回は変更を加えていない。
 - **テスト**: `backend/tests/test_project_access.py`（17件、FakeConnection/FakeCursorのみで完結、実DB・monkeypatch不要）、`backend/tests/test_analysis_history_repository.py`に`project_ids`関連4件を追加。既存の`GET /analysis-runs`系テスト（`HISTORY_READ_TOKEN`gate関連含む）はすべて無変更で通過することを確認した。
 - **今回未実装（引き続き別タスク）**: `main.py`からのこれらhelperの呼び出し、frontendからのaccess token送信、`HISTORY_READ_TOKEN`との移行期間運用、RLS policy実行・enable/disable、migration追加、Supabase/Render/Vercel設定変更。
+
+## 16. frontend→backend access token転送の実装状況（2026-09-11追記）
+
+`feature/frontend-proxy-forward-auth-token`（2026-09-11）で、4章「想定リクエスト形式」で整理した形（`Authorization: Bearer <Supabase access token>`）をfrontend proxy routeから実際にbackendへ送る実装を追加した。**backendはこのheaderをまだ検証に使っておらず**、既存の`GET /analysis-runs`系3本の許可条件は`HISTORY_READ_TOKEN`のみのまま変更していない。
+
+- **スコープ拡張（ユーザー承認済み）**: 当初のタスク範囲では`app/lib/supabase/client.ts`・`package.json`の変更が禁止されていたが、実装着手時に「`@supabase/supabase-js`のブラウザclientはsessionを`localStorage`にのみ保存しており、server側のRoute Handlerからcookie経由で読み取ることが技術的に不可能」という制約が判明したため、ユーザーに確認のうえ`@supabase/ssr`パッケージの追加と`app/lib/supabase/client.ts`の変更を許可された。
+- **`app/lib/supabase/client.ts`**: `@supabase/supabase-js`の`createClient()`から`@supabase/ssr`の`createBrowserClient()`へ変更した。返り値の型・APIは同一の`SupabaseClient`のため、`useSupabaseSession.ts`・`/login`・`AuthGuard`・`LogoutButton`はいずれも変更不要。sessionはcookie（ブラウザの`document.cookie`）に保存されるようになり、同一originへの`fetch()`（`/history`系ページが呼ぶ`/api/analysis-runs`等）にはブラウザが自動的にcookieを付与する。
+- **新規`app/lib/supabase/server.ts`**: `@supabase/ssr`の`createServerClient()`を使い、Route Handlerが受け取った`Request`の`Cookie`ヘッダーから（`next/headers`のcookies()ではなく`request.headers.get("cookie")`を直接parseする方式——route.test.tsが素の`Request`を直接渡す既存のテスト方式と両立させるため）Supabase sessionを復元し、`access_token`を取得する`getServerSupabaseAccessToken(request)`を追加した。未設定・session無し・エラー時はいずれも`null`を返し、例外を投げない。tokenはconsole.log・response・URLのいずれにも出さない。
+- **3つのproxy route（`app/api/analysis-runs/route.ts`・`app/api/analysis-runs/[id]/route.ts`・`app/api/analysis-runs/[id]/comparison/route.ts`）**: `getServerSupabaseAccessToken(request)`を呼び、取得できた場合のみ`Authorization: Bearer <token>`をbackendへのリクエストへ追加する。**既存の`X-History-Read-Token`ヘッダーは変更なく維持**しており、access tokenの有無にかかわらず送信される。
+- **テスト**: `app/lib/supabase/server.test.ts`（8件、`@supabase/ssr`をmock）、3つのroute.test.tsに各3件（Authorization header付与・非付与・response非漏洩）を追加。既存テストはすべて無変更で通過。
+- **未検証・今回対象外**: 実際のSupabaseプロジェクト・実ブラウザでのcookie往復の本番/実機確認（本タスクはvitestでのmock検証のみ）。backend側のJWT検証をAPI許可条件へ接続すること、JWTだけで履歴APIを許可すること、project権限判定の接続、RLS policy実行・enable/disable、migration追加、Supabase/Render/Vercel設定変更はいずれも行っていない。
 
 ## 関連ドキュメント
 

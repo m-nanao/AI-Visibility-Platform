@@ -1,10 +1,21 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Browser-side Supabase client factory. This file must only ever read
 // NEXT_PUBLIC_* env vars — it runs in the browser, so a server-only
 // secret (SUPABASE_SERVICE_ROLE_KEY / SUPABASE_JWT_SECRET / DATABASE_URL)
 // must never be imported or referenced here. See
 // docs/34_supabase_auth_introduction_design.md "10. 必要env案".
+//
+// Uses @supabase/ssr's createBrowserClient() (not
+// @supabase/supabase-js's createClient() directly) so the session is
+// persisted via cookies instead of only localStorage — a Next.js
+// server Route Handler has no access to the browser's localStorage,
+// but it can read the request's Cookie header (see
+// app/lib/supabase/server.ts). The returned client has the same
+// SupabaseClient API/type either way, so nothing else in this app
+// (useSupabaseSession.ts, /login, AuthGuard, LogoutButton) needed to
+// change.
 
 export type SupabaseConfigStatus =
   | { configured: true; url: string; anonKey: string }
@@ -32,7 +43,7 @@ export function getSupabaseBrowserClient(): SupabaseClient | null {
   const status = getSupabaseConfigStatus();
   if (!status.configured) return null;
   if (!cachedClient) {
-    cachedClient = createClient(status.url, status.anonKey);
+    cachedClient = createBrowserClient(status.url, status.anonKey);
   }
   return cachedClient;
 }
