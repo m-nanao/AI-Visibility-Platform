@@ -1,6 +1,6 @@
 # Backend JWT Verification Design
 
-**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**backend APIへの組み込みはいずれも未実施**——既存の`GET /analysis-runs`系3本の許可条件（`HISTORY_READ_TOKEN`のみ）は変更していない。Supabase Auth設定変更・RLS変更・migration追加・env追加（本番Render設定）は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendからbackendへSupabase access tokenを`Authorization: Bearer <token>`で転送する処理は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——詳細は「16. frontend→backend access token転送の実装状況」参照。main反映後、本番Vercelでの実ブラウザ動作確認も完了済み——詳細は「17. frontend→backend access token転送の本番確認」参照。backend JWT検証module自体（候補A: JWKS方式）は`feature/backend-jwt-verification`（2026-09-11）で実装済み——詳細は「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「15. project権限判定の実装状況」参照。**これらはすべて`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ接続済み**——詳細は「18. backend履歴APIへのJWT検証＋project権限判定の接続」参照。既存の`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy実行・migration追加・Supabase設定変更・Render env設定は、この設計メモをもとにした別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -272,11 +272,63 @@ frontend proxyからbackendへSupabase access tokenを`Authorization: Bearer <to
 - ログアウトできる
 - ログアウト後、`/history`へ直接アクセスすると`/login`に戻される
 
-未実装として以下を残す。
+未実装として以下を残す（`feature/backend-history-api-jwt-project-access`、2026-09-12で解消——「18」参照）。
 
 - backend側でAuthorization Bearer JWTを履歴APIの許可条件に接続すること
 - `user_id`に基づくproject権限判定を履歴APIへ接続すること
-- RLS policy本番適用
+- RLS policy本番適用（引き続き未実装）
+
+## 18. backend履歴APIへのJWT検証＋project権限判定の接続（2026-09-12追記）
+
+`feature/backend-history-api-jwt-project-access`（2026-09-12）で、9章「project権限判定」・8章「HISTORY_READ_TOKENからの移行方針」（Phase 2: JWT併用）で整理した方針に沿って、`services/jwt_auth.py`・`services/project_access.py`を`GET /analysis-runs`・`GET /analysis-runs/{analysis_run_id}`・`GET /analysis-runs/{analysis_run_id}/comparison`の3本すべてに接続した。**`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。**
+
+### 認証/認可の解決順序（`_resolve_history_access()`）
+
+新規`HistoryAccessContext`（`mode: "history_token" | "jwt"`、`user_id`、`project_ids`）を返す`_resolve_history_access()`が、旧`_check_history_read_access()`を置き換えた。
+
+1. `READ_HISTORY_ENABLED=false` / `DATABASE_URL`未設定 / `HISTORY_READ_TOKEN`未設定 → 503（従来どおり）。
+2. `X-History-Read-Token`headerが正しい → `mode="history_token"`、project制限なし（**従来と完全に同一の挙動**）。`Authorization`headerが同時に付いていてもこちらが優先される——既存frontend proxyは常にこのheaderを送るため、本番トラフィックへの影響はない。
+3. それ以外で、`AUTH_JWT_ENABLED=true`かつ`Authorization: Bearer`headerがある場合のみ、JWTを検証（`verify_supabase_jwt()`）し、`user_id`取得後に`get_accessible_project_ids(conn, user_id)`でアクセス可能project一覧を取得 → `mode="jwt"`。
+4. それ以外（資格情報なし） → 403（従来どおり）。
+
+### エラー方針
+
+- Authorization headerなし・`HISTORY_READ_TOKEN`もなし: 403（従来どおり）
+- Bearer形式不正: 401
+- JWT署名不正・期限切れ・issuer/audience不一致・subなし: 401
+- JWT検証設定不足（`SUPABASE_JWKS_URL`未設定）・JWKS取得失敗: 503（401にせず、「サーバー側が検証できない」ことを「呼び出し元のtokenが不正」と区別する）
+- project権限判定中のDBエラー: 503（fail-closed、決して無制限扱いにしない）
+- project権限なし: 403
+- `AUTH_JWT_ENABLED=false`のとき、`Authorization`headerがあっても一切参照しない（JWT検証関数は呼ばれない）
+
+### 一覧（`GET /analysis-runs`）
+
+`mode="jwt"`の場合のみ`list_analysis_runs(project_ids=access.project_ids)`を呼ぶ（`project_ids`は常に明示的に渡し、省略しない）。`project_ids=[]`（所属projectなし）は既存の`list_analysis_runs()`の短絡処理により、DBに触れず即座に空配列を返す。`mode="history_token"`は従来どおり`project_ids`を渡さない。
+
+### 詳細（`GET /analysis-runs/{analysis_run_id}`）
+
+`mode="jwt"`の場合、`repository_get_analysis_run()`を呼ぶ前に`can_user_access_analysis_run(conn, user_id, analysis_run_id)`を確認する。`False`なら404を試みることなく403を返す——存在しないidとアクセス権のないidを区別しない（10章の「権限なしと存在なしの情報漏えいを避ける」方針をJWT経路で採用）。`mode="history_token"`は従来どおり404判定が主経路のまま。
+
+### comparison（`GET /analysis-runs/{analysis_run_id}/comparison`）とproject境界
+
+`mode="jwt"`の場合、まず現在のrun（`analysis_run_id`）への`can_user_access_analysis_run()`を確認し、`False`なら403。許可された場合のみ`repository_get_analysis_run()`で現在のrunを取得し、その`projectId`を`get_previous_analysis_run_for_brand(analysis_run_id, project_id=current["projectId"])`に渡すことで、**前回runが現在のrunと異なるprojectに属する場合は返さない**——同一brand・異なるproject（将来的な可能性）でも境界を超えない。`mode="history_token"`は`project_id=None`のまま、従来どおりbrand単位のみで前回を探す。
+
+### repository側の変更
+
+- `get_analysis_run()`が返す辞書に`"projectId"`を追加した（APIレスポンスには含まれない——main.pyが個別フィールドを指定して`AnalysisRunDetailResponse`を構築するため）。
+- `get_previous_analysis_run_for_brand()`に任意の`project_id: str | None = None`を追加した。`None`（デフォルト）は既存のbrandのみでの一致、値を渡すと`prev.project_id = %s`条件を追加する。
+- `get_connection()`を新規追加した。`services/project_access.py`の関数群が要求する「開いた接続」をmain.pyから渡せるようにするための薄いラッパーで、既存の`_require_connectable()`を再利用する。
+
+### テスト
+
+`backend/tests/test_main_analysis_history_read_api.py`に約20件を追加・更新した。既存の2件（AUTH_JWT_ENABLED=trueでも403のまま、というPhase 1時点のテスト）は、今回の接続によって実際には503（JWT検証設定不足）になるよう更新した——これはPhase 1からPhase 2への意図的な仕様変更であり、劣化ではない。追加したテストは、JWT無効時のプレーン403維持、JWT設定不足503、JWT優先順位（HISTORY_READ_TOKEN優先）、project scopingされた一覧、空project一覧時の空配列、詳細/comparisonのアクセス可否判定、comparisonのproject境界越境防止、401/503のエラー区別、tokenの非漏洩を網羅する。`backend/tests/test_analysis_history_repository.py`にも`projectId`・`project_id`filter関連のテストを追加した。既存の`test_main_analysis_history_comparison_api.py`のmockシグネチャも新しい`project_id`引数を受け取れるよう更新した（挙動自体は無変更）。
+
+### 今回未実装（引き続き別タスク）
+
+- RLS policy実行・enable/disable
+- migration追加・変更
+- Supabase/Render/Vercel設定変更（本番でAUTH_JWT_ENABLED/SUPABASE_JWKS_URL等を有効化するには別途Render env設定が必要）
+- frontend実装変更
 
 ## 関連ドキュメント
 

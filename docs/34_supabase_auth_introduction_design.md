@@ -1,6 +1,6 @@
 # Supabase Auth Introduction Design
 
-**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）も`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「18. project権限判定helperの追加」参照。frontend proxyからbackendへのSupabase access token転送（`Authorization: Bearer <token>`）は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——ブラウザ側のsession保存方式を`@supabase/ssr`のcookieベースへ変更した。詳細は「19. frontend→backend access token転送の追加」参照。cookieベースへの変更後も、本番Vercelでのログイン・履歴表示・ログアウトの動作確認済み——詳細は「20. cookie session化後の本番動作確認」参照。**backend APIへの組み込みはいずれも未実施**。RLS policy実行・migration追加は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。frontendログイン（Email + Password、`/login`・`AuthGuard`）は`feature/supabase-auth-frontend-login`（2026-09-11）で実装済み——詳細は「15. 実装状況（frontendログイン）」参照。本番Vercelへのenv設定・Supabaseユーザー作成・本番ログイン確認も完了済み——詳細は「16. 本番環境での動作確認」参照。backend JWT検証moduleは`feature/backend-jwt-verification`（2026-09-11）で追加済みだがAPIへは未組み込み——詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「14. 実装状況」参照。project権限判定helper（`services/project_access.py`）も`feature/backend-project-access-helpers`（2026-09-11）で追加済み——詳細は「18. project権限判定helperの追加」参照。frontend proxyからbackendへのSupabase access token転送（`Authorization: Bearer <token>`）は`feature/frontend-proxy-forward-auth-token`（2026-09-11）で実装済み——ブラウザ側のsession保存方式を`@supabase/ssr`のcookieベースへ変更した。詳細は「19. frontend→backend access token転送の追加」参照。cookieベースへの変更後も、本番Vercelでのログイン・履歴表示・ログアウトの動作確認済み——詳細は「20. cookie session化後の本番動作確認」参照。**backend側でJWT検証とproject権限判定を`GET /analysis-runs`系3本のAPIへ実際に接続する作業も`feature/backend-history-api-jwt-project-access`（2026-09-12）で完了済み**——詳細は「21. backend履歴APIへのJWT検証＋project権限判定の接続」参照。`HISTORY_READ_TOKEN` gateは移行期間として維持しており、JWTだけで全履歴が許可されることはない。RLS policy本番適用は引き続き別タスクで行う。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-11**
 
@@ -304,6 +304,17 @@ Supabase Auth frontendログイン（`feature/supabase-auth-frontend-login`、co
 - ログアウト後、`/history`へ直接アクセスすると`/login`に戻される（`AuthGuard`による保護が引き続き機能している）
 
 これにより、sessionの保存方式を`localStorage`からcookieへ変更したことによるログイン機能・route保護機能への悪影響がないことを確認した。詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「17. frontend→backend access token転送の本番確認」を参照。
+
+## 21. backend履歴APIへのJWT検証＋project権限判定の接続（2026-09-12追記）
+
+`feature/backend-history-api-jwt-project-access`（2026-09-12）で、7章「backend JWT検証との接続」・8章「organization_members / project_id との接続」で整理した接続を、`GET /analysis-runs`・`GET /analysis-runs/{analysis_run_id}`・`GET /analysis-runs/{analysis_run_id}/comparison`の3本すべてに対して実際に行った。
+
+- `HISTORY_READ_TOKEN`が正しい場合は従来どおり無制限に許可する（既存frontend proxyは常にこのheaderを送るため、本番挙動は変わらない）。
+- `HISTORY_READ_TOKEN`が無い/不正で、`AUTH_JWT_ENABLED=true`かつ有効なSupabase Auth JWTがある場合のみ、`user_id`が所属するprojectのデータのみを返す。
+- JWTだけで全履歴が返ることはない——project権限判定に失敗すれば403、判定処理自体がエラーになれば503（fail-closed）。
+- `HISTORY_READ_TOKEN`gate・`STAGING_ACCESS_CODE`gateはいずれも変更していない。
+
+詳細（エラー設計・project境界の扱い等）は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)「18. backend履歴APIへのJWT検証＋project権限判定の接続」を参照。**本番でAUTH_JWT_ENABLEDを有効化するにはRender env設定が別途必要——今回は行っていない。** RLS policy本番適用も引き続き未実施。
 
 ## 関連ドキュメント
 

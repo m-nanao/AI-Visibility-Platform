@@ -128,7 +128,7 @@ def test_does_not_query_previous_run_when_current_not_found(monkeypatch):
     monkeypatch.setattr(
         main,
         "repository_get_previous_analysis_run_for_brand",
-        lambda analysis_run_id: previous_calls.append(analysis_run_id),
+        lambda analysis_run_id, project_id=None: previous_calls.append(analysis_run_id),
     )
 
     client.get(f"/analysis-runs/{CURRENT_ID}/comparison", headers=_auth_headers())
@@ -156,7 +156,7 @@ def test_returns_503_when_previous_lookup_raises(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda analysis_run_id: _fake_current_run())
 
-    def raising_get_previous(analysis_run_id):
+    def raising_get_previous(analysis_run_id, project_id=None):
         raise AnalysisHistoryReadError("boom")
 
     monkeypatch.setattr(main, "repository_get_previous_analysis_run_for_brand", raising_get_previous)
@@ -173,7 +173,9 @@ def test_success_with_no_previous_run(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda analysis_run_id: _fake_current_run())
     monkeypatch.setattr(
-        main, "repository_get_previous_analysis_run_for_brand", lambda analysis_run_id: None
+        main,
+        "repository_get_previous_analysis_run_for_brand",
+        lambda analysis_run_id, project_id=None: None,
     )
 
     response = client.get(f"/analysis-runs/{CURRENT_ID}/comparison", headers=_auth_headers())
@@ -196,7 +198,7 @@ def test_success_with_previous_run_includes_diff(monkeypatch):
     monkeypatch.setattr(
         main,
         "repository_get_previous_analysis_run_for_brand",
-        lambda analysis_run_id: _fake_previous_run(),
+        lambda analysis_run_id, project_id=None: _fake_previous_run(),
     )
 
     response = client.get(f"/analysis-runs/{CURRENT_ID}/comparison", headers=_auth_headers())
@@ -234,7 +236,7 @@ def test_success_passes_current_result_and_started_at_through(monkeypatch):
     monkeypatch.setattr(
         main,
         "repository_get_previous_analysis_run_for_brand",
-        lambda analysis_run_id: _fake_previous_run(result=previous_result),
+        lambda analysis_run_id, project_id=None: _fake_previous_run(result=previous_result),
     )
 
     response = client.get(f"/analysis-runs/{CURRENT_ID}/comparison", headers=_auth_headers())

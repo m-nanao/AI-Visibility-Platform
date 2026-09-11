@@ -73,7 +73,9 @@ POST body.
 import hmac
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -111,10 +113,14 @@ from services.analysis_history_comparison import build_comparison_response
 from services.analysis_history_repository import (
     AnalysisHistoryReadError,
     get_analysis_run as repository_get_analysis_run,
+    get_connection as open_history_db_connection,
     get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
     list_analysis_runs as repository_list_analysis_runs,
     save_analysis_history,
 )
+from services.auth_settings import load_auth_settings
+from services.jwt_auth import JWTAuthError, extract_bearer_token, verify_supabase_jwt
+from services.project_access import can_user_access_analysis_run, get_accessible_project_ids
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -698,43 +704,115 @@ def analyze(payload: AnalyzeRequest):
 
 
 # --- Analysis history read API (GET /analysis-runs, GET
-# /analysis-runs/{id}) — see
+# /analysis-runs/{id}, GET /analysis-runs/{id}/comparison) — see
 # docs/20_analysis_history_read_api_design.md. Entirely separate from
 # /analyze above: no request/response field of /analyze is touched by
 # anything below (AnalysisResult.analysisRunId is set above, inside the
 # /analyze handler itself — nothing here adds to it). Gated by
 # READ_HISTORY_ENABLED (a flag independent of DB_SAVE_ENABLED, since
-# saving is an internal write with no external caller while these two
+# saving is an internal write with no external caller while these
 # endpoints are reachable by anyone who can call this service) *and*,
-# on top of that, a shared-secret HISTORY_READ_TOKEN required in the
-# X-History-Read-Token header — see
-# docs/24_auth_rls_history_access_design.md "7. backend APIでのアクセ
-# ス制御案". READ_HISTORY_ENABLED=true alone still isn't enough to
-# serve a request.
+# on top of that, one of two authorization paths — see
+# _resolve_history_access() below and
+# docs/32_backend_jwt_verification_design.md "8. HISTORY_READ_TOKEN
+# からの移行方針" (Phase 2: JWT併用):
+#
+# 1. the existing shared-secret HISTORY_READ_TOKEN in the
+#    X-History-Read-Token header (docs/24_auth_rls_history_access_design.md
+#    "7. backend APIでのアクセス制御案") — unrestricted, exactly as
+#    before this task. The current frontend proxy always sends this,
+#    so today's production traffic is unaffected.
+# 2. AUTH_JWT_ENABLED=true and a Supabase Auth access token in
+#    Authorization: Bearer — verified, then always scoped to the
+#    caller's accessible projects via services.project_access.py. A
+#    JWT is *never* sufficient on its own to see any history; project
+#    scoping is mandatory whenever this path is taken.
+#
+# READ_HISTORY_ENABLED=true alone still isn't enough to serve a
+# request either way.
 HISTORY_READ_TOKEN_HEADER = "X-History-Read-Token"
+AUTHORIZATION_HEADER = "Authorization"
 HISTORY_READ_NOT_CONFIGURED_MESSAGE = "analysis history read API is not enabled"
 HISTORY_READ_DB_NOT_CONFIGURED_MESSAGE = "analysis history read API is not configured"
 HISTORY_READ_TOKEN_NOT_CONFIGURED_MESSAGE = "analysis history read token is not configured"
 HISTORY_READ_ACCESS_DENIED_MESSAGE = "analysis history read access denied"
+HISTORY_READ_INVALID_TOKEN_MESSAGE = "invalid or expired authentication token"
+HISTORY_READ_JWT_NOT_CONFIGURED_MESSAGE = "analysis history JWT verification is not configured"
 HISTORY_READ_FAILED_MESSAGE = "failed to read analysis history"
 
+# JWTAuthError.reason values (see services/jwt_auth.py) that mean "this
+# server can't verify any JWT right now" rather than "this particular
+# token is bad" — mapped to 503, not 401, so an operator can tell a
+# missing/misconfigured SUPABASE_JWKS_URL (or an unreachable JWKS
+# endpoint) apart from an actually-invalid caller token.
+_JWT_UNAVAILABLE_REASONS = frozenset({"not_configured", "jwks_fetch_failed"})
 
-def _check_history_read_access(request: Request) -> JSONResponse | None:
-    """Returns an error JSONResponse if this request must not proceed,
-    or None once every gate has passed. Checked first thing by both
-    read API endpoints below.
 
-    Order matters for the message returned (each case is deliberately
-    distinguishable so an operator can tell *why* a request was
-    rejected from the response alone, without needing server logs):
-    READ_HISTORY_ENABLED=false -> 503 (feature off) -> DATABASE_URL
-    unset -> 503 (misconfigured) -> HISTORY_READ_TOKEN unset -> 503
-    (misconfigured — an operator must opt in to a token, not just to
-    READ_HISTORY_ENABLED) -> header missing/mismatched -> 403.
+@dataclass(frozen=True)
+class HistoryAccessContext:
+    """Result of successfully authorizing a history-read request — see
+    docs/32_backend_jwt_verification_design.md "15. project権限判定の
+    実装状況" and "16"/"17" for how this connects the JWT verification
+    and project-access helpers built in earlier tasks.
 
-    The token comparison uses hmac.compare_digest() to avoid a timing
-    side-channel; neither the configured nor the provided token is ever
-    included in a response body or logged.
+    mode="history_token": the existing X-History-Read-Token gate
+    passed. Behaves exactly as before this feature existed — no
+    project scoping, `user_id`/`project_ids` are both None. Takes
+    precedence over any Authorization header present (see
+    _resolve_history_access()'s docstring), so today's production
+    traffic (the frontend proxy always sends this header) is
+    unaffected by this task.
+
+    mode="jwt": a valid Supabase Auth JWT was presented instead (and
+    HISTORY_READ_TOKEN was absent/incorrect). `user_id` is always set;
+    `project_ids` is the caller's accessible project id list from
+    services.project_access.get_accessible_project_ids() — this can be
+    an empty list, meaning "no accessible projects". Callers must
+    always apply `project_ids` as a filter (or an explicit membership
+    check) and must never treat mode="jwt" alone as "show everything".
+    """
+
+    mode: Literal["history_token", "jwt"]
+    user_id: str | None = None
+    project_ids: list[str] | None = None
+
+
+def _resolve_history_access(request: Request) -> HistoryAccessContext | JSONResponse:
+    """Returns a HistoryAccessContext once the request is authorized to
+    proceed, or a JSONResponse to return immediately otherwise. Checked
+    first thing by all three read API endpoints below — supersedes the
+    old _check_history_read_access() (same READ_HISTORY_ENABLED/
+    DATABASE_URL/HISTORY_READ_TOKEN checks, now also resolving a JWT
+    when the token gate doesn't pass).
+
+    Resolution order:
+    1. READ_HISTORY_ENABLED=false -> 503 (feature off) -> DATABASE_URL
+       unset -> 503 (misconfigured) -> HISTORY_READ_TOKEN unset -> 503
+       (misconfigured) — identical to before this task, regardless of
+       AUTH_JWT_ENABLED or any Authorization header.
+    2. X-History-Read-Token header correct -> mode="history_token",
+       unrestricted — identical to before this task. Checked before
+       any JWT, so a request that happens to carry both a correct
+       token and an Authorization header still gets the simple,
+       unrestricted path (this is what the current frontend proxy
+       sends).
+    3. Otherwise, only when AUTH_JWT_ENABLED=true and an
+       Authorization: Bearer header is present: parse and verify the
+       JWT (services/jwt_auth.py), then resolve the caller's
+       accessible projects (services/project_access.py) ->
+       mode="jwt". A malformed Authorization header or a JWT that
+       fails verification for any reason -> 401, except when this
+       server itself can't verify any JWT right now
+       (SUPABASE_JWKS_URL unset, or its JWKS endpoint unreachable) ->
+       503, and a DB failure while resolving accessible projects ->
+       503 (fails closed — never silently proceeds unrestricted).
+    4. Otherwise (no usable credentials of either kind) -> 403,
+       identical to before this task.
+
+    The HISTORY_READ_TOKEN comparison uses hmac.compare_digest() to
+    avoid a timing side-channel. Neither HISTORY_READ_TOKEN nor a JWT
+    (or any part of one) is ever included in a response body or
+    logged.
     """
     settings = load_db_settings()
 
@@ -748,10 +826,32 @@ def _check_history_read_access(request: Request) -> JSONResponse | None:
         return error_response(HISTORY_READ_TOKEN_NOT_CONFIGURED_MESSAGE, status_code=503)
 
     provided_token = request.headers.get(HISTORY_READ_TOKEN_HEADER, "")
-    if not provided_token or not hmac.compare_digest(provided_token, settings.history_read_token):
-        return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+    if provided_token and hmac.compare_digest(provided_token, settings.history_read_token):
+        return HistoryAccessContext(mode="history_token")
 
-    return None
+    auth_settings = load_auth_settings()
+    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
+    if auth_settings.jwt_enabled and authorization_header:
+        try:
+            token = extract_bearer_token(authorization_header)
+            authenticated_user = verify_supabase_jwt(token, auth_settings)
+        except JWTAuthError as exc:
+            if exc.reason in _JWT_UNAVAILABLE_REASONS:
+                return error_response(HISTORY_READ_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+            return error_response(HISTORY_READ_INVALID_TOKEN_MESSAGE, status_code=401)
+
+        try:
+            with open_history_db_connection() as conn:
+                project_ids = get_accessible_project_ids(conn, authenticated_user.user_id)
+        except Exception:
+            logger.exception("Failed to resolve accessible projects for JWT-authenticated request")
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+        return HistoryAccessContext(
+            mode="jwt", user_id=authenticated_user.user_id, project_ids=project_ids
+        )
+
+    return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
 
 
 @app.get("/analysis-runs", response_model=AnalysisRunListResponse)
@@ -762,14 +862,28 @@ def list_analysis_runs(
     brand: str | None = None,
     status: str | None = None,
 ):
-    access_denied = _check_history_read_access(request)
-    if access_denied is not None:
-        return access_denied
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
 
     try:
-        items = repository_list_analysis_runs(
-            limit=limit, offset=offset, brand=brand, status=status
-        )
+        if access.mode == "jwt":
+            # project_ids is always passed explicitly here (never
+            # omitted) — an empty list means "no accessible projects"
+            # and list_analysis_runs() short-circuits to [] without
+            # touching the DB, rather than this ever falling back to
+            # the unrestricted call below.
+            items = repository_list_analysis_runs(
+                limit=limit,
+                offset=offset,
+                brand=brand,
+                status=status,
+                project_ids=access.project_ids,
+            )
+        else:
+            items = repository_list_analysis_runs(
+                limit=limit, offset=offset, brand=brand, status=status
+            )
     except AnalysisHistoryReadError:
         return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
 
@@ -793,17 +907,44 @@ def get_analysis_run_comparison(analysis_run_id: str, request: Request):
     disambiguates these by segment count, but the explicit ordering
     keeps the intent obvious and matches this file's existing
     most-specific-route-first convention).
+
+    In JWT mode, access is checked against `analysis_run_id` (the
+    *current* run) before anything is fetched — a caller who can't see
+    the current run gets 403 without learning whether it even exists,
+    same as the detail endpoint below. The previous run is then looked
+    up scoped to the current run's own project_id (see
+    services.analysis_history_repository.get_previous_analysis_run_for_brand()'s
+    `project_id` parameter), so a comparison can never surface a run
+    from a project other than the one already authorized above — see
+    docs/32_backend_jwt_verification_design.md "project境界".
     """
-    access_denied = _check_history_read_access(request)
-    if access_denied is not None:
-        return access_denied
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
 
     try:
         current = repository_get_analysis_run(analysis_run_id)
         if current is None:
             return error_response("analysis run not found", status_code=404)
 
-        previous = repository_get_previous_analysis_run_for_brand(analysis_run_id)
+        previous = repository_get_previous_analysis_run_for_brand(
+            analysis_run_id,
+            project_id=current["projectId"] if access.mode == "jwt" else None,
+        )
     except AnalysisHistoryReadError:
         return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
 
@@ -820,9 +961,32 @@ def get_analysis_run_comparison(analysis_run_id: str, request: Request):
 
 @app.get("/analysis-runs/{analysis_run_id}", response_model=AnalysisRunDetailResponse)
 def get_analysis_run(analysis_run_id: str, request: Request):
-    access_denied = _check_history_read_access(request)
-    if access_denied is not None:
-        return access_denied
+    """In JWT mode, access is checked against `analysis_run_id` before
+    the detail is even fetched — a caller who can't see this run gets
+    403 without learning whether it exists (a nonexistent id and an
+    inaccessible id are indistinguishable in that mode, by design; see
+    docs/32_backend_jwt_verification_design.md "10. エラー設計"'s note
+    on not leaking existence). The `analysis run not found` 404 below
+    is still reachable in JWT mode only for the unlikely race where the
+    run is deleted between the access check and the fetch; it remains
+    the primary path, unchanged, for the history_token mode."""
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
 
     try:
         detail = repository_get_analysis_run(analysis_run_id)
