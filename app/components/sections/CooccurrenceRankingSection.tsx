@@ -1,6 +1,7 @@
 import Card from "../Card";
 import { trendStyles } from "../../lib/badge-styles";
 import {
+  COMMON_CRAWL_EXPLANATION_TEXT,
   getAnalysisSourceBreakdownDisplay,
   getCommonCrawlAnalyzedPagesDisplay,
   getCommonCrawlProviderDisplay,
@@ -47,7 +48,8 @@ export default function CooccurrenceRankingSection({
           「依頼者確認結果」参照。 */}
       {commonCrawlProvider && (
         <div className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          <p>{commonCrawlProvider.summary}</p>
+          <p>{COMMON_CRAWL_EXPLANATION_TEXT}</p>
+          <p className="mt-1">{commonCrawlProvider.summary}</p>
           {commonCrawlProvider.detail && <p>{commonCrawlProvider.detail}</p>}
           {commonCrawlProvider.note && <p>{commonCrawlProvider.note}</p>}
           {/* URLのみを表示する（HTML/WARC本文・raw responseは

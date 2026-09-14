@@ -10,6 +10,7 @@ import {
   HISTORY_COMPARISON_COOCCURRENCE_NEW_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_REMOVED_LABEL,
   HISTORY_COMPARISON_IMPROVEMENTS_LABEL,
+  HISTORY_COMPARISON_INTRO_TEXT,
   HISTORY_COMPARISON_SECTION_TITLE,
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
   HISTORY_DETAIL_BACK_LINK_TEXT,
@@ -227,6 +228,9 @@ function ComparisonSection({ view }: { view: HistoryComparisonViewState }) {
       <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
         {HISTORY_COMPARISON_SECTION_TITLE}
       </h2>
+      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+        {HISTORY_COMPARISON_INTRO_TEXT}
+      </p>
 
       {warnings.length > 0 && (
         <ul className="mt-2 space-y-1 text-xs text-amber-600 dark:text-amber-400">

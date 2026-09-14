@@ -375,8 +375,55 @@ export interface AiOverviewProviderStatusDisplay {
   // stronger warning distinguishing a connectivity-check response
   // (Sandbox) from a real, potentially-billed production result (Live).
   caution?: string;
+  // Present only on an "unavailable" result — a neutral reassurance
+  // (OBSERVATION_UNAVAILABLE_NOTE) that not being able to fetch this
+  // one observation doesn't mean the brand "doesn't exist" in the AI,
+  // and doesn't stop the rest of the analysis. Deliberately a separate
+  // field from `caution` (which is a real warning, e.g. cost risk) so
+  // it can be styled as neutral rather than amber.
+  note?: string;
   tone: "neutral" | "caution";
 }
+
+// Shown for AI Overview/ChatGPT observation `mode="off"` — added for
+// MVP review clarity (see docs/task 「MVPレビュー向けにAI観測結果・Web
+// 情報環境の比較表示を整える」) so a 依頼者 doesn't read "無効"/"OFF" as
+// a bug or a permanent limitation.
+export const OBSERVATION_OFF_NOTE =
+  "この観測は現在OFFです。必要に応じて検証時のみONにできます。";
+
+// Shown for AI Overview `mode="mock"` — replaces the previous
+// "現在mockデータです" wording with an explicit statement that this is
+// not a real AI observation at all, to avoid a 依頼者 mistaking fixed
+// placeholder data for an actual AI response.
+export const OBSERVATION_MOCK_NOTE =
+  "これは開発・表示確認用のサンプルデータです。実際のAI観測結果ではありません。";
+
+// Shown alongside every "unavailable" observation status (AI Overview,
+// ChatGPT) — a neutral reassurance that a failed/未取得 observation
+// doesn't mean the brand is absent from that AI, only that this
+// particular attempt (this condition, source, and timing) couldn't
+// confirm it, and that the rest of the brand analysis still ran.
+export const OBSERVATION_UNAVAILABLE_NOTE =
+  "取得できなかった場合でも、ブランド分析全体は継続されます。未取得は「AIに存在しない」という意味ではなく、今回の条件・取得元・タイミングで確認できなかったことを示します。";
+
+// A short framing sentence for the Google AI Overview / AI Mode
+// observation — distinct from CHATGPT_PLATFORM_NOTE below, shown once
+// near the top of the AI Overview比較 section regardless of which
+// platform's items are actually present, so a 依頼者 understands what
+// this section is (and isn't) measuring before reading individual
+// cards.
+export const AI_OVERVIEW_EXPLANATION_TEXT =
+  "Google AI Overview / AI Modeで、対象ブランドがどのように回答・参照されるかを観測した結果です。AIの内部状態や学習内容を保証するものではなく、検索AI上で確認できた結果側の観測データです。";
+
+// A short framing sentence for Common Crawl「補完」— what the
+// supplementary Document(s) it adds are actually for, distinct from
+// getCommonCrawlProviderDisplay()'s per-request status line below.
+// Shown once whenever meta.commonCrawlProvider is present (any
+// status), so a 依頼者 understands the purpose of this feature before
+// reading its per-request outcome.
+export const COMMON_CRAWL_EXPLANATION_TEXT =
+  "Web上に公開され、Common Crawlに収集されたページを補助データとして使い、AIに参照されやすい情報環境を推定するための材料です。AIが実際に学習した内容そのものを示すものではありません。";
 
 /**
  * Describes which provider actually produced aiOverviewComparison, for
@@ -397,7 +444,7 @@ export function getAiOverviewProviderStatusDisplay(
     case "off":
       return {
         label: "無効",
-        description: "AI Overview比較は無効化されています。",
+        description: OBSERVATION_OFF_NOTE,
         tone: "neutral",
       };
 
@@ -427,6 +474,7 @@ export function getAiOverviewProviderStatusDisplay(
       return {
         label: "DataForSEO 未取得",
         description: "DataForSEOからAI Overview項目を取得できませんでした。",
+        note: OBSERVATION_UNAVAILABLE_NOTE,
         tone: "neutral",
       };
 
@@ -434,9 +482,48 @@ export function getAiOverviewProviderStatusDisplay(
     default:
       return {
         label: "開発用データ",
-        description: "AI Overview比較は現在mockデータです。",
+        description: OBSERVATION_MOCK_NOTE,
         tone: "neutral",
       };
+  }
+}
+
+/**
+ * Mirrors getAiOverviewProviderStatusDisplay() above, but for the
+ * independent ChatGPT-equivalent observation (meta.chatgptProvider —
+ * see backend/services/chatgpt_provider.py). Returns null both when
+ * meta.chatgptProvider is absent (older backend/client dummy fallback)
+ * and on a successful ("real") observation — a real ChatGPT card
+ * already carries its own inline explanation via CHATGPT_PLATFORM_NOTE
+ * (see getAiOverviewItemDetailDisplay's platformNote), so a second
+ * top-level "OK" badge here would be redundant. Only the off/未取得
+ * states get a badge, matching what a 依頼者 actually needs explained.
+ */
+export function getChatGptProviderStatusDisplay(
+  meta: AnalysisMeta,
+): AiOverviewProviderStatusDisplay | null {
+  const provider = meta.chatgptProvider;
+  if (!provider) return null;
+
+  switch (provider.status) {
+    case "off":
+      return {
+        label: "無効",
+        description: OBSERVATION_OFF_NOTE,
+        tone: "neutral",
+      };
+
+    case "unavailable":
+      return {
+        label: "ChatGPT 未取得",
+        description: "OpenAI APIからChatGPT観測を取得できませんでした。",
+        note: OBSERVATION_UNAVAILABLE_NOTE,
+        tone: "neutral",
+      };
+
+    case "real":
+    default:
+      return null;
   }
 }
 
@@ -546,7 +633,7 @@ export interface AiOverviewItemDetailDisplay {
 // frontend has for "this card is the real OpenAI API observation" vs.
 // e.g. the mock fixture's plain "ChatGPT" placeholder.
 const CHATGPT_OPENAI_PLATFORM_LABEL = "ChatGPT (OpenAI API)";
-const CHATGPT_PLATFORM_NOTE =
+export const CHATGPT_PLATFORM_NOTE =
   "OpenAI APIによる1問観測です。ChatGPTアプリ全体の認識や内部状態を保証するものではありません。";
 
 // Below this length, a "続きを見る" toggle would reveal only a sliver of

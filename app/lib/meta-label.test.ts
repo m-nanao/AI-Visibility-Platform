@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  OBSERVATION_UNAVAILABLE_NOTE,
   OWN_DOMAIN_STATUS_LABELS,
   REFERENCE_CATEGORY_LABELS,
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
   getAnalysisSourceBreakdownDisplay,
+  getChatGptProviderStatusDisplay,
   getCommonCrawlAnalyzedPagesDisplay,
   getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
@@ -280,6 +282,132 @@ describe("getAiOverviewProviderStatusDisplay", () => {
 
     const display = getAiOverviewProviderStatusDisplay(meta);
     expect(display?.label).toBe("DataForSEO Sandbox");
+  });
+
+  it("explains mock data as a sample, not a real AI observation", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "mock",
+        status: "mock",
+        reason: "Using mock AI Overview data for development.",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.description).toBe(
+      "これは開発・表示確認用のサンプルデータです。実際のAI観測結果ではありません。",
+    );
+  });
+
+  it("explains off mode as a toggle-able state, not a permanent limitation", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "off",
+        status: "unavailable",
+        reason: "AI Overview comparison is disabled (AI_OVERVIEW_PROVIDER_MODE=off).",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.description).toBe(
+      "この観測は現在OFFです。必要に応じて検証時のみONにできます。",
+    );
+  });
+
+  it("adds a reassurance note on unavailable that the brand isn't absent from the AI, just not confirmed this time", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "unavailable",
+        reason: "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
+      },
+    };
+
+    const display = getAiOverviewProviderStatusDisplay(meta);
+    expect(display?.note).toBe(OBSERVATION_UNAVAILABLE_NOTE);
+  });
+
+  it("does not add a note on mock/off/success results", () => {
+    const mockMeta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: { mode: "mock", status: "mock", reason: "mock" },
+    };
+    const offMeta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: { mode: "off", status: "unavailable", reason: "off" },
+    };
+    const realMeta: AnalysisMeta = {
+      ...baseMeta(),
+      aiOverviewProvider: {
+        mode: "dataforseo",
+        status: "real",
+        reason: "DataForSEO Sandbox AI Mode request succeeded.",
+      },
+    };
+
+    expect(getAiOverviewProviderStatusDisplay(mockMeta)?.note).toBeUndefined();
+    expect(getAiOverviewProviderStatusDisplay(offMeta)?.note).toBeUndefined();
+    expect(getAiOverviewProviderStatusDisplay(realMeta)?.note).toBeUndefined();
+  });
+});
+
+describe("getChatGptProviderStatusDisplay", () => {
+  it("returns null when meta.chatgptProvider is absent", () => {
+    expect(getChatGptProviderStatusDisplay(baseMeta())).toBeNull();
+  });
+
+  it("returns null on a successful observation (already explained inline per-card)", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      chatgptProvider: {
+        mode: "openai",
+        status: "real",
+        reason: "OpenAI API observation succeeded.",
+        environment: "api",
+      },
+    };
+
+    expect(getChatGptProviderStatusDisplay(meta)).toBeNull();
+  });
+
+  it("describes off mode as a toggle-able state", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      chatgptProvider: {
+        mode: "off",
+        status: "off",
+        reason: "ChatGPT observation is disabled (CHATGPT_PROVIDER_MODE=off).",
+        environment: "off",
+      },
+    };
+
+    const display = getChatGptProviderStatusDisplay(meta);
+    expect(display?.label).toBe("無効");
+    expect(display?.description).toBe(
+      "この観測は現在OFFです。必要に応じて検証時のみONにできます。",
+    );
+    expect(display?.tone).toBe("neutral");
+  });
+
+  it("describes an unavailable observation without exposing the raw reason, plus a reassurance note", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      chatgptProvider: {
+        mode: "openai",
+        status: "unavailable",
+        reason: "OPENAI_API_KEY is not configured.",
+        environment: "unavailable",
+      },
+    };
+
+    const display = getChatGptProviderStatusDisplay(meta);
+    expect(display?.label).toBe("ChatGPT 未取得");
+    expect(display?.description).not.toContain("OPENAI_API_KEY");
+    expect(display?.note).toBe(OBSERVATION_UNAVAILABLE_NOTE);
+    expect(display?.tone).toBe("neutral");
   });
 });
 

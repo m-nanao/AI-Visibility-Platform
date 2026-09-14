@@ -336,7 +336,7 @@ export async function resolveHistoryDetailFetchOutcome(
 
 export const POST_ANALYZE_HISTORY_LINK_TEXT = "保存済み履歴で開く";
 export const POST_ANALYZE_HISTORY_LINK_HELPER_TEXT =
-  "この分析結果は履歴に保存されています。";
+  "この分析結果は履歴に保存されています。保存済み履歴からは、前回比較やレポート表示も確認できます。";
 
 export type PostAnalyzeHistoryLink = {
   path: string;
@@ -444,6 +444,8 @@ export type ResolvedAnalysisRunComparison = AnalysisRunComparisonResponse & {
 };
 
 export const HISTORY_COMPARISON_SECTION_TITLE = "前回比較";
+export const HISTORY_COMPARISON_INTRO_TEXT =
+  "同じブランドの前回の分析結果と比較した変化です。";
 export const HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL = "可視性スコア";
 export const HISTORY_COMPARISON_COOCCURRENCE_LABEL = "共起語の変化";
 export const HISTORY_COMPARISON_COOCCURRENCE_NEW_LABEL = "新規";
