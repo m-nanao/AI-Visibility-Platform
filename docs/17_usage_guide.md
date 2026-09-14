@@ -1,5 +1,7 @@
 # AI Visibility Platform MVP 使い方ガイド
 
+**このドキュメントに沿った時系列のデモ実演手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を参照。ログイン（Supabase Auth）・履歴一覧/詳細・前回比較・レポート表示は実装済みであり、本ガイドの「11. ログイン・履歴・比較・レポートの使い方」に整理した。**
+
 ## 1. このドキュメントの目的
 
 - このドキュメントは、MVPを実際に操作する人向けの使い方ガイドである。
@@ -198,7 +200,37 @@ Common Crawl補完: 公式ドメインから補完
 - Common Crawlに存在するページがAIに必ず使われたとは言えない。
 - AI Overview / ChatGPT観測は時点や条件で変動する。
 - DataForSEO Live・ChatGPT (OpenAI API)は費用が発生する可能性がある。
-- 本格運用ではDB保存・非同期job・定期取得が必要になる（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
+- 分析履歴の保存・履歴一覧/詳細・前回比較・レポート表示は実装済み（11章参照）——非同期job化・定期取得はまだ今後の対応（[02_roadmap.md](./02_roadmap.md)のNext/Later欄参照）。
+
+## 11. ログイン・履歴・比較・レポートの使い方（2026-09-15追記）
+
+Supabase Authによるログイン、分析履歴の保存・閲覧、前回比較、レポート表示は実装済みである。
+
+### ログイン
+
+- `/login`でメールアドレス・パスワードでログインする。
+- ログイン後、`/history`・`/history/[id]`・`/history/[id]/report`が閲覧可能になる（未ログイン時は`/login`へリダイレクトされる）。
+- ログインユーザーは、`organization_members`に登録済みの組織が持つprojectの履歴のみ閲覧できる（project権限判定、詳細は[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)参照）。
+
+### 履歴一覧（`/history`）
+
+- 過去に実行した分析（保存に成功したもの）が一覧表示される。
+- 各項目の「詳細を見る」ボタンから詳細画面へ移動する。
+
+### 履歴詳細（`/history/[id]`）
+
+- 保存された分析結果を、分析直後の結果画面と同じ形式で再表示する。
+- 「前回比較」セクションで、同じブランドの前回結果との差分（可視性スコア・共起語の新規/消失/変化・改善提案件数）を確認できる。前回履歴がない場合は「比較できる過去履歴がまだありません。」と表示される（エラーではない）。
+- 「レポートを表示」ボタンからレポート画面へ移動する。
+
+### レポート（`/history/[id]/report`）
+
+- 依頼者への共有・印刷を想定した1ページのレポート表示。
+- PDF保存/印刷ボタンあり——ブラウザの印刷機能によるものであり、正式なPDF自動生成機能ではない（[26_report_output_design.md](./26_report_output_design.md)参照）。
+
+### この順番で操作する場合のデモ台本
+
+上記を時系列でまとめた実演手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「4. デモの流れ」を参照。
 
 ## 関連ドキュメント
 
@@ -207,4 +239,5 @@ Common Crawl補完: 公式ドメインから補完
 - 依頼者への確認事項（表現・用語・優先順位）: [15_requester_review_items.md](./15_requester_review_items.md)
 - Common Crawl補完の設計・現行設計まとめ: [13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)
 - フェーズ別ロードマップ: [02_roadmap.md](./02_roadmap.md)
-- デモ提出用チェックリスト（推奨env・見せる順番）: [12_demo_readiness.md](./12_demo_readiness.md)
+- デモ提出用チェックリスト（2026-07-28時点、ログイン・履歴機能実装前のスナップショット）: [12_demo_readiness.md](./12_demo_readiness.md)
+- MVPレビュー用デモ手順（時系列の実演手順）: [37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)

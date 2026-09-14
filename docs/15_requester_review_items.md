@@ -316,3 +316,9 @@ Common Crawl固有の未取得表示は上記2-2-Gを参照。ここではアプ
 - 今後のタスク一覧: [05_tasks.md](./05_tasks.md)
 - 現状サマリー: [development_status.md](./development_status.md)
 - デモ提出用チェックリスト: [12_demo_readiness.md](./12_demo_readiness.md)
+
+## 8. MVPレビュー用デモ手順との関係（2026-09-15追記）
+
+本ファイル（1〜7章）はCommon Crawl補完・AI Overview/ChatGPT観測の**表現・文言**について、2026-08-20に依頼者から承認済みの方針を記録したものである。
+
+これとは別に、ログイン・履歴・比較・レポートまで含めた現在のMVP全体を依頼者にレビューしてもらうための、新しいレビュー観点リストを[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「7. 依頼者に確認してもらうレビュー項目」に整理した（複数AI比較の優先度、project/招待UI、定期観測等）。こちらはまだ依頼者からの回答を得ていない、次の確認ラウンド向けの項目である——本章の「承認済み」扱いとは区別すること。
