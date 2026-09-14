@@ -1,8 +1,8 @@
 # RLS Policy 検証DB Runbook
 
-**この手順書は、[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)のselect policy SQL案を検証DBで実行するための実務手順書である。本番Supabaseへの適用は含まない。** **この手順書に沿った検証DBでの基本テストが`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bの分離を確認済み。詳細は「12. 検証DBでの基本テスト結果」参照。`analysis_runs`/`analysis_results`のREST可視性確認・rollback SQL実行・本番適用はいずれもまだ行っていない。RLS policyはbackendアプリケーション層のJWT検証＋project権限判定（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)）の代替ではなく、DB層に追加する防御層として扱う。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書は、[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)のselect policy SQL案を検証DBで実行するための実務手順書である。本番Supabaseへの適用は含まない。** **この手順書に沿った検証DBでの基本テストが`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bの分離を確認済み。詳細は「12. 検証DBでの基本テスト結果」参照。**`analysis_runs`/`analysis_results`のREST可視性確認も`docs/record-rls-run-result-visibility-verification`（2026-09-14）で追加実施済み**——詳細は「13. analysis_runs / analysis_resultsのRLS可視性確認結果」参照。rollback SQL実行・本番適用はいずれもまだ行っていない。RLS policyはbackendアプリケーション層のJWT検証＋project権限判定（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)）の代替ではなく、DB層に追加する防御層として扱う。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-12**
+**最終更新日: 2026-09-14**
 
 ## 1. このドキュメントの目的
 
@@ -371,9 +371,36 @@ delete from public.organizations where id in ('<org-a-id>', '<org-b-id>');
 
 **未認証アクセスの扱いについて:** 未認証アクセスの期待値は「空配列」または「permission denied」のいずれも許容する。今回の検証DBでは`anon`roleにSELECT権限をgrantしていないため`permission denied`となったが、いずれにせよ未認証状態でデータが読めていないことが確認できていれば安全側としてOKと判断する。
 
+**未確認として以下を残す（`analysis_runs`/`analysis_results`のREST可視性確認は13章で解消済み）。**
+
+- rollback SQL（9章）の検証DBでの実行確認
+- RLS本番適用判断
+- 本番DBへの適用（引き続き別タスク）
+
+**本番DBへは今回もRLS policyを適用していない。** 検証DBへの操作のみであり、本番Supabase・Render・Vercelの設定変更はいずれも行っていない。
+
+## 13. analysis_runs / analysis_resultsのRLS可視性確認結果（2026-09-14追記）
+
+`docs/record-rls-run-result-visibility-verification`（2026-09-14、docsのみ・コード変更なし）で、12章の基本テストで未確認として残っていた`analysis_runs`/`analysis_results`のREST可視性を、同じ02_migration検証用Supabase project・同じuser A2/Bで追加確認した。
+
+**確認結果（7章「方法A」に沿ってログイン→JWT取得→REST APIで確認）:**
+
+| 実行者 | 確認したテーブル | 結果 |
+|---|---|---|
+| user A2 | `analysis_runs` | A側のみ返る |
+| user A2 | `analysis_results` | A側のみ返る |
+| user B | `analysis_runs` | B側のみ返る |
+| user B | `analysis_results` | B側のみ返る |
+| 未認証 | `analysis_runs` | 読めない |
+| 未認証 | `analysis_results` | 読めない |
+
+- `analysis_runs`/`analysis_results`いずれもorganization/project境界を越えたデータ漏えいは確認されなかった。
+- `analysis_results`は自身が`project_id`を持たず、親`analysis_runs.project_id`経由でproject判定するpolicy（6章「analysis_results」参照）だが、期待どおり親run側のproject境界内に正しく制限されていることを確認した。
+
+**JWT期限切れへの対応:** 検証の途中、時間経過により既存のaccess tokenが期限切れとなり、Supabase REST APIから`JWT expired`が返る場面があった。この場合はテストユーザーで再ログインしてaccess tokenを再取得すれば検証を継続できる——今回もuser A2/Bそれぞれのaccess tokenを再取得し、期待どおりの結果を確認できた。長時間の検証セッションでは、これを一時的な失敗ではなく想定内の運用として扱う。
+
 **未確認として以下を残す。**
 
-- `analysis_runs` / `analysis_results`のREST可視性確認（user A2/Bそれぞれで、同様にA側/B側のみ見えることの確認）
 - rollback SQL（9章）の検証DBでの実行確認
 - RLS本番適用判断
 - 本番DBへの適用（引き続き別タスク）
