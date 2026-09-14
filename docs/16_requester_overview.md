@@ -2,9 +2,11 @@
 
 このドキュメントは、依頼者・非エンジニア・依頼者側AIが、このMVPの現状を素早く・正確に説明できるようにするための1ファイルです。技術的な詳細（実装・テスト・設計判断の経緯）は各docsに譲り、ここでは「何ができて、何をまだ保証していないか」を平易な言葉でまとめています。
 
-開発者向けの詳細は[development_status.md](./development_status.md)（現状サマリー）・[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)（Common Crawl補完の設計）を参照してください。docs全体の読む順番は[00_index.md](./00_index.md)を参照してください。
+開発者向けの詳細は[development_status.md](./development_status.md)（現状サマリー）・[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)（Common Crawl補完の設計）を参照してください。docs全体の読む順番は[00_index.md](./00_index.md)を参照してください。**MVPを実際に見せる際の時系列の実演手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を参照してください。**
 
-**最終更新日: 2026-07-29**
+**最終更新日: 2026-09-15**
+
+**2026-09-15追記: このファイルの本文（1〜10章）は2026-07-29時点の記述のままだが、その後Supabase Authログイン・分析履歴保存・履歴一覧/詳細・前回比較・レポート表示・backend JWT検証+project権限判定が実装され、本番で動作確認済みである。「8. 現時点でまだできないこと」に記載の「DB保存」「時系列変化の継続分析」「ダッシュボードとしての履歴管理」は解消済み——最新の実装状況は[development_status.md](./development_status.md)、依頼者向けの完全な現状整理は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「6. MVP範囲と未対応範囲」を参照すること。**
 
 ## 1. 現在のMVPでできること
 
