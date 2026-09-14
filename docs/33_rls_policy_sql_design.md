@@ -1,6 +1,6 @@
 # RLS Policy SQL Design
 
-**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済みで、**本番Vercel/RenderでJWT/project権限判定経路を実際に通った履歴表示を確認済み**——詳細は「16. JWTがある場合の優先化」「17. JWT/project権限判定経路の本番確認」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。**RLS policyの検証DB向け実行手順（drop policy if exists付きSQL・検証データ作成手順・検証クエリの複数案・期待結果・rollback SQL・本番適用前チェックリスト）は`docs/rls-verification-runbook`（2026-09-12）で[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)として整備済み**——詳細は「18. 検証DB向けRunbookの整備」参照。**この手順に沿った検証DBでの基本テストも`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bのorganization/project/brand分離をREST/JWT経由で確認済み。詳細は「19. 検証DBでの基本テスト結果」参照。**`analysis_runs`/`analysis_results`のREST/JWT分離確認も`docs/record-rls-run-result-visibility-verification`（2026-09-14）で追加実施済み**——詳細は「20. analysis_runs / analysis_resultsのRLS可視性確認結果」参照。**検証DBへの実際のSQL実行・6テーブル分の可視性確認は完了したが、rollback SQL実行・本番適用はまだ行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは設計メモである。SQL案は本番Supabaseにはまだ適用していない。migrationファイルとしても追加していない。実行は検証DBでのみ想定する。** アプリ層（backend）での同等のアクセス可否判定helper（`backend/services/project_access.py`）は`feature/backend-project-access-helpers`（2026-09-11）で追加済みで、`feature/backend-history-api-jwt-project-access`（2026-09-12）でbackend履歴API（`GET /analysis-runs`系3本）へ実際に接続された——詳細は「15. backend履歴APIへの接続」参照。**`Authorization`headerがある場合はJWT/project権限判定経路を優先し`HISTORY_READ_TOKEN`へfallbackしない移行**は`feature/prefer-jwt-project-access-for-history-api`（2026-09-12）で完了済みで、**本番Vercel/RenderでJWT/project権限判定経路を実際に通った履歴表示を確認済み**——詳細は「16. JWTがある場合の優先化」「17. JWT/project権限判定経路の本番確認」参照。**これはRLS policyの代替ではない**——DB自体はRLS policyなしで無防備なままであり、アプリ層のチェックはbackendのDB接続（RLSをbypassしうる）上で明示的にSQLを実行しているに過ぎない。**RLS policyの検証DB向け実行手順（drop policy if exists付きSQL・検証データ作成手順・検証クエリの複数案・期待結果・rollback SQL・本番適用前チェックリスト）は`docs/rls-verification-runbook`（2026-09-12）で[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)として整備済み**——詳細は「18. 検証DB向けRunbookの整備」参照。**この手順に沿った検証DBでの基本テストも`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bのorganization/project/brand分離をREST/JWT経由で確認済み。詳細は「19. 検証DBでの基本テスト結果」参照。**`analysis_runs`/`analysis_results`のREST/JWT分離確認も`docs/record-rls-run-result-visibility-verification`（2026-09-14）で追加実施済み**——詳細は「20. analysis_runs / analysis_resultsのRLS可視性確認結果」参照。**rollback SQLの検証DB実行も`docs/record-rls-rollback-verification`（2026-09-14）で完了済み**——詳細は「21. rollback SQLの検証DB実行結果」参照。検証DBでの適用・分離確認・rollbackは一通り完了したが、**RLS本番適用はまだ行っていない。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-14**
 
@@ -326,7 +326,21 @@ drop policy if exists "members can select analysis results in their projects" on
 
 検証途中、access tokenの期限切れにより`JWT expired`が返る場面があったが、テストユーザーで再ログインしてaccess tokenを再取得することで検証を継続できた（詳細は[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)「13」参照）。
 
-**未確認として以下を残す:** rollback SQLの検証DB実行確認、RLS本番適用判断。**本番DBには今回もRLS policyを適用していない。**
+**未確認として以下を残す（rollback SQLの検証DB実行確認は21章で解消済み）:** RLS本番適用判断。**本番DBには今回もRLS policyを適用していない。**
+
+## 21. rollback SQLの検証DB実行結果（2026-09-14追記）
+
+`docs/record-rls-rollback-verification`（2026-09-14、docsのみ・コード変更なし）で、11章のロールバック方針に沿ったSQLを02_migration検証用Supabase projectで実際に実行した。
+
+**Rollback SQL was verified on the 02_migration verification Supabase project. The verification confirmed that policies, grants, RLS enabled state, and helper function can be removed/disabled as expected. Production DB has not been changed.**
+
+- select policy 6件がすべて削除され、`pg_policies`は対象6テーブルで0件になった。
+- 対象6テーブルの`rls_enabled`/`rls_forced`はいずれも`false`を確認した。
+- 20章までの検証で採用した`security definer`のhelper function `public.is_org_member(uuid)`も削除を確認した。
+- テーブル本体・検証データは削除していない。
+- 実行時、Supabase Dashboard上で「Potential issue detected」の警告が表示されたが、実行対象が本番Supabaseではなく検証用projectであることを確認したうえで実行した。
+
+詳細（実行SQL・警告への対応・確認結果の表）は[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)「14. rollback SQLの検証DB実行結果」を参照。**これにより検証DBでは、select policyの適用・REST/JWTでのuser A2/B分離確認・rollbackまで一通り完了した。残るのはRLS本番適用の判断のみである。**
 
 ## 関連ドキュメント
 
