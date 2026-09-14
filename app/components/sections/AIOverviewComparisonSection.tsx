@@ -1,10 +1,37 @@
 import Card from "../Card";
 import {
+  AI_OVERVIEW_EXPLANATION_TEXT,
+  CHATGPT_PLATFORM_NOTE,
   OWN_DOMAIN_STATUS_LABELS,
   getAiOverviewItemDetailDisplay,
   getAiOverviewProviderStatusDisplay,
+  getChatGptProviderStatusDisplay,
 } from "../../lib/meta-label";
+import type { AiOverviewProviderStatusDisplay } from "../../lib/meta-label";
 import type { AIOverviewComparisonItem, AnalysisMeta } from "../../lib/types";
+
+function ProviderStatusBadge({ status }: { status: AiOverviewProviderStatusDisplay }) {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span
+        className={`rounded px-1.5 py-0.5 text-xs ${
+          status.tone === "caution"
+            ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400"
+            : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+        }`}
+      >
+        {status.label}
+      </span>
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">{status.description}</p>
+      {status.caution && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">{status.caution}</p>
+      )}
+      {status.note && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">{status.note}</p>
+      )}
+    </div>
+  );
+}
 
 export default function AIOverviewComparisonSection({
   items,
@@ -14,31 +41,22 @@ export default function AIOverviewComparisonSection({
   meta: AnalysisMeta;
 }) {
   const providerStatus = getAiOverviewProviderStatusDisplay(meta);
+  const chatgptStatus = getChatGptProviderStatusDisplay(meta);
 
   return (
     <Card
       title="4. AI Overview比較"
       description="AI Overview / ChatGPT観測で確認された回答・参照状況（結果側の観測データ）"
     >
-      {providerStatus && (
-        <div className="mb-3 flex flex-col items-start gap-1">
-          <span
-            className={`rounded px-1.5 py-0.5 text-xs ${
-              providerStatus.tone === "caution"
-                ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400"
-                : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-            }`}
-          >
-            {providerStatus.label}
-          </span>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {providerStatus.description}
-          </p>
-          {providerStatus.caution && (
-            <p className="text-xs text-amber-700 dark:text-amber-400">
-              {providerStatus.caution}
-            </p>
-          )}
+      <div className="mb-3 space-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+        <p>{AI_OVERVIEW_EXPLANATION_TEXT}</p>
+        <p>{CHATGPT_PLATFORM_NOTE}</p>
+      </div>
+
+      {(providerStatus || chatgptStatus) && (
+        <div className="mb-3 flex flex-col gap-3">
+          {providerStatus && <ProviderStatusBadge status={providerStatus} />}
+          {chatgptStatus && <ProviderStatusBadge status={chatgptStatus} />}
         </div>
       )}
 

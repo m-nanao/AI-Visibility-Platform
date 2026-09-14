@@ -6,11 +6,16 @@ import { useParams } from "next/navigation";
 import ReportPrintButton from "../../../components/ReportPrintButton";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
 import {
+  ANALYSIS_GUIDE_INTRO,
+  ANALYSIS_GUIDE_OUTRO,
+} from "../../../lib/analysis-explanation";
+import {
   HISTORY_COMPARISON_COOCCURRENCE_CHANGED_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_NEW_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_REMOVED_LABEL,
   HISTORY_COMPARISON_IMPROVEMENTS_LABEL,
+  HISTORY_COMPARISON_INTRO_TEXT,
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
   HISTORY_LOADING_TEXT,
   REPORT_AI_OVERVIEW_EMPTY_MESSAGE,
@@ -35,6 +40,12 @@ import type {
   AnalysisRunDetailViewState,
   HistoryComparisonViewState,
 } from "../../../lib/analysis-history";
+import {
+  AI_OVERVIEW_EXPLANATION_TEXT,
+  CHATGPT_PLATFORM_NOTE,
+  COMMON_CRAWL_EXPLANATION_TEXT,
+  getCommonCrawlProviderDisplay,
+} from "../../../lib/meta-label";
 import type { AnalysisResult } from "../../../lib/types";
 
 // Print-oriented HTML report page (docs/26_report_output_design.md).
@@ -160,6 +171,12 @@ function ReportContent({
         </p>
       </section>
 
+      {/* この分析の見方（原因側/結果側の整理） */}
+      <section className="rounded-md bg-zinc-50 p-4 text-xs leading-relaxed text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300 print:border print:border-black print:bg-white print:text-black">
+        <p>{ANALYSIS_GUIDE_INTRO}</p>
+        <p className="mt-1">{ANALYSIS_GUIDE_OUTRO}</p>
+      </section>
+
       {/* 2. サマリー */}
       <section>
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
@@ -192,6 +209,15 @@ function ReportContent({
           </p>
         )}
 
+        {result.meta.commonCrawlProvider && (
+          <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+            <p>{COMMON_CRAWL_EXPLANATION_TEXT}</p>
+            <p className="mt-0.5">
+              {getCommonCrawlProviderDisplay(result.meta)?.summary}
+            </p>
+          </div>
+        )}
+
         <h3 className="mt-4 text-sm font-semibold">文脈分析</h3>
         {result.contextAnalysis.length > 0 ? (
           <div className="mt-1 space-y-2">
@@ -218,6 +244,10 @@ function ReportContent({
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
           {REPORT_SECTION_TITLES.aiObservation}
         </h2>
+        <div className="mt-1 space-y-0.5 text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+          <p>{AI_OVERVIEW_EXPLANATION_TEXT}</p>
+          <p>{CHATGPT_PLATFORM_NOTE}</p>
+        </div>
         {result.aiOverviewComparison.length > 0 ? (
           <div className="mt-2 space-y-2">
             {result.aiOverviewComparison.map((item) => (
@@ -321,6 +351,9 @@ function ReportComparison({ view }: { view: HistoryComparisonViewState }) {
 
   return (
     <div className="mt-2 space-y-2">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+        {HISTORY_COMPARISON_INTRO_TEXT}
+      </p>
       {warnings.length > 0 && (
         <ul className="space-y-0.5 text-xs text-amber-600 dark:text-amber-400 print:text-black">
           {warnings.map((warning) => (

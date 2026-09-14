@@ -5,6 +5,7 @@ import {
   POST_ANALYZE_HISTORY_LINK_TEXT,
   resolvePostAnalyzeHistoryLink,
 } from "../lib/analysis-history";
+import AnalysisGuideCard from "./AnalysisGuideCard";
 import BrandSummarySection from "./sections/BrandSummarySection";
 import CooccurrenceRankingSection from "./sections/CooccurrenceRankingSection";
 import ContextAnalysisSection from "./sections/ContextAnalysisSection";
@@ -37,6 +38,9 @@ export default function AnalysisDashboard({
           </Link>
         </div>
       )}
+      <div className="lg:col-span-2">
+        <AnalysisGuideCard />
+      </div>
       <div className="lg:col-span-2">
         <BrandSummarySection summary={result.summary} />
       </div>
