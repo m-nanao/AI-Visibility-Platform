@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import AnalysisDashboard from "../../components/AnalysisDashboard";
+import { REPORT_LINK_BUTTON_CLASSNAME } from "../../lib/link-button-styles";
 import {
   HISTORY_COMPARISON_COOCCURRENCE_CHANGED_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_LABEL,
@@ -181,11 +182,9 @@ function BasicInfo({
       </div>
       {id && (
         <div className="mt-3">
-          <Link
-            href={buildHistoryReportPath(id)}
-            className="text-sm text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
-          >
-            {REPORT_LINK_TEXT} →
+          <Link href={buildHistoryReportPath(id)} className={REPORT_LINK_BUTTON_CLASSNAME}>
+            {REPORT_LINK_TEXT}
+            <span aria-hidden="true">→</span>
           </Link>
         </div>
       )}

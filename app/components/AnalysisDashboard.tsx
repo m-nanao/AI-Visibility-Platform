@@ -53,7 +53,14 @@ export default function AnalysisDashboard({
       <div className="lg:col-span-2">
         <AIOverviewComparisonSection items={result.aiOverviewComparison} meta={result.meta} />
       </div>
-      <ImprovementSuggestionsSection items={result.improvements} />
+      {/* 改善提案は他セクションより文章量が多くなりやすく、狭い2カラム
+          グリッド内だと1件あたりの説明文が読みにくくなるため、
+          BrandSummarySection/AIOverviewComparisonSectionと同様に横幅
+          いっぱい（lg:col-span-2）を使う。1カラム表示（lg未満）では
+          col-span指定なしと同じく自然に100%幅になる。 */}
+      <div className="lg:col-span-2">
+        <ImprovementSuggestionsSection items={result.improvements} />
+      </div>
     </div>
   );
 }

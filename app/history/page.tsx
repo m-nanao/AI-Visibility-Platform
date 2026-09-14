@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import LogoutButton from "../components/LogoutButton";
+import { DETAIL_LINK_BUTTON_CLASSNAME } from "../lib/link-button-styles";
 import {
   HISTORY_PAGE_TITLE,
   HISTORY_PAGE_DESCRIPTION,
@@ -124,9 +125,10 @@ export default function HistoryPage() {
                   </div>
                   <Link
                     href={buildHistoryDetailPath(item.id)}
-                    className="mt-2 inline-block text-xs text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+                    className={DETAIL_LINK_BUTTON_CLASSNAME}
                   >
                     {HISTORY_LIST_DETAIL_LINK_TEXT}
+                    <span aria-hidden="true">→</span>
                   </Link>
                 </li>
               );
