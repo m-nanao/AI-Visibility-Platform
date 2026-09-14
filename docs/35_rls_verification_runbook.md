@@ -1,6 +1,6 @@
 # RLS Policy 検証DB Runbook
 
-**この手順書は、[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)のselect policy SQL案を検証DBで実行するための実務手順書である。本番Supabaseへの適用は含まない。** **この手順書に沿った検証DBでの基本テストが`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bの分離を確認済み。詳細は「12. 検証DBでの基本テスト結果」参照。**`analysis_runs`/`analysis_results`のREST可視性確認も`docs/record-rls-run-result-visibility-verification`（2026-09-14）で追加実施済み**——詳細は「13. analysis_runs / analysis_resultsのRLS可視性確認結果」参照。rollback SQL実行・本番適用はいずれもまだ行っていない。RLS policyはbackendアプリケーション層のJWT検証＋project権限判定（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)）の代替ではなく、DB層に追加する防御層として扱う。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**この手順書は、[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)のselect policy SQL案を検証DBで実行するための実務手順書である。本番Supabaseへの適用は含まない。** **この手順書に沿った検証DBでの基本テストが`docs/record-rls-verification-basic-results`（2026-09-12）で実施済み**——02_migration検証用Supabase projectでuser A2/Bの分離を確認済み。詳細は「12. 検証DBでの基本テスト結果」参照。**`analysis_runs`/`analysis_results`のREST可視性確認も`docs/record-rls-run-result-visibility-verification`（2026-09-14）で追加実施済み**——詳細は「13. analysis_runs / analysis_resultsのRLS可視性確認結果」参照。**rollback SQLの検証DB実行も`docs/record-rls-rollback-verification`（2026-09-14）で完了済み**——詳細は「14. rollback SQLの検証DB実行結果」参照。これにより検証DBでは適用・分離確認・rollbackまで一通り完了している。**本番適用はまだ行っていない。** RLS policyはbackendアプリケーション層のJWT検証＋project権限判定（[32_backend_jwt_verification_design.md](./32_backend_jwt_verification_design.md)）の代替ではなく、DB層に追加する防御層として扱う。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-14**
 
@@ -294,6 +294,19 @@ alter table public.analysis_runs disable row level security;
 alter table public.analysis_results disable row level security;
 ```
 
+`authenticated`roleへのgrant、および6章「organization_members」の注意で導入した`security definer`のhelper function `public.is_org_member(uuid)`を使った場合は、それらも合わせて戻す（12章で実際に採用した構成に対応）:
+
+```sql
+revoke select on public.organizations from authenticated;
+revoke select on public.projects from authenticated;
+revoke select on public.organization_members from authenticated;
+revoke select on public.brands from authenticated;
+revoke select on public.analysis_runs from authenticated;
+revoke select on public.analysis_results from authenticated;
+
+drop function if exists public.is_org_member(uuid);
+```
+
 検証データ自体を削除する場合（検証DB専用、本番では絶対に実行しない）:
 
 ```sql
@@ -399,13 +412,35 @@ delete from public.organizations where id in ('<org-a-id>', '<org-b-id>');
 
 **JWT期限切れへの対応:** 検証の途中、時間経過により既存のaccess tokenが期限切れとなり、Supabase REST APIから`JWT expired`が返る場面があった。この場合はテストユーザーで再ログインしてaccess tokenを再取得すれば検証を継続できる——今回もuser A2/Bそれぞれのaccess tokenを再取得し、期待どおりの結果を確認できた。長時間の検証セッションでは、これを一時的な失敗ではなく想定内の運用として扱う。
 
-**未確認として以下を残す。**
+**未確認として以下を残す（rollback SQLの検証DB実行確認は14章で解消済み）。**
 
-- rollback SQL（9章）の検証DBでの実行確認
 - RLS本番適用判断
 - 本番DBへの適用（引き続き別タスク）
 
 **本番DBへは今回もRLS policyを適用していない。** 検証DBへの操作のみであり、本番Supabase・Render・Vercelの設定変更はいずれも行っていない。
+
+## 14. rollback SQLの検証DB実行結果（2026-09-14追記）
+
+`docs/record-rls-rollback-verification`（2026-09-14、docsのみ・コード変更なし）で、9章のrollback SQLを02_migration検証用Supabase projectで実際に実行し、期待どおり戻せることを確認した。
+
+**実行したSQL:** 9章の`drop policy if exists`（6テーブル分）、`revoke select ... from authenticated`（6テーブル分）、`drop function if exists public.is_org_member(uuid)`——12章で採用した構成（helper functionと`authenticated`へのgrant）に対応する一式を実行した。RLS自体の`disable row level security`は今回は実行していない（policy削除のみで確認する方針、9章「RLS自体を無効化する場合」の位置づけどおり）。
+
+**Supabase Dashboardの警告について:** SQL Editorでこのrollback SQLを実行しようとした際、`drop policy`・`disable row level security`・`revoke`・`drop function`を含む破壊的な変更であることに対する「Potential issue detected」という警告がDashboard上に表示された。**この警告は、実行対象が本番Supabaseではなく検証用Supabase projectであることを確認したうえで、承認して実行を進めた。**
+
+**確認結果:**
+
+| 確認項目 | 結果 |
+|---|---|
+| select policy 6件 | すべて削除された |
+| 対象6テーブルの`rls_enabled` | すべて`false` |
+| 対象6テーブルの`rls_forced` | すべて`false` |
+| `pg_policies`（対象6テーブル） | 0件 |
+| `public.is_org_member(uuid)` | 削除され、関数一覧に存在しない |
+
+- テーブル本体（`organizations`/`organization_members`/`projects`/`brands`/`analysis_runs`/`analysis_results`）、および12〜13章の検証データ（organization A/B・project A/B・user A2/B・brand A/B・analysis_run/analysis_result A/B）はいずれも削除していない——rollback対象はpolicy/grant/helper functionのみ。
+- **本番DBには今回もRLS policyを適用していない。** rollback SQLの実行は検証DBのみに対して行った。
+
+**これにより、検証DBではRLS policyの適用（12章）→REST/JWT分離確認（12〜13章）→rollback（本章）まで一通り確認できたことになる。** 未確認として残るのはRLS本番適用の判断のみ。
 
 ## 関連ドキュメント
 
