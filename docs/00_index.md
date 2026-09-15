@@ -49,7 +49,7 @@
 - [07_decisions.md](./07_decisions.md) — 設計判断ログ（なぜそうしたかの記録）
 - [08_screen_design.md](./08_screen_design.md) — 画面設計
 - [09_deployment.md](./09_deployment.md) — 公開手順（依頼者確認用のVercel/Render公開）
-- [12_demo_readiness.md](./12_demo_readiness.md) — デモ提出用チェックリスト（推奨env・入力例・見せる順番）
+- [12_demo_readiness.md](./12_demo_readiness.md) — **旧デモ準備メモ（2026-07-28時点）**。Supabase Authログイン・履歴機能の実装前のスナップショットであり、**現在のMVPレビュー手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を主に参照する**。DataForSEO/ChatGPT/Common Crawlのenv変数・selector設定（3〜5章）は参考情報として残るが、実際の値は本番Render/Vercelで確認すること。「11. 現状との差分」に現行MVP状態との対応を追記済み。
 - [14_common_crawl_improvement_policy.md](./14_common_crawl_improvement_policy.md) — Common Crawl由来データを改善提案へ反映する方針（表現ガイドライン）
 - [task_template.md](./task_template.md) / [review_template.md](./review_template.md) — タスク依頼・レビューの雛形
 
