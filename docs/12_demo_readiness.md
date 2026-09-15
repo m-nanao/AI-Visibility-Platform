@@ -1,6 +1,8 @@
-# 12. デモ提出用チェックリスト（2026-07-28時点）
+# 12. デモ提出用チェックリスト（2026-07-28時点・旧メモ）
 
-依頼者への提出デモに向けて、現状のAI Visibility Platform MVPを「見せやすい状態」に固定するための1ファイル。**新機能追加は含まず**、既存実装をどう見せるかの整理のみ。実装の詳細は[development_status.md](./development_status.md)・[11_architecture_v1.md](./11_architecture_v1.md)・各`docs/`ファイルを参照。
+**この文書は2026-07-28時点のデモ準備メモであり、Supabase Authログイン・分析履歴保存・履歴一覧/詳細・前回比較・レポート表示が実装される前のスナップショットである。現在のMVPレビューの主手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を参照すること——デモ前準備・推奨入力・時系列の実演手順・画面ごとの説明・MVP範囲と未対応範囲・依頼者レビュー項目・トラブル時の説明はすべてそちらに集約済みである。** 本文中の「1. 現在できること」「2. 次フェーズ扱い」「7. デモで見る順番」「8. 依頼者への説明文案」は当時のMVP範囲（ログイン・履歴機能なし）の記述であり、現在は古い——最新の説明ポイントは[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「5」「6」を参照。3〜5章（運用方針・推奨Environment Variables・selector設定）はDataForSEO/ChatGPT/Common Crawlのenv変数・selector設定に関する参考情報として引き続き有効な可能性があるが、実際の値は本番Render/Vercelの管理画面で確認すること。9章の一部記述も現状と矛盾しており、11章（2026-09-15追記）で訂正している。
+
+依頼者への提出デモに向けて、現状のAI Visibility Platform MVPを「見せやすい状態」に固定するための1ファイル（2026-07-28時点）。**新機能追加は含まず**、既存実装をどう見せるかの整理のみ。実装の詳細は[development_status.md](./development_status.md)・[11_architecture_v1.md](./11_architecture_v1.md)・各`docs/`ファイルを参照。
 
 ## 1. 現在できること（明日見せる範囲）
 
@@ -30,8 +32,8 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 - Common Crawl本格連携（**backend `/analyze`への統合（最大3件、最大5候補試行、`feature/common-crawl-multiple-documents`で2026-07-28に最大1件から拡張）＋検証用UI selector（「Common Crawl補完（検証用）」）まで実装済み**だが、`NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR`はデフォルトfalseのため通常の画面には表示されない。表示名・説明文・注意書きが依頼者確認前の仮のものであるため、**明日のデモではこのフラグをtrueにしない**——デモでは触れない。なお、ブランド認知サマリーに残っていた「Common Crawl（未実装）」という不正確な表示は`style/common-crawl-source-labels`（2026-07-28）で「Common Crawl補完」に修正済み。詳細は[13_common_crawl_mvp_design.md](./13_common_crawl_mvp_design.md)「11. 依頼者確認が必要な点」「13. 複数件取得への拡張」参照）
 - Claude / Gemini / Perplexity等の複数AI実連携
 - 定期取得・自動スケジュール実行
-- DB保存（分析結果は画面をリロードすると消える）
-- 時系列比較
+- ~~DB保存（分析結果は画面をリロードすると消える）~~ → **2026-09-15時点で実装済み。分析履歴はSupabase/PostgreSQLに保存され、履歴一覧・履歴詳細・前回比較・レポート表示から閲覧できる（詳細は11章参照）。**
+- ~~時系列比較~~ → 直近2件の**前回比較**は実装済み（本格的な時系列ダッシュボードはまだ未実装、11章参照）
 - 競合比較
 - SaaS化
 - 課金管理
@@ -194,7 +196,7 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 - **これはChatGPTアプリ画面そのものの内部認識を再現するものではない。** OpenAI APIのモデルへの1問の質問と回答を「ChatGPT相当モデルの観測結果」として表示している（詳細は[07_decisions.md](./07_decisions.md)）。
 - DataForSEO **Sandbox**のレスポンスは接続確認用のテストデータであり、実際の本番SERPを反映したものではない（Live接続時のみ実際の本番データだが、費用が発生し得るため今回のデモでは使わない）。`dataforseo_live`を明示的に選んでも、Render側の5つの手動確認用ゲートがすべて揃っていない限り実際には接続されない（安全設計）。
 - `visibilityScore`・改善提案はMVP用のルールベース簡易処理であり、AI/LLMによる高度な分析ではない（詳細は[11_architecture_v1.md](./11_architecture_v1.md)）。
-- 分析結果は永続化されない（DB未接続、画面をリロードすると消える）。
+- ~~分析結果は永続化されない（DB未接続、画面をリロードすると消える）。~~ → **2026-09-15時点で誤り。分析履歴はSupabase/PostgreSQLに保存され、ログイン後の履歴一覧・履歴詳細から再表示できる（11章参照）。**
 - Render無料プランのためコールドスタートがある（スリープ復帰に約20〜25秒。この間はダミーデータにフォールバックすることがある。詳細は[09_deployment.md](./09_deployment.md)「コールドスタートに関する注意」）。**デモ直前に一度アクセスして起こしておくことを推奨する。**
 - 依頼者確認用ステージング環境であり、正式な本番環境ではない（詳細は[09_deployment.md](./09_deployment.md)）。
 
@@ -206,3 +208,30 @@ main最新（2026-07-28時点）で以下が実装済み。デモではこの範
 - 設計判断ログ（ChatGPT観測・DataForSEO Live gate等）: [07_decisions.md](./07_decisions.md)
 - API設計: [03_api_design.md](./03_api_design.md)
 - backendの環境変数・provider設計の詳細: [backend/README.md](../backend/README.md)
+- **MVPレビュー用デモ手順（現在の主手順）: [37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)**
+
+## 11. 現状との差分（2026-09-15追記）
+
+このファイル自体は更新せず旧メモとして残すが、以下の現在のMVP状態（2026-09-15時点）を記録する。詳細・時系列のデモ手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を参照。
+
+```txt
+現在のMVP状態:
+- Supabase/PostgreSQLによる分析履歴保存あり
+- 履歴一覧あり
+- 履歴詳細あり
+- 前回比較あり
+- レポート表示あり
+- Supabase Authログインあり
+- frontend route保護あり
+- backend JWT/project権限判定あり
+- RLSは検証DBでapply/separation/rollback確認済み、本番未適用
+- AI Overview観測あり
+- ChatGPT相当モデルの1問観測あり
+- Common Crawl補完あり
+```
+
+- ログインが必須になった（`/login`）ため、7章「デモで見る順番」はログイン手順が抜けている——[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「4. デモの流れ」を使うこと。
+- 8章「依頼者への説明文案」も履歴・比較・レポート・ログインに触れていないため古い——[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「6」「7」で最新の説明ポイント・レビュー項目に置き換え済み。
+- 3〜5章（重要な運用方針・推奨Environment Variables・デモ時の画面設定）は、DataForSEO/ChatGPT/Common Crawlのenv変数・selector設定に関する部分は変更されていない想定だが、実際の値は必ず本番Render/Vercelの管理画面で確認すること。
+
+**MVPレビュー本番のデモ手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を参照。**
