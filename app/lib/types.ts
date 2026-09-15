@@ -107,6 +107,63 @@ export interface ChatGptProviderInfo {
   environment?: ChatGptEnvironment;
 }
 
+// Which data source the Claude-equivalent observation card in
+// aiOverviewComparison comes from — see
+// backend/services/claude_provider.py. "off" (default; no Anthropic
+// call, no card added) or "anthropic" (asks an Anthropic API model one
+// non-browsing question about the brand, using the same prompt as the
+// Gemini observation below for comparability — see
+// backend/services/ai_observation_prompts.py). **Unlike ChatGPT, this
+// is NOT skipped when aiOverviewMode is "mock"** — the mock fixture
+// has no "Claude" card to collide with, so claudeMode alone (plus the
+// usual CLAUDE_PROVIDER_MODE/ALLOW_CLAUDE_MODE_OVERRIDE env gates)
+// decides whether this runs.
+export type ClaudeProviderMode = "off" | "anthropic";
+
+// Whether the Claude observation card was actually added this request.
+// Distinct from SectionStatus since Claude observation has no "mock"
+// state of its own.
+export type ClaudeStatus = "real" | "off" | "unavailable";
+
+// Mirrors ChatGptEnvironment's role for the Claude observation.
+export type ClaudeEnvironment = "api" | "off" | "unavailable";
+
+// Reports whether a Claude-equivalent observation card was added to
+// aiOverviewComparison this request, and why. Mirrors
+// backend/models.py's ClaudeProviderInfo — entirely independent of
+// AIOverviewProviderInfo/ChatGptProviderInfo above.
+export interface ClaudeProviderInfo {
+  mode: ClaudeProviderMode;
+  status: ClaudeStatus;
+  reason: string;
+  environment?: ClaudeEnvironment;
+}
+
+// Which data source the Gemini-equivalent observation card in
+// aiOverviewComparison comes from — see
+// backend/services/gemini_provider.py. Same design as
+// ClaudeProviderMode above: "off" (default) or "google" (asks a Gemini
+// API model the same comparison-oriented question as Claude). Also NOT
+// skipped when aiOverviewMode is "mock", for the same reason as Claude.
+export type GeminiProviderMode = "off" | "google";
+
+// Whether the Gemini observation card was actually added this request.
+export type GeminiStatus = "real" | "off" | "unavailable";
+
+// Mirrors ClaudeEnvironment's role for the Gemini observation.
+export type GeminiEnvironment = "api" | "off" | "unavailable";
+
+// Reports whether a Gemini-equivalent observation card was added to
+// aiOverviewComparison this request, and why. Mirrors
+// backend/models.py's GeminiProviderInfo — entirely independent of
+// AIOverviewProviderInfo/ChatGptProviderInfo/ClaudeProviderInfo above.
+export interface GeminiProviderInfo {
+  mode: GeminiProviderMode;
+  status: GeminiStatus;
+  reason: string;
+  environment?: GeminiEnvironment;
+}
+
 // Whether /analyze should try to add supplementary Document(s) from
 // Common Crawl — see backend/services/common_crawl_index.py /
 // common_crawl_warc.py / common_crawl_document_provider.py and
@@ -190,6 +247,15 @@ export interface AnalysisMeta {
   // Whether a ChatGPT-equivalent observation card was added to
   // aiOverviewComparison this request. Independent of aiOverviewProvider.
   chatgptProvider?: ChatGptProviderInfo;
+  // Whether a Claude-equivalent observation card was added to
+  // aiOverviewComparison this request. Independent of the other
+  // providers here, and NOT skipped when aiOverviewProvider is mock
+  // (see ClaudeProviderMode above).
+  claudeProvider?: ClaudeProviderInfo;
+  // Whether a Gemini-equivalent observation card was added to
+  // aiOverviewComparison this request. Same independence as
+  // claudeProvider above.
+  geminiProvider?: GeminiProviderInfo;
   // Whether a supplementary Common Crawl Document was added to this
   // request's Document[]. Independent of aiOverviewProvider/chatgptProvider.
   commonCrawlProvider?: CommonCrawlProviderInfo;

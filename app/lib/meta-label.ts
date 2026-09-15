@@ -416,6 +416,15 @@ export const OBSERVATION_UNAVAILABLE_NOTE =
 export const AI_OVERVIEW_EXPLANATION_TEXT =
   "Google AI Overview / AI Modeで、対象ブランドがどのように回答・参照されるかを観測した結果です。AIの内部状態や学習内容を保証するものではなく、検索AI上で確認できた結果側の観測データです。";
 
+// A short framing sentence shared across every multi-AI observation
+// card (ChatGPT/Claude/Gemini) — distinct from each platform's own
+// *_PLATFORM_NOTE below, which explains that one specific card. Shown
+// once so a 依頼者 understands, before reading any individual card,
+// that these are single-shot answer-tendency snapshots for the same
+// brand/question, not a direct look at what the AI has "learned".
+export const AI_OBSERVATION_COMMON_EXPLANATION_TEXT =
+  "各AI観測は、同一ブランド・同一質問観点に対する単発の回答傾向です。AIの内部学習内容を直接確認するものではありません。";
+
 // A short framing sentence for Common Crawl「補完」— what the
 // supplementary Document(s) it adds are actually for, distinct from
 // getCommonCrawlProviderDisplay()'s per-request status line below.
@@ -517,6 +526,74 @@ export function getChatGptProviderStatusDisplay(
       return {
         label: "ChatGPT 未取得",
         description: "OpenAI APIからChatGPT観測を取得できませんでした。",
+        note: OBSERVATION_UNAVAILABLE_NOTE,
+        tone: "neutral",
+      };
+
+    case "real":
+    default:
+      return null;
+  }
+}
+
+/**
+ * Mirrors getChatGptProviderStatusDisplay() above, but for the
+ * independent Claude-equivalent observation (meta.claudeProvider — see
+ * backend/services/claude_provider.py). Same null/real-case rationale:
+ * a real Claude card already carries its own inline explanation via
+ * CLAUDE_PLATFORM_NOTE below.
+ */
+export function getClaudeProviderStatusDisplay(
+  meta: AnalysisMeta,
+): AiOverviewProviderStatusDisplay | null {
+  const provider = meta.claudeProvider;
+  if (!provider) return null;
+
+  switch (provider.status) {
+    case "off":
+      return {
+        label: "無効",
+        description: OBSERVATION_OFF_NOTE,
+        tone: "neutral",
+      };
+
+    case "unavailable":
+      return {
+        label: "Claude 未取得",
+        description: "Anthropic APIからClaude観測を取得できませんでした。",
+        note: OBSERVATION_UNAVAILABLE_NOTE,
+        tone: "neutral",
+      };
+
+    case "real":
+    default:
+      return null;
+  }
+}
+
+/**
+ * Mirrors getClaudeProviderStatusDisplay() above, but for the
+ * independent Gemini-equivalent observation (meta.geminiProvider — see
+ * backend/services/gemini_provider.py).
+ */
+export function getGeminiProviderStatusDisplay(
+  meta: AnalysisMeta,
+): AiOverviewProviderStatusDisplay | null {
+  const provider = meta.geminiProvider;
+  if (!provider) return null;
+
+  switch (provider.status) {
+    case "off":
+      return {
+        label: "無効",
+        description: OBSERVATION_OFF_NOTE,
+        tone: "neutral",
+      };
+
+    case "unavailable":
+      return {
+        label: "Gemini 未取得",
+        description: "Gemini APIからGemini観測を取得できませんでした。",
         note: OBSERVATION_UNAVAILABLE_NOTE,
         tone: "neutral",
       };
@@ -635,6 +712,18 @@ export interface AiOverviewItemDetailDisplay {
 const CHATGPT_OPENAI_PLATFORM_LABEL = "ChatGPT (OpenAI API)";
 export const CHATGPT_PLATFORM_NOTE =
   "OpenAI APIによる1問観測です。ChatGPTアプリ全体の認識や内部状態を保証するものではありません。";
+
+// Must match backend/services/claude_provider.py's CLAUDE_PLATFORM_LABEL
+// exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above.
+const CLAUDE_ANTHROPIC_PLATFORM_LABEL = "Claude (Anthropic API)";
+export const CLAUDE_PLATFORM_NOTE =
+  "Claude APIを使い、Claude相当モデルに同じ観点で質問した1回分の観測結果です。Claudeサービス全体の認識やAIの内部状態を保証するものではありません。";
+
+// Must match backend/services/gemini_provider.py's GEMINI_PLATFORM_LABEL
+// exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above.
+const GEMINI_GOOGLE_PLATFORM_LABEL = "Gemini (Google API)";
+export const GEMINI_PLATFORM_NOTE =
+  "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。";
 
 // Below this length, a "続きを見る" toggle would reveal only a sliver of
 // text — not worth the extra click. Applies both to a continuation
@@ -841,7 +930,13 @@ export function getAiOverviewItemDetailDisplay(
   }
 
   const platformNote =
-    item.platform === CHATGPT_OPENAI_PLATFORM_LABEL ? CHATGPT_PLATFORM_NOTE : undefined;
+    item.platform === CHATGPT_OPENAI_PLATFORM_LABEL
+      ? CHATGPT_PLATFORM_NOTE
+      : item.platform === CLAUDE_ANTHROPIC_PLATFORM_LABEL
+        ? CLAUDE_PLATFORM_NOTE
+        : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
+          ? GEMINI_PLATFORM_NOTE
+          : undefined;
 
   return {
     hasContinuation,

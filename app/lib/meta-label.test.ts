@@ -7,9 +7,11 @@ import {
   getAiOverviewProviderStatusDisplay,
   getAnalysisSourceBreakdownDisplay,
   getChatGptProviderStatusDisplay,
+  getClaudeProviderStatusDisplay,
   getCommonCrawlAnalyzedPagesDisplay,
   getCommonCrawlProviderDisplay,
   getCooccurrenceUnavailableMessage,
+  getGeminiProviderStatusDisplay,
   getSectionStatusSummary,
   getUrlFetchSummary,
 } from "./meta-label";
@@ -411,6 +413,120 @@ describe("getChatGptProviderStatusDisplay", () => {
   });
 });
 
+describe("getClaudeProviderStatusDisplay", () => {
+  it("returns null when meta.claudeProvider is absent", () => {
+    expect(getClaudeProviderStatusDisplay(baseMeta())).toBeNull();
+  });
+
+  it("returns null on a successful observation (already explained inline per-card)", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      claudeProvider: {
+        mode: "anthropic",
+        status: "real",
+        reason: "Claude Anthropic API request succeeded.",
+        environment: "api",
+      },
+    };
+
+    expect(getClaudeProviderStatusDisplay(meta)).toBeNull();
+  });
+
+  it("describes off mode as a toggle-able state", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      claudeProvider: {
+        mode: "off",
+        status: "off",
+        reason: "Claude observation is disabled.",
+        environment: "off",
+      },
+    };
+
+    const display = getClaudeProviderStatusDisplay(meta);
+    expect(display?.label).toBe("無効");
+    expect(display?.description).toBe(
+      "この観測は現在OFFです。必要に応じて検証時のみONにできます。",
+    );
+    expect(display?.tone).toBe("neutral");
+  });
+
+  it("describes an unavailable observation without exposing the raw reason, plus a reassurance note", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      claudeProvider: {
+        mode: "anthropic",
+        status: "unavailable",
+        reason: "Anthropic API key is not configured.",
+        environment: "unavailable",
+      },
+    };
+
+    const display = getClaudeProviderStatusDisplay(meta);
+    expect(display?.label).toBe("Claude 未取得");
+    expect(display?.description).not.toContain("Anthropic API key is not configured.");
+    expect(display?.note).toBe(OBSERVATION_UNAVAILABLE_NOTE);
+    expect(display?.tone).toBe("neutral");
+  });
+});
+
+describe("getGeminiProviderStatusDisplay", () => {
+  it("returns null when meta.geminiProvider is absent", () => {
+    expect(getGeminiProviderStatusDisplay(baseMeta())).toBeNull();
+  });
+
+  it("returns null on a successful observation (already explained inline per-card)", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      geminiProvider: {
+        mode: "google",
+        status: "real",
+        reason: "Gemini Google API request succeeded.",
+        environment: "api",
+      },
+    };
+
+    expect(getGeminiProviderStatusDisplay(meta)).toBeNull();
+  });
+
+  it("describes off mode as a toggle-able state", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      geminiProvider: {
+        mode: "off",
+        status: "off",
+        reason: "Gemini observation is disabled.",
+        environment: "off",
+      },
+    };
+
+    const display = getGeminiProviderStatusDisplay(meta);
+    expect(display?.label).toBe("無効");
+    expect(display?.description).toBe(
+      "この観測は現在OFFです。必要に応じて検証時のみONにできます。",
+    );
+    expect(display?.tone).toBe("neutral");
+  });
+
+  it("describes an unavailable observation without exposing the raw reason, plus a reassurance note", () => {
+    const meta: AnalysisMeta = {
+      ...baseMeta(),
+      geminiProvider: {
+        mode: "google",
+        status: "unavailable",
+        reason: "Gemini API key is not configured.",
+        environment: "unavailable",
+      },
+    };
+
+    const display = getGeminiProviderStatusDisplay(meta);
+    expect(display?.label).toBe("Gemini 未取得");
+    expect(display?.description).not.toContain("Gemini API key is not configured.");
+    expect(display?.note).toBe(OBSERVATION_UNAVAILABLE_NOTE);
+    expect(display?.tone).toBe("neutral");
+  });
+});
+
 describe("getAiOverviewItemDetailDisplay", () => {
   function baseItem(): AIOverviewComparisonItem {
     return {
@@ -685,6 +801,28 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(
       getAiOverviewItemDetailDisplay({ ...baseItem(), platform: "ChatGPT" }).platformNote,
     ).toBeUndefined();
+  });
+
+  it("adds a platformNote reminder for the real Claude (Anthropic API) observation card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      platform: "Claude (Anthropic API)",
+    });
+
+    expect(display.platformNote).toBe(
+      "Claude APIを使い、Claude相当モデルに同じ観点で質問した1回分の観測結果です。Claudeサービス全体の認識やAIの内部状態を保証するものではありません。",
+    );
+  });
+
+  it("adds a platformNote reminder for the real Gemini (Google API) observation card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      platform: "Gemini (Google API)",
+    });
+
+    expect(display.platformNote).toBe(
+      "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。",
+    );
   });
 });
 

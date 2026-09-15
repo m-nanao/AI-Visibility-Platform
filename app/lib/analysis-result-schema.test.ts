@@ -215,6 +215,72 @@ describe("parseAnalysisResult", () => {
     }
   });
 
+  it("accepts meta.claudeProvider/meta.geminiProvider when present", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        claudeProvider: {
+          mode: "anthropic",
+          status: "real",
+          reason: "Claude Anthropic API request succeeded.",
+          environment: "api",
+        },
+        geminiProvider: {
+          mode: "google",
+          status: "real",
+          reason: "Gemini Google API request succeeded.",
+          environment: "api",
+        },
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.claudeProvider?.mode).toBe("anthropic");
+      expect(result.data.meta.geminiProvider?.mode).toBe("google");
+    }
+  });
+
+  it("accepts a response that omits meta.claudeProvider/meta.geminiProvider entirely (old saved history)", () => {
+    // Analysis history saved before this feature existed has no
+    // claudeProvider/geminiProvider key at all in its stored meta_json
+    // — this must still parse successfully (see
+    // docs/36_multi_ai_comparison_design.md's backward-compatibility
+    // requirement).
+    const oldMeta = { ...buildDummyAnalysis("OpenAI").meta };
+    const valid = { ...buildDummyAnalysis("OpenAI"), meta: oldMeta };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.claudeProvider).toBeUndefined();
+      expect(result.data.meta.geminiProvider).toBeUndefined();
+    }
+  });
+
+  it("accepts meta.claudeProvider/meta.geminiProvider: null the same way as other optional fields", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: {
+        ...buildDummyAnalysis("OpenAI").meta,
+        claudeProvider: null,
+        geminiProvider: null,
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.meta.claudeProvider).toBeUndefined();
+      expect(result.data.meta.geminiProvider).toBeUndefined();
+    }
+  });
+
   it("rejects a sourceTypes value outside the known DocumentSourceType set", () => {
     const invalid = {
       ...buildDummyAnalysis("OpenAI"),
