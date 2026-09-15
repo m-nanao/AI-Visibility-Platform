@@ -101,6 +101,49 @@ ChatGptStatus = Literal["real", "off", "unavailable"]
 # otherwise. See services/chatgpt_provider.py's build_chatgpt_observation().
 ChatGptEnvironment = Literal["api", "off", "unavailable"]
 
+# Which data source the Claude-equivalent observation card in
+# aiOverviewComparison comes from. See services/claude_provider.py —
+# "off" (default; no Anthropic call, no card added) or "anthropic"
+# (asks a Claude model one non-browsing question about the brand).
+# Selected via the CLAUDE_PROVIDER_MODE env var, optionally overridden
+# per-request via AnalyzeRequest.claudeMode when
+# ALLOW_CLAUDE_MODE_OVERRIDE=true. Entirely independent of
+# AiOverviewProviderMode/ChatGptProviderMode — unlike ChatGPT, this is
+# never forced to "off" when aiOverviewMode is "mock", since the mock
+# aiOverviewComparison fixture (services/ai_overview_provider.py's
+# build_mock_ai_overview_comparison()) has no fixed "Claude" card to
+# collide with.
+ClaudeProviderMode = Literal["off", "anthropic"]
+
+# Whether the Claude observation card was actually added this request.
+# Mirrors ChatGptStatus's role for Claude.
+ClaudeStatus = Literal["real", "off", "unavailable"]
+
+# Mirrors ChatGptEnvironment's role for the Claude observation: "api"
+# when an Anthropic API call actually succeeded, "off"/"unavailable"
+# otherwise. See services/claude_provider.py's build_claude_observation().
+ClaudeEnvironment = Literal["api", "off", "unavailable"]
+
+# Which data source the Gemini-equivalent observation card in
+# aiOverviewComparison comes from. See services/gemini_provider.py —
+# "off" (default; no Google API call, no card added) or "google" (asks
+# a Gemini model one non-browsing question about the brand). Selected
+# via the GEMINI_PROVIDER_MODE env var, optionally overridden
+# per-request via AnalyzeRequest.geminiMode when
+# ALLOW_GEMINI_MODE_OVERRIDE=true. Entirely independent of the other
+# AI observation providers — see ClaudeProviderMode's docstring for why
+# this is never forced to "off" when aiOverviewMode is "mock".
+GeminiProviderMode = Literal["off", "google"]
+
+# Whether the Gemini observation card was actually added this request.
+# Mirrors ChatGptStatus's role for Gemini.
+GeminiStatus = Literal["real", "off", "unavailable"]
+
+# Mirrors ChatGptEnvironment's role for the Gemini observation: "api"
+# when a Google Gemini API call actually succeeded, "off"/"unavailable"
+# otherwise. See services/gemini_provider.py's build_gemini_observation().
+GeminiEnvironment = Literal["api", "off", "unavailable"]
+
 # Whether /analyze should try to add supplementary Document(s) from
 # Common Crawl (see services/common_crawl_index.py /
 # common_crawl_warc.py / common_crawl_document_provider.py and
@@ -221,6 +264,32 @@ class ChatGptProviderInfo(BaseModel):
     environment: ChatGptEnvironment | None = None
 
 
+class ClaudeProviderInfo(BaseModel):
+    """Reports whether the Claude-equivalent observation card was added
+    to aiOverviewComparison this request, and why — see
+    services/claude_provider.py. Entirely optional/independent of
+    AIOverviewProviderInfo/ChatGptProviderInfo above.
+    """
+
+    mode: ClaudeProviderMode
+    status: ClaudeStatus
+    reason: str
+    environment: ClaudeEnvironment | None = None
+
+
+class GeminiProviderInfo(BaseModel):
+    """Reports whether the Gemini-equivalent observation card was added
+    to aiOverviewComparison this request, and why — see
+    services/gemini_provider.py. Entirely optional/independent of the
+    other AI observation providers above.
+    """
+
+    mode: GeminiProviderMode
+    status: GeminiStatus
+    reason: str
+    environment: GeminiEnvironment | None = None
+
+
 class CommonCrawlProviderInfo(BaseModel):
     """Reports whether the Common Crawl "補完" flow added a
     supplementary Document to this request, and why — see
@@ -283,6 +352,16 @@ class AnalysisMeta(BaseModel):
     # Independent of aiOverviewProvider — optional so existing
     # clients/tests that don't know about it aren't broken.
     chatgptProvider: ChatGptProviderInfo | None = None
+    # Whether a Claude-equivalent observation card was added to
+    # aiOverviewComparison this request (see ClaudeProviderInfo above).
+    # Independent of the other AI observation providers — optional so
+    # existing clients/tests that don't know about it aren't broken.
+    claudeProvider: ClaudeProviderInfo | None = None
+    # Whether a Gemini-equivalent observation card was added to
+    # aiOverviewComparison this request (see GeminiProviderInfo above).
+    # Independent of the other AI observation providers — optional so
+    # existing clients/tests that don't know about it aren't broken.
+    geminiProvider: GeminiProviderInfo | None = None
     # Whether a supplementary Common Crawl Document was added to this
     # request's Document[] (see CommonCrawlProviderInfo above).
     # Independent of aiOverviewProvider/chatgptProvider — optional so
@@ -452,6 +531,26 @@ class AnalyzeRequest(BaseModel):
     # and becomes the same 400 {"error": "invalid request body"} as
     # other malformed request fields.
     chatgptMode: ChatGptProviderMode | None = None
+    # Optional per-request override of the Claude-equivalent
+    # observation mode (see services/claude_provider.py). Only honored
+    # when ALLOW_CLAUDE_MODE_OVERRIDE=true — otherwise main.py ignores
+    # this and uses CLAUDE_PROVIDER_MODE instead, so a request body
+    # alone can never turn on a billable Anthropic API call in an
+    # environment that isn't configured to allow it. An invalid value
+    # (anything outside ClaudeProviderMode) fails Pydantic validation
+    # and becomes the same 400 {"error": "invalid request body"} as
+    # other malformed request fields.
+    claudeMode: ClaudeProviderMode | None = None
+    # Optional per-request override of the Gemini-equivalent
+    # observation mode (see services/gemini_provider.py). Only honored
+    # when ALLOW_GEMINI_MODE_OVERRIDE=true — otherwise main.py ignores
+    # this and uses GEMINI_PROVIDER_MODE instead, so a request body
+    # alone can never turn on a billable Google API call in an
+    # environment that isn't configured to allow it. An invalid value
+    # (anything outside GeminiProviderMode) fails Pydantic validation
+    # and becomes the same 400 {"error": "invalid request body"} as
+    # other malformed request fields.
+    geminiMode: GeminiProviderMode | None = None
     # Whether to try adding one supplementary Document from Common
     # Crawl (see CommonCrawlProviderMode above). Defaults to "off" when
     # omitted (treated the same as explicit "off" — see main.py). An

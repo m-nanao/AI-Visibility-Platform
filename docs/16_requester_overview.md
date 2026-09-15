@@ -8,6 +8,8 @@
 
 **2026-09-15追記: このファイルの本文（1〜10章）は2026-07-29時点の記述のままだが、その後Supabase Authログイン・分析履歴保存・履歴一覧/詳細・前回比較・レポート表示・backend JWT検証+project権限判定が実装され、本番で動作確認済みである。「8. 現時点でまだできないこと」に記載の「DB保存」「時系列変化の継続分析」「ダッシュボードとしての履歴管理」は解消済み——最新の実装状況は[development_status.md](./development_status.md)、依頼者向けの完全な現状整理は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「6. MVP範囲と未対応範囲」を参照すること。**
 
+**追記（同日）: 「9. 今後の拡張候補」に挙げた「ChatGPT / Claude / Geminiなど複数AI観測」のうち、Claude/Gemini観測の実装基盤（デフォルトoff）を追加した。本番環境での有効化はまだ行っていない——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8. 実装基盤の追加」を参照。**
+
 ## 1. 現在のMVPでできること
 
 現在のMVPでは、ブランド名や公式サイトURLをもとに、Web上でそのブランドがどのような文脈で扱われているかを分析できます。

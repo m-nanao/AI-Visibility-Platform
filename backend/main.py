@@ -50,6 +50,19 @@ skipped whenever `aiOverviewMode` resolves to "mock", and reported via
 `meta.chatgptProvider`. This never replaces the Google AI Mode/AI
 Overview card above; the two providers don't know about each other.
 
+It may similarly gain a "Claude (Anthropic API)" card (see
+services/claude_provider.py, off by default via
+`CLAUDE_PROVIDER_MODE=off`, reported via `meta.claudeProvider`) and a
+"Gemini (Google API)" card (see services/gemini_provider.py, off by
+default via `GEMINI_PROVIDER_MODE=off`, reported via
+`meta.geminiProvider`). Unlike ChatGPT, neither is skipped when
+`aiOverviewMode` is "mock" — see services/claude_provider.py's module
+docstring for why. Each of the four observation providers here
+(Google AI Mode/AI Overview, ChatGPT, Claude, Gemini) is fully
+independent — a single non-browsing text-generation observation, not a
+guarantee about that AI service's overall behavior — see
+docs/36_multi_ai_comparison_design.md.
+
 The primary Document[] above may also gain one supplementary Document
 from Common Crawl (see services/common_crawl_index.py /
 common_crawl_warc.py / common_crawl_document_provider.py and
@@ -101,10 +114,12 @@ from models import (
     AnalysisSectionStatuses,
     AnalyzeRequest,
     ChatGptProviderInfo,
+    ClaudeProviderInfo,
     CommonCrawlProviderInfo,
     CommonCrawlProviderMode,
     Document,
     DocumentsSource,
+    GeminiProviderInfo,
     SectionStatus,
     UrlFetchResult,
 )
@@ -123,6 +138,8 @@ from services.jwt_auth import JWTAuthError, extract_bearer_token, verify_supabas
 from services.project_access import can_user_access_analysis_run, get_accessible_project_ids
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
+from services.claude_provider import build_claude_observation, resolve_claude_mode
+from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
 from services.common_crawl_document_provider import build_common_crawl_document
 from services.common_crawl_index import search_common_crawl_domain
 from services.common_crawl_settings import load_common_crawl_settings
@@ -631,6 +648,46 @@ def analyze(payload: AnalyzeRequest):
         chatgpt_status,
     )
 
+    # Claude observation (see services/claude_provider.py): an
+    # independent, optional single Anthropic API call whose result (if
+    # any) is appended as an *extra* card to aiOverviewComparison.
+    # Deliberately NOT skipped when aiOverviewMode is "mock" — unlike
+    # ChatGPT above, the mock aiOverviewComparison fixture has no
+    # "Claude" card to collide with (see services/claude_provider.py's
+    # module docstring).
+    claude_mode = resolve_claude_mode(payload.claudeMode)
+    (
+        claude_item,
+        claude_status,
+        claude_reason,
+        claude_environment,
+    ) = build_claude_observation(brand_name, claude_mode)
+    if claude_item is not None:
+        result.aiOverviewComparison = [*result.aiOverviewComparison, claude_item]
+    logger.info(
+        "claude observation complete: mode=%s status=%s",
+        claude_mode,
+        claude_status,
+    )
+
+    # Gemini observation (see services/gemini_provider.py): same design
+    # as Claude above — independent, optional, single Google API call,
+    # not skipped in mock mode (no "Gemini" mock card to collide with).
+    gemini_mode = resolve_gemini_mode(payload.geminiMode)
+    (
+        gemini_item,
+        gemini_status,
+        gemini_reason,
+        gemini_environment,
+    ) = build_gemini_observation(brand_name, gemini_mode)
+    if gemini_item is not None:
+        result.aiOverviewComparison = [*result.aiOverviewComparison, gemini_item]
+    logger.info(
+        "gemini observation complete: mode=%s status=%s",
+        gemini_mode,
+        gemini_status,
+    )
+
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(
             summary=cooccurrence_status,
@@ -657,6 +714,18 @@ def analyze(payload: AnalyzeRequest):
             reason=chatgpt_reason,
             environment=chatgpt_environment,
         ),
+        claudeProvider=ClaudeProviderInfo(
+            mode=claude_mode,
+            status=claude_status,
+            reason=claude_reason,
+            environment=claude_environment,
+        ),
+        geminiProvider=GeminiProviderInfo(
+            mode=gemini_mode,
+            status=gemini_status,
+            reason=gemini_reason,
+            environment=gemini_environment,
+        ),
         commonCrawlProvider=common_crawl_provider,
     )
 
@@ -682,6 +751,8 @@ def analyze(payload: AnalyzeRequest):
                 "commonCrawlDomain": payload.commonCrawlDomain,
                 "aiOverviewMode": payload.aiOverviewMode,
                 "chatgptMode": payload.chatgptMode,
+                "claudeMode": payload.claudeMode,
+                "geminiMode": payload.geminiMode,
             },
             source_summary=dict(Counter(document.sourceType for document in documents_list)),
             result_json=result.model_dump(),

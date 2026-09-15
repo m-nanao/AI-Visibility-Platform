@@ -232,6 +232,14 @@ Supabase Authによるログイン、分析履歴の保存・閲覧、前回比�
 
 上記を時系列でまとめた実演手順は[37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)「4. デモの流れ」を参照。
 
+## 12. Claude/Gemini観測の実装基盤について（2026-09-15追記）
+
+`feature/multi-ai-observation-foundation`で、ChatGPT観測と同じ設計のClaude観測（Anthropic API）・Gemini観測（Google API）の**実装基盤**を追加した。**現時点ではデフォルトoffであり、本番環境ではまだ有効化していない**——通常の利用・デモではこれまで通りAI Overview / ChatGPT観測のみが動作する。
+
+- 開発・検証用のUI selectorはまだ用意していない（`claudeMode`/`geminiMode`はリクエストボディでのみ指定可能）。通常の画面操作では、Claude/Geminiの観測結果は表示されない。
+- Claude/Gemini観測が動作する環境（開発・検証時にAPIキーを設定した場合）では、「4. AI Overview比較」カードにChatGPT観測と並んで「Claude (Anthropic API)」「Gemini (Google API)」カードが追加表示される。これらも単発API呼び出しによる1回分の観測結果であり、Claude/Geminiサービス全体の認識・内部状態を保証するものではない（表現注意はChatGPT観測と同じ）。
+- 詳細な設計・今後の対応候補は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8. 実装基盤の追加」、backend側の詳細は[backend/README.md](../backend/README.md)「Claude/Gemini相当モデルの1問観測」を参照。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

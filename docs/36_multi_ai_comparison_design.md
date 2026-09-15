@@ -1,6 +1,6 @@
 # 複数AI横並び比較 設計メモ
 
-**このドキュメントは設計メモである。今回はClaude / GeminiのAPI連携は実装していない。新しい外部AI API呼び出しは追加していない。** 現在AI観測として実装済みなのは、Google AI Overview / AI Mode（DataForSEO経由、[03_api_design.md](./03_api_design.md)・[11_architecture_v1.md](./11_architecture_v1.md)参照）とChatGPT相当モデル（OpenAI API、`services/chatgpt_provider.py`）の2種類のみ。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは元々設計メモとして作成された（下記本文は作成当時のまま）。2026-09-15、`feature/multi-ai-observation-foundation`でClaude/Gemini観測provider（実装基盤）を追加した——詳細は末尾の「8. 実装基盤の追加」を参照。実際の本番Render/Vercel環境でのAPIキー設定・有効化はまだ行っていない（デフォルトoff、別タスク）。** 現在AI観測として実装済みなのは、Google AI Overview / AI Mode（DataForSEO経由、[03_api_design.md](./03_api_design.md)・[11_architecture_v1.md](./11_architecture_v1.md)参照）・ChatGPT相当モデル（OpenAI API、`services/chatgpt_provider.py`）・Claude相当モデル（Anthropic API、`services/claude_provider.py`）・Gemini相当モデル（Google API、`services/gemini_provider.py`）の4種類。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-15**
 
@@ -51,7 +51,7 @@
 - 料金・API制限・response形式の違いを考慮して段階実装する必要がある——Claude/Gemini APIはOpenAI APIと料金体系・レスポンス形式が異なるため、`services/chatgpt_provider.py`をそのまま流用することはできず、それぞれ専用のprovider moduleが必要になる。
 - 複数AIを同時に実APIで呼び出す実装は、リクエストごとの費用・レイテンシが線形に増える点に注意する（既存のAI Overview Live APIと同様、手動確認ゲートを設ける方針を踏襲することが望ましい）。
 
-## 6. 対象外（今回）
+## 6. 対象外（今回、作成当時）
 
 - Claude API連携の実装
 - Gemini API連携の実装
@@ -63,13 +63,25 @@
 - backend実装
 - frontend実装
 
-## 7. 次の実装候補
+**上記のうち「Claude/Gemini API連携の実装」「provider mode追加」「backend/frontend実装」は、下記「8. 実装基盤の追加」により完了した。** 本番環境でのAPIキー設定・実際の有効化（課金が発生し得る状態にすること）は引き続き対象外。
 
-1. Claude/Gemini APIの利用可否・料金体系・レスポンス形式を調査する
-2. `services/chatgpt_provider.py`と同じ設計パターンでprovider moduleの雛形を設計する
-3. 複数AI横並び比較UIの画面設計を行う（既存の1カラムカードレイアウトからの変更要否を含む）
-4. 手動確認ゲート（DataForSEO Live APIの`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`等と同様の仕組み）の要否を検討する
-5. 依頼者へ実装優先度を確認する
+## 7. 次の実装候補（作成当時のもの、8で実施済みの部分あり）
+
+1. Claude/Gemini APIの利用可否・料金体系・レスポンス形式を調査する — 実施済み（8参照）
+2. `services/chatgpt_provider.py`と同じ設計パターンでprovider moduleの雛形を設計する — 実施済み（8参照）
+3. 複数AI横並び比較UIの画面設計を行う（既存の1カラムカードレイアウトからの変更要否を含む）——**未実施**。今回は既存の1カラムカードレイアウトへClaude/Geminiカードを追加するに留め、専用compare UIへの再設計は行っていない
+4. 手動確認ゲート（DataForSEO Live APIの`ALLOW_AI_OVERVIEW_MODE_OVERRIDE`等と同様の仕組み）の要否を検討する — 実施済み。`ALLOW_CLAUDE_MODE_OVERRIDE`/`ALLOW_GEMINI_MODE_OVERRIDE`として、ChatGPT観測と同じ2段階ゲート設計をそのまま採用した
+5. 依頼者へ実装優先度を確認する — **未実施**。本番有効化の優先度は別途確認が必要
+
+## 8. 実装基盤の追加（2026-09-15、`feature/multi-ai-observation-foundation`）
+
+上記3節で「候補」としていた設計方針を、実際にコードとして実装した。ただし**本番環境変数の設定・実際の有効化は含まない**——デフォルトは常にoffで、Render/Vercelの本番環境変数はこのタスクでは変更していない。
+
+- **実装したもの**: `backend/services/claude_settings.py`/`claude_client.py`/`claude_provider.py`（Anthropic Messages API）、`backend/services/gemini_settings.py`/`gemini_client.py`/`gemini_provider.py`（Google Gemini generateContent API）、両者が共有する`backend/services/ai_observation_prompts.py`（統一プロンプト、上記「3.2 比較観点」で挙げた観点を1つの質問文にまとめたもの）。設計は3節で候補に挙げた通り、`ChatGptProviderMode`/`ChatGptProviderInfo`と同じ「provider mode + provider info」パターンをそのまま踏襲（`ClaudeProviderMode`/`ClaudeProviderInfo`、`GeminiProviderMode`/`GeminiProviderInfo`）。`aiOverviewComparison`配列への追加という既存の枠組みも維持し、専用compare UIへの切り替えは行っていない（3節で挙げたもう一方の選択肢は見送り）。
+- **ChatGPTとの重要な違い**: ChatGPT観測は`aiOverviewMode == "mock"`のとき常にスキップされる（mockフィクスチャに既に「ChatGPT」というダミーカードがあるため）。Claude/Geminiにはそのような衝突するmockカードが存在しないため、**`aiOverviewMode`の値に関わらず**、`claudeMode`/`geminiMode`のゲートのみで判定される。詳細な理由は`backend/services/claude_provider.py`のモジュールdocstringを参照。
+- **プロンプトの統一**: Claude/Geminiは同一のsystem/userプロンプト（`ai_observation_prompts.py`）で質問される——同一ブランド・同一観点で両者の回答を比較できるようにするため。既存のChatGPT観測のプロンプトは変更していない（別モジュールとして独立に保持、既存の検証済み挙動を変えないため）。
+- **frontend**: `app/lib/types.ts`/`analysis-result-schema.ts`に`ClaudeProviderInfo`/`GeminiProviderInfo`型を追加、`app/lib/meta-label.ts`に`getClaudeProviderStatusDisplay()`/`getGeminiProviderStatusDisplay()`と依頼者向け説明文（`CLAUDE_PLATFORM_NOTE`/`GEMINI_PLATFORM_NOTE`/`AI_OBSERVATION_COMMON_EXPLANATION_TEXT`）を追加、`AIOverviewComparisonSection`に表示の受け皿を追加。古い保存済み履歴（`claudeProvider`/`geminiProvider`フィールドを持たない）も引き続き正常にパースできることをテストで確認済み。
+- **未実施のまま残っているもの**: 本番Render/Vercel環境でのAPIキー設定・実際の有効化、開発・検証用UI selector（`NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR`相当のもの）、専用の横並び比較UI（列=AI、行=比較観点）への再設計。詳細は[backend/README.md](../backend/README.md)の「Claude/Gemini相当モデルの1問観測」を参照。
 
 ## 関連ドキュメント
 

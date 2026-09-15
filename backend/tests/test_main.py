@@ -18,7 +18,14 @@ from models import (
     MAX_URLS,
     AnalysisResult,
 )
-from services import chatgpt_client, common_crawl_index, common_crawl_warc, dataforseo_client
+from services import (
+    chatgpt_client,
+    claude_client,
+    common_crawl_index,
+    common_crawl_warc,
+    dataforseo_client,
+    gemini_client,
+)
 from services.sample_documents import SAMPLE_DOCUMENT_TEMPLATES
 from services.web_fetcher import UrlFetchResult as FetcherResult
 
@@ -704,6 +711,302 @@ def test_analyze_chatgpt_mode_request_override_ignored_without_allow_flag(monkey
     assert result.meta.chatgptProvider is not None
     assert result.meta.chatgptProvider.mode == "off"
     assert result.meta.chatgptProvider.status == "off"
+
+
+# --- Claude/Gemini observation (services/claude_provider.py, services/gemini_provider.py) --
+
+
+def _clear_claude_env(monkeypatch):
+    for name in (
+        "CLAUDE_API_KEY",
+        "CLAUDE_PROVIDER_MODE",
+        "ALLOW_CLAUDE_MODE_OVERRIDE",
+        "CLAUDE_MODEL",
+        "CLAUDE_MAX_OUTPUT_TOKENS",
+        "CLAUDE_REQUEST_LIMIT_PER_ANALYZE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _clear_gemini_env(monkeypatch):
+    for name in (
+        "GEMINI_API_KEY",
+        "GEMINI_PROVIDER_MODE",
+        "ALLOW_GEMINI_MODE_OVERRIDE",
+        "GEMINI_MODEL",
+        "GEMINI_MAX_OUTPUT_TOKENS",
+        "GEMINI_REQUEST_LIMIT_PER_ANALYZE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_analyze_default_claude_and_gemini_mode_is_off_and_never_calls_apis(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-super-secret-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-super-secret-key")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called when claudeMode/geminiMode are off by default")
+
+    monkeypatch.setattr(claude_client.httpx, "post", fail_if_called)
+    monkeypatch.setattr(gemini_client.httpx, "post", fail_if_called)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.claudeProvider is not None
+    assert result.meta.claudeProvider.mode == "off"
+    assert result.meta.claudeProvider.status == "off"
+    assert result.meta.geminiProvider is not None
+    assert result.meta.geminiProvider.mode == "off"
+    assert result.meta.geminiProvider.status == "off"
+    assert not any(item.platform.startswith("Claude (") for item in result.aiOverviewComparison)
+    assert not any(item.platform.startswith("Gemini (") for item in result.aiOverviewComparison)
+
+
+def test_analyze_default_claude_and_gemini_mode_does_not_break_existing_chatgpt_behavior(monkeypatch):
+    # A default (all-off) /analyze call must look the same for existing
+    # sections regardless of the new Claude/Gemini providers being wired
+    # in — this is the "does not break /analyze" completion criterion.
+    _clear_chatgpt_env(monkeypatch)
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.chatgptProvider is not None
+    assert result.meta.chatgptProvider.mode == "off"
+
+
+def test_analyze_claude_mode_anthropic_adds_a_card_when_allowed(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-super-secret-key")
+    monkeypatch.setenv("ALLOW_CLAUDE_MODE_OVERRIDE", "true")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "OpenAI is a well-known AI research company."}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(claude_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI", "claudeMode": "anthropic"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.claudeProvider is not None
+    assert result.meta.claudeProvider.mode == "anthropic"
+    assert result.meta.claudeProvider.status == "real"
+    assert result.meta.claudeProvider.environment == "api"
+
+    platforms = [item.platform for item in result.aiOverviewComparison]
+    assert "Claude (Anthropic API)" in platforms
+
+    claude_item = next(item for item in result.aiOverviewComparison if item.platform == "Claude (Anthropic API)")
+    assert claude_item.mentioned is True
+    assert claude_item.rank is None
+    assert claude_item.references is None
+    assert claude_item.ownDomainReferenced is None
+
+    assert "sk-ant-super-secret-key" not in response.text
+
+
+def test_analyze_claude_mode_anthropic_is_not_skipped_when_ai_overview_mode_is_mock(monkeypatch):
+    # Deliberately different from ChatGPT's behavior — see
+    # services/claude_provider.py's module docstring: the mock
+    # aiOverviewComparison fixture has no "Claude" card, so there is no
+    # duplicate-card collision to avoid here.
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-super-secret-key")
+    monkeypatch.setenv("ALLOW_CLAUDE_MODE_OVERRIDE", "true")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "OpenAI is a well-known AI research company."}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(claude_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI", "claudeMode": "anthropic"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.claudeProvider is not None
+    assert result.meta.claudeProvider.status == "real"
+    assert "Claude (Anthropic API)" in [item.platform for item in result.aiOverviewComparison]
+
+
+def test_analyze_claude_mode_request_override_ignored_without_allow_flag(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-super-secret-key")
+    # ALLOW_CLAUDE_MODE_OVERRIDE deliberately left unset (false by default).
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without ALLOW_CLAUDE_MODE_OVERRIDE=true")
+
+    monkeypatch.setattr(claude_client.httpx, "post", fail_if_called)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI", "claudeMode": "anthropic"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.claudeProvider is not None
+    assert result.meta.claudeProvider.mode == "off"
+    assert result.meta.claudeProvider.status == "off"
+
+
+def test_analyze_gemini_mode_google_adds_a_card_when_allowed(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-super-secret-key")
+    monkeypatch.setenv("ALLOW_GEMINI_MODE_OVERRIDE", "true")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {"content": {"parts": [{"text": "OpenAI is a well-known AI research company."}]}}
+                ]
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI", "geminiMode": "google"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.geminiProvider is not None
+    assert result.meta.geminiProvider.mode == "google"
+    assert result.meta.geminiProvider.status == "real"
+    assert result.meta.geminiProvider.environment == "api"
+
+    platforms = [item.platform for item in result.aiOverviewComparison]
+    assert "Gemini (Google API)" in platforms
+
+    gemini_item = next(item for item in result.aiOverviewComparison if item.platform == "Gemini (Google API)")
+    assert gemini_item.mentioned is True
+    assert gemini_item.rank is None
+    assert gemini_item.references is None
+    assert gemini_item.ownDomainReferenced is None
+
+    assert "gm-super-secret-key" not in response.text
+
+
+def test_analyze_gemini_mode_request_override_ignored_without_allow_flag(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-super-secret-key")
+    # ALLOW_GEMINI_MODE_OVERRIDE deliberately left unset (false by default).
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("httpx.post should not be called without ALLOW_GEMINI_MODE_OVERRIDE=true")
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fail_if_called)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI", "geminiMode": "google"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.geminiProvider is not None
+    assert result.meta.geminiProvider.mode == "off"
+    assert result.meta.geminiProvider.status == "off"
+
+
+def test_analyze_claude_and_gemini_combine_with_chatgpt_and_dataforseo(monkeypatch):
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "dataforseo")
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "someone@example.com")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "super-secret-password")
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+
+    _clear_chatgpt_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-key")
+    monkeypatch.setenv("ALLOW_CHATGPT_MODE_OVERRIDE", "true")
+
+    _clear_claude_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-super-secret-key")
+    monkeypatch.setenv("ALLOW_CLAUDE_MODE_OVERRIDE", "true")
+
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-super-secret-key")
+    monkeypatch.setenv("ALLOW_GEMINI_MODE_OVERRIDE", "true")
+
+    dataforseo_payload = {
+        "status_code": 20000,
+        "tasks": [{"result": [{"items": [{"type": "ai_overview", "rank_absolute": 1, "text": "OpenAI is great."}]}]}],
+    }
+
+    # chatgpt_client, claude_client, gemini_client, and dataforseo_client
+    # all `import httpx` and call `httpx.post(...)` directly, so they all
+    # share the exact same `httpx` module object — one dispatching
+    # fake_post (by URL) is required instead of separate monkeypatch
+    # calls, which would just overwrite each other (see the ChatGPT
+    # version of this comment above).
+    def fake_post(url, **kwargs):
+        if url == chatgpt_client.RESPONSES_API_URL:
+            return httpx.Response(
+                200,
+                json={"output_text": "OpenAI is a well-known AI research company."},
+                request=httpx.Request("POST", url),
+            )
+        if url == claude_client.MESSAGES_API_URL:
+            return httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": "OpenAI is a well-known AI research company."}]},
+                request=httpx.Request("POST", url),
+            )
+        if url == gemini_client.GENERATE_CONTENT_URL_TEMPLATE.format(model="gemini-2.5-flash"):
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {"content": {"parts": [{"text": "OpenAI is a well-known AI research company."}]}}
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(200, json=dataforseo_payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(dataforseo_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "chatgptMode": "openai",
+            "claudeMode": "anthropic",
+            "geminiMode": "google",
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    platforms = [item.platform for item in result.aiOverviewComparison]
+    assert "Google AI Mode (DataForSEO Sandbox)" in platforms
+    assert "ChatGPT (OpenAI API)" in platforms
+    assert "Claude (Anthropic API)" in platforms
+    assert "Gemini (Google API)" in platforms
+
+    body_text = response.text
+    assert "sk-super-secret-key" not in body_text
+    assert "sk-ant-super-secret-key" not in body_text
+    assert "gm-super-secret-key" not in body_text
+    assert "super-secret-password" not in body_text
 
 
 def test_analyze_ai_overview_mode_dataforseo_sandbox_failure_does_not_break_analyze(monkeypatch):

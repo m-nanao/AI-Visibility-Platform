@@ -108,6 +108,7 @@ Common Crawl補完: 公式ドメインから補完
 - Common Crawl補完による過去クロールデータの補助分析
 - Google AI Overview / AI Mode観測（DataForSEO経由）
 - ChatGPT相当モデルの1問観測（OpenAI API経由）
+- Claude/Gemini相当モデルの1問観測の実装基盤（2026-09-15追加、デフォルトoff——本番環境ではまだ有効化していないため、通常のデモでは表示されない）
 - 改善提案の提示
 - 分析履歴の保存
 - 履歴一覧・履歴詳細
@@ -120,7 +121,7 @@ Common Crawl補完: 公式ドメインから補完
 
 - AIの内部学習内容を直接確認するものではない——公開Web情報からの推定、またはAPI経由の単発観測に留まる。
 - ChatGPT観測はOpenAI APIによる1回分の観測であり、ChatGPTアプリ全体の認識を再現するものではない。
-- Claude/Geminiなど他AIとの実API比較は未実装——将来方針は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)に設計メモとして整理済み。
+- Claude/Geminiの観測は実装基盤（デフォルトoff）のみで、本番環境での実際の有効化・実API比較はまだ行っていない——設計と実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8. 実装基盤の追加」を参照。
 - AI Overviewは取得条件・タイミング（DataForSEO側の状況、Sandbox/Liveの違い）に左右され、毎回同じ結果になるとは限らない。
 - RLS（Row Level Security）は検証DBで適用・分離確認・rollbackまで確認済みだが、本番Supabaseへはまだ適用していない——現在の権限制御はbackendアプリケーション層（JWT検証＋project権限判定）が担っている（詳細は[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)・[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)参照）。
 - project作成・招待UIは未実装——現状は既存のdefault organization/projectに登録済みのユーザーのみが利用できる。

@@ -31,6 +31,12 @@ const aiOverviewEnvironmentSchema = z.enum(["mock", "sandbox", "live", "off", "u
 const chatGptProviderModeSchema = z.enum(["off", "openai"]);
 const chatGptStatusSchema = z.enum(["real", "off", "unavailable"]);
 const chatGptEnvironmentSchema = z.enum(["api", "off", "unavailable"]);
+const claudeProviderModeSchema = z.enum(["off", "anthropic"]);
+const claudeStatusSchema = z.enum(["real", "off", "unavailable"]);
+const claudeEnvironmentSchema = z.enum(["api", "off", "unavailable"]);
+const geminiProviderModeSchema = z.enum(["off", "google"]);
+const geminiStatusSchema = z.enum(["real", "off", "unavailable"]);
+const geminiEnvironmentSchema = z.enum(["api", "off", "unavailable"]);
 const commonCrawlProviderModeSchema = z.enum(["off", "domain"]);
 const commonCrawlProviderStatusSchema = z.enum(["off", "real", "unavailable"]);
 
@@ -71,6 +77,20 @@ const chatGptProviderInfoSchema = z.object({
   environment: optionalFromPython(chatGptEnvironmentSchema),
 });
 
+const claudeProviderInfoSchema = z.object({
+  mode: claudeProviderModeSchema,
+  status: claudeStatusSchema,
+  reason: z.string(),
+  environment: optionalFromPython(claudeEnvironmentSchema),
+});
+
+const geminiProviderInfoSchema = z.object({
+  mode: geminiProviderModeSchema,
+  status: geminiStatusSchema,
+  reason: z.string(),
+  environment: optionalFromPython(geminiEnvironmentSchema),
+});
+
 const commonCrawlProviderInfoSchema = z.object({
   mode: commonCrawlProviderModeSchema,
   status: commonCrawlProviderStatusSchema,
@@ -95,6 +115,8 @@ const analysisMetaSchema = z.object({
   chunkCount: optionalFromPython(z.number()),
   aiOverviewProvider: optionalFromPython(aiOverviewProviderInfoSchema),
   chatgptProvider: optionalFromPython(chatGptProviderInfoSchema),
+  claudeProvider: optionalFromPython(claudeProviderInfoSchema),
+  geminiProvider: optionalFromPython(geminiProviderInfoSchema),
   commonCrawlProvider: optionalFromPython(commonCrawlProviderInfoSchema),
 });
 
