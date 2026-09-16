@@ -3,6 +3,7 @@ import {
   buildAnalyzeRequestBody,
   isAiOverviewModeSelectorEnabled,
   isChatGptModeSelectorEnabled,
+  isClaudeModeSelectorEnabled,
   isCommonCrawlModeSelectorEnabled,
 } from "./analysis-request";
 
@@ -115,6 +116,49 @@ describe("isCommonCrawlModeSelectorEnabled", () => {
     expect(isCommonCrawlModeSelectorEnabled()).toBe(true);
     expect(isAiOverviewModeSelectorEnabled()).toBe(false);
     expect(isChatGptModeSelectorEnabled()).toBe(false);
+  });
+});
+
+describe("isClaudeModeSelectorEnabled", () => {
+  const originalValue = process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR;
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR;
+    } else {
+      process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR = originalValue;
+    }
+  });
+
+  it("is disabled when the env var is unset", () => {
+    delete process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR;
+    expect(isClaudeModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is disabled when the env var is \"false\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR = "false";
+    expect(isClaudeModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is disabled for any value other than the exact string \"true\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR = "TRUE";
+    expect(isClaudeModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is enabled only when the env var is exactly \"true\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR = "true";
+    expect(isClaudeModeSelectorEnabled()).toBe(true);
+  });
+
+  it("is independent from the other mode selectors' own flags (Gemini selector does not exist yet)", () => {
+    process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR = "true";
+    delete process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR;
+    delete process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR;
+    delete process.env.NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR;
+    expect(isClaudeModeSelectorEnabled()).toBe(true);
+    expect(isAiOverviewModeSelectorEnabled()).toBe(false);
+    expect(isChatGptModeSelectorEnabled()).toBe(false);
+    expect(isCommonCrawlModeSelectorEnabled()).toBe(false);
   });
 });
 
@@ -267,5 +311,66 @@ describe("buildAnalyzeRequestBody", () => {
       commonCrawlMode: "domain",
       commonCrawlDomain: "acme.example.com",
     });
+  });
+
+  it("omits claudeMode when not passed (selector not shown)", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    expect(body.claudeMode).toBeUndefined();
+    expect("claudeMode" in body).toBe(false);
+  });
+
+  it("includes claudeMode when passed (mode selector shown and a value selected)", () => {
+    expect(
+      buildAnalyzeRequestBody("Acme", [], undefined, undefined, undefined, undefined, "anthropic"),
+    ).toEqual({
+      brandName: "Acme",
+      claudeMode: "anthropic",
+    });
+  });
+
+  it("includes off/anthropic claudeMode values (default off is sent explicitly when the selector is shown)", () => {
+    expect(
+      buildAnalyzeRequestBody("Acme", [], undefined, undefined, undefined, undefined, "off")
+        .claudeMode,
+    ).toBe("off");
+    expect(
+      buildAnalyzeRequestBody("Acme", [], undefined, undefined, undefined, undefined, "anthropic")
+        .claudeMode,
+    ).toBe("anthropic");
+  });
+
+  it("includes urls, aiOverviewMode, chatgptMode, commonCrawlMode, commonCrawlDomain, and claudeMode together", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        ["https://acme.example.com"],
+        "dataforseo",
+        "openai",
+        "domain",
+        "acme.example.com",
+        "anthropic",
+      ),
+    ).toEqual({
+      brandName: "Acme",
+      urls: ["https://acme.example.com"],
+      aiOverviewMode: "dataforseo",
+      chatgptMode: "openai",
+      commonCrawlMode: "domain",
+      commonCrawlDomain: "acme.example.com",
+      claudeMode: "anthropic",
+    });
+  });
+
+  it("never includes a geminiMode field (Gemini selector is not implemented yet)", () => {
+    const body = buildAnalyzeRequestBody(
+      "Acme",
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "anthropic",
+    );
+    expect("geminiMode" in body).toBe(false);
   });
 });

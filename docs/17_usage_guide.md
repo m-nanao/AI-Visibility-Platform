@@ -236,9 +236,19 @@ Supabase Authによるログイン、分析履歴の保存・閲覧、前回比�
 
 `feature/multi-ai-observation-foundation`で、ChatGPT観測と同じ設計のClaude観測（Anthropic API）・Gemini観測（Google API）の**実装基盤**を追加した。**現時点ではデフォルトoffであり、本番環境ではまだ有効化していない**——通常の利用・デモではこれまで通りAI Overview / ChatGPT観測のみが動作する。
 
-- 開発・検証用のUI selectorはまだ用意していない（`claudeMode`/`geminiMode`はリクエストボディでのみ指定可能）。通常の画面操作では、Claude/Geminiの観測結果は表示されない。
+- 開発・検証用のUI selectorは、2026-09-17時点でClaudeのみ追加した（下記13章参照）。Geminiはリクエストボディでのみ`geminiMode`を指定可能で、UI selectorはまだ用意していない。
 - Claude/Gemini観測が動作する環境（開発・検証時にAPIキーを設定した場合）では、「4. AI Overview比較」カードにChatGPT観測と並んで「Claude (Anthropic API)」「Gemini (Google API)」カードが追加表示される。これらも単発API呼び出しによる1回分の観測結果であり、Claude/Geminiサービス全体の認識・内部状態を保証するものではない（表現注意はChatGPT観測と同じ）。
 - 詳細な設計・今後の対応候補は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8. 実装基盤の追加」、backend側の詳細は[backend/README.md](../backend/README.md)「Claude/Gemini相当モデルの1問観測」を参照。
+
+## 13. Claude観測モードの検証用selectorについて（2026-09-17追記）
+
+`feature/claude-mode-selector`で、Claude観測を検証用にON/OFFできるUI selectorを追加した。既存のAI Overview取得モード/ChatGPT観測モード/Common Crawl補完selectorと全く同じ設計（`NEXT_PUBLIC_ENABLE_*_MODE_SELECTOR`フラグでの表示制御）。
+
+- **表示条件**: `NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`の環境でのみ、分析フォームに「Claude観測モード（検証用）」というoff/anthropicの選択UIが表示される。未設定/false（デフォルト）では表示されない。
+- **選択肢**: 「off: 無効」/「anthropic: Claude API」。helper文言は「Claude APIを使い、同じ観点で1回分の回答傾向を観測します。検証時のみONにしてください。」
+- 選択した値はリクエストボディの`claudeMode`に入るだけの表示制御フラグ——**実際にAnthropic APIへ接続されるかどうかは、Python API側の`ALLOW_CLAUDE_MODE_OVERRIDE=true`・APIキー設定・リクエスト上限が別途揃っている場合のみ**（詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「9」・[backend/README.md](../backend/README.md)「Claude/Gemini相当モデルの1問観測」参照）。ChatGPT観測のselectorと異なり、AI Overview取得モードがmockの場合でもClaude観測はスキップされない。
+- **Gemini用の同等selectorはまだ追加していない**（今回はClaudeのみが対象）。
+- APIキーはRender backendの環境変数にのみ設定されており、frontendのコード・画面・レスポンスのいずれにも実値は現れない。
 
 ## 関連ドキュメント
 

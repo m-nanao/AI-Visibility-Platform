@@ -458,6 +458,85 @@ describe("POST /api/analyze", () => {
     expect(forwardedBody.chatgptMode).toBeUndefined();
   });
 
+  it("forwards a valid claudeMode to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", claudeMode: "anthropic" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.claudeMode).toBe("anthropic");
+  });
+
+  it("forwards an explicit off claudeMode to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", claudeMode: "off" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.claudeMode).toBe("off");
+  });
+
+  it("drops an invalid claudeMode instead of forwarding it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", claudeMode: "claude" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.claudeMode).toBeUndefined();
+  });
+
+  it("omits claudeMode from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.claudeMode).toBeUndefined();
+  });
+
+  it("never forwards a claudeMode field that looks like an API key", async () => {
+    // Defense-in-depth: even if a caller tried to smuggle a secret
+    // through this field, CLAUDE_MODES.includes() only accepts the
+    // literal "off"/"anthropic" strings, so anything else (including
+    // an attempted API key value) is dropped rather than forwarded.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", claudeMode: "sk-ant-not-a-real-key" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.claudeMode).toBeUndefined();
+  });
+
   it("forwards a valid commonCrawlMode and commonCrawlDomain to the Python API when provided", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = buildDummyAnalysis("Cybozu");
@@ -737,6 +816,71 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.chatgptProvider).toBeUndefined();
+  });
+
+  it("passes through meta.claudeProvider and an extra Claude card from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Google AI Mode (DataForSEO Sandbox)", mentioned: true, rank: 1, summary: "OpenAI is..." },
+        { platform: "Claude (Anthropic API)", mentioned: true, rank: null, summary: "OpenAI is a well-known AI lab." },
+      ],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "real" },
+        aiOverviewProvider: {
+          mode: "dataforseo",
+          status: "real",
+          reason: "DataForSEO Sandbox AI Mode request succeeded.",
+          environment: "sandbox",
+        },
+        claudeProvider: {
+          mode: "anthropic",
+          status: "real",
+          reason: "Claude Anthropic API request succeeded.",
+          environment: "api",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo", claudeMode: "anthropic" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.claudeProvider).toEqual({
+      mode: "anthropic",
+      status: "real",
+      reason: "Claude Anthropic API request succeeded.",
+      environment: "api",
+    });
+    const platforms = data.aiOverviewComparison.map((item: { platform: string }) => item.platform);
+    expect(platforms).toContain("Claude (Anthropic API)");
+
+    // API key must never appear in the response body forwarded to the browser.
+    const body = JSON.stringify(data);
+    expect(body).not.toMatch(/sk-ant-/);
+  });
+
+  it("accepts a response without meta.claudeProvider (existing/older backend shape)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({}),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.claudeProvider).toBeUndefined();
   });
 
   it("passes through aiOverviewComparison's fullSummary/references/ownDomainReferenced from the Python API", async () => {
