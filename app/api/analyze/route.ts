@@ -5,6 +5,7 @@ import type {
   AiOverviewProviderMode,
   AnalysisResult,
   ChatGptProviderMode,
+  ClaudeProviderMode,
   CommonCrawlProviderMode,
 } from "../../lib/types";
 
@@ -17,6 +18,7 @@ const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = [
 ];
 const CHATGPT_MODES: readonly ChatGptProviderMode[] = ["off", "openai"];
 const COMMON_CRAWL_MODES: readonly CommonCrawlProviderMode[] = ["off", "domain"];
+const CLAUDE_MODES: readonly ClaudeProviderMode[] = ["off", "anthropic"];
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
 
@@ -54,6 +56,7 @@ async function fetchFromPythonApi(
   chatgptMode?: ChatGptProviderMode,
   commonCrawlMode?: CommonCrawlProviderMode,
   commonCrawlDomain?: string,
+  claudeMode?: ClaudeProviderMode,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable" };
@@ -72,6 +75,7 @@ async function fetchFromPythonApi(
     chatgptMode?: ChatGptProviderMode;
     commonCrawlMode?: CommonCrawlProviderMode;
     commonCrawlDomain?: string;
+    claudeMode?: ClaudeProviderMode;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
@@ -93,6 +97,13 @@ async function fetchFromPythonApi(
   // there is no UI for it yet (API/console verification only).
   if (commonCrawlMode) requestBody.commonCrawlMode = commonCrawlMode;
   if (commonCrawlDomain) requestBody.commonCrawlDomain = commonCrawlDomain;
+  // Same passthrough pattern as chatgptMode above, for the Claude
+  // observation (see backend/services/claude_provider.py). The Python
+  // API decides whether to actually honor it
+  // (ALLOW_CLAUDE_MODE_OVERRIDE) — unlike chatgptMode, it is NOT
+  // skipped when aiOverviewMode is "mock" (see that module's
+  // docstring). Next.js does not gate this itself.
+  if (claudeMode) requestBody.claudeMode = claudeMode;
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
@@ -212,6 +223,12 @@ export async function POST(request: Request) {
     typeof body?.commonCrawlDomain === "string" && body.commonCrawlDomain.trim()
       ? body.commonCrawlDomain.trim()
       : undefined;
+  // Same pattern as chatgptMode above, for the Claude observation (see
+  // backend/services/claude_provider.py). An invalid value is dropped
+  // rather than rejected with 400.
+  const claudeMode = CLAUDE_MODES.includes(body?.claudeMode)
+    ? (body.claudeMode as ClaudeProviderMode)
+    : undefined;
 
   const outcome = await fetchFromPythonApi(
     trimmedBrandName,
@@ -221,6 +238,7 @@ export async function POST(request: Request) {
     chatgptMode,
     commonCrawlMode,
     commonCrawlDomain,
+    claudeMode,
   );
 
   if (outcome.kind === "success") {

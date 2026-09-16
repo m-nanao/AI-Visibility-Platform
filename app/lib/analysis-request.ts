@@ -1,6 +1,7 @@
 import type {
   AiOverviewProviderMode,
   ChatGptProviderMode,
+  ClaudeProviderMode,
   CommonCrawlProviderMode,
 } from "./types";
 
@@ -40,6 +41,19 @@ export function isCommonCrawlModeSelectorEnabled(): boolean {
   return process.env.NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR === "true";
 }
 
+// Same idea again, for the dev/verification-only "Claude観測モード"
+// selector. This flag only controls whether the select renders — it
+// cannot make the Python API call Anthropic by itself. Whether a
+// submitted claudeMode is actually honored is still decided
+// server-side by ALLOW_CLAUDE_MODE_OVERRIDE (see
+// backend/services/claude_provider.py). Unlike chatgptMode, this is
+// NOT skipped when aiOverviewMode is "mock" — see
+// backend/services/claude_provider.py's module docstring for why
+// (there's no colliding "Claude" mock card to avoid duplicating).
+export function isClaudeModeSelectorEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR === "true";
+}
+
 export interface AnalyzeRequestBody {
   brandName: string;
   urls?: string[];
@@ -47,20 +61,24 @@ export interface AnalyzeRequestBody {
   chatgptMode?: ChatGptProviderMode;
   commonCrawlMode?: CommonCrawlProviderMode;
   commonCrawlDomain?: string;
+  claudeMode?: ClaudeProviderMode;
 }
 
 /**
  * Builds the POST /api/analyze request body. `urls`/`aiOverviewMode`/
- * `chatgptMode`/`commonCrawlMode`/`commonCrawlDomain` are omitted
- * entirely (not sent as `[]`/`undefined`/`"off"`/empty-string values)
- * rather than included with an empty/default value — the Next.js and
- * Python APIs both treat an omitted key as "use the default", so a
- * normal submission (no urls, no mode selector shown) produces exactly
- * the same body it always has. `commonCrawlMode` follows this same
- * omit-the-default pattern as aiOverviewMode/chatgptMode — omitting
- * "off" is behaviorally identical to sending it explicitly, since the
- * backend already treats an omitted commonCrawlMode as "off" (see
- * backend/main.py).
+ * `chatgptMode`/`commonCrawlMode`/`commonCrawlDomain`/`claudeMode` are
+ * omitted entirely (not sent as `[]`/`undefined`/`"off"`/empty-string
+ * values) rather than included with an empty/default value — the
+ * Next.js and Python APIs both treat an omitted key as "use the
+ * default", so a normal submission (no urls, no mode selector shown)
+ * produces exactly the same body it always has. `commonCrawlMode`
+ * follows this same omit-the-default pattern as
+ * aiOverviewMode/chatgptMode — omitting "off" is behaviorally
+ * identical to sending it explicitly, since the backend already
+ * treats an omitted commonCrawlMode as "off" (see backend/main.py).
+ * `claudeMode` mirrors chatgptMode's own pattern exactly: included
+ * whenever passed (even "off"), omitted only when the selector isn't
+ * shown at all.
  */
 export function buildAnalyzeRequestBody(
   brandName: string,
@@ -69,6 +87,7 @@ export function buildAnalyzeRequestBody(
   chatgptMode?: ChatGptProviderMode,
   commonCrawlMode?: CommonCrawlProviderMode,
   commonCrawlDomain?: string,
+  claudeMode?: ClaudeProviderMode,
 ): AnalyzeRequestBody {
   const body: AnalyzeRequestBody = { brandName };
   if (urls.length > 0) body.urls = urls;
@@ -78,5 +97,6 @@ export function buildAnalyzeRequestBody(
   if (commonCrawlDomain && commonCrawlDomain.trim()) {
     body.commonCrawlDomain = commonCrawlDomain.trim();
   }
+  if (claudeMode) body.claudeMode = claudeMode;
   return body;
 }

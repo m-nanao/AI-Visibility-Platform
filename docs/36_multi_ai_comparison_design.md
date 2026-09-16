@@ -83,6 +83,16 @@
 - **frontend**: `app/lib/types.ts`/`analysis-result-schema.ts`に`ClaudeProviderInfo`/`GeminiProviderInfo`型を追加、`app/lib/meta-label.ts`に`getClaudeProviderStatusDisplay()`/`getGeminiProviderStatusDisplay()`と依頼者向け説明文（`CLAUDE_PLATFORM_NOTE`/`GEMINI_PLATFORM_NOTE`/`AI_OBSERVATION_COMMON_EXPLANATION_TEXT`）を追加、`AIOverviewComparisonSection`に表示の受け皿を追加。古い保存済み履歴（`claudeProvider`/`geminiProvider`フィールドを持たない）も引き続き正常にパースできることをテストで確認済み。
 - **未実施のまま残っているもの**: 本番Render/Vercel環境でのAPIキー設定・実際の有効化、開発・検証用UI selector（`NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR`相当のもの）、専用の横並び比較UI（列=AI、行=比較観点）への再設計。詳細は[backend/README.md](../backend/README.md)の「Claude/Gemini相当モデルの1問観測」を参照。
 
+## 9. Claude観測用frontend selectorの追加（2026-09-17、`feature/claude-mode-selector`）
+
+上記「8」で追加した実装基盤のうち、「未実施のまま残っているもの」の一つだった開発・検証用UI selectorを、**Claudeのみ**追加した（Geminiは今回対象外・未実装のまま）。
+
+- Render backend側では、この時点で`CLAUDE_PROVIDER_MODE=off`・`ALLOW_CLAUDE_MODE_OVERRIDE=true`・`CLAUDE_API_KEY`設定済み・`CLAUDE_MODEL=claude-sonnet-4-5`等が既に本番環境変数として設定されていた（このタスクでのRender/Vercel設定変更ではない、事前に別途設定済みのもの）。ただし画面上にClaude selectorがなく、画面操作からclaudeModeを上書きする手段がなかった。
+- 新規`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`（デフォルトoff/未設定）を追加し、`true`の場合のみ分析フォームに「Claude観測モード（検証用）」というoff/anthropicの選択UIが表示されるようにした（`app/components/BrandInputForm.tsx`、既存のAI Overview/ChatGPT/Common Crawl selectorと全く同じ「表示フラグ→UI表示→request bodyへclaudeModeを含める」の3段構成）。選択肢のvalueは既存の`ClaudeProviderMode`型（`backend/models.py`のClaudeProviderMode、`app/lib/types.ts`のClaudeProviderMode）にあわせて`"off"`/`"anthropic"`とした——タスク依頼文中の仮の値名「claude」ではなく、実際にbackendが受け付ける値をそのまま使っている。
+- `app/lib/analysis-request.ts`に`isClaudeModeSelectorEnabled()`・`buildAnalyzeRequestBody()`への`claudeMode`引数を追加（ChatGPT観測の`isChatGptModeSelectorEnabled()`/`chatgptMode`と全く同じ設計）。`app/page.tsx`・`app/api/analyze/route.ts`（Next.js側の値検証・Python APIへのpassthrough）もあわせて更新——これらは元タスクの「変更してよいファイル」一覧には明記されていなかったが、selectorをrequest bodyまで実際に届けるために不可欠な配線であり、既存のChatGPT/Common Crawl selectorもこの3ファイルを経由している。
+- API keyは一貫してbackend環境変数（Render）のみに置かれ、frontendのコード・レスポンス・request bodyのいずれにも実値は含まれない（`claudeMode`は`"off"`/`"anthropic"`という設定名のみで、キー自体を運ばない）。
+- 本番Vercel環境変数（`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`含む）は今回設定していない——コード側の対応のみ。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）
