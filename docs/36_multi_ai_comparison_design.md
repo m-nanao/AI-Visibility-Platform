@@ -1,8 +1,8 @@
 # 複数AI横並び比較 設計メモ
 
-**このドキュメントは元々設計メモとして作成された（下記本文は作成当時のまま）。2026-09-15、`feature/multi-ai-observation-foundation`でClaude/Gemini観測provider（実装基盤）を追加した——詳細は末尾の「8. 実装基盤の追加」を参照。実際の本番Render/Vercel環境でのAPIキー設定・有効化はまだ行っていない（デフォルトoff、別タスク）。** 現在AI観測として実装済みなのは、Google AI Overview / AI Mode（DataForSEO経由、[03_api_design.md](./03_api_design.md)・[11_architecture_v1.md](./11_architecture_v1.md)参照）・ChatGPT相当モデル（OpenAI API、`services/chatgpt_provider.py`）・Claude相当モデル（Anthropic API、`services/claude_provider.py`）・Gemini相当モデル（Google API、`services/gemini_provider.py`）の4種類。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは元々設計メモとして作成された（下記本文は作成当時のまま）。2026-09-15、`feature/multi-ai-observation-foundation`でClaude/Gemini観測provider（実装基盤）を追加した——詳細は末尾の「8. 実装基盤の追加」を参照。2026-09-17にClaude、2026-09-19にGeminiの検証用selectorを追加し、いずれも本番Render backend・Vercel frontendの環境変数設定・本番検証まで完了している（デフォルトは常にoff、検証用selectorで明示的にONにした場合のみ動作——詳細は「10」「13」参照）。** 現在AI観測として実装済みなのは、Google AI Overview / AI Mode（DataForSEO経由、[03_api_design.md](./03_api_design.md)・[11_architecture_v1.md](./11_architecture_v1.md)参照）・ChatGPT相当モデル（OpenAI API、`services/chatgpt_provider.py`）・Claude相当モデル（Anthropic API、`services/claude_provider.py`、本番検証済み）・Gemini相当モデル（Google API、`services/gemini_provider.py`、本番検証済み）の4種類。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-09-15**
+**最終更新日: 2026-09-19**
 
 ## 1. 目的
 
@@ -130,6 +130,34 @@
 - **frontend表示**: `isTruncated`が真の場合、Gemini観測カードの概要欄の直下に注意文（`note`。バックエンドが送っていない場合は`app/lib/meta-label.ts`の`GEMINI_TRUNCATION_NOTE`にフォールバック）を表示するようにした（`AIOverviewComparisonSection.tsx`）。文言は「Gemini APIの出力が途中で終了した可能性があります。必要に応じて再実行するか、出力上限を増やして検証してください。」——**「Geminiに情報がない」「AIの内部認識が途切れている」とは書かない**（単なる今回の観測1回分の出力の途中終了として説明する）。
 - **既存provider・既存表示への影響**: Claude/ChatGPT/AI Overview/Common Crawlの実装・表示ロジックはいずれも変更していない。`GEMINI_PROVIDER_MODE`のデフォルトoff・`ALLOW_GEMINI_MODE_OVERRIDE`によるselector override方式もそのまま——検証時のみ画面からONにする運用方針は変更していない。
 - **今後の対応候補**: `GEMINI_MAX_OUTPUT_TOKENS`を700から1500/2000程度へ引き上げることで、途中終了の発生頻度そのものを下げられる可能性がある（Render本番環境変数の変更が必要なため、この変更自体は今回のタスクの対象外——依頼者確認のうえ別途対応する）。
+
+## 13. Gemini観測の本番検証結果（2026-09-19、`docs/record-gemini-and-navigation-production-verification`）
+
+上記「11」「12」の後、Render backend・Vercel frontendの本番環境変数が設定され、実際の本番環境で一連の動作確認が行われた。**このセクションはdocsの記録のみで、コード変更・環境変数の追加設定は伴わない。**
+
+- **Render backend側の本番設定**: `GEMINI_PROVIDER_MODE=off`（通常時のデフォルト、常時offのまま）・`ALLOW_GEMINI_MODE_OVERRIDE=true`（検証時のみリクエスト単位の上書きを許可）・`GEMINI_API_KEY`設定済み（実値はdocsに記載しない）・`GEMINI_MODEL=gemini-2.5-flash`・`GEMINI_MAX_OUTPUT_TOKENS=1500`・`GEMINI_REQUEST_LIMIT_PER_ANALYZE=1`。
+- **Vercel frontend側の本番設定**: `NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`。**Gemini API keyはRender backendの環境変数にのみ存在し、Vercel側には一切設定されていない**（frontendはgeminiModeという設定名のみをやり取りし、キー自体を扱わない設計——「11」参照）。
+- **`GEMINI_MAX_OUTPUT_TOKENS`の調整結果**: 「12」で追加した途中終了検知機能とは別に、根本原因への対応として実際に環境変数を調整した。**`GEMINI_MAX_OUTPUT_TOKENS=700`（デフォルト）では本文が「- **」のように途中で切れる現象が再現した**が、**`GEMINI_MAX_OUTPUT_TOKENS=1500`に変更したところ、本文が最後まで取得できることを確認した**——`maxOutputTokens`上限による途中終了という「12」での原因推定が裏付けられた形になる。「12」の途中終了検知・注意文表示のロジック自体はコード変更しておらず、`GEMINI_MAX_OUTPUT_TOKENS`の値に関わらず、実際に途中終了が起きた場合は引き続き注意文が表示される。
+- **本番画面での確認結果**:
+  - 分析入力画面に「Gemini観測モード（検証用）」selectorが表示され、初期値が「off: 無効」になっていることを確認。
+  - 既存のClaude観測モードselectorも引き続き表示されることを確認（Gemini selector追加によるClaude selectorへの影響なし）。
+  - 「google: Gemini API」のみを選択し、Claudeは`off`のままで分析を実行できることを確認（各AI providerの独立性を確認）。
+  - 分析結果画面の「4. AI Overview比較」に、既存のChatGPT/Claude/AI Overview/Common Crawl表示を壊すことなくGemini観測カードが追加表示されることを確認。
+  - 分析結果を保存した履歴の詳細画面（`/history/[id]`）でも、保存済みのGemini観測が同じ形式で再表示されることを確認。
+  - レポート画面（`/history/[id]/report`）でもGemini観測を含めて表示崩れがないことを確認。
+- **完全性の限界**: この確認は目視によるスモークテストであり、Geminiの応答内容そのものの品質評価・複数ブランドでの再現性確認・エラー系（APIキー失効・レート制限等）の本番確認は含まれない。途中終了は今回`GEMINI_MAX_OUTPUT_TOKENS=1500`で解消を確認したが、より長い応答では再発する可能性があり、「12」の検知・注意文表示はその安全網として引き続き機能する。
+
+## 14. 共通ヘッダー / ナビゲーション改善の本番確認結果（2026-09-19、`docs/record-gemini-and-navigation-production-verification`）
+
+`feature/app-navigation-header`で追加した共通ヘッダー（`AppHeader`）・パンくず（`Breadcrumb`）について、本番環境で表示・動作を確認した。
+
+- 主要4画面（`/`・`/history`・`/history/[id]`・`/history/[id]/report`）で共通ヘッダーが表示されることを確認。
+- ヘッダーの「AI Visibility Platform」または「分析」から分析画面`/`へ、「履歴」から`/history`へ、それぞれ1クリックで戻れることを確認。
+- ログアウトボタンが主要画面で表示されることを確認（ログイン済み状態でのみ表示される設計どおり）。
+- `/history/[id]`に「分析履歴一覧 > 履歴詳細」のパンくずが表示されることを確認。
+- `/history/[id]/report`に「分析履歴一覧 > 履歴詳細 > レポート」のパンくずが表示されることを確認。
+- モバイル幅を含め表示崩れがないこと、既存の分析・履歴詳細・レポート表示が壊れていないことを確認。
+- 認証ロジック・Supabase Auth・`STAGING_ACCESS_CODE`/`HISTORY_READ_TOKEN`gateへの影響はなし（表示のみの変更のため）。
 
 ## 関連ドキュメント
 

@@ -10,7 +10,9 @@
 
 **追記（同日）: 「9. 今後の拡張候補」に挙げた「ChatGPT / Claude / Geminiなど複数AI観測」のうち、Claude/Gemini観測の実装基盤（デフォルトoff）を追加した。本番環境での有効化はまだ行っていない——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8. 実装基盤の追加」を参照。**
 
-**追記（2026-09-17）: 現在のMVPでは、ChatGPT相当モデルに加え、Claude観測も検証可能である。ただし単発観測であり、Claudeサービス全体の認識やAIの内部状態を保証するものではない（ChatGPT観測と同じ制約）。本番環境（Render backend・Vercel frontend）でClaude API選択→分析実行→結果カード表示→履歴詳細表示→レポート表示まで確認済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10. Claude観測の本番検証結果」を参照。Gemini観測はprovider実装基盤のみで、selector表示・本番有効化はまだ行っていない。**
+**追記（2026-09-17）: 現在のMVPでは、ChatGPT相当モデルに加え、Claude観測も検証可能である。ただし単発観測であり、Claudeサービス全体の認識やAIの内部状態を保証するものではない（ChatGPT観測と同じ制約）。本番環境（Render backend・Vercel frontend）でClaude API選択→分析実行→結果カード表示→履歴詳細表示→レポート表示まで確認済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10. Claude観測の本番検証結果」を参照。**
+
+**追記（2026-09-19）: ChatGPT・Claudeに加え、Gemini観測も本番環境で検証可能になった——ChatGPT/Claude相当モデルの1問観測を比較できる状態である。いずれも単発観測であり、各AIサービス全体の認識や内部状態を保証するものではない。Gemini観測は出力上限により本文が途中で終了する場合があるが、その場合は注意文が表示され、「Geminiに情報がない」ことを意味しない（本番`GEMINI_MAX_OUTPUT_TOKENS`は1500に調整済みで、以前発生していた途中切れは解消を確認済み）——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「13. Gemini観測の本番検証結果」を参照。あわせて、主要画面（分析・履歴一覧・履歴詳細・レポート）に共通ヘッダー（分析・履歴・ログアウトへの導線）とパンくず（履歴詳細・レポート）を追加し、画面間の移動をしやすくした——詳細は同ファイル「14. 共通ヘッダー / ナビゲーション改善の本番確認結果」を参照。**
 
 ## 1. 現在のMVPでできること
 
