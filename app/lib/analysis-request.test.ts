@@ -5,6 +5,7 @@ import {
   isChatGptModeSelectorEnabled,
   isClaudeModeSelectorEnabled,
   isCommonCrawlModeSelectorEnabled,
+  isGeminiModeSelectorEnabled,
 } from "./analysis-request";
 
 describe("isAiOverviewModeSelectorEnabled", () => {
@@ -150,15 +151,62 @@ describe("isClaudeModeSelectorEnabled", () => {
     expect(isClaudeModeSelectorEnabled()).toBe(true);
   });
 
-  it("is independent from the other mode selectors' own flags (Gemini selector does not exist yet)", () => {
+  it("is independent from the other mode selectors' own flags", () => {
     process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR = "true";
     delete process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR;
     delete process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR;
     delete process.env.NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR;
+    delete process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR;
     expect(isClaudeModeSelectorEnabled()).toBe(true);
     expect(isAiOverviewModeSelectorEnabled()).toBe(false);
     expect(isChatGptModeSelectorEnabled()).toBe(false);
     expect(isCommonCrawlModeSelectorEnabled()).toBe(false);
+    expect(isGeminiModeSelectorEnabled()).toBe(false);
+  });
+});
+
+describe("isGeminiModeSelectorEnabled", () => {
+  const originalValue = process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR;
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR;
+    } else {
+      process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR = originalValue;
+    }
+  });
+
+  it("is disabled when the env var is unset", () => {
+    delete process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR;
+    expect(isGeminiModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is disabled when the env var is \"false\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR = "false";
+    expect(isGeminiModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is disabled for any value other than the exact string \"true\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR = "TRUE";
+    expect(isGeminiModeSelectorEnabled()).toBe(false);
+  });
+
+  it("is enabled only when the env var is exactly \"true\"", () => {
+    process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR = "true";
+    expect(isGeminiModeSelectorEnabled()).toBe(true);
+  });
+
+  it("is independent from the other mode selectors' own flags, including Claude's", () => {
+    process.env.NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR = "true";
+    delete process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR;
+    delete process.env.NEXT_PUBLIC_ENABLE_CHATGPT_MODE_SELECTOR;
+    delete process.env.NEXT_PUBLIC_ENABLE_COMMON_CRAWL_MODE_SELECTOR;
+    delete process.env.NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR;
+    expect(isGeminiModeSelectorEnabled()).toBe(true);
+    expect(isAiOverviewModeSelectorEnabled()).toBe(false);
+    expect(isChatGptModeSelectorEnabled()).toBe(false);
+    expect(isCommonCrawlModeSelectorEnabled()).toBe(false);
+    expect(isClaudeModeSelectorEnabled()).toBe(false);
   });
 });
 
@@ -361,16 +409,97 @@ describe("buildAnalyzeRequestBody", () => {
     });
   });
 
-  it("never includes a geminiMode field (Gemini selector is not implemented yet)", () => {
-    const body = buildAnalyzeRequestBody(
-      "Acme",
-      [],
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "anthropic",
-    );
+  it("omits geminiMode when not passed (selector not shown)", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    expect(body.geminiMode).toBeUndefined();
     expect("geminiMode" in body).toBe(false);
+  });
+
+  it("includes geminiMode when passed (mode selector shown and a value selected)", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "google",
+      ),
+    ).toEqual({
+      brandName: "Acme",
+      geminiMode: "google",
+    });
+  });
+
+  it("includes off/google geminiMode values (default off is sent explicitly when the selector is shown)", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "off",
+      ).geminiMode,
+    ).toBe("off");
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "google",
+      ).geminiMode,
+    ).toBe("google");
+  });
+
+  it("does not affect claudeMode when geminiMode is also passed (both selectors can be shown independently)", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "anthropic",
+        "google",
+      ),
+    ).toEqual({
+      brandName: "Acme",
+      claudeMode: "anthropic",
+      geminiMode: "google",
+    });
+  });
+
+  it("includes urls, aiOverviewMode, chatgptMode, commonCrawlMode, commonCrawlDomain, claudeMode, and geminiMode together", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        ["https://acme.example.com"],
+        "dataforseo",
+        "openai",
+        "domain",
+        "acme.example.com",
+        "anthropic",
+        "google",
+      ),
+    ).toEqual({
+      brandName: "Acme",
+      urls: ["https://acme.example.com"],
+      aiOverviewMode: "dataforseo",
+      chatgptMode: "openai",
+      commonCrawlMode: "domain",
+      commonCrawlDomain: "acme.example.com",
+      claudeMode: "anthropic",
+      geminiMode: "google",
+    });
   });
 });

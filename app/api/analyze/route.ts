@@ -7,6 +7,7 @@ import type {
   ChatGptProviderMode,
   ClaudeProviderMode,
   CommonCrawlProviderMode,
+  GeminiProviderMode,
 } from "../../lib/types";
 
 const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = [
@@ -19,6 +20,7 @@ const AI_OVERVIEW_MODES: readonly AiOverviewProviderMode[] = [
 const CHATGPT_MODES: readonly ChatGptProviderMode[] = ["off", "openai"];
 const COMMON_CRAWL_MODES: readonly CommonCrawlProviderMode[] = ["off", "domain"];
 const CLAUDE_MODES: readonly ClaudeProviderMode[] = ["off", "anthropic"];
+const GEMINI_MODES: readonly GeminiProviderMode[] = ["off", "google"];
 
 const SIMULATED_ANALYSIS_DELAY_MS = 900;
 
@@ -57,6 +59,7 @@ async function fetchFromPythonApi(
   commonCrawlMode?: CommonCrawlProviderMode,
   commonCrawlDomain?: string,
   claudeMode?: ClaudeProviderMode,
+  geminiMode?: GeminiProviderMode,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable" };
@@ -76,6 +79,7 @@ async function fetchFromPythonApi(
     commonCrawlMode?: CommonCrawlProviderMode;
     commonCrawlDomain?: string;
     claudeMode?: ClaudeProviderMode;
+    geminiMode?: GeminiProviderMode;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
@@ -104,6 +108,13 @@ async function fetchFromPythonApi(
   // skipped when aiOverviewMode is "mock" (see that module's
   // docstring). Next.js does not gate this itself.
   if (claudeMode) requestBody.claudeMode = claudeMode;
+  // Same passthrough pattern as claudeMode above, for the Gemini
+  // observation (see backend/services/gemini_provider.py). The Python
+  // API decides whether to actually honor it
+  // (ALLOW_GEMINI_MODE_OVERRIDE) — like claudeMode, it is NOT skipped
+  // when aiOverviewMode is "mock" (see that module's docstring).
+  // Next.js does not gate this itself.
+  if (geminiMode) requestBody.geminiMode = geminiMode;
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
@@ -229,6 +240,12 @@ export async function POST(request: Request) {
   const claudeMode = CLAUDE_MODES.includes(body?.claudeMode)
     ? (body.claudeMode as ClaudeProviderMode)
     : undefined;
+  // Same pattern as claudeMode above, for the Gemini observation (see
+  // backend/services/gemini_provider.py). An invalid value is dropped
+  // rather than rejected with 400.
+  const geminiMode = GEMINI_MODES.includes(body?.geminiMode)
+    ? (body.geminiMode as GeminiProviderMode)
+    : undefined;
 
   const outcome = await fetchFromPythonApi(
     trimmedBrandName,
@@ -239,6 +256,7 @@ export async function POST(request: Request) {
     commonCrawlMode,
     commonCrawlDomain,
     claudeMode,
+    geminiMode,
   );
 
   if (outcome.kind === "success") {

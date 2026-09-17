@@ -261,7 +261,18 @@ Supabase Authによるログイン、分析履歴の保存・閲覧、前回比�
 - **保存後は履歴詳細・レポートでも表示される**: 分析結果を保存すると、`/history/[id]`（履歴詳細）・`/history/[id]/report`（レポート）のいずれでも、保存時のClaude観測結果が同じ形式で再表示される。
 - **単発観測であることの注意**: Claude観測は、Claude APIに同じ観点で1回だけ質問した結果である。Claudeサービス全体の認識やAIの内部状態を保証するものではない（画面上にも同旨の説明文を表示済み）。
 - 上記はすべて本番環境（Vercel + Render）で実際に確認済み。詳細な確認結果は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10. Claude観測の本番検証結果」を参照。
-- **Geminiの同等機能はまだ用意していない**（selector未追加・本番未有効化）。
+- **Geminiの同等機能はコードとしては追加済みだが、本番環境ではまだ有効化していない**（下記15章参照）。
+
+## 15. Gemini観測モードの検証用selectorについて（2026-09-19追記）
+
+`feature/gemini-mode-selector`で、Gemini観測を検証用にON/OFFできるUI selectorを追加した。既存のClaude観測モードselector（13章）と全く同じ設計（`NEXT_PUBLIC_ENABLE_*_MODE_SELECTOR`フラグでの表示制御）。**今回はselectorのコード追加のみで、Gemini API keyの取得・本番環境変数の設定・本番有効化は行っていない（別タスク）。**
+
+- **表示条件**: `NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`の環境でのみ、分析フォームに「Gemini観測モード（検証用）」というoff/googleの選択UIが表示される。未設定/false（デフォルト）では表示されない。**本番環境ではまだこのフラグを設定していないため、通常の画面には表示されない。**
+- **選択肢**: 「off: 無効」/「google: Gemini API」。helper文言は「Gemini APIを使い、同じ観点で1回分の回答傾向を観測します。検証時のみONにしてください。」
+- 選択した値はリクエストボディの`geminiMode`に入るだけの表示制御フラグ——**実際にGemini APIへ接続されるかどうかは、Python API側の`ALLOW_GEMINI_MODE_OVERRIDE=true`・APIキー設定・リクエスト上限が別途揃っている場合のみ**（詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「11」・[backend/README.md](../backend/README.md)「Claude/Gemini相当モデルの1問観測」参照）。Claude観測のselectorと同様、AI Overview取得モードがmockの場合でもGemini観測はスキップされない。
+- Gemini API keyはまだ取得・設定されていないため、開発・検証環境で`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`にして「google: Gemini API」を選んでも、現時点では`Gemini 未取得`と表示される（想定どおりの安全な挙動）。
+- APIキーはRender backendの環境変数にのみ設定する設計であり、frontendのコード・画面・レスポンスのいずれにも実値は現れない。
+- 既存のClaude観測モードselector（13〜14章）・AI Overview/ChatGPT/Common Crawl selector・既存の分析・履歴・レポート表示への影響はない。
 
 ## 関連ドキュメント
 

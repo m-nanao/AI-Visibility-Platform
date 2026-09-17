@@ -6,6 +6,7 @@ import {
   isChatGptModeSelectorEnabled,
   isClaudeModeSelectorEnabled,
   isCommonCrawlModeSelectorEnabled,
+  isGeminiModeSelectorEnabled,
 } from "../lib/analysis-request";
 import { MAX_URLS, validateUrlsInput } from "../lib/url-validation";
 import type {
@@ -13,6 +14,7 @@ import type {
   ChatGptProviderMode,
   ClaudeProviderMode,
   CommonCrawlProviderMode,
+  GeminiProviderMode,
 } from "../lib/types";
 
 const AI_OVERVIEW_MODE_OPTIONS: { value: AiOverviewProviderMode; label: string }[] = [
@@ -38,6 +40,16 @@ const CLAUDE_MODE_OPTIONS: { value: ClaudeProviderMode; label: string }[] = [
 // verbatim requested copy (feature/claude-mode-selector).
 const CLAUDE_MODE_HELPER_TEXT =
   "Claude APIを使い、同じ観点で1回分の回答傾向を観測します。検証時のみONにしてください。";
+
+const GEMINI_MODE_OPTIONS: { value: GeminiProviderMode; label: string }[] = [
+  { value: "off", label: "off: 無効" },
+  { value: "google", label: "google: Gemini API" },
+];
+
+// Wording for the Gemini観測 selector — mirrors CLAUDE_MODE_HELPER_TEXT's
+// pattern exactly (feature/gemini-mode-selector).
+const GEMINI_MODE_HELPER_TEXT =
+  "Gemini APIを使い、同じ観点で1回分の回答傾向を観測します。検証時のみONにしてください。";
 
 // Wording for the Common Crawl補完 selector. The policy/tone behind
 // this wording (auxiliary data, never a guarantee of what any AI
@@ -83,6 +95,7 @@ export default function BrandInputForm({
     commonCrawlMode?: CommonCrawlProviderMode,
     commonCrawlDomain?: string,
     claudeMode?: ClaudeProviderMode,
+    geminiMode?: GeminiProviderMode,
   ) => void;
   isLoading: boolean;
   initialValue?: string;
@@ -95,10 +108,12 @@ export default function BrandInputForm({
   const [commonCrawlMode, setCommonCrawlMode] = useState<CommonCrawlProviderMode>("off");
   const [commonCrawlDomain, setCommonCrawlDomain] = useState("");
   const [claudeMode, setClaudeMode] = useState<ClaudeProviderMode>("off");
+  const [geminiMode, setGeminiMode] = useState<GeminiProviderMode>("off");
   const showAiOverviewModeSelector = isAiOverviewModeSelectorEnabled();
   const showChatGptModeSelector = isChatGptModeSelectorEnabled();
   const showCommonCrawlModeSelector = isCommonCrawlModeSelectorEnabled();
   const showClaudeModeSelector = isClaudeModeSelectorEnabled();
+  const showGeminiModeSelector = isGeminiModeSelectorEnabled();
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -116,8 +131,8 @@ export default function BrandInputForm({
     }
 
     setUrlErrors([]);
-    // aiOverviewMode/chatgptMode/commonCrawlMode/claudeMode are only
-    // ever passed when their respective dev/verification-only
+    // aiOverviewMode/chatgptMode/commonCrawlMode/claudeMode/geminiMode
+    // are only ever passed when their respective dev/verification-only
     // selectors are actually shown — otherwise this behaves exactly as
     // before (undefined), so a normal submission's request body is
     // unaffected by any selector's existence. commonCrawlDomain is
@@ -135,6 +150,7 @@ export default function BrandInputForm({
         ? commonCrawlDomain.trim()
         : undefined,
       showClaudeModeSelector ? claudeMode : undefined,
+      showGeminiModeSelector ? geminiMode : undefined,
     );
   };
 
@@ -318,6 +334,46 @@ export default function BrandInputForm({
           </select>
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             {CLAUDE_MODE_HELPER_TEXT}
+          </p>
+        </div>
+      )}
+
+      {/* Dev/verification-only — see app/lib/analysis-request.ts's
+          isGeminiModeSelectorEnabled(). Selecting "google" here only
+          sends geminiMode in the request body; whether the Python API
+          actually calls Gemini still depends entirely on server-side
+          gates (ALLOW_GEMINI_MODE_OVERRIDE, an API key, the request
+          limit) that this UI cannot change. Like the Claude selector
+          above (and unlike ChatGPT), this is NOT a no-op when the AI
+          Overview section is "mock" — see
+          backend/services/gemini_provider.py's module docstring for
+          why (no colliding mock "Gemini" card exists). */}
+      {showGeminiModeSelector && (
+        <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+          <label
+            htmlFor="geminiMode"
+            className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            Gemini観測モード（検証用）
+          </label>
+          <select
+            id="geminiMode"
+            name="geminiMode"
+            disabled={isLoading}
+            value={geminiMode}
+            onChange={(event) =>
+              setGeminiMode(event.target.value as GeminiProviderMode)
+            }
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 sm:w-auto"
+          >
+            {GEMINI_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+            {GEMINI_MODE_HELPER_TEXT}
           </p>
         </div>
       )}
