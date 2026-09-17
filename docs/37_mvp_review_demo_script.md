@@ -109,6 +109,7 @@ Common Crawl補完: 公式ドメインから補完
 - 上部に「分析履歴一覧 > 履歴詳細 > レポート」のパンくずを表示する（`feature/app-navigation-header`）。共通ヘッダー・パンくずとも印刷時（PDF保存/印刷）には表示されない。
 - 依頼者への共有・印刷を想定した1ページレイアウト。
 - PDF保存/印刷ボタンあり——ただし正式なPDF自動生成機能ではなく、ブラウザの印刷機能（`window.print()`）によるものである（[26_report_output_design.md](./26_report_output_design.md)参照）。
+- **「AI回答側の観測」セクションには、分析結果画面・履歴詳細画面と同じAI Overview / ChatGPT / Claude / Gemini各観測の注記（単発観測であること、各サービス全体の認識を保証しないこと）と、Gemini観測が途中終了した場合の注意文が表示される**（`chore/mvp-review-copy-final-check`、2026-09-18。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「15」参照。依頼者に共有される可能性が高いレポート画面でも同じ注意事項が伝わるようにした）。
 
 ## 6. MVP範囲と未対応範囲
 

@@ -36,10 +36,12 @@ export const WEB_ENVIRONMENT_GUIDE: AnalysisGuideSection = {
 
 export const AI_OBSERVATION_GUIDE: AnalysisGuideSection = {
   label: "結果側: AI観測",
-  text: "AI OverviewやChatGPT相当モデルで、ブランドがどのように回答されるかを確認します。",
+  text: "AI Overview / ChatGPT / Claude / Gemini相当モデルで、ブランドがどのように扱われる傾向があるかを、単発の観測結果として確認します。",
   items: [
     "Google AI Overview / AI Mode上の回答・参照状況",
     "ChatGPT相当モデルでの回答傾向",
+    "Claude相当モデルでの回答傾向",
+    "Gemini相当モデルでの回答傾向",
   ],
 };
 

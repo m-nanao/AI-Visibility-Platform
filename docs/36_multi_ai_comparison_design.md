@@ -159,6 +159,25 @@
 - モバイル幅を含め表示崩れがないこと、既存の分析・履歴詳細・レポート表示が壊れていないことを確認。
 - 認証ロジック・Supabase Auth・`STAGING_ACCESS_CODE`/`HISTORY_READ_TOKEN`gateへの影響はなし（表示のみの変更のため）。
 
+## 15. MVPレビュー前の表示文言最終確認（2026-09-18、`chore/mvp-review-copy-final-check`）
+
+MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状態を断定的に述べていないか、Common Crawl / AI Overview / ChatGPT / Claude / Gemini の違いが伝わるか、mock/off/unavailable/truncatedの意味が誤解されないかを確認した。**コード変更は表示文言・説明文のみで、backend・API・DB schema・migration・Supabase/Render/Vercel設定・provider実装・認証ロジックはいずれも変更していない。**
+
+確認の結果、以下は既に非断定的な文言になっており変更不要と判断した。
+
+- `app/lib/meta-label.ts`の`AI_OVERVIEW_EXPLANATION_TEXT`/`CHATGPT_PLATFORM_NOTE`/`CLAUDE_PLATFORM_NOTE`/`GEMINI_PLATFORM_NOTE`/`AI_OBSERVATION_COMMON_EXPLANATION_TEXT`/`OBSERVATION_OFF_NOTE`/`OBSERVATION_MOCK_NOTE`/`OBSERVATION_UNAVAILABLE_NOTE`/`GEMINI_TRUNCATION_NOTE`（いずれも「保証するものではありません」「AIに存在しないという意味ではなく」等、既に非断定的）。
+- `app/components/BrandInputForm.tsx`のCommon Crawl/Claude/Gemini selectorの説明文（いずれも「検証時のみONにしてください」等、既に承認済み方針どおり）。
+- `app/components/sections/CooccurrenceRankingSection.tsx`のCommon Crawl表示（既に`COMMON_CRAWL_EXPLANATION_TEXT`で「AIの学習内容そのものを保証するものではありません」と明記済み）。
+
+一方、以下は断定的・不正確な表現が残っていたため修正した（表示文言のみ、ロジック変更なし）。
+
+- **`app/page.tsx`の分析画面トップの説明文**: 「ブランドがAIサービス上でどのように認知されているかを分析します」→「Web上の情報環境をもとに、ブランドがAI上でどのように扱われやすいかを推定します」（「分析します」という断定を避け、[16_requester_overview.md](./16_requester_overview.md)・[01_requirements.md](./01_requirements.md)の「推定」という既存の位置づけに合わせた）。
+- **`app/components/sections/BrandSummarySection.tsx`のCard description**: 「「{ブランド名}」のAIプラットフォーム上での認知状況」→「「{ブランド名}」のWeb上の情報環境から見た概況（AIの内部認識を断定するものではありません）」（`backend/services/brand_summary.py`のdocstringが明記するとおり、`visibilityScore`はAI/LLM呼び出しを一切行わない粗い推定値であり、`topPlatforms`もAIプラットフォームではなくDocument取得元を示すため、旧文言は実装内容と不整合だった）。
+- **`app/components/sections/ImprovementSuggestionsSection.tsx`のCard description**: 「AI上での認知度向上に向けた施策案」→「Web上の情報発信を改善するための施策案（候補）」（「改善すればAIに拾われる」に類する断定を避け、`IMPROVEMENT_HINT_GUIDE`の文言と揃えた）。
+- **`app/lib/analysis-explanation.ts`の`AI_OBSERVATION_GUIDE`**: Claude/Gemini観測が本番検証済みになった後もChatGPT/AI Overviewのみの説明のまま更新されていなかったため、Claude/Gemini相当モデルを項目に追加し、本文も「どのように回答されるかを確認します」→「どのように扱われる傾向があるかを、単発の観測結果として確認します」へ調整した。
+- **`app/history/[id]/report/page.tsx`のレポート画面「4. AI回答側の観測」セクション**: それまでAI Overview/ChatGPTの注記のみで、Claude/Gemini観測の注記（`CLAUDE_PLATFORM_NOTE`/`GEMINI_PLATFORM_NOTE`）・単発観測である旨の共通注記（`AI_OBSERVATION_COMMON_EXPLANATION_TEXT`）・Gemini途中終了時の注意文（`isTruncated`/`note`、分析結果画面・履歴詳細画面と同じ`getAiOverviewItemDetailDisplay()`のtruncationWarning）が表示されていなかった。依頼者に共有される可能性が高いレポート画面でも分析結果画面・履歴詳細画面と同じ注意事項が伝わるよう追加した。
+- **`app/lib/analysis-history.ts`の`REPORT_AI_OVERVIEW_EMPTY_MESSAGE`**: 「AI Overview / ChatGPT観測データはありません。」→「AI Overview / ChatGPT / Claude / Gemini観測データはありません。」（Claude/Gemini観測が追加された後も更新されていなかった）。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）

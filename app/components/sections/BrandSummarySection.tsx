@@ -11,7 +11,7 @@ export default function BrandSummarySection({
   return (
     <Card
       title="1. ブランド認知サマリー"
-      description={`「${summary.brandName}」のAIプラットフォーム上での認知状況`}
+      description={`「${summary.brandName}」のWeb上の情報環境から見た概況（AIの内部認識を断定するものではありません）`}
     >
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <div>

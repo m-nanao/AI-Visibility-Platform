@@ -97,7 +97,7 @@ export default function Home() {
       <div className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto max-w-5xl px-6 py-4">
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            ブランドがAIサービス上でどのように認知されているかを分析します
+            Web上の情報環境をもとに、ブランドがAI上でどのように扱われやすいかを推定します
           </p>
           <p className="mt-2 inline-block rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
             {STAGING_BANNER_TEXT}
