@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useParams } from "next/navigation";
+import AppHeader from "../../../components/AppHeader";
+import Breadcrumb from "../../../components/Breadcrumb";
 import ReportPrintButton from "../../../components/ReportPrintButton";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
 import {
@@ -19,7 +20,6 @@ import {
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
   HISTORY_LOADING_TEXT,
   REPORT_AI_OVERVIEW_EMPTY_MESSAGE,
-  REPORT_BACK_TO_DETAIL_LINK_TEXT,
   REPORT_NOTES,
   REPORT_PAGE_TITLE,
   REPORT_SECTION_TITLES,
@@ -106,14 +106,16 @@ export default function HistoryReportPage() {
 
   return (
     <div className="min-h-full flex-1 bg-white dark:bg-zinc-950 print:bg-white">
+      <AppHeader />
       <header className="border-b border-zinc-200 bg-white px-6 py-4 print:hidden dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto flex max-w-3xl items-center justify-between">
-          <Link
-            href={id ? `/history/${encodeURIComponent(id)}` : "/history"}
-            className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
-          >
-            ← {REPORT_BACK_TO_DETAIL_LINK_TEXT}
-          </Link>
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-2">
+          <Breadcrumb
+            items={[
+              { label: "分析履歴一覧", href: "/history" },
+              { label: "履歴詳細", href: id ? `/history/${encodeURIComponent(id)}` : "/history" },
+              { label: "レポート" },
+            ]}
+          />
           {view.kind === "success" && <ReportPrintButton />}
         </div>
       </header>

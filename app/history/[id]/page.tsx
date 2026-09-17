@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import AnalysisDashboard from "../../components/AnalysisDashboard";
+import AppHeader from "../../components/AppHeader";
+import Breadcrumb from "../../components/Breadcrumb";
 import { REPORT_LINK_BUTTON_CLASSNAME } from "../../lib/link-button-styles";
 import {
   HISTORY_COMPARISON_COOCCURRENCE_CHANGED_LABEL,
@@ -14,7 +16,6 @@ import {
   HISTORY_COMPARISON_INTRO_TEXT,
   HISTORY_COMPARISON_SECTION_TITLE,
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
-  HISTORY_DETAIL_BACK_LINK_TEXT,
   HISTORY_DETAIL_PAGE_TITLE,
   HISTORY_LOADING_TEXT,
   REPORT_LINK_TEXT,
@@ -97,19 +98,17 @@ export default function HistoryDetailPage() {
 
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
-      <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <AppHeader />
+      <div className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto max-w-5xl px-6 py-4">
-          <Link
-            href="/history"
-            className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
-          >
-            ← {HISTORY_DETAIL_BACK_LINK_TEXT}
-          </Link>
+          <Breadcrumb
+            items={[{ label: "分析履歴一覧", href: "/history" }, { label: "履歴詳細" }]}
+          />
           <h1 className="mt-2 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
             {HISTORY_DETAIL_PAGE_TITLE}
           </h1>
         </div>
-      </header>
+      </div>
 
       <main className="mx-auto max-w-5xl px-6 py-8">
         {view.kind === "loading" && (
