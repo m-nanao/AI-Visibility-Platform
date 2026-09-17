@@ -93,6 +93,22 @@
 - API keyは一貫してbackend環境変数（Render）のみに置かれ、frontendのコード・レスポンス・request bodyのいずれにも実値は含まれない（`claudeMode`は`"off"`/`"anthropic"`という設定名のみで、キー自体を運ばない）。
 - 本番Vercel環境変数（`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`含む）は今回設定していない——コード側の対応のみ。
 
+## 10. Claude観測の本番検証結果（2026-09-17、`docs/record-claude-observation-production-verification`）
+
+上記「9」で追加したClaude selectorに対し、Render backend・Vercel frontendの本番環境変数が別途設定され、実際の本番環境で一連の動作確認が行われた。**このセクションはdocsの記録のみで、コード変更・環境変数の追加設定は伴わない。**
+
+- **Render backend側の本番設定**: `CLAUDE_PROVIDER_MODE=off`（通常時のデフォルト、常時offのまま）・`ALLOW_CLAUDE_MODE_OVERRIDE=true`（検証時のみリクエスト単位の上書きを許可）・`CLAUDE_API_KEY`設定済み（実値はdocsに記載しない）・`CLAUDE_MODEL=claude-sonnet-4-5`・`CLAUDE_MAX_OUTPUT_TOKENS=700`・`CLAUDE_REQUEST_LIMIT_PER_ANALYZE=1`。`CLAUDE_PROVIDER_MODE=off`と`ALLOW_CLAUDE_MODE_OVERRIDE=true`の組み合わせにより、**通常の分析リクエスト（claudeModeを指定しない）では引き続きoffのまま**で、検証用selectorから明示的に`claudeMode=anthropic`を送った場合のみClaude観測が実行される。
+- **Vercel frontend側の本番設定**: `NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`。**Claude API keyはRender backendの環境変数にのみ存在し、Vercel側には一切設定されていない**（frontendはclaudeModeという設定名のみをやり取りし、キー自体を扱わない設計——「9」参照）。
+- **本番画面での確認結果**:
+  - 分析入力画面に「Claude観測モード（検証用）」selectorが表示され、初期値が「off: 無効」になっていることを確認。
+  - Gemini用の同等selectorは表示されないことを確認（Geminiのselectorは未実装のまま——下記参照）。
+  - 「anthropic: Claude API」を選択して分析を実行できることを確認。
+  - 分析結果画面の「4. AI Overview比較」に、既存のChatGPT/AI Overview/Common Crawl表示を壊すことなくClaude観測カードが追加表示されることを確認。
+  - 分析結果を保存した履歴の詳細画面（`/history/[id]`）でも、保存済みのClaude観測が同じ形式で再表示されることを確認。
+  - レポート画面（`/history/[id]/report`）でもClaude観測を含めて表示崩れがないことを確認。
+- **Geminiの状態**: providerの実装基盤（`services/gemini_provider.py`等）は存在するが、frontend selectorの追加・本番環境変数の設定・本番有効化はいずれも今回も行っていない（引き続き「9」時点と同じ、未実装/未有効化のまま）。
+- **完全性の限界**: この確認は目視によるスモークテストであり、Claudeの応答内容そのものの品質評価・複数ブランドでの再現性確認・エラー系（APIキー失効・レート制限等）の本番確認は含まれない。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）
