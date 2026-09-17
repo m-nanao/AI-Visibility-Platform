@@ -13,6 +13,7 @@ import type {
   ChatGptProviderMode,
   ClaudeProviderMode,
   CommonCrawlProviderMode,
+  GeminiProviderMode,
 } from "./lib/types";
 
 type Status = "idle" | "loading" | "done" | "error";
@@ -34,6 +35,7 @@ export default function Home() {
     commonCrawlMode?: CommonCrawlProviderMode,
     commonCrawlDomain?: string,
     claudeMode?: ClaudeProviderMode,
+    geminiMode?: GeminiProviderMode,
   ) => {
     setStatus("loading");
     setError(null);
@@ -43,10 +45,11 @@ export default function Home() {
       // API fall back to its own default (development sample
       // documents), and keeps `urls: []` reserved as an explicit
       // "reject this request" signal on the API side. aiOverviewMode/
-      // chatgptMode/commonCrawlMode/commonCrawlDomain/claudeMode are
-      // only present when BrandInputForm's dev/verification-only mode
-      // selectors are shown (see app/lib/analysis-request.ts) —
-      // otherwise they're undefined and omitted here too, same as before.
+      // chatgptMode/commonCrawlMode/commonCrawlDomain/claudeMode/
+      // geminiMode are only present when BrandInputForm's
+      // dev/verification-only mode selectors are shown (see
+      // app/lib/analysis-request.ts) — otherwise they're undefined and
+      // omitted here too, same as before.
       const requestBody = buildAnalyzeRequestBody(
         brandName,
         urls,
@@ -55,6 +58,7 @@ export default function Home() {
         commonCrawlMode,
         commonCrawlDomain,
         claudeMode,
+        geminiMode,
       );
 
       const response = await fetch("/api/analyze", {

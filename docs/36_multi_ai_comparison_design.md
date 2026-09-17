@@ -109,6 +109,16 @@
 - **Geminiの状態**: providerの実装基盤（`services/gemini_provider.py`等）は存在するが、frontend selectorの追加・本番環境変数の設定・本番有効化はいずれも今回も行っていない（引き続き「9」時点と同じ、未実装/未有効化のまま）。
 - **完全性の限界**: この確認は目視によるスモークテストであり、Claudeの応答内容そのものの品質評価・複数ブランドでの再現性確認・エラー系（APIキー失効・レート制限等）の本番確認は含まれない。
 
+## 11. Gemini観測用frontend selectorの追加（2026-09-19、`feature/gemini-mode-selector`）
+
+上記「9」「10」で追加・本番検証したClaude selectorと対になる、Gemini観測の検証用selectorを追加した。**今回はselectorの追加のみで、Gemini API keyの取得・設定、本番環境変数の設定・本番有効化はいずれも別タスク（対象外）。**
+
+- 新規`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR`（デフォルトoff/未設定）を追加し、`true`の場合のみ分析フォームに「Gemini観測モード（検証用）」というoff/googleの選択UIが表示されるようにした（`app/components/BrandInputForm.tsx`）。既存のClaude selector（「9」参照）と全く同じ「表示フラグ→UI表示→request bodyへgeminiModeを含める」の3段構成を踏襲している。選択肢のvalueは既存の`GeminiProviderMode`型（`backend/models.py`・`app/lib/types.ts`のGeminiProviderMode）にあわせて`"off"`/`"google"`とした——タスク依頼文中の候補名（`gemini`/`google`/`google_genai`）のうち、実際にbackendが受け付ける値をそのまま使っている。
+- `app/lib/analysis-request.ts`に`isGeminiModeSelectorEnabled()`・`buildAnalyzeRequestBody()`への`geminiMode`引数を追加（Claude観測の`isClaudeModeSelectorEnabled()`/`claudeMode`と全く同じ設計）。`app/page.tsx`・`app/api/analyze/route.ts`（Next.js側の値検証・Python APIへのforward）もあわせて更新——Claude selectorのときと同様、これらはselectorをrequest bodyまで実際に届けるために不可欠な配線であり、既存のChatGPT/Claude/Common Crawl selectorも同じ3ファイルを経由している。
+- Claude selector・その他既存selector（AI Overview/ChatGPT/Common Crawl）のコード・挙動はいずれも変更していない——独立した並列の追加であることをテストで確認済み。
+- API keyは一貫してbackend環境変数（Render）のみに置かれる設計であり、frontendのコード・レスポンス・request bodyのいずれにも実値は含まれない（`geminiMode`は`"off"`/`"google"`という設定名のみで、キー自体を運ばない）。Gemini API keyはまだRender backendにも設定されていない（別タスク）ため、現時点で`geminiMode=google`を選んでも`unavailable`になる。
+- 本番Vercel環境変数（`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR`含む）は今回設定していない——コード側の対応のみ。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）

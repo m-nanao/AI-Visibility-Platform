@@ -537,6 +537,101 @@ describe("POST /api/analyze", () => {
     expect(forwardedBody.claudeMode).toBeUndefined();
   });
 
+  it("forwards a valid geminiMode to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", geminiMode: "google" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.geminiMode).toBe("google");
+  });
+
+  it("forwards an explicit off geminiMode to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", geminiMode: "off" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.geminiMode).toBe("off");
+  });
+
+  it("drops an invalid geminiMode instead of forwarding it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", geminiMode: "gemini" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.geminiMode).toBeUndefined();
+  });
+
+  it("omits geminiMode from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.geminiMode).toBeUndefined();
+  });
+
+  it("never forwards a geminiMode field that looks like an API key", async () => {
+    // Defense-in-depth: even if a caller tried to smuggle a secret
+    // through this field, GEMINI_MODES.includes() only accepts the
+    // literal "off"/"google" strings, so anything else (including an
+    // attempted API key value) is dropped rather than forwarded.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", geminiMode: "AIzaSyNotARealKey1234567890" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.geminiMode).toBeUndefined();
+  });
+
+  it("forwards claudeMode and geminiMode together without interfering with each other", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = buildDummyAnalysis("OpenAI");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", claudeMode: "anthropic", geminiMode: "google" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const forwardedBody = JSON.parse(requestInit.body as string);
+    expect(forwardedBody.claudeMode).toBe("anthropic");
+    expect(forwardedBody.geminiMode).toBe("google");
+  });
+
   it("forwards a valid commonCrawlMode and commonCrawlDomain to the Python API when provided", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     const pythonResult = buildDummyAnalysis("Cybozu");
@@ -881,6 +976,71 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.claudeProvider).toBeUndefined();
+  });
+
+  it("passes through meta.geminiProvider and an extra Gemini card from the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Google AI Mode (DataForSEO Sandbox)", mentioned: true, rank: 1, summary: "OpenAI is..." },
+        { platform: "Gemini (Google API)", mentioned: true, rank: null, summary: "OpenAI is a well-known AI lab." },
+      ],
+      meta: pythonMetaOverride({
+        sections: { aiOverviewComparison: "real" },
+        aiOverviewProvider: {
+          mode: "dataforseo",
+          status: "real",
+          reason: "DataForSEO Sandbox AI Mode request succeeded.",
+          environment: "sandbox",
+        },
+        geminiProvider: {
+          mode: "google",
+          status: "real",
+          reason: "Gemini Google API request succeeded.",
+          environment: "api",
+        },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", aiOverviewMode: "dataforseo", geminiMode: "google" }),
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.geminiProvider).toEqual({
+      mode: "google",
+      status: "real",
+      reason: "Gemini Google API request succeeded.",
+      environment: "api",
+    });
+    const platforms = data.aiOverviewComparison.map((item: { platform: string }) => item.platform);
+    expect(platforms).toContain("Gemini (Google API)");
+
+    // API key must never appear in the response body forwarded to the browser.
+    const body = JSON.stringify(data);
+    expect(body).not.toMatch(/AIzaSy/);
+  });
+
+  it("accepts a response without meta.geminiProvider (existing/older backend shape)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      meta: pythonMetaOverride({}),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.meta.geminiProvider).toBeUndefined();
   });
 
   it("passes through aiOverviewComparison's fullSummary/references/ownDomainReferenced from the Python API", async () => {
