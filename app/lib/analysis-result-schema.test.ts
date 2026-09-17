@@ -352,4 +352,105 @@ describe("parseAnalysisResult", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- Gemini truncation-detection fields (finishReason/isTruncated/note) ---
+
+  it("accepts aiOverviewComparison items with finishReason/isTruncated/note (Gemini truncation)", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API)",
+          mentioned: true,
+          rank: null,
+          summary: "OpenAI is a well-known...",
+          finishReason: "MAX_TOKENS",
+          isTruncated: true,
+          note: "Gemini APIの出力が途中で終了した可能性があります。",
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0];
+      expect(item.finishReason).toBe("MAX_TOKENS");
+      expect(item.isTruncated).toBe(true);
+      expect(item.note).toBe("Gemini APIの出力が途中で終了した可能性があります。");
+    }
+  });
+
+  it("accepts aiOverviewComparison items that omit finishReason/isTruncated/note (old saved history)", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Gemini (Google API)", mentioned: true, rank: null, summary: "OpenAI is..." },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0];
+      expect(item.finishReason).toBeUndefined();
+      expect(item.isTruncated).toBeUndefined();
+      expect(item.note).toBeUndefined();
+    }
+  });
+
+  it("accepts aiOverviewComparison items with finishReason/isTruncated/note: null the same way as other optional fields", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API)",
+          mentioned: true,
+          rank: null,
+          summary: "OpenAI is...",
+          finishReason: null,
+          isTruncated: null,
+          note: null,
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0];
+      expect(item.finishReason).toBeUndefined();
+      expect(item.isTruncated).toBeUndefined();
+      expect(item.note).toBeUndefined();
+    }
+  });
+
+  it("accepts isTruncated: false with no note (a normal, non-truncated Gemini success)", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API)",
+          mentioned: true,
+          rank: null,
+          summary: "OpenAI is...",
+          finishReason: "STOP",
+          isTruncated: false,
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0];
+      expect(item.finishReason).toBe("STOP");
+      expect(item.isTruncated).toBe(false);
+      expect(item.note).toBeUndefined();
+    }
+  });
 });

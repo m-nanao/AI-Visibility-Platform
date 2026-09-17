@@ -194,6 +194,12 @@ const aiOverviewComparisonItemSchema = z.object({
   references: optionalFromPython(z.array(aiOverviewReferenceSchema)),
   referenceSummary: optionalFromPython(aiOverviewReferenceSummarySchema),
   ownDomainReferenced: optionalFromPython(z.boolean()),
+  // Gemini-only truncation-detection fields (see
+  // backend/services/gemini_client.py) — optional so old saved
+  // history and every non-Gemini item still parse unchanged.
+  finishReason: optionalFromPython(z.string()),
+  isTruncated: optionalFromPython(z.boolean()),
+  note: optionalFromPython(z.string()),
 });
 
 const improvementSuggestionSchema = z.object({

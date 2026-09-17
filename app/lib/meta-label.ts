@@ -703,6 +703,13 @@ export interface AiOverviewItemDetailDisplay {
   // an OpenAI API observation, so adding this note there would overstate
   // what it actually is.
   platformNote?: string;
+  // Present only when item.isTruncated is true (Gemini-only signal, see
+  // backend/services/gemini_client.py's _is_likely_truncated()) — a
+  // heuristic-only warning that this one observation attempt's text may
+  // have been cut off mid-way. Never means the AI "has no information"
+  // about the brand. Undefined for every non-truncated item, including
+  // old saved history that predates isTruncated/note.
+  truncationWarning?: string;
 }
 
 // Must match backend/services/chatgpt_provider.py's
@@ -722,6 +729,14 @@ export const CLAUDE_PLATFORM_NOTE =
 // Must match backend/services/gemini_provider.py's GEMINI_PLATFORM_LABEL
 // exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above.
 const GEMINI_GOOGLE_PLATFORM_LABEL = "Gemini (Google API)";
+// Matches backend/services/gemini_client.py's TRUNCATION_NOTE exactly —
+// used as a fallback if a future/older backend ever sends
+// isTruncated=true without a note (defensive only; the backend always
+// sets both together today).
+export const GEMINI_TRUNCATION_NOTE =
+  "Gemini APIの出力が途中で終了した可能性があります。" +
+  "必要に応じて再実行するか、出力上限を増やして検証してください。";
+
 export const GEMINI_PLATFORM_NOTE =
   "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。";
 
@@ -938,6 +953,10 @@ export function getAiOverviewItemDetailDisplay(
           ? GEMINI_PLATFORM_NOTE
           : undefined;
 
+  const truncationWarning = item.isTruncated
+    ? item.note ?? GEMINI_TRUNCATION_NOTE
+    : undefined;
+
   return {
     hasContinuation,
     continuationText,
@@ -946,5 +965,6 @@ export function getAiOverviewItemDetailDisplay(
     referenceSummary,
     ownDomainStatus,
     platformNote,
+    truncationWarning,
   };
 }

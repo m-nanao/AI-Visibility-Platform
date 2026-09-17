@@ -1,14 +1,29 @@
 import httpx
 
 from services import gemini_client
-from services.gemini_client import GENERATE_CONTENT_URL_TEMPLATE, fetch_gemini_observation
+from services.gemini_client import (
+    GENERATE_CONTENT_URL_TEMPLATE,
+    TRUNCATION_NOTE,
+    fetch_gemini_observation,
+)
 from services.gemini_settings import GeminiCredentials
 
 _CREDENTIALS = GeminiCredentials(api_key="gm-super-secret-key")
 
+# Long enough to clear _SHORT_TEXT_TRUNCATION_THRESHOLD_CHARS and to end
+# on a normal sentence (no unbalanced markdown) — the "definitely not
+# truncated" fixture text for tests that care about is_truncated/note.
+_NORMAL_LENGTH_TEXT = (
+    "Acmeは、業務効率化ツールとして広く知られています。"
+    "主に中小企業のバックオフィス業務を支援する用途で言及されることが多いです。"
+)
 
-def _candidate_response(text: str) -> dict:
-    return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+def _candidate_response(text: str, finish_reason: str | None = None) -> dict:
+    candidate: dict = {"content": {"parts": [{"text": text}]}}
+    if finish_reason is not None:
+        candidate["finishReason"] = finish_reason
+    return {"candidates": [candidate]}
 
 
 def test_fetch_posts_to_the_generate_content_url_for_the_given_model(monkeypatch):
@@ -250,3 +265,194 @@ def test_fetch_truncates_summary_to_a_short_excerpt(monkeypatch):
     assert result.success is True
     assert len(result.summary) <= 201
     assert len(result.summary) < len(result.full_summary)
+
+
+# --- finishReason / truncation detection ------------------------------------
+
+
+def test_fetch_extracts_finish_reason_stop_on_success(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json=_candidate_response(_NORMAL_LENGTH_TEXT, finish_reason="STOP"),
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is True
+    assert result.finish_reason == "STOP"
+
+
+def test_fetch_does_not_flag_truncated_on_normal_stop_response(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json=_candidate_response(_NORMAL_LENGTH_TEXT, finish_reason="STOP"),
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.is_truncated is False
+    assert result.note is None
+
+
+def test_fetch_flags_truncated_when_finish_reason_is_max_tokens(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json=_candidate_response(_NORMAL_LENGTH_TEXT, finish_reason="MAX_TOKENS"),
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is True
+    assert result.finish_reason == "MAX_TOKENS"
+    assert result.is_truncated is True
+    assert result.note == TRUNCATION_NOTE
+
+
+def test_fetch_flags_truncated_on_unbalanced_markdown_even_with_stop(monkeypatch):
+    # Reproduces the exact production report: a response that reports
+    # finishReason="STOP" (or omits it) but whose text visibly cuts off
+    # mid-bold-span, e.g. "...と考えられます。 - **".
+    cut_off_text = (
+        "サイボウズは、Web検索ユーザーが比較検討する場面で、主に以下のように説明されると考えられます。 - **"
+    )
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json=_candidate_response(cut_off_text, finish_reason="STOP"),
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is True
+    assert result.is_truncated is True
+    assert result.note == TRUNCATION_NOTE
+
+
+def test_fetch_flags_truncated_on_implausibly_short_text(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json=_candidate_response("短い", finish_reason="STOP"),
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is True
+    assert result.is_truncated is True
+    assert result.note == TRUNCATION_NOTE
+
+
+def test_fetch_truncation_note_never_claims_gemini_has_no_information():
+    # Copy requirement (feature/fix task): a truncated observation must
+    # never be worded as "Gemini has no information about the brand" or
+    # "the AI's internal state is cut off" — only as this one attempt's
+    # output possibly being incomplete.
+    assert "情報がない" not in TRUNCATION_NOTE
+    assert "内部" not in TRUNCATION_NOTE
+
+
+def test_fetch_connects_all_text_parts_across_multiple_parts(monkeypatch):
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "Acme is a well-known tool for teams."},
+                        {"text": "It is often compared with similar SaaS products."},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is True
+    assert "Acme is a well-known tool for teams." in result.full_summary
+    assert "It is often compared with similar SaaS products." in result.full_summary
+
+
+def test_fetch_skips_non_text_parts_without_dropping_text_parts(monkeypatch):
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "not_text", "args": {}}},
+                        {"text": _NORMAL_LENGTH_TEXT},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is True
+    assert _NORMAL_LENGTH_TEXT in result.full_summary
+
+
+def test_fetch_finish_reason_is_included_in_reason_when_safety_blocks_text(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"candidates": [{"finishReason": "SAFETY"}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert result.success is False
+    assert result.finish_reason == "SAFETY"
+    assert "SAFETY" in result.reason
+    assert result.is_truncated is False
+    assert result.note is None
+
+
+def test_api_key_never_appears_in_reason_or_note_on_truncated_response(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json=_candidate_response(_NORMAL_LENGTH_TEXT, finish_reason="MAX_TOKENS"),
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    result = fetch_gemini_observation(_CREDENTIALS, "Acme", model="gemini-2.5-flash", max_output_tokens=700)
+
+    assert "gm-super-secret-key" not in result.reason
+    assert "gm-super-secret-key" not in (result.note or "")

@@ -160,5 +160,12 @@ def build_gemini_observation(
         references=None,
         referenceSummary=None,
         ownDomainReferenced=None,
+        # See services/gemini_client.py's truncation-detection module
+        # docstring — a heuristic-only signal, never treated as a
+        # failure: status stays "real" either way, only this card's
+        # note changes.
+        finishReason=result.finish_reason,
+        isTruncated=result.is_truncated,
+        note=result.note,
     )
     return item, "real", result.reason, "api"

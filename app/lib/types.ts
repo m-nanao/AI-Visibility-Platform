@@ -370,6 +370,26 @@ export interface AIOverviewComparisonItem {
   // match, not a content check). Undefined when it can't be determined
   // (e.g. the request had no `urls`).
   ownDomainReferenced?: boolean;
+  // The following three are optional and only ever populated by the
+  // Gemini observation provider (see backend/services/gemini_client.py)
+  // — every other provider (mock, DataForSEO, ChatGPT, Claude) leaves
+  // them undefined, so existing clients/old saved history that don't
+  // know about these fields keep working unchanged.
+  //
+  // finishReason: Gemini's own candidates[0].finishReason value
+  // verbatim (e.g. "STOP", "MAX_TOKENS", "SAFETY", "RECITATION",
+  // "OTHER"). Undefined when Gemini didn't include one, or for every
+  // non-Gemini item.
+  finishReason?: string;
+  // isTruncated: a heuristic-only signal (never a hard error) that this
+  // answer may have been cut off mid-way — see
+  // backend/services/gemini_client.py's _is_likely_truncated(). True
+  // doesn't mean "Gemini has no information about this brand"; it means
+  // this one observation attempt's output may be incomplete.
+  isTruncated?: boolean;
+  // note: a short, safe-to-display explanation shown alongside the card
+  // when isTruncated is true. Undefined when there's nothing to add.
+  note?: string;
 }
 
 export interface ImprovementSuggestion {
