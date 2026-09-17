@@ -265,7 +265,7 @@ Supabase Authによるログイン、分析履歴の保存・閲覧、前回比�
 
 ## 15. Gemini観測モードの検証用selectorについて（2026-09-19追記）
 
-`feature/gemini-mode-selector`で、Gemini観測を検証用にON/OFFできるUI selectorを追加した。既存のClaude観測モードselector（13章）と全く同じ設計（`NEXT_PUBLIC_ENABLE_*_MODE_SELECTOR`フラグでの表示制御）。**この時点ではselectorのコード追加のみで、Gemini API keyの取得・本番環境変数の設定・本番有効化は別タスクだった**（その後、下記16章の時点までにRender backend・Vercel frontend双方に本番設定済み）。
+`feature/gemini-mode-selector`で、Gemini観測を検証用にON/OFFできるUI selectorを追加した。既存のClaude観測モードselector（13章）と全く同じ設計（`NEXT_PUBLIC_ENABLE_*_MODE_SELECTOR`フラグでの表示制御）。**この時点ではselectorのコード追加のみで、Gemini API keyの取得・本番環境変数の設定・本番有効化は別タスクだった**（その後、Render backend・Vercel frontend双方に本番設定され、2026-09-19に本番検証済み——18章参照）。
 
 - **表示条件**: `NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`の環境でのみ、分析フォームに「Gemini観測モード（検証用）」というoff/googleの選択UIが表示される。未設定/false（デフォルト）では表示されない。
 - **選択肢**: 「off: 無効」/「google: Gemini API」。helper文言は「Gemini APIを使い、同じ観点で1回分の回答傾向を観測します。検証時のみONにしてください。」
@@ -279,7 +279,7 @@ Gemini観測は、出力上限（`GEMINI_MAX_OUTPUT_TOKENS`、デフォルト700
 
 - **見分け方**: 本文の末尾が「- **」のように不完全なMarkdownで切れている場合や、観測カードに注意文が表示されている場合は、途中終了の可能性がある。
 - **意味しないこと**: 途中終了は「Geminiにそのブランドの情報がない」ことを意味しない。あくまで今回の1回分の観測が、出力の途中で打ち切られた可能性を示すだけである。
-- **確認方法**: 気になる場合は、再実行するか、`GEMINI_MAX_OUTPUT_TOKENS`を増やして（例: 1500や2000）再確認する。本番環境変数の変更が必要なため、この調整自体は依頼者確認のうえで行う。
+- **確認方法**: 気になる場合は、再実行するか、`GEMINI_MAX_OUTPUT_TOKENS`を増やして再確認する。**本番環境では2026-09-19時点で`GEMINI_MAX_OUTPUT_TOKENS=700`（デフォルト）から`1500`へ調整済みで、以前700で発生していた本文の途中切れが解消することを確認済み**（18章参照）。
 - 本番では通常`GEMINI_PROVIDER_MODE=off`のままで、検証用selector（15章）から明示的にONにした場合のみGemini観測が実行される——この方針は変更していない。
 - 詳細な原因調査・実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12. Gemini観測結果の途中終了検知と表示改善」を参照。
 
@@ -294,6 +294,26 @@ Gemini観測は、出力上限（`GEMINI_MAX_OUTPUT_TOKENS`、デフォルト700
 - **レポートのパンくず**: `/history/[id]/report`の上部に「分析履歴一覧 > 履歴詳細 > レポート」のパンくずを表示する（それぞれ`/history`・`/history/[id]`へ戻れる）。印刷時（`print:hidden`）にはヘッダー・パンくずともに表示されない——既存のレポート印刷仕様は変更していない。
 - 認証ロジック・Supabase Authの挙動・`STAGING_ACCESS_CODE`/`HISTORY_READ_TOKEN`gateはいずれも変更していない——共通ヘッダーは既存のログイン状態を読み取って表示を切り替えるだけである。
 - 履歴詳細から同じ条件で再分析する機能は、今回は対象外——今後の拡張候補として残す（[02_roadmap.md](./02_roadmap.md)参照）。
+
+## 18. Gemini観測・共通ヘッダーの本番検証結果（2026-09-19追記）
+
+上記15〜17章のGemini観測selector・共通ヘッダーについて、本番環境（Render backend・Vercel frontend）で実際の動作確認を行った。
+
+### Gemini観測
+
+- **表示条件**: 「Gemini観測モード（検証用）」は、`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`の環境でのみ分析フォームに表示される。**現在の本番環境ではこのフラグが有効になっているため、通常の画面にもこのselectorが表示される。**
+- **通常はoff**: selectorの初期値は「off: 無効」——何もしなければ、これまで通りGemini観測は実行されない。
+- **検証時のみGemini APIを選ぶ**: 「google: Gemini API」を選んで分析を実行すると、Gemini観測が実行される。Claude観測selectorも同じ画面に表示されており、両者は独立して動作する（例: Geminiのみ選択しClaudeはoffのまま、という使い方も可能）。
+- **実行すると結果画面にGemini観測カードが出る**: 「4. AI Overview比較」セクションに、既存のAI Overview/ChatGPT/Claude観測カードと並んで「Gemini (Google API)」カードが追加表示される。
+- **保存後は履歴詳細・レポートでも表示される**: 分析結果を保存すると、`/history/[id]`（履歴詳細）・`/history/[id]/report`（レポート）のいずれでも、保存時のGemini観測結果が同じ形式で再表示される。
+- **`GEMINI_MAX_OUTPUT_TOKENS`の調整結果**: 本番で`GEMINI_MAX_OUTPUT_TOKENS=700`（デフォルト）のまま検証したところ、本文が「- **」のように途中で切れる現象が再現した。`GEMINI_MAX_OUTPUT_TOKENS=1500`へ変更したところ、本文が最後まで取得できることを確認した——出力上限（`maxOutputTokens`）による途中終了という原因推定が裏付けられた。途中終了検知・注意文表示のロジック（16章）自体は変更していない。
+- **単発観測であることの注意**: Gemini観測は、Gemini APIに同じ観点で1回だけ質問した結果である。Geminiサービス全体の認識やAIの内部状態を保証するものではない（画面上にも同旨の説明文を表示済み）。途中終了の注意文が出ている場合も同様に、「Geminiに情報がない」ことを意味しない。
+- 上記はすべて本番環境（Vercel + Render）で実際に確認済み。詳細な確認結果は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「13. Gemini観測の本番検証結果」を参照。
+
+### 共通ヘッダー / ナビゲーション
+
+- 主要4画面（`/`・`/history`・`/history/[id]`・`/history/[id]/report`）で共通ヘッダーが表示されること、「AI Visibility Platform」/「分析」から`/`へ、「履歴」から`/history`へ1クリックで戻れること、ログアウトボタンがログイン済みの場合に表示されること、`/history/[id]`・`/history/[id]/report`のパンくずが表示されること、モバイル幅を含め表示崩れがないことを、いずれも本番環境で確認済み。
+- 詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「14. 共通ヘッダー / ナビゲーション改善の本番確認結果」を参照。
 
 ## 関連ドキュメント
 
