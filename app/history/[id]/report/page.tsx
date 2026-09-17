@@ -41,9 +41,13 @@ import type {
   HistoryComparisonViewState,
 } from "../../../lib/analysis-history";
 import {
+  AI_OBSERVATION_COMMON_EXPLANATION_TEXT,
   AI_OVERVIEW_EXPLANATION_TEXT,
   CHATGPT_PLATFORM_NOTE,
+  CLAUDE_PLATFORM_NOTE,
   COMMON_CRAWL_EXPLANATION_TEXT,
+  GEMINI_PLATFORM_NOTE,
+  getAiOverviewItemDetailDisplay,
   getCommonCrawlProviderDisplay,
 } from "../../../lib/meta-label";
 import type { AnalysisResult } from "../../../lib/types";
@@ -248,20 +252,31 @@ function ReportContent({
         </h2>
         <div className="mt-1 space-y-0.5 text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
           <p>{AI_OVERVIEW_EXPLANATION_TEXT}</p>
+          <p>{AI_OBSERVATION_COMMON_EXPLANATION_TEXT}</p>
           <p>{CHATGPT_PLATFORM_NOTE}</p>
+          <p>{CLAUDE_PLATFORM_NOTE}</p>
+          <p>{GEMINI_PLATFORM_NOTE}</p>
         </div>
         {result.aiOverviewComparison.length > 0 ? (
           <div className="mt-2 space-y-2">
-            {result.aiOverviewComparison.map((item) => (
-              <div key={item.platform}>
-                <p className="font-medium">
-                  {item.platform}（{item.mentioned ? "言及あり" : "言及なし"}）
-                </p>
-                <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
-                  {item.summary}
-                </p>
-              </div>
-            ))}
+            {result.aiOverviewComparison.map((item) => {
+              const truncationWarning = getAiOverviewItemDetailDisplay(item).truncationWarning;
+              return (
+                <div key={item.platform}>
+                  <p className="font-medium">
+                    {item.platform}（{item.mentioned ? "言及あり" : "言及なし"}）
+                  </p>
+                  <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+                    {item.summary}
+                  </p>
+                  {truncationWarning && (
+                    <p className="mt-0.5 text-amber-700 dark:text-amber-400 print:text-black">
+                      {truncationWarning}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ) : (
           <p className="mt-2 text-zinc-500 dark:text-zinc-400 print:text-black">

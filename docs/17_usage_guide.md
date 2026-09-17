@@ -315,6 +315,15 @@ Gemini観測は、出力上限（`GEMINI_MAX_OUTPUT_TOKENS`、デフォルト700
 - 主要4画面（`/`・`/history`・`/history/[id]`・`/history/[id]/report`）で共通ヘッダーが表示されること、「AI Visibility Platform」/「分析」から`/`へ、「履歴」から`/history`へ1クリックで戻れること、ログアウトボタンがログイン済みの場合に表示されること、`/history/[id]`・`/history/[id]/report`のパンくずが表示されること、モバイル幅を含め表示崩れがないことを、いずれも本番環境で確認済み。
 - 詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「14. 共通ヘッダー / ナビゲーション改善の本番確認結果」を参照。
 
+## 19. MVPレビュー前の表示文言最終確認（2026-09-18追記）
+
+MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状態を断定していないか、Common Crawl / AI Overview / ChatGPT / Claude / Gemini の違いが伝わるか、レポート画面でも同じ注意が伝わるかを確認した（`chore/mvp-review-copy-final-check`）。表示文言・説明文のみの調整で、backend・API・分析ロジック・provider実装は変更していない。
+
+- 分析画面トップの説明文、「1. ブランド認知サマリー」・「5. 改善提案」セクションの説明文が、実装内容（`visibilityScore`はAI/LLM呼び出しなしの推定値、`topPlatforms`はAIプラットフォームではなくDocument取得元）と食い違う断定的な表現になっていたため、より正確で非断定的な文言に修正した。
+- 「この分析の見方」（`AnalysisGuideCard`）のAI観測欄が、Claude/Gemini観測が本番検証済みになった後もChatGPT/AI Overviewのみの説明のままだったため、Claude/Gemini相当モデルを追加した。
+- レポート画面（`/history/[id]/report`）の「AI回答側の観測」セクションに、Claude/Gemini観測の注記と、Gemini観測が途中終了した場合の注意文を追加し、分析結果画面・履歴詳細画面と同じ内容が依頼者に共有されるレポートでも伝わるようにした。
+- 修正内容の詳細（変更前後の文言・対象ファイル）は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「15. MVPレビュー前の表示文言最終確認」を参照。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

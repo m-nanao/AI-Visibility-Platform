@@ -668,14 +668,16 @@ export function limitReportCooccurrenceTerms(
 }
 
 // Shown in the report's "AI回答側の観測" section when
-// aiOverviewComparison is empty — covers both AI Overview mode being
-// off/unavailable and ChatGPT observation mode being off, without
-// trying to distinguish which (see docs/26_report_output_design.md
-// "15. エラー・データ不足時の表示方針" — this report keeps the two
-// specific messages listed there merged into one, per that doc's
-// "ただし、初期実装なので過度に凝らない" framing for this task).
+// aiOverviewComparison is empty — covers AI Overview/ChatGPT/Claude/
+// Gemini observation modes all being off/unavailable, without trying
+// to distinguish which (see docs/26_report_output_design.md "15. エラ
+// ー・データ不足時の表示方針" — this report keeps the specific messages
+// listed there merged into one, per that doc's "ただし、初期実装なので
+// 過度に凝らない" framing for this task). Updated (chore/mvp-review-copy-
+// final-check) to mention Claude/Gemini alongside AI Overview/ChatGPT,
+// since both are now production-verified observation modes.
 export const REPORT_AI_OVERVIEW_EMPTY_MESSAGE =
-  "AI Overview / ChatGPT観測データはありません。";
+  "AI Overview / ChatGPT / Claude / Gemini観測データはありません。";
 
 // Fixed disclaimer text for the report's "注意事項" section (see
 // docs/26_report_output_design.md "9. レポート構成案"「8. 注意事項」).
