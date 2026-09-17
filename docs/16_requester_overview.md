@@ -10,6 +10,8 @@
 
 **追記（同日）: 「9. 今後の拡張候補」に挙げた「ChatGPT / Claude / Geminiなど複数AI観測」のうち、Claude/Gemini観測の実装基盤（デフォルトoff）を追加した。本番環境での有効化はまだ行っていない——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8. 実装基盤の追加」を参照。**
 
+**追記（2026-09-17）: 現在のMVPでは、ChatGPT相当モデルに加え、Claude観測も検証可能である。ただし単発観測であり、Claudeサービス全体の認識やAIの内部状態を保証するものではない（ChatGPT観測と同じ制約）。本番環境（Render backend・Vercel frontend）でClaude API選択→分析実行→結果カード表示→履歴詳細表示→レポート表示まで確認済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10. Claude観測の本番検証結果」を参照。Gemini観測はprovider実装基盤のみで、selector表示・本番有効化はまだ行っていない。**
+
 ## 1. 現在のMVPでできること
 
 現在のMVPでは、ブランド名や公式サイトURLをもとに、Web上でそのブランドがどのような文脈で扱われているかを分析できます。

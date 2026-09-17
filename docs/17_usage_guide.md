@@ -250,6 +250,19 @@ Supabase Authによるログイン、分析履歴の保存・閲覧、前回比�
 - **Gemini用の同等selectorはまだ追加していない**（今回はClaudeのみが対象）。
 - APIキーはRender backendの環境変数にのみ設定されており、frontendのコード・画面・レスポンスのいずれにも実値は現れない。
 
+## 14. Claude観測の使い方・本番検証結果（2026-09-17追記）
+
+上記13章のselectorに対し、本番環境（Render backend・Vercel frontend）で実際の動作確認を行った。以下は依頼者・非エンジニア向けの使い方まとめである。
+
+- **表示条件**: 「Claude観測モード（検証用）」は、`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`の環境でのみ分析フォームに表示される。**現在の本番環境ではこのフラグが有効になっているため、通常の画面にもこのselectorが表示される。**
+- **通常はoff**: selectorの初期値は「off: 無効」——何もしなければ、これまで通りClaude観測は実行されない。
+- **検証時のみClaude APIを選ぶ**: 「anthropic: Claude API」を選んで分析を実行すると、Claude観測が実行される。
+- **実行すると結果画面にClaude観測カードが出る**: 「4. AI Overview比較」セクションに、既存のAI Overview/ChatGPT観測カードと並んで「Claude (Anthropic API)」カードが追加表示される。
+- **保存後は履歴詳細・レポートでも表示される**: 分析結果を保存すると、`/history/[id]`（履歴詳細）・`/history/[id]/report`（レポート）のいずれでも、保存時のClaude観測結果が同じ形式で再表示される。
+- **単発観測であることの注意**: Claude観測は、Claude APIに同じ観点で1回だけ質問した結果である。Claudeサービス全体の認識やAIの内部状態を保証するものではない（画面上にも同旨の説明文を表示済み）。
+- 上記はすべて本番環境（Vercel + Render）で実際に確認済み。詳細な確認結果は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10. Claude観測の本番検証結果」を参照。
+- **Geminiの同等機能はまだ用意していない**（selector未追加・本番未有効化）。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

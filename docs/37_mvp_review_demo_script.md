@@ -17,7 +17,7 @@
 - [ ] Vercel本番URLにアクセスできること。
 - [ ] `STAGING_ACCESS_CODE`が設定されている環境の場合、`/staging-login`のパスコードを把握していること（[09_deployment.md](./09_deployment.md)参照）。
 - [ ] Supabase Authのログイン用アカウント（メールアドレス・パスワード）を把握していること。デモ用アカウントが`organization_members`に登録済みであること（未登録だと履歴が0件に見える——8章「履歴が出ない」参照）。
-- [ ] DataForSEO（AI Overview）・ChatGPT観測・Claude観測・Common Crawl補完それぞれのON/OFF状態を確認しておく（selectorが表示される環境かどうかは`NEXT_PUBLIC_ENABLE_*_MODE_SELECTOR`次第——[17_usage_guide.md](./17_usage_guide.md)「1. このドキュメントの目的」参照）。デモ中に費用が発生し得るDataForSEO Live・OpenAI API・Anthropic APIを不用意にONにしないよう、[12_demo_readiness.md](./12_demo_readiness.md)「3. 重要な運用方針」の値を確認する。**Claude観測selector（`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`）は2026-09-17時点でVercel本番環境変数には設定していないため、通常のデモでは表示されない**（[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「9」参照）。
+- [ ] DataForSEO（AI Overview）・ChatGPT観測・Claude観測・Common Crawl補完それぞれのON/OFF状態を確認しておく（selectorが表示される環境かどうかは`NEXT_PUBLIC_ENABLE_*_MODE_SELECTOR`次第——[17_usage_guide.md](./17_usage_guide.md)「1. このドキュメントの目的」参照）。デモ中に費用が発生し得るDataForSEO Live・OpenAI API・Anthropic APIを不用意にONにしないよう、[12_demo_readiness.md](./12_demo_readiness.md)「3. 重要な運用方針」の値を確認する。**Claude観測selector（`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`）は2026-09-17時点でVercel本番環境変数に`true`が設定済みのため、通常のデモ画面にも「Claude観測モード（検証用）」が表示される（初期値はoff）**——本番での確認結果は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照。デモ中に不用意にONにしないよう、Claude APIも費用が発生し得る点に注意する。
 - [ ] Render backendのhealthを確認する（`GET /health`、または一度分析を実行してレスポンスが返ることを確認）。Render無料プランはコールドスタートがあり、スリープ復帰に約20〜25秒かかることがある——デモ直前に一度アクセスして起こしておく（[09_deployment.md](./09_deployment.md)「コールドスタートに関する注意」参照）。
 - [ ] 保存済みの分析履歴が1件以上あること——新規分析が何らかの理由で失敗しても、履歴画面から既存の結果を見せられるようにしておく（フォールバック手段）。
 - [ ] 前回比較を見せたい場合、同じブランド名で2件以上の履歴があることを確認する（1件しかない場合、前回比較は「比較できる過去履歴がまだありません。」と表示される——想定どおりの挙動であり、エラーではない）。
@@ -45,11 +45,11 @@ Common Crawl補完: 公式ドメインから補完
 4. ブランド名を入力する。
 5. 公式URLを入力する。
 6. Common Crawl補完を「公式ドメインから補完」にする（selectorが表示される環境の場合）。
-7. 必要に応じてAI Overview / ChatGPT観測をONにする（selectorが表示される環境の場合。費用リスクは2章参照）。
+7. 必要に応じてAI Overview / ChatGPT観測 / Claude観測をONにする（selectorが表示される環境の場合。費用リスクは2章参照）。
 8. 「分析する」を実行する。
 9. 結果画面で「この分析の見方」ガイドカードを説明する——Web情報環境（原因側）とAI観測（結果側）を分けて見ることを伝える（詳細は5章「分析結果画面」参照）。
 10. 共起語ランキング・文脈分析（Web情報環境側）を見る。
-11. AI Overview比較・ChatGPT観測（結果側）を見る。
+11. AI Overview比較・ChatGPT観測・Claude観測（結果側）を見る。
 12. 改善提案を見る（横幅いっぱいで表示されるようになっている）。
 13. 「保存済み履歴で開く」から履歴詳細へ移動する。
 14. 履歴詳細画面で、保存された分析結果が再表示されることを確認する。
@@ -74,6 +74,7 @@ Common Crawl補完: 公式ドメインから補完
 - **文脈分析**: ブランドがどのような文脈で語られているか。
 - **AI Overview**: Google AI Overview / AI Modeでの回答・参照状況（結果側の観測データ、AIの内部状態を保証するものではない旨の説明文を画面に表示済み）。
 - **ChatGPT観測**: OpenAI APIによる1問観測（同様に、ChatGPTアプリ全体の認識を保証するものではない旨を画面に表示済み）。
+- **Claude観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Anthropic APIによる1問観測で、Claudeサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。履歴詳細・レポート画面でも同じ形式で再表示される（本番確認済み、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照）。
 - **改善提案**: 横幅いっぱいで表示され、Web上の説明とAI回答のズレを改善するヒントとして提示する（`feature/history-ui-link-and-layout-polish`で調整済み）。
 
 ### 履歴一覧（`/history`）
@@ -108,7 +109,7 @@ Common Crawl補完: 公式ドメインから補完
 - Common Crawl補完による過去クロールデータの補助分析
 - Google AI Overview / AI Mode観測（DataForSEO経由）
 - ChatGPT相当モデルの1問観測（OpenAI API経由）
-- Claude相当モデルの1問観測（2026-09-15に実装基盤を追加、Render backend側は本番APIキー・`ALLOW_CLAUDE_MODE_OVERRIDE=true`まで設定済み。2026-09-17、`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`にすればfrontend検証用selectorも表示できる状態——ただしVercel本番環境変数には未設定のため、通常のデモでは表示されない）。Gemini相当モデルは実装基盤のみでselectorは未実装
+- Claude相当モデルの1問観測（2026-09-15に実装基盤を追加、2026-09-17にfrontend検証用selectorを追加。Render backend本番APIキー・`ALLOW_CLAUDE_MODE_OVERRIDE=true`・Vercel本番`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`まで設定済みで、Claude API選択→分析実行→結果カード表示→履歴詳細→レポート表示まで本番で確認済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照。通常は`CLAUDE_PROVIDER_MODE=off`のため未選択時はこれまで通りoff）。Gemini相当モデルは実装基盤のみでselectorは未実装・本番未有効化
 - 改善提案の提示
 - 分析履歴の保存
 - 履歴一覧・履歴詳細
@@ -121,7 +122,7 @@ Common Crawl補完: 公式ドメインから補完
 
 - AIの内部学習内容を直接確認するものではない——公開Web情報からの推定、またはAPI経由の単発観測に留まる。
 - ChatGPT観測はOpenAI APIによる1回分の観測であり、ChatGPTアプリ全体の認識を再現するものではない。
-- Claude観測はbackend側の実装基盤・本番APIキー設定・frontend検証用selectorまで揃ったが、**Vercel本番環境変数（`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`）は未設定のため通常のデモ画面には出ない**。Geminiの観測はbackend実装基盤のみで、selectorも実API比較もまだ行っていない——設計と実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8」「9」を参照。
+- Claude観測は検証用selectorからONにでき、本番で結果画面・履歴詳細・レポート表示まで確認済み。Gemini観測はprovider基盤のみで、selector表示・本番有効化はまだ行っていない——設計と実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8」「9」「10」を参照。
 - AI Overviewは取得条件・タイミング（DataForSEO側の状況、Sandbox/Liveの違い）に左右され、毎回同じ結果になるとは限らない。
 - RLS（Row Level Security）は検証DBで適用・分離確認・rollbackまで確認済みだが、本番Supabaseへはまだ適用していない——現在の権限制御はbackendアプリケーション層（JWT検証＋project権限判定）が担っている（詳細は[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)・[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)参照）。
 - project作成・招待UIは未実装——現状は既存のdefault organization/projectに登録済みのユーザーのみが利用できる。
@@ -150,6 +151,11 @@ Common Crawl補完: 公式ドメインから補完
 **ChatGPT観測未取得（`ChatGPT 未取得`表示）:**
 - API設定（`CHATGPT_PROVIDER_MODE`）、選択したモード、または一時的なAPI呼び出し失敗の可能性がある。
 - AI Overview同様、「AIに存在しない」ことを意味しない。
+
+**Claude観測未取得（`Claude 未取得`表示）:**
+- Claude観測モードselectorで「anthropic: Claude API」を選んでいない（デフォルトoffのまま）、または一時的なAnthropic API呼び出し失敗の可能性がある。
+- ChatGPT観測同様、「AIに存在しない」ことを意味しない。
+- selector自体が画面に出ない場合は、`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`が有効な環境かどうかを確認する。
 
 **Common Crawl未取得（`Common Crawl補完: 補完データ未取得`表示）:**
 - クロールデータに対象URL/ドメインが含まれていない可能性、または外部APIが不安定な可能性がある（[16_requester_overview.md](./16_requester_overview.md)「4. Common Crawl APIの安定性について」参照）。
