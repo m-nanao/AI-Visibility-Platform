@@ -134,6 +134,12 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
         </details>
       )}
 
+      {detail.truncationWarning && (
+        <p className="mt-3 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+          {detail.truncationWarning}
+        </p>
+      )}
+
       {detail.referenceSummary && (
         <div className="mt-3 min-w-0">
           <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">

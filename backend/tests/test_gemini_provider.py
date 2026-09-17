@@ -24,10 +24,13 @@ def _set_credentials(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "gm-super-secret-key")
 
 
-def _text_response(url, text):
+def _text_response(url, text, finish_reason=None):
+    candidate = {"content": {"parts": [{"text": text}]}}
+    if finish_reason is not None:
+        candidate["finishReason"] = finish_reason
     return httpx.Response(
         200,
-        json={"candidates": [{"content": {"parts": [{"text": text}]}}]},
+        json={"candidates": [candidate]},
         request=httpx.Request("POST", url),
     )
 
@@ -161,6 +164,8 @@ def test_build_gemini_observation_success_returns_an_item(monkeypatch):
     assert item.references is None
     assert item.referenceSummary is None
     assert item.ownDomainReferenced is None
+    assert item.isTruncated is False
+    assert item.note is None
 
 
 def test_build_gemini_observation_sends_exactly_one_request(monkeypatch):
@@ -261,3 +266,47 @@ def test_build_gemini_observation_reason_never_includes_the_api_key_on_success(m
     _, _, reason, _ = build_gemini_observation("Acme", "google")
 
     assert "gm-super-secret-key" not in reason
+
+
+# --- finishReason / truncation pass-through onto the item -------------------
+
+
+def test_build_gemini_observation_passes_through_finish_reason_and_truncation(monkeypatch):
+    _clear_gemini_env(monkeypatch)
+    _set_credentials(monkeypatch)
+
+    long_text = (
+        "Acmeは、業務効率化ツールとして広く知られています。"
+        "主に中小企業のバックオフィス業務を支援する用途で言及されることが多いです。"
+    )
+
+    def fake_post(url, **kwargs):
+        return _text_response(url, long_text, finish_reason="MAX_TOKENS")
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    item, status, _, _ = build_gemini_observation("Acme", "google")
+
+    assert status == "real"
+    assert item is not None
+    assert item.finishReason == "MAX_TOKENS"
+    assert item.isTruncated is True
+    assert item.note is not None
+    assert "情報がない" not in item.note
+
+
+def test_build_gemini_observation_status_stays_real_even_when_truncated(monkeypatch):
+    # A truncation warning is never treated as a failure — the card
+    # still reports status="real" (see services/gemini_client.py's
+    # module docstring).
+    _clear_gemini_env(monkeypatch)
+    _set_credentials(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        return _text_response(url, "Acme " * 50, finish_reason="MAX_TOKENS")
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    item, status, reason, environment = build_gemini_observation("Acme", "google")
+
+    assert status == "real"

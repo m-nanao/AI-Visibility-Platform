@@ -75,7 +75,7 @@ Common Crawl補完: 公式ドメインから補完
 - **AI Overview**: Google AI Overview / AI Modeでの回答・参照状況（結果側の観測データ、AIの内部状態を保証するものではない旨の説明文を画面に表示済み）。
 - **ChatGPT観測**: OpenAI APIによる1問観測（同様に、ChatGPTアプリ全体の認識を保証するものではない旨を画面に表示済み）。
 - **Claude観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Anthropic APIによる1問観測で、Claudeサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。履歴詳細・レポート画面でも同じ形式で再表示される（本番確認済み、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照）。
-- **Gemini観測**: 検証用selectorのコードは追加済みだが、**本番環境（Vercel）ではまだ有効化していない**——通常のデモ画面には表示されない（[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「11」参照）。
+- **Gemini観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Google Gemini APIによる1問観測で、Geminiサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。**出力上限やAPI側の都合で本文が途中終了する場合があり、その場合は注意文が表示される**（「Gemini APIの出力が途中で終了した可能性があります」——[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12」参照）。
 - **改善提案**: 横幅いっぱいで表示され、Web上の説明とAI回答のズレを改善するヒントとして提示する（`feature/history-ui-link-and-layout-polish`で調整済み）。
 
 ### 履歴一覧（`/history`）
@@ -110,7 +110,7 @@ Common Crawl補完: 公式ドメインから補完
 - Common Crawl補完による過去クロールデータの補助分析
 - Google AI Overview / AI Mode観測（DataForSEO経由）
 - ChatGPT相当モデルの1問観測（OpenAI API経由）
-- Claude相当モデルの1問観測（2026-09-15に実装基盤を追加、2026-09-17にfrontend検証用selectorを追加。Render backend本番APIキー・`ALLOW_CLAUDE_MODE_OVERRIDE=true`・Vercel本番`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`まで設定済みで、Claude API選択→分析実行→結果カード表示→履歴詳細→レポート表示まで本番で確認済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照。通常は`CLAUDE_PROVIDER_MODE=off`のため未選択時はこれまで通りoff）。Gemini相当モデルは実装基盤に加え、2026-09-19にfrontend検証用selectorも追加した（`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR`）が、**Vercel本番環境変数は未設定・Gemini API keyも未取得のため、通常のデモでは表示されず、選択しても`unavailable`になる**（詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「11」参照）
+- Claude相当モデルの1問観測（2026-09-15に実装基盤を追加、2026-09-17にfrontend検証用selectorを追加。Render backend本番APIキー・`ALLOW_CLAUDE_MODE_OVERRIDE=true`・Vercel本番`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR=true`まで設定済みで、Claude API選択→分析実行→結果カード表示→履歴詳細→レポート表示まで本番で確認済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照。通常は`CLAUDE_PROVIDER_MODE=off`のため未選択時はこれまで通りoff）。Gemini相当モデルの1問観測（2026-09-19にfrontend検証用selectorを追加、その後Render backend本番APIキー・Vercel本番`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`まで設定済み。Gemini選択→分析実行→結果カード表示→履歴詳細→レポート表示まで本番で確認済み。出力上限等による途中終了を検知し注意文を表示する改善も実施済み——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「11」「12」参照。通常は`GEMINI_PROVIDER_MODE=off`のため未選択時はこれまで通りoff）
 - 改善提案の提示
 - 分析履歴の保存
 - 履歴一覧・履歴詳細
@@ -123,7 +123,7 @@ Common Crawl補完: 公式ドメインから補完
 
 - AIの内部学習内容を直接確認するものではない——公開Web情報からの推定、またはAPI経由の単発観測に留まる。
 - ChatGPT観測はOpenAI APIによる1回分の観測であり、ChatGPTアプリ全体の認識を再現するものではない。
-- Claude観測は検証用selectorからONにでき、本番で結果画面・履歴詳細・レポート表示まで確認済み。Gemini観測は検証用selectorのコード自体は追加済みだが、Vercel本番環境変数の設定・Gemini API key取得・本番有効化はまだ行っていない——設計と実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8」「9」「10」「11」を参照。
+- Claude観測・Gemini観測とも検証用selectorからONにでき、本番で結果画面・履歴詳細・レポート表示まで確認済み。Gemini観測は出力上限等による本文の途中終了を検知し、注意文を表示する改善も実施済み（「Geminiに情報がない」という意味ではなく、今回1回分の観測の途中終了を示すのみ）。設計と実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8」「9」「10」「11」「12」を参照。
 - AI Overviewは取得条件・タイミング（DataForSEO側の状況、Sandbox/Liveの違い）に左右され、毎回同じ結果になるとは限らない。
 - RLS（Row Level Security）は検証DBで適用・分離確認・rollbackまで確認済みだが、本番Supabaseへはまだ適用していない——現在の権限制御はbackendアプリケーション層（JWT検証＋project権限判定）が担っている（詳細は[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)・[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)参照）。
 - project作成・招待UIは未実装——現状は既存のdefault organization/projectに登録済みのユーザーのみが利用できる。
@@ -159,8 +159,12 @@ Common Crawl補完: 公式ドメインから補完
 - selector自体が画面に出ない場合は、`NEXT_PUBLIC_ENABLE_CLAUDE_MODE_SELECTOR`が有効な環境かどうかを確認する。
 
 **Gemini観測selectorが画面に出ない場合:**
-- `NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR`は2026-09-19時点でVercel本番環境変数に設定していないため、本番デモでは想定どおり非表示である（バグではない）。
-- 開発・検証環境で`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`にした場合でも、Gemini API keyが未設定のため「google: Gemini API」を選んでも`Gemini 未取得`表示になる（想定どおり）。
+- `NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR`が有効な環境かどうかを確認する。
+
+**Gemini観測の本文が途中で切れている（「- **」のような不完全な表示）:**
+- 出力上限（`GEMINI_MAX_OUTPUT_TOKENS`）やGemini API側の都合により、本文が途中で終了した可能性がある——観測カードに注意文が表示されているはずである。
+- ChatGPT/Claude観測同様、「Geminiにその情報がない」ことを意味しない。今回の1回分の観測の出力が途中で終わった可能性を示すのみ。
+- 気になる場合は再実行するか、`GEMINI_MAX_OUTPUT_TOKENS`を増やして再確認する（詳細は[17_usage_guide.md](./17_usage_guide.md)「16」・[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12」参照）。
 
 **Common Crawl未取得（`Common Crawl補完: 補完データ未取得`表示）:**
 - クロールデータに対象URL/ドメインが含まれていない可能性、または外部APIが不安定な可能性がある（[16_requester_overview.md](./16_requester_overview.md)「4. Common Crawl APIの安定性について」参照）。

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GEMINI_TRUNCATION_NOTE,
   OBSERVATION_UNAVAILABLE_NOTE,
   OWN_DOMAIN_STATUS_LABELS,
   REFERENCE_CATEGORY_LABELS,
@@ -823,6 +824,63 @@ describe("getAiOverviewItemDetailDisplay", () => {
     expect(display.platformNote).toBe(
       "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。",
     );
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — truncationWarning (Gemini truncation detection)", () => {
+  function baseItem(): AIOverviewComparisonItem {
+    return {
+      platform: "Gemini (Google API)",
+      mentioned: true,
+      rank: null,
+      summary: "OpenAI is a well-known AI research company.",
+    };
+  }
+
+  it("returns the backend-provided note when isTruncated is true", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      isTruncated: true,
+      note: "Gemini APIの出力が途中で終了した可能性があります。",
+    });
+
+    expect(display.truncationWarning).toBe(
+      "Gemini APIの出力が途中で終了した可能性があります。",
+    );
+  });
+
+  it("falls back to GEMINI_TRUNCATION_NOTE when isTruncated is true but note is missing", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      isTruncated: true,
+    });
+
+    expect(display.truncationWarning).toBe(GEMINI_TRUNCATION_NOTE);
+  });
+
+  it("returns undefined when isTruncated is false", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      isTruncated: false,
+      finishReason: "STOP",
+    });
+
+    expect(display.truncationWarning).toBeUndefined();
+  });
+
+  it("returns undefined when isTruncated/finishReason/note are absent (old saved history)", () => {
+    const display = getAiOverviewItemDetailDisplay(baseItem());
+
+    expect(display.truncationWarning).toBeUndefined();
+  });
+
+  it("returns undefined when note is set but isTruncated is not true (note alone doesn't trigger the warning)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      note: "some other note, not a truncation warning",
+    });
+
+    expect(display.truncationWarning).toBeUndefined();
   });
 });
 

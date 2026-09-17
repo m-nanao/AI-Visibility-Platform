@@ -479,6 +479,28 @@ class AIOverviewComparisonItem(BaseModel):
     # (e.g. the request had no `urls`, so there is no "own domain" to
     # compare against) — see services/ai_overview_provider.py.
     ownDomainReferenced: bool | None = None
+    # The following three are optional and only ever populated by the
+    # Gemini observation provider (see services/gemini_client.py) —
+    # every other provider (mock, DataForSEO, ChatGPT, Claude) leaves
+    # them None, so existing clients/old saved history that don't know
+    # about these fields keep working unchanged.
+    #
+    # finishReason: Gemini's own candidates[0].finishReason value
+    # verbatim (e.g. "STOP", "MAX_TOKENS", "SAFETY", "RECITATION",
+    # "OTHER") — never used to change /analyze's control flow beyond
+    # deciding isTruncated below, just surfaced for debugging. None
+    # when Gemini didn't include one, or for every non-Gemini item.
+    finishReason: str | None = None
+    # isTruncated: a heuristic-only signal (never a hard error) that
+    # this answer may have been cut off mid-way — see
+    # services/gemini_client.py's _is_likely_truncated(). True doesn't
+    # mean "Gemini has no information about this brand"; it means this
+    # one observation attempt's output may be incomplete.
+    isTruncated: bool | None = None
+    # note: a short, safe-to-display explanation shown alongside the
+    # card when isTruncated is True (see services/gemini_client.py's
+    # TRUNCATION_NOTE) — None when there's nothing to add.
+    note: str | None = None
 
 
 class ImprovementSuggestion(BaseModel):

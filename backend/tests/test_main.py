@@ -908,6 +908,53 @@ def test_analyze_gemini_mode_google_adds_a_card_when_allowed(monkeypatch):
     assert "gm-super-secret-key" not in response.text
 
 
+def test_analyze_gemini_card_flags_truncation_when_finish_reason_is_max_tokens(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-super-secret-key")
+    monkeypatch.setenv("ALLOW_GEMINI_MODE_OVERRIDE", "true")
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": (
+                                        "サイボウズは、Web検索ユーザーが比較検討する場面で、"
+                                        "主に以下のように説明されると考えられます。 - **"
+                                    )
+                                }
+                            ]
+                        },
+                        "finishReason": "MAX_TOKENS",
+                    }
+                ]
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
+
+    response = client.post("/analyze", json={"brandName": "Cybozu", "geminiMode": "google"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.meta.geminiProvider is not None
+    assert result.meta.geminiProvider.status == "real"
+
+    gemini_item = next(item for item in result.aiOverviewComparison if item.platform == "Gemini (Google API)")
+    assert gemini_item.finishReason == "MAX_TOKENS"
+    assert gemini_item.isTruncated is True
+    assert gemini_item.note is not None
+    assert "情報がない" not in gemini_item.note
+
+    assert "gm-super-secret-key" not in response.text
+
+
 def test_analyze_gemini_mode_request_override_ignored_without_allow_flag(monkeypatch):
     _clear_claude_env(monkeypatch)
     _clear_gemini_env(monkeypatch)

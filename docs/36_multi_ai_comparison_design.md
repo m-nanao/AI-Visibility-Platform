@@ -119,6 +119,18 @@
 - API keyは一貫してbackend環境変数（Render）のみに置かれる設計であり、frontendのコード・レスポンス・request bodyのいずれにも実値は含まれない（`geminiMode`は`"off"`/`"google"`という設定名のみで、キー自体を運ばない）。Gemini API keyはまだRender backendにも設定されていない（別タスク）ため、現時点で`geminiMode=google`を選んでも`unavailable`になる。
 - 本番Vercel環境変数（`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR`含む）は今回設定していない——コード側の対応のみ。
 
+## 12. Gemini観測結果の途中終了検知と表示改善（2026-09-18、`fix/gemini-observation-truncation-warning`）
+
+上記「11」の後、Gemini API key・`NEXT_PUBLIC_ENABLE_GEMINI_MODE_SELECTOR=true`双方が本番環境に設定され、本番画面でGemini observation選択→分析実行→結果カード表示→履歴詳細→レポート表示まで確認された。その際、**Gemini観測カードの本文が「- **」のように途中で切れて表示される現象**が報告された。
+
+- **原因の切り分け**: `backend/services/gemini_client.py`の既存レスポンスパーサー（`_extract_output_text()`）を確認したところ、`content.parts[]`の全text partを正しく連結しており、text以外のpartがあっても落ちず、safety等でcontent自体が無い候補も安全に無視する設計に問題は見つからなかった——パーサー自体のバグではなく、**Gemini API自体が`maxOutputTokens`上限（`GEMINI_MAX_OUTPUT_TOKENS`、デフォルト700）に達して応答を打ち切っていた可能性が高いと判断した**。
+- **finishReasonの取得**: `_extract_finish_reason()`を新設し、Gemini応答の`candidates[0].finishReason`（`"STOP"`/`"MAX_TOKENS"`/`"SAFETY"`/`"RECITATION"`/`"OTHER"`等）を安全に取得するようにした。
+- **途中終了の検知（ヒューリスティック、エラー扱いにはしない）**: `_is_likely_truncated()`が以下のいずれかに該当する場合のみ「途中終了の可能性」と判定する——`finishReason == "MAX_TOKENS"`（最も明確な signal）、テキスト末尾が不均衡なmarkdown（`**`の出現数が奇数、または`-`/`*`/`:`等で終わる——実際の報告事例「- **」はこの条件に一致する）、テキストが極端に短い（20文字未満）。**単純な不完全Markdownだけで`status`を`unavailable`やエラー扱いにはしない**——`status`は`"real"`のまま、追加のsoft signalとしてのみ扱う。
+- **schema変更（後方互換）**: `AIOverviewComparisonItem`（`backend/models.py`・`app/lib/types.ts`）に`finishReason`/`isTruncated`/`note`を追加した。3つとも省略可能で、Gemini以外の既存provider（mock/DataForSEO/ChatGPT/Claude）はいずれも設定しない——古い保存済み履歴にこれらのフィールドが存在しなくても引き続き正常にパースされることをテストで確認済み。
+- **frontend表示**: `isTruncated`が真の場合、Gemini観測カードの概要欄の直下に注意文（`note`。バックエンドが送っていない場合は`app/lib/meta-label.ts`の`GEMINI_TRUNCATION_NOTE`にフォールバック）を表示するようにした（`AIOverviewComparisonSection.tsx`）。文言は「Gemini APIの出力が途中で終了した可能性があります。必要に応じて再実行するか、出力上限を増やして検証してください。」——**「Geminiに情報がない」「AIの内部認識が途切れている」とは書かない**（単なる今回の観測1回分の出力の途中終了として説明する）。
+- **既存provider・既存表示への影響**: Claude/ChatGPT/AI Overview/Common Crawlの実装・表示ロジックはいずれも変更していない。`GEMINI_PROVIDER_MODE`のデフォルトoff・`ALLOW_GEMINI_MODE_OVERRIDE`によるselector override方式もそのまま——検証時のみ画面からONにする運用方針は変更していない。
+- **今後の対応候補**: `GEMINI_MAX_OUTPUT_TOKENS`を700から1500/2000程度へ引き上げることで、途中終了の発生頻度そのものを下げられる可能性がある（Render本番環境変数の変更が必要なため、この変更自体は今回のタスクの対象外——依頼者確認のうえ別途対応する）。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）
