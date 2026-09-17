@@ -60,6 +60,12 @@ Common Crawl補完: 公式ドメインから補完
 
 ## 5. 画面ごとの説明ポイント
 
+### 共通ヘッダー（分析画面・履歴一覧・履歴詳細・レポートで共通）
+
+- 左に「AI Visibility Platform」（クリックで分析画面`/`へ）、右に「分析」「履歴」「ログアウト」を表示する（`feature/app-navigation-header`）。
+- どの画面からでも1クリックで分析画面・履歴一覧へ戻れる。ログアウトボタンはログイン済みの場合のみ表示される。
+- ログイン画面`/login`・パスコード画面`/staging-login`には表示されない。
+
 ### 分析画面（`/`）
 
 - ブランド名を入力する。
@@ -85,6 +91,7 @@ Common Crawl補完: 公式ドメインから補完
 
 ### 履歴詳細（`/history/[id]`）
 
+- 上部に「分析履歴一覧 > 履歴詳細」のパンくずを表示する（`feature/app-navigation-header`）。
 - 保存された分析結果（分析画面と同じ`AnalysisDashboard`）を再表示する。
 - 「前回比較」セクションで、同じブランドの前回結果との差分を確認できる。
 - 「レポートを表示 →」ボタンからレポート画面へ移動する（button風リンクに改善済み）。
@@ -98,6 +105,7 @@ Common Crawl補完: 公式ドメインから補完
 
 ### レポート（`/history/[id]/report`）
 
+- 上部に「分析履歴一覧 > 履歴詳細 > レポート」のパンくずを表示する（`feature/app-navigation-header`）。共通ヘッダー・パンくずとも印刷時（PDF保存/印刷）には表示されない。
 - 依頼者への共有・印刷を想定した1ページレイアウト。
 - PDF保存/印刷ボタンあり——ただし正式なPDF自動生成機能ではなく、ブラウザの印刷機能（`window.print()`）によるものである（[26_report_output_design.md](./26_report_output_design.md)参照）。
 
@@ -118,6 +126,7 @@ Common Crawl補完: 公式ドメインから補完
 - レポート表示（印刷/PDF保存導線つき）
 - Supabase Authによるログイン保護
 - backend側のJWT検証＋project権限判定（`user_id`が所属するprojectの履歴のみ閲覧可能）
+- 主要画面（分析・履歴一覧・履歴詳細・レポート）共通のヘッダーナビゲーション（分析・履歴・ログアウトへ常時1クリックで移動可能）と、履歴詳細・レポートのパンくず（`feature/app-navigation-header`、2026-09-18）
 
 ### MVPではまだ限定的なこと
 
@@ -128,6 +137,7 @@ Common Crawl補完: 公式ドメインから補完
 - RLS（Row Level Security）は検証DBで適用・分離確認・rollbackまで確認済みだが、本番Supabaseへはまだ適用していない——現在の権限制御はbackendアプリケーション層（JWT検証＋project権限判定）が担っている（詳細は[33_rls_policy_sql_design.md](./33_rls_policy_sql_design.md)・[35_rls_verification_runbook.md](./35_rls_verification_runbook.md)参照）。
 - project作成・招待UIは未実装——現状は既存のdefault organization/projectに登録済みのユーザーのみが利用できる。
 - 決済・利用量制限は未実装。
+- 履歴詳細から同じ条件（同じブランド名・URL・各種mode）で再分析するボタンは未実装——今回のナビゲーション改善（`feature/app-navigation-header`）では対象外とし、今後の拡張候補として残す（[02_roadmap.md](./02_roadmap.md)参照）。
 
 ## 7. 依頼者に確認してもらうレビュー項目
 

@@ -283,6 +283,18 @@ Gemini観測は、出力上限（`GEMINI_MAX_OUTPUT_TOKENS`、デフォルト700
 - 本番では通常`GEMINI_PROVIDER_MODE=off`のままで、検証用selector（15章）から明示的にONにした場合のみGemini観測が実行される——この方針は変更していない。
 - 詳細な原因調査・実装内容は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12. Gemini観測結果の途中終了検知と表示改善」を参照。
 
+## 17. 共通ヘッダーとナビゲーションについて（2026-09-18追記）
+
+`feature/app-navigation-header`で、主要画面（分析画面`/`・履歴一覧`/history`・履歴詳細`/history/[id]`・レポート`/history/[id]/report`）に共通ヘッダーを追加した。ログイン画面`/login`・パスコード画面`/staging-login`には表示されない。
+
+- **共通ヘッダーの内容**: 左に「AI Visibility Platform」（クリックすると分析画面`/`へ）、右に「分析」（`/`）・「履歴」（`/history`）・「ログアウト」の3つのリンク/ボタンを表示する。ログアウトボタンは、Supabase Authにログイン済みの場合のみ表示される（未ログイン時は表示されない——ボタンを押せてしまう変な状態を避けるため）。
+- **分析画面へ戻る**: どの画面からでも、ヘッダーの「AI Visibility Platform」または「分析」をクリックすれば分析画面に戻れる。
+- **履歴一覧へ戻る**: どの画面からでも、ヘッダーの「履歴」をクリックすれば履歴一覧に戻れる。
+- **履歴詳細のパンくず**: `/history/[id]`の上部に「分析履歴一覧 > 履歴詳細」のパンくずを表示する（「分析履歴一覧」から`/history`へ戻れる）。
+- **レポートのパンくず**: `/history/[id]/report`の上部に「分析履歴一覧 > 履歴詳細 > レポート」のパンくずを表示する（それぞれ`/history`・`/history/[id]`へ戻れる）。印刷時（`print:hidden`）にはヘッダー・パンくずともに表示されない——既存のレポート印刷仕様は変更していない。
+- 認証ロジック・Supabase Authの挙動・`STAGING_ACCESS_CODE`/`HISTORY_READ_TOKEN`gateはいずれも変更していない——共通ヘッダーは既存のログイン状態を読み取って表示を切り替えるだけである。
+- 履歴詳細から同じ条件で再分析する機能は、今回は対象外——今後の拡張候補として残す（[02_roadmap.md](./02_roadmap.md)参照）。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
