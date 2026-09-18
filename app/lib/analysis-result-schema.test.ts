@@ -453,4 +453,131 @@ describe("parseAnalysisResult", () => {
       expect(item.note).toBeUndefined();
     }
   });
+
+  // --- webAiGap ("Web上の説明とAI回答のズレ", backend/services/web_ai_gap.py) ---
+
+  it("accepts an AnalysisResult without webAiGap (older saved history predating this field)", () => {
+    const valid = buildDummyAnalysis("OpenAI");
+    expect("webAiGap" in valid).toBe(false);
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGap).toBeUndefined();
+    }
+  });
+
+  it("accepts webAiGap: null (mirrors Pydantic's `X | None = None` serialization)", () => {
+    const valid = { ...buildDummyAnalysis("OpenAI"), webAiGap: null };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGap).toBeUndefined();
+    }
+  });
+
+  it('accepts webAiGap with status "unavailable" and no webContext/aiContexts', () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGap: {
+        status: "unavailable",
+        aiContexts: [],
+        suggestions: [],
+        note: "Web情報またはAI観測が不足しているため、差分比較は表示できません。",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGap?.status).toBe("unavailable");
+      expect(result.data.webAiGap?.webContext).toBeUndefined();
+      expect(result.data.webAiGap?.aiContexts).toEqual([]);
+    }
+  });
+
+  it('accepts a full "real" webAiGap with webContext/aiContexts/gapSummary/suggestions', () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGap: {
+        status: "real",
+        webContext: {
+          summary: "OpenAIは契約期間の縛りなし・初期費用0円で利用できます。",
+          sourceType: "common_crawl",
+          sourceUrl: "https://example.com/about",
+        },
+        aiContexts: [
+          { platform: "chatgpt", summary: "OpenAIはAI研究を行う会社です。", status: "real" },
+          { platform: "claude", summary: "OpenAIはAIモデルを開発しています。", status: "real" },
+        ],
+        gapSummary: "Web上では料金条件が目立つ一方、AI回答ではサービス内容が中心です。",
+        suggestions: ["社名の近くに主要サービス名を明記する"],
+        note: "Web上の情報環境とAI回答の単発観測を比較した補助的な見立てです。AIの内部認識を直接示すものではありません。",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGap?.status).toBe("real");
+      expect(result.data.webAiGap?.webContext?.sourceType).toBe("common_crawl");
+      expect(result.data.webAiGap?.aiContexts).toHaveLength(2);
+      expect(result.data.webAiGap?.aiContexts[0].platform).toBe("chatgpt");
+      expect(result.data.webAiGap?.gapSummary).toContain("料金条件");
+      expect(result.data.webAiGap?.suggestions).toHaveLength(1);
+    }
+  });
+
+  it("accepts webContext without sourceUrl (development_sample/user_provided has no URL)", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGap: {
+        status: "real",
+        webContext: { summary: "OpenAIについての説明です。", sourceType: "web_fetch" },
+        aiContexts: [{ platform: "gemini", summary: "OpenAIはAI企業です。", status: "real" }],
+        suggestions: [],
+        note: "note",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGap?.webContext?.sourceUrl).toBeUndefined();
+    }
+  });
+
+  it("rejects webAiGap with an invalid status value", () => {
+    const invalid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGap: { status: "not-a-real-status", aiContexts: [], suggestions: [], note: "n" },
+    };
+
+    const result = parseAnalysisResult(invalid);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a webAiGap aiContexts entry with an unknown platform key", () => {
+    const invalid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGap: {
+        status: "real",
+        webContext: { summary: "s", sourceType: "web_fetch" },
+        aiContexts: [{ platform: "perplexity", summary: "s", status: "real" }],
+        suggestions: [],
+        note: "n",
+      },
+    };
+
+    const result = parseAnalysisResult(invalid);
+
+    expect(result.success).toBe(false);
+  });
 });

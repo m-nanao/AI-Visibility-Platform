@@ -16,6 +16,8 @@
 
 **追記（2026-09-18）: MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状態を断定していないか最終確認した（`chore/mvp-review-copy-final-check`）。「AIプラットフォーム上での認知状況」「AI上での認知度向上に向けた施策案」等、実装内容と食い違う断定的な表現をより正確な文言に修正し、レポート画面にもClaude/Gemini観測の注記・Gemini途中終了時の注意文を追加した。表示文言・説明文のみの調整で、backend・API・分析ロジック・provider実装は変更していない——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「15. MVPレビュー前の表示文言最終確認」を参照。**
 
+**追記（2026-09-19）: 依頼者レビューの追加要望を受け、分析結果画面・履歴詳細・レポートに新ブロック「Web上の説明とAI回答のズレ」を追加した（`feature/web-ai-gap-section`）。Web上の情報環境（Common Crawl/入力URL）の代表文脈と、ChatGPT/Claude/Gemini/AI Overviewの回答内容を並べて表示し、両者の違いから改善の方向性を考えるための補助情報である。Common CrawlはAIの学習内容そのものではなく、ChatGPT/Claude/Geminiはいずれも単発観測として扱い、「AIが学習している」「AIが必ずこう理解する」とは書かない方針を踏襲している。新しい外部API呼び出しは追加していない（既存のCommon Crawl/web_fetch文書・既存のAI観測結果・既存の共起語ランキング計算を再利用するのみ）。古い保存済み履歴ではこのブロック自体が表示されず、画面が壊れることはない——詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16. Web上の説明とAI回答のズレブロックの追加」を参照。**
+
 ## 1. 現在のMVPでできること
 
 現在のMVPでは、ブランド名や公式サイトURLをもとに、Web上でそのブランドがどのような文脈で扱われているかを分析できます。
