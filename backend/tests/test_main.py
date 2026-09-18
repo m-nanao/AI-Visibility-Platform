@@ -2574,3 +2574,75 @@ def test_analyze_common_crawl_combines_with_dataforseo_and_chatgpt_includes_anal
     assert result.meta.commonCrawlProvider.analyzedUrls == ["https://cybozu.co.jp/about"]
     assert result.meta.aiOverviewProvider.mode == "dataforseo"
     assert result.meta.chatgptProvider.status == "real"
+
+
+# --- webAiGap ("Web上の説明とAI回答のズレ", see services/web_ai_gap.py) ---
+
+
+def test_analyze_web_ai_gap_is_unavailable_by_default(monkeypatch):
+    # Default request: no urls/documents (development_sample only, no
+    # common_crawl/web_fetch Document) and aiOverviewComparison stays
+    # mock (no real single-shot AI observation) — neither side has
+    # anything usable, so webAiGap must be "unavailable".
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+
+    response = client.post("/analyze", json={"brandName": "OpenAI"})
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.webAiGap is not None
+    assert result.webAiGap.status == "unavailable"
+    assert result.webAiGap.webContext is None
+    assert result.webAiGap.aiContexts == []
+
+
+def test_analyze_web_ai_gap_is_real_with_web_fetch_urls_and_a_real_claude_observation(monkeypatch):
+    _clear_claude_env(monkeypatch)
+    _clear_gemini_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-super-secret-key")
+    monkeypatch.setenv("ALLOW_CLAUDE_MODE_OVERRIDE", "true")
+
+    def fake_fetch(urls):
+        return [
+            FetcherResult(
+                url=u,
+                success=True,
+                text="OpenAIは契約期間の縛りなし・初期費用0円で利用できるサービスです。",
+            )
+            for u in urls
+        ]
+
+    monkeypatch.setattr(main, "fetch_url_texts", fake_fetch)
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "OpenAIはAI研究・開発を行う会社です。"}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(claude_client.httpx, "post", fake_post)
+
+    response = client.post(
+        "/analyze",
+        json={
+            "brandName": "OpenAI",
+            "urls": ["https://example.com/about"],
+            "claudeMode": "anthropic",
+        },
+    )
+    assert response.status_code == 200
+
+    result = AnalysisResult.model_validate(response.json())
+    assert result.webAiGap is not None
+    assert result.webAiGap.status == "real"
+    assert result.webAiGap.webContext is not None
+    assert result.webAiGap.webContext.sourceType == "web_fetch"
+    assert "claude" in [context.platform for context in result.webAiGap.aiContexts]
+    assert result.webAiGap.gapSummary is not None
+    assert result.webAiGap.suggestions
+    # Never claims an AI has "learned"/"understood" anything, and never
+    # asserts what the internal state of the model is.
+    assert "学習" not in result.webAiGap.note
+    assert "理解" not in result.webAiGap.note

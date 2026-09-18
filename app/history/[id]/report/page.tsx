@@ -50,7 +50,19 @@ import {
   getAiOverviewItemDetailDisplay,
   getCommonCrawlProviderDisplay,
 } from "../../../lib/meta-label";
-import type { AnalysisResult } from "../../../lib/types";
+import type { AnalysisResult, WebAiGapPlatform } from "../../../lib/types";
+
+// Display labels for WebAiGapAiContext.platform (see WebAiGapSection.tsx,
+// which uses the identical mapping for the analysis result/history
+// detail screens — kept as its own local copy here rather than a
+// shared import since this report page already builds its own
+// plain-text layout independent of AnalysisDashboard's components).
+const WEB_AI_GAP_PLATFORM_LABELS: Record<WebAiGapPlatform, string> = {
+  chatgpt: "ChatGPT",
+  claude: "Claude",
+  gemini: "Gemini",
+  ai_overview: "AI Overview",
+};
 
 // Print-oriented HTML report page (docs/26_report_output_design.md).
 // Fetches the same two endpoints as app/history/[id]/page.tsx (via the
@@ -285,7 +297,71 @@ function ReportContent({
         )}
       </section>
 
-      {/* 5. 前回比較 */}
+      {/* 5. Web上の説明とAI回答のズレ (webAiGap) — AI回答側の観測の直後・
+          前回比較/改善提案の直前に置く（feature/web-ai-gap-section、
+          分析結果画面のAnalysisDashboardと同じ順序意図）。
+          result.webAiGapが未定義の場合(古い履歴)はセクション自体を
+          レンダリングしない。 */}
+      {result.webAiGap && (
+        <section className="break-inside-avoid">
+          <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
+            {REPORT_SECTION_TITLES.webAiGap}
+          </h2>
+          {result.webAiGap.status === "unavailable" ? (
+            <p className="mt-1 text-zinc-500 dark:text-zinc-400 print:text-black">
+              {result.webAiGap.note}
+            </p>
+          ) : (
+            <div className="mt-1 space-y-2">
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  Web上の情報環境
+                </p>
+                <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+                  {result.webAiGap.webContext?.summary}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  AI回答上の説明
+                </p>
+                {result.webAiGap.aiContexts.map((context) => (
+                  <p key={context.platform} className="text-zinc-600 dark:text-zinc-300 print:text-black">
+                    {WEB_AI_GAP_PLATFORM_LABELS[context.platform]}: {context.summary}
+                  </p>
+                ))}
+              </div>
+              {result.webAiGap.gapSummary && (
+                <div>
+                  <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    ズレの見方
+                  </p>
+                  <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+                    {result.webAiGap.gapSummary}
+                  </p>
+                </div>
+              )}
+              {result.webAiGap.suggestions.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    改善ヒント
+                  </p>
+                  <ul className="list-disc space-y-0.5 pl-5">
+                    {result.webAiGap.suggestions.map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+                {result.webAiGap.note}
+              </p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* 6. 前回比較 */}
       <section className="break-inside-avoid">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
           {REPORT_SECTION_TITLES.comparison}
@@ -293,7 +369,7 @@ function ReportContent({
         <ReportComparison view={comparisonView} />
       </section>
 
-      {/* 6. 改善提案 */}
+      {/* 7. 改善提案 */}
       <section>
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
           {REPORT_SECTION_TITLES.improvements}
@@ -321,7 +397,7 @@ function ReportContent({
         )}
       </section>
 
-      {/* 7. 注意事項 */}
+      {/* 8. 注意事項 */}
       <section className="break-inside-avoid border-t border-zinc-200 pt-4 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 print:border-black print:text-black">
         <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 print:text-black">
           {REPORT_SECTION_TITLES.notes}

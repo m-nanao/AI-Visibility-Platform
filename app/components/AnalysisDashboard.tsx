@@ -10,6 +10,7 @@ import BrandSummarySection from "./sections/BrandSummarySection";
 import CooccurrenceRankingSection from "./sections/CooccurrenceRankingSection";
 import ContextAnalysisSection from "./sections/ContextAnalysisSection";
 import AIOverviewComparisonSection from "./sections/AIOverviewComparisonSection";
+import WebAiGapSection from "./sections/WebAiGapSection";
 import ImprovementSuggestionsSection from "./sections/ImprovementSuggestionsSection";
 
 export default function AnalysisDashboard({
@@ -52,6 +53,15 @@ export default function AnalysisDashboard({
           での折り返し・視認性を改善する（style/widen-ai-overview-section）。 */}
       <div className="lg:col-span-2">
         <AIOverviewComparisonSection items={result.aiOverviewComparison} meta={result.meta} />
+      </div>
+      {/* Web上の説明とAI回答のズレ ("webAiGap") はAI観測ブロックの直後・
+          改善提案ブロックの直前に置く — AI観測を見た後にWeb側との差分を
+          見て、その後に改善提案を見る流れが自然なため
+          (feature/web-ai-gap-section)。他の長文セクションと同様
+          lg:col-span-2。result.webAiGapが未定義の場合(古い履歴)は
+          WebAiGapSection自体が何もレンダリングしない。 */}
+      <div className="lg:col-span-2">
+        <WebAiGapSection webAiGap={result.webAiGap} />
       </div>
       {/* 改善提案は他セクションより文章量が多くなりやすく、狭い2カラム
           グリッド内だと1件あたりの説明文が読みにくくなるため、

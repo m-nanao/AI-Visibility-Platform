@@ -398,6 +398,46 @@ export interface ImprovementSuggestion {
   priority: Priority;
 }
 
+// "Web上の説明とAI回答のズレ" — see backend/services/web_ai_gap.py.
+// There is no "mock" status here (unlike SectionStatus): this section
+// is never fixed placeholder data, it's either computed from what's
+// actually available this request or not computed at all.
+export type WebAiGapStatus = "real" | "unavailable";
+
+// Where WebAiGapWebContext.summary's representative text came from —
+// backend/services/web_ai_gap.py only ever produces "common_crawl" or
+// "web_fetch" today ("mixed"/"unknown" are reserved for later).
+export type WebAiGapWebSourceType = "common_crawl" | "web_fetch" | "mixed" | "unknown";
+
+export type WebAiGapPlatform = "chatgpt" | "claude" | "gemini" | "ai_overview";
+
+export interface WebAiGapWebContext {
+  summary: string;
+  sourceType: WebAiGapWebSourceType;
+  sourceUrl?: string;
+}
+
+export interface WebAiGapAiContext {
+  platform: WebAiGapPlatform;
+  summary: string;
+  status: "real";
+}
+
+export interface WebAiGapResult {
+  status: WebAiGapStatus;
+  // Undefined when status is "unavailable" (nothing to compare).
+  webContext?: WebAiGapWebContext;
+  aiContexts: WebAiGapAiContext[];
+  // Undefined when status is "unavailable", or when there was nothing
+  // distinctive to report on either side.
+  gapSummary?: string;
+  suggestions: string[];
+  // A short, always-present reminder that this is a rough, auxiliary
+  // comparison — never a claim about what an AI has "learned" or
+  // "understood".
+  note: string;
+}
+
 export interface AnalysisResult {
   brandName: string;
   summary: BrandSummary;
@@ -412,4 +452,8 @@ export interface AnalysisResult {
   // docs/23_analysis_run_id_and_post_analyze_link_design.md). Not yet
   // used to render a link — that's a later task.
   analysisRunId?: string | null;
+  // "Web上の説明とAI回答のズレ" (see WebAiGapResult above). Undefined on
+  // older saved history that predates this field — components must
+  // treat that the same as "nothing to show" rather than an error.
+  webAiGap?: WebAiGapResult;
 }

@@ -1,6 +1,6 @@
 # 複数AI横並び比較 設計メモ
 
-**このドキュメントは元々設計メモとして作成された（下記本文は作成当時のまま）。2026-09-15、`feature/multi-ai-observation-foundation`でClaude/Gemini観測provider（実装基盤）を追加した——詳細は末尾の「8. 実装基盤の追加」を参照。2026-09-17にClaude、2026-09-19にGeminiの検証用selectorを追加し、いずれも本番Render backend・Vercel frontendの環境変数設定・本番検証まで完了している（デフォルトは常にoff、検証用selectorで明示的にONにした場合のみ動作——詳細は「10」「13」参照）。** 現在AI観測として実装済みなのは、Google AI Overview / AI Mode（DataForSEO経由、[03_api_design.md](./03_api_design.md)・[11_architecture_v1.md](./11_architecture_v1.md)参照）・ChatGPT相当モデル（OpenAI API、`services/chatgpt_provider.py`）・Claude相当モデル（Anthropic API、`services/claude_provider.py`、本番検証済み）・Gemini相当モデル（Google API、`services/gemini_provider.py`、本番検証済み）の4種類。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+**このドキュメントは元々設計メモとして作成された（下記本文は作成当時のまま）。2026-09-15、`feature/multi-ai-observation-foundation`でClaude/Gemini観測provider（実装基盤）を追加した——詳細は末尾の「8. 実装基盤の追加」を参照。2026-09-17にClaude、2026-09-19にGeminiの検証用selectorを追加し、いずれも本番Render backend・Vercel frontendの環境変数設定・本番検証まで完了している（デフォルトは常にoff、検証用selectorで明示的にONにした場合のみ動作——詳細は「10」「13」参照）。** 現在AI観測として実装済みなのは、Google AI Overview / AI Mode（DataForSEO経由、[03_api_design.md](./03_api_design.md)・[11_architecture_v1.md](./11_architecture_v1.md)参照）・ChatGPT相当モデル（OpenAI API、`services/chatgpt_provider.py`）・Claude相当モデル（Anthropic API、`services/claude_provider.py`、本番検証済み）・Gemini相当モデル（Google API、`services/gemini_provider.py`、本番検証済み）の4種類。**2026-09-19、`feature/web-ai-gap-section`で、Web上の情報環境（Common Crawl/web_fetch）とこれらAI観測の差分を見せる補助セクション「Web上の説明とAI回答のズレ」（`AnalysisResult.webAiGap`）を追加した——新しい外部API呼び出しは追加していない（詳細は「16」参照）。** docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
 **最終更新日: 2026-09-19**
 
@@ -177,6 +177,29 @@ MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状
 - **`app/lib/analysis-explanation.ts`の`AI_OBSERVATION_GUIDE`**: Claude/Gemini観測が本番検証済みになった後もChatGPT/AI Overviewのみの説明のまま更新されていなかったため、Claude/Gemini相当モデルを項目に追加し、本文も「どのように回答されるかを確認します」→「どのように扱われる傾向があるかを、単発の観測結果として確認します」へ調整した。
 - **`app/history/[id]/report/page.tsx`のレポート画面「4. AI回答側の観測」セクション**: それまでAI Overview/ChatGPTの注記のみで、Claude/Gemini観測の注記（`CLAUDE_PLATFORM_NOTE`/`GEMINI_PLATFORM_NOTE`）・単発観測である旨の共通注記（`AI_OBSERVATION_COMMON_EXPLANATION_TEXT`）・Gemini途中終了時の注意文（`isTruncated`/`note`、分析結果画面・履歴詳細画面と同じ`getAiOverviewItemDetailDisplay()`のtruncationWarning）が表示されていなかった。依頼者に共有される可能性が高いレポート画面でも分析結果画面・履歴詳細画面と同じ注意事項が伝わるよう追加した。
 - **`app/lib/analysis-history.ts`の`REPORT_AI_OVERVIEW_EMPTY_MESSAGE`**: 「AI Overview / ChatGPT観測データはありません。」→「AI Overview / ChatGPT / Claude / Gemini観測データはありません。」（Claude/Gemini観測が追加された後も更新されていなかった）。
+
+## 16. Web上の説明とAI回答のズレブロックの追加（2026-09-19、`feature/web-ai-gap-section`）
+
+依頼者レビューで「Common Crawlで集めたデータと、各AIモデルが回答生成した際のデータを比較できるブロックが欲しい」という追加要望を受け、分析結果画面・履歴詳細・レポートに新セクション「Web上の説明とAI回答のズレ」（`WebAiGapSection`、backendの新フィールド`AnalysisResult.webAiGap`）を追加した。
+
+**新しい外部API呼び出しは一切追加していない**。既に計算済みの以下だけを使う。
+
+- Web側: `documents_list`（cooccurrenceRankingにも使われるDocument[]。Common Crawl由来があれば優先、なければ入力URL(web_fetch)由来、どちらもなければ`unavailable`）。
+- AI側: `result.aiOverviewComparison`（ChatGPT/Claude/Gemini/AI Overview観測が既に追加された後の状態）から、実観測（mock/off/unavailableのカードは除外）だけを抽出。
+- 差分判定: `services/cooccurrence.py`の`compute_cooccurrence_ranking()`をAI側テキストにもそのまま再利用し、Web側の既存`cooccurrenceRanking`と比較する簡易ヒューリスティック（新しいtokenizerは実装していない）。
+
+新設`backend/services/web_ai_gap.py`の`build_web_ai_gap()`が本体で、`backend/main.py`ではGemini観測の直後・`result.meta`組み立ての直前で1回呼ぶだけ（`backend/models.py`に`WebAiGapResult`/`WebAiGapWebContext`/`WebAiGapAiContext`を追加）。
+
+- `status`: `webContext`と`aiContexts`の両方が揃った場合のみ`"real"`、どちらか一方でも欠ける場合は`"unavailable"`（例:「Web情報またはAI観測が不足しているため、差分比較は表示できません。」）。
+- 文言方針: 「AIが学習している」「AIが必ずこう理解する」とは書かず、常に「Web上で確認できる文脈」と「AI観測上の回答傾向」の比較として表現する（`WEB_AI_GAP_NOTE`＝「Web上の情報環境とAI回答の単発観測を比較した補助的な見立てです。AIの内部認識を直接示すものではありません。」を`real`/`unavailable`いずれでも表示）。
+
+frontend側は新規`app/components/sections/WebAiGapSection.tsx`を追加し、`AnalysisDashboard`のAI Overview比較セクションの直後・改善提案セクションの直前（`5.`、改善提案は`6.`へ繰り下げ）に配置した——AI観測を見た後にWeb側との差分を見て、その後に改善提案を見る流れが自然なため。`app/history/[id]/page.tsx`は既存の`AnalysisDashboard`をそのまま再利用しているため変更不要。`app/history/[id]/report/page.tsx`には「4. AI回答側の観測」の直後・「前回比較」の直前に同内容の簡易版セクションを追加し、それに伴い以降のセクション番号を1つずつ繰り下げた（前回比較6・改善提案7・注意事項8）。
+
+古い保存済み履歴（`webAiGap`フィールドを持たない）は、分析結果画面・履歴詳細・レポートのいずれでも`WebAiGapSection`自体が何もレンダリングしない設計にした（`result.webAiGap`が`undefined`の場合、コンポーネントは`null`を返す／レポート側は`{result.webAiGap && (...)}`で丸ごとスキップ）——画面が壊れることはない。
+
+`app/lib/types.ts`・`app/lib/analysis-result-schema.ts`（Zodスキーマ）にも同じ型を追加し、`webAiGap`が存在しない/`null`の応答を後方互換で受け付ける。
+
+DB schema変更・migration追加・Supabase/Render/Vercel設定変更・RLS本番適用はいずれも行っていない（`result.webAiGap`は既存の`result_json`保存にそのまま含まれるだけで、テーブル定義自体は無変更）。backend/frontendともにテストを追加した（`backend/tests/test_web_ai_gap.py`新規10件、`backend/tests/test_main.py`に統合テスト2件、`app/lib/analysis-result-schema.test.ts`に7件）。
 
 ## 関連ドキュメント
 

@@ -208,6 +208,31 @@ const improvementSuggestionSchema = z.object({
   priority: prioritySchema,
 });
 
+const webAiGapStatusSchema = z.enum(["real", "unavailable"]);
+const webAiGapWebSourceTypeSchema = z.enum(["common_crawl", "web_fetch", "mixed", "unknown"]);
+const webAiGapPlatformSchema = z.enum(["chatgpt", "claude", "gemini", "ai_overview"]);
+
+const webAiGapWebContextSchema = z.object({
+  summary: z.string(),
+  sourceType: webAiGapWebSourceTypeSchema,
+  sourceUrl: optionalFromPython(z.string()),
+});
+
+const webAiGapAiContextSchema = z.object({
+  platform: webAiGapPlatformSchema,
+  summary: z.string(),
+  status: z.literal("real"),
+});
+
+const webAiGapResultSchema = z.object({
+  status: webAiGapStatusSchema,
+  webContext: optionalFromPython(webAiGapWebContextSchema),
+  aiContexts: z.array(webAiGapAiContextSchema).default([]),
+  gapSummary: optionalFromPython(z.string()),
+  suggestions: z.array(z.string()).default([]),
+  note: z.string(),
+});
+
 export const analysisResultSchema = z.object({
   brandName: z.string(),
   summary: brandSummarySchema,
@@ -222,6 +247,10 @@ export const analysisResultSchema = z.object({
   // "7. frontend schema / 型の変更方針". Absent entirely on older saved
   // results predating this field, which parses the same as null.
   analysisRunId: z.string().uuid().nullable().optional(),
+  // "Web上の説明とAI回答のズレ" (see backend/services/web_ai_gap.py).
+  // Absent entirely on older saved results predating this field, which
+  // parses the same as undefined (no block rendered).
+  webAiGap: optionalFromPython(webAiGapResultSchema),
 });
 
 export type AnalysisResultParseResult =

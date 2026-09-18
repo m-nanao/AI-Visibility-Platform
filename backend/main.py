@@ -155,6 +155,7 @@ from services.document_chunker import chunk_documents
 from services.document_normalizer import normalize_text
 from services.mock_analysis import build_dummy_analysis
 from services.sample_documents import build_sample_documents_as_documents
+from services.web_ai_gap import build_web_ai_gap
 from services.web_fetcher import fetch_url_texts, to_documents as fetch_results_to_documents
 
 # Common Crawl's Index API can return up to settings.max_results
@@ -687,6 +688,18 @@ def analyze(payload: AnalyzeRequest):
         gemini_mode,
         gemini_status,
     )
+
+    # webAiGap ("Web上の説明とAI回答のズレ", see services/web_ai_gap.py):
+    # a rule-based comparison between the Web-side Document[]
+    # (documents_list, same list used for cooccurrenceRanking above)
+    # and result.aiOverviewComparison (now that ChatGPT/Claude/Gemini
+    # have all had a chance to append their cards above). No new
+    # external API call — built entirely from data already computed in
+    # this request.
+    result.webAiGap = build_web_ai_gap(
+        brand_name, documents_list, result.cooccurrenceRanking, result.aiOverviewComparison
+    )
+    logger.info("web/AI gap complete: status=%s", result.webAiGap.status)
 
     result.meta = AnalysisMeta(
         sections=AnalysisSectionStatuses(

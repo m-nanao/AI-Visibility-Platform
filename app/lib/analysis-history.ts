@@ -595,6 +595,10 @@ export const REPORT_SECTION_TITLES = {
   summary: "サマリー",
   webContext: "Web上の文脈",
   aiObservation: "AI回答側の観測",
+  // "Web上の説明とAI回答のズレ" (webAiGap, feature/web-ai-gap-section) —
+  // placed right after aiObservation, before comparison/improvements,
+  // mirroring the analysis result screen's AnalysisDashboard ordering.
+  webAiGap: "Web上の説明とAI回答のズレ",
   comparison: "前回比較",
   improvements: "改善提案",
   notes: "注意事項",

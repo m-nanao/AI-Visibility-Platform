@@ -8,7 +8,7 @@ export default function ImprovementSuggestionsSection({
   items: ImprovementSuggestion[];
 }) {
   return (
-    <Card title="5. 改善提案" description="Web上の情報発信を改善するための施策案（候補）">
+    <Card title="6. 改善提案" description="Web上の情報発信を改善するための施策案（候補）">
       <ul className="flex flex-col gap-3">
         {items.map((item) => (
           <li

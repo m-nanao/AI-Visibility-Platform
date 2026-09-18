@@ -83,6 +83,7 @@ Common Crawl補完: 公式ドメインから補完
 - **ChatGPT観測**: OpenAI APIによる1問観測（同様に、ChatGPTアプリ全体の認識を保証するものではない旨を画面に表示済み）。
 - **Claude観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Anthropic APIによる1問観測で、Claudeサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。履歴詳細・レポート画面でも同じ形式で再表示される（本番確認済み、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照）。
 - **Gemini観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Google Gemini APIによる1問観測で、Geminiサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。**出力上限やAPI側の都合で本文が途中終了する場合があり、その場合は注意文が表示される**（「Gemini APIの出力が途中で終了した可能性があります」——[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12」参照）。
+- **Web上の説明とAI回答のズレ**: AI Overview比較の直後・改善提案の直前に表示。Web上の情報環境（Common Crawl/入力URL）の代表文脈と、実際に観測できたChatGPT/Claude/Gemini/AI Overviewの回答内容を並べて表示し、両者のズレの見方と改善ヒントを提示する。新しい外部API呼び出しは追加していない補助情報であり、AIの内部認識を断定しない旨の注意書きを常に表示する。Web情報またはAI観測のいずれかが不足する場合は差分比較が表示できない旨を表示し、古い保存済み履歴（このフィールドを持たない）ではブロック自体が表示されない（`feature/web-ai-gap-section`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照）。
 - **改善提案**: 横幅いっぱいで表示され、Web上の説明とAI回答のズレを改善するヒントとして提示する（`feature/history-ui-link-and-layout-polish`で調整済み）。
 
 ### 履歴一覧（`/history`）
@@ -110,6 +111,7 @@ Common Crawl補完: 公式ドメインから補完
 - 依頼者への共有・印刷を想定した1ページレイアウト。
 - PDF保存/印刷ボタンあり——ただし正式なPDF自動生成機能ではなく、ブラウザの印刷機能（`window.print()`）によるものである（[26_report_output_design.md](./26_report_output_design.md)参照）。
 - **「AI回答側の観測」セクションには、分析結果画面・履歴詳細画面と同じAI Overview / ChatGPT / Claude / Gemini各観測の注記（単発観測であること、各サービス全体の認識を保証しないこと）と、Gemini観測が途中終了した場合の注意文が表示される**（`chore/mvp-review-copy-final-check`、2026-09-18。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「15」参照。依頼者に共有される可能性が高いレポート画面でも同じ注意事項が伝わるようにした）。
+- **「AI回答側の観測」の直後・「前回比較」の直前に「Web上の説明とAI回答のズレ」セクションが追加され、印刷向けの簡潔な表示でWeb上の情報環境・AI回答の説明・ズレの見方・改善ヒントが表示される**（`feature/web-ai-gap-section`、2026-09-19。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照。古い保存済み履歴ではこのセクション自体が表示されない）。
 
 ## 6. MVP範囲と未対応範囲
 

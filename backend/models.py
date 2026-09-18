@@ -503,6 +503,93 @@ class AIOverviewComparisonItem(BaseModel):
     note: str | None = None
 
 
+# Whether services/web_ai_gap.py could build a meaningful comparison —
+# "real" when both a Web-side representative context and at least one
+# real single-shot AI observation were available, "unavailable"
+# otherwise (missing either side means there is nothing to compare).
+# Distinct from SectionStatus: there is no "mock" state here, since
+# this section is never fixed placeholder data — it's either computed
+# from what's actually available this request, or not computed at all.
+WebAiGapStatus = Literal["real", "unavailable"]
+
+# Where WebAiGapWebContext.summary's representative text came from.
+# services/web_ai_gap.py only ever picks a single Document (preferring
+# "common_crawl" over "web_fetch" — see its module docstring), so only
+# those two values are actually produced today; "mixed"/"unknown" are
+# reserved for a future version that might blend multiple Documents.
+WebAiGapWebSourceType = Literal["common_crawl", "web_fetch", "mixed", "unknown"]
+
+# Which AI observation a WebAiGapAiContext entry summarizes. Mirrors
+# the platform labels already used elsewhere (ChatGptProviderInfo.mode
+# "openai" etc.) but as a short, stable key rather than each provider's
+# display-oriented AIOverviewComparisonItem.platform string (e.g.
+# "ChatGPT (OpenAI API)") — see services/web_ai_gap.py's
+# _classify_ai_platform().
+WebAiGapPlatform = Literal["chatgpt", "claude", "gemini", "ai_overview"]
+
+
+class WebAiGapWebContext(BaseModel):
+    """A short, representative excerpt of what the Web-side Document[]
+    says about the brand — see services/web_ai_gap.py. Never the full
+    Document text, and never HTML/WARC body (same discipline as
+    CommonCrawlProviderInfo above)."""
+
+    summary: str
+    sourceType: WebAiGapWebSourceType
+    sourceUrl: str | None = None
+
+
+class WebAiGapAiContext(BaseModel):
+    """One AI observation's short excerpt, reused as-is from the
+    matching AIOverviewComparisonItem.summary already computed earlier
+    in /analyze (see services/web_ai_gap.py) — no new API call. `status`
+    is always "real": services/web_ai_gap.py only ever builds an entry
+    for a platform that actually produced a real single-shot
+    observation this request (off/unavailable/mock items are excluded
+    entirely, never included with a different status), so this field
+    exists only to make that guarantee explicit in the response shape
+    rather than to distinguish states.
+    """
+
+    platform: WebAiGapPlatform
+    summary: str
+    status: Literal["real"] = "real"
+
+
+class WebAiGapResult(BaseModel):
+    """"Web上の説明とAI回答のズレ" — an MVP, rule-based comparison
+    between the Web-side information environment (Common Crawl/
+    web_fetch Document[], already gathered for cooccurrenceRanking) and
+    the AI-side single-shot observations (ChatGPT/Claude/Gemini/AI
+    Overview, already gathered for aiOverviewComparison) — see
+    services/web_ai_gap.py. Added per a依頼者 review request to help
+    explain *why* Web content and AI answers might read differently,
+    and what to adjust on the Web side to narrow that gap.
+
+    No new external API call of any kind (no new AI summarization
+    call, no new Common Crawl/web fetch) — every field here is built
+    from Document[]/cooccurrenceRanking/aiOverviewComparison already
+    computed elsewhere in the same /analyze request. Optional on
+    AnalysisResult so older saved history (predating this field)
+    keeps parsing unchanged — see AnalysisResult.webAiGap below.
+    """
+
+    status: WebAiGapStatus
+    # None when status is "unavailable" (nothing to compare).
+    webContext: WebAiGapWebContext | None = None
+    aiContexts: list[WebAiGapAiContext] = []
+    # None when status is "unavailable", or when there was nothing
+    # distinctive to report on either side.
+    gapSummary: str | None = None
+    suggestions: list[str] = []
+    # A short, always-present reminder that this is a rough, auxiliary
+    # comparison — never a claim about what an AI has "learned" or
+    # "understood" (see services/web_ai_gap.py's WEB_AI_GAP_NOTE /
+    # WEB_AI_GAP_UNAVAILABLE_NOTE for the exact wording used for each
+    # status).
+    note: str
+
+
 class ImprovementSuggestion(BaseModel):
     title: str
     description: str
@@ -524,6 +611,10 @@ class AnalysisResult(BaseModel):
     # save failure never fails /analyze itself — this field is simply
     # None in that case, same as when saving is off entirely.
     analysisRunId: str | None = None
+    # "Web上の説明とAI回答のズレ" — see WebAiGapResult above and
+    # services/web_ai_gap.py. Optional so old saved history (predating
+    # this field) still parses/renders unchanged.
+    webAiGap: WebAiGapResult | None = None
 
 
 class AnalyzeRequest(BaseModel):
