@@ -217,6 +217,8 @@ Supabase Authによるログイン、分析履歴の保存・閲覧、前回比�
 
 - 過去に実行した分析（保存に成功したもの）が一覧表示される。
 - 各項目の「詳細を見る」ボタンから詳細画面へ移動する。
+- 各項目に、その分析時にAI Overview / ChatGPT / Claude / Gemini / Common Crawlがそれぞれどの状態だったかを示す短いバッジが表示される（2026-09-19追記、21章参照）。
+- 各項目の「削除」ボタンから、その分析履歴を一覧から削除できる（2026-09-19追記、物理削除ではない。21章参照）。
 
 ### 履歴詳細（`/history/[id]`）
 
@@ -341,6 +343,29 @@ MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状
 - **古い保存済み履歴**（`webAiGap`フィールドを持たない）では、このブロック自体が表示されない——画面が壊れることはない。
 - 履歴詳細（`/history/[id]`）は既存の分析結果画面と同じ`AnalysisDashboard`を再利用しているため自動的に同じブロックが表示される。レポート画面（`/history/[id]/report`）にも印刷しやすい簡潔な同内容のセクションを追加した。
 - 詳細（backend実装・データ取得元・差分判定ロジック）は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16. Web上の説明とAI回答のズレブロックの追加」を参照。
+
+## 21. 分析履歴の削除・観測モードバッジ（2026-09-19追記）
+
+全ON・単体ON検証を何度も実行した結果、履歴一覧に似た履歴が増えて見分けにくくなったという依頼者からのフィードバックを受け、履歴の削除機能と、各履歴が実行時にどの観測をONにしていたか分かるバッジ表示を追加した（`feature/history-delete-and-mode-badges`）。
+
+### 削除（soft delete）
+
+- `/history`の各履歴に「削除」ボタンがある。クリックすると「この分析履歴を削除しますか？削除すると一覧には表示されなくなります。」という確認ダイアログが出る。
+- 確認すると削除が実行され、成功すると一覧からその場で消える。削除中は「削除中...」と表示されボタンは無効化される。
+- 削除に失敗した場合は、一覧からは消さずにその行にエラーメッセージを表示する。
+- **削除は物理削除ではない**。DB上は`analysis_runs.deleted_at`に削除日時が入るだけで、`analysis_results`・`brands`テーブルの行は削除されない（`backend/migrations/003_add_deleted_at_to_analysis_runs.sql`）。削除済み履歴は一覧（`GET /analysis-runs`）・詳細（`GET /analysis-runs/{id}`）のいずれにも出てこなくなり、前回比較の比較対象としても使われなくなる。
+- 同じ履歴を2回削除しても、2回目はエラーにならず成功扱いになる（既に削除済みとして扱う）。
+- project access / JWT認証のログイン済みユーザーは、自分がアクセスできるprojectの履歴のみ削除できる（他projectの履歴を削除しようとすると403）。`HISTORY_READ_TOKEN`による内部/管理用アクセス時は、これまでの読み取りAPIと同様に制限なく削除できる。
+- 「同じ条件で再分析」機能はまだ実装していない——削除した履歴を復元したい場合は、現時点では`deleted_at`を手動でNULLに戻す以外の方法はない。
+
+### 観測モードバッジ
+
+- `/history`の各履歴に、AI Overview / ChatGPT / Claude / Gemini / Common Crawlそれぞれの状態を示す短いバッジが表示される。
+- 例: `AI Overview: 実測(Live)` / `ChatGPT: ON` / `Claude: OFF` / `Gemini: 未取得` / `Common Crawl: ON`
+- 保存済みの`meta_json`（分析結果と一緒にDBへ保存されているメタ情報）から判定しており、新しい外部API呼び出しは発生しない。
+- 古い保存済み履歴で情報がない項目は「不明」と表示され、画面が壊れることはない。
+
+詳細（migration・backend実装）は[19_minimum_db_migration_design.md](./19_minimum_db_migration_design.md)「16. analysis_runs への deleted_at 追加（soft delete）」を参照。判定ロジックは`backend/services/history_mode_summary.py`（観測モードバッジ）・`backend/services/analysis_history_repository.py`の`soft_delete_analysis_run()`（削除）を参照。
 
 ## 関連ドキュメント
 

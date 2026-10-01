@@ -14,11 +14,32 @@ import {
 import { parseAnalysisResult } from "./analysis-result-schema";
 import type { AnalysisResult, CooccurrenceKeyword } from "./types";
 
+/** Which observation providers were actually in effect for one saved
+ * analysis run — mirrors backend/models.py's AnalysisRunModeSummary
+ * (see backend/services/history_mode_summary.py). `aiOverview` uses
+ * "mock"/"sandbox"/"live"/"off"/"unavailable"/"unknown";
+ * `chatgpt`/`claude`/`gemini`/`commonCrawl` use
+ * "real"/"off"/"unavailable"/"unknown" — kept as plain `string` here
+ * (not a union of literals) to match the backend model's own loose
+ * typing and so an unrecognized future value never fails Zod
+ * validation, only falls back to a raw display below (see
+ * formatModeSummaryBadges()).
+ */
+export type AnalysisRunModeSummary = {
+  aiOverview: string;
+  chatgpt: string;
+  claude: string;
+  gemini: string;
+  commonCrawl: string;
+};
+
 /** One row of GET /analysis-runs's `items` — mirrors
  * backend/models.py's AnalysisRunListItem. Deliberately excludes
  * result/resultJson (see docs/20_analysis_history_read_api_design.md
  * "5. GET /analysis-runs の設計案"「返さないもの」) — the list view
- * never needs to know about them.
+ * never needs to know about them. `modeSummary` is the one deliberate
+ * exception (see AnalysisRunModeSummary above) — undefined on older
+ * saved history that predates this field.
  */
 export type AnalysisRunListItem = {
   id: string;
@@ -30,6 +51,7 @@ export type AnalysisRunListItem = {
   startedAt?: string;
   completedAt?: string;
   createdAt?: string;
+  modeSummary?: AnalysisRunModeSummary;
 };
 
 export type AnalysisRunListResponse = {
@@ -105,6 +127,7 @@ export type AnalysisRunListItemDisplay = {
   visibilityScoreLabel?: string;
   sourceSummaryLabel?: string;
   startedAtLabel: string;
+  modeBadges: ModeSummaryBadge[];
 };
 
 export function formatAnalysisRunListItem(
@@ -120,7 +143,112 @@ export function formatAnalysisRunListItem(
         : undefined,
     sourceSummaryLabel: formatSourceSummary(item.sourceSummary),
     startedAtLabel: item.startedAt ?? item.createdAt ?? "実行日時不明",
+    modeBadges: formatModeSummaryBadges(item.modeSummary),
   };
+}
+
+// --- Mode summary badges (feature/history-delete-and-mode-badges) --------
+//
+// Lets a依頼者 scanning the history list tell apart similar-looking
+// runs from a full-ON/single-ON/failed verification pass without
+// opening each one's detail page — see
+// backend/services/history_mode_summary.py's module docstring for why
+// this is derived from meta_json rather than input_snapshot.
+
+const AI_OVERVIEW_BADGE_LABELS: Record<string, string> = {
+  mock: "mock",
+  sandbox: "実測(Sandbox)",
+  live: "実測(Live)",
+  off: "OFF",
+  unavailable: "未取得",
+  unknown: "不明",
+};
+
+// Shared by chatgpt/claude/gemini/commonCrawl — all four use the same
+// real/off/unavailable/unknown vocabulary (see AnalysisRunModeSummary
+// above).
+const SIMPLE_PROVIDER_BADGE_LABELS: Record<string, string> = {
+  real: "ON",
+  off: "OFF",
+  unavailable: "未取得",
+  unknown: "不明",
+};
+
+export type ModeSummaryBadge = {
+  label: string;
+  value: string;
+};
+
+/** Builds the short badge row for one history list item — always
+ * returns all 5 badges (falling back to "不明" for every one) when
+ * `modeSummary` itself is undefined, so an older saved run renders the
+ * same badge row shape as a new one instead of a differently-shaped
+ * (or missing) row. An unrecognized value (a future provider state
+ * this frontend doesn't know about yet) is shown as-is rather than
+ * hidden, so it's at least visible instead of silently dropped.
+ */
+export function formatModeSummaryBadges(
+  modeSummary: AnalysisRunModeSummary | undefined,
+): ModeSummaryBadge[] {
+  const s = modeSummary ?? {
+    aiOverview: "unknown",
+    chatgpt: "unknown",
+    claude: "unknown",
+    gemini: "unknown",
+    commonCrawl: "unknown",
+  };
+
+  return [
+    { label: "AI Overview", value: AI_OVERVIEW_BADGE_LABELS[s.aiOverview] ?? s.aiOverview },
+    { label: "ChatGPT", value: SIMPLE_PROVIDER_BADGE_LABELS[s.chatgpt] ?? s.chatgpt },
+    { label: "Claude", value: SIMPLE_PROVIDER_BADGE_LABELS[s.claude] ?? s.claude },
+    { label: "Gemini", value: SIMPLE_PROVIDER_BADGE_LABELS[s.gemini] ?? s.gemini },
+    { label: "Common Crawl", value: SIMPLE_PROVIDER_BADGE_LABELS[s.commonCrawl] ?? s.commonCrawl },
+  ];
+}
+
+// --- Delete (DELETE /analysis-runs/{id}, feature/history-delete-and-mode-badges) ---
+
+export const HISTORY_DELETE_BUTTON_LABEL = "削除";
+export const HISTORY_DELETE_CONFIRM_MESSAGE =
+  "この分析履歴を削除しますか？\n削除すると一覧には表示されなくなります。";
+export const HISTORY_DELETE_NOT_FOUND_MESSAGE = "この分析履歴は見つかりませんでした。";
+export const HISTORY_DELETE_ERROR_MESSAGE =
+  "削除に失敗しました。時間をおいて再度お試しください。";
+
+export type DeleteAnalysisRunOutcome =
+  | { success: true }
+  | { success: false; message: string };
+
+/** Turns a fetch() Response (or null, on a network-level failure) from
+ * DELETE /api/analysis-runs/{id} into an outcome the page can act on —
+ * mirrors resolveHistoryFetchOutcome()'s pure-function-for-testability
+ * shape. A soft delete is idempotent on the backend (see
+ * backend/services/analysis_history_repository.py's
+ * soft_delete_analysis_run()), so there is no separate "already
+ * deleted" outcome here — a repeat delete of the same id is just
+ * another `{ success: true }`.
+ */
+export async function resolveDeleteAnalysisRunOutcome(
+  response: Response | null,
+): Promise<DeleteAnalysisRunOutcome> {
+  if (!response) {
+    return { success: false, message: HISTORY_DELETE_ERROR_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { success: false, message: HISTORY_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { success: false, message: HISTORY_DELETE_NOT_FOUND_MESSAGE };
+  }
+
+  if (!response.ok) {
+    return { success: false, message: HISTORY_DELETE_ERROR_MESSAGE };
+  }
+
+  return { success: true };
 }
 
 export type HistoryViewState =

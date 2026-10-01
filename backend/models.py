@@ -697,11 +697,37 @@ class ErrorResponse(BaseModel):
 # request/response schema is unchanged by this API.
 
 
+class AnalysisRunModeSummary(BaseModel):
+    """Which observation providers were actually in effect for one
+    saved analysis run — see services/history_mode_summary.py's
+    build_mode_summary(). Shown as a short badge row on each
+    GET /analysis-runs list item so a依頼者 running repeated full-ON/
+    single-ON verification passes can tell similar-looking runs apart
+    without opening each one's detail page.
+
+    `aiOverview` uses the same vocabulary as AiOverviewEnvironment
+    ("mock"/"sandbox"/"live"/"off"/"unavailable") plus "unknown";
+    `chatgpt`/`claude`/`gemini`/`commonCrawl` use their own provider's
+    status vocabulary ("real"/"off"/"unavailable") plus "unknown". Every
+    field is "unknown" rather than raising when its provider info is
+    missing from the saved meta_json (e.g. a run saved before that
+    provider existed), so this never breaks rendering of old history.
+    """
+
+    aiOverview: str
+    chatgpt: str
+    claude: str
+    gemini: str
+    commonCrawl: str
+
+
 class AnalysisRunListItem(BaseModel):
     """One row of GET /analysis-runs's `items` — see
     docs/20_analysis_history_read_api_design.md "5. GET /analysis-runs
     の設計案". Deliberately excludes result_json/meta_json (see that
     section's "返さないもの") — use GET /analysis-runs/{id} for those.
+    `modeSummary` below is a small, derived-from-meta_json exception to
+    that rule, added for feature/history-delete-and-mode-badges.
     """
 
     id: str
@@ -713,6 +739,12 @@ class AnalysisRunListItem(BaseModel):
     startedAt: str | None
     completedAt: str | None
     createdAt: str | None
+    # Optional so an existing/older frontend build that doesn't know
+    # about this field keeps working unchanged (it simply ignores the
+    # extra key) — see services/history_mode_summary.py's module
+    # docstring for how this is computed and why it always falls back
+    # to "unknown" rather than ever being omitted in practice.
+    modeSummary: AnalysisRunModeSummary | None = None
 
 
 class AnalysisRunListResponse(BaseModel):

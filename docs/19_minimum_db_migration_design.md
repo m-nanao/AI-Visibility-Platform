@@ -265,6 +265,19 @@ DB保存機能の追加により、既存の分析体験が壊れることを避
 - APIレスポンスには`analysisRunId`等の識別子を今回も追加していない——保存確認は常にSupabase Table Editor上の目視確認によるもので、アプリの画面やAPIレスポンスからは保存有無を確認できない。
 - pgvector導入・非同期job化・Document保存等の個別テーブル化は引き続き対象外。
 
+## 16. analysis_runs への deleted_at 追加（soft delete、2026-09-19追記）
+
+依頼者から「全ON・単体ON検証を何度も実行したため履歴一覧に似た履歴が増えて見分けにくい」というフィードバックを受け、履歴の削除機能を追加した（`feature/history-delete-and-mode-badges`）。
+
+- 新規migration `backend/migrations/003_add_deleted_at_to_analysis_runs.sql`で、`analysis_runs`テーブルに`deleted_at timestamptz`（nullable）を追加した。あわせて`idx_analysis_runs_deleted_at`・`idx_analysis_runs_project_deleted_created_at`の2つのindexを追加した。
+- **物理削除（`DELETE FROM analysis_runs`）は行わない**。削除は`UPDATE analysis_runs SET deleted_at = now()`で表現する——`backend/services/analysis_history_repository.py`の`soft_delete_analysis_run()`参照。
+- `analysis_results`・`brands`テーブルは一切変更しない。削除済み`analysis_runs`に紐づく`analysis_results`行もそのまま残る（`analysis_run_id`外部キー経由で参照できなくなるだけ）。
+- 読み取り側（`list_analysis_runs()`・`get_analysis_run()`・`get_previous_analysis_run_for_brand()`）は、いずれも`deleted_at is null`の行のみを返すようにSQL側で変更した——削除済み履歴は一覧・詳細・前回比較のいずれにも出てこない。
+- 復元用の専用APIは今回追加していない。誤って削除した場合は、`update analysis_runs set deleted_at = null where id = '...'`を手動実行することで復元できる。
+- RLS policyの変更・本番Supabaseへのmigration適用はいずれも今回のタスクでは行っていない（他のmigrationファイルと同様、設計artifactとしての追加のみ）。
+
+詳細は[17_usage_guide.md](./17_usage_guide.md)「21. 分析履歴の削除・観測モードバッジ」を参照。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

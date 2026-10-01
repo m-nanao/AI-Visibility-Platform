@@ -151,6 +151,78 @@ describe("parseAnalysisRunListResponse", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- modeSummary (feature/history-delete-and-mode-badges) ---
+
+  it("accepts an item with modeSummary", () => {
+    const withModeSummary = {
+      ...validListResponse(),
+      items: [
+        {
+          ...validListResponse().items[0],
+          modeSummary: {
+            aiOverview: "live",
+            chatgpt: "real",
+            claude: "off",
+            gemini: "unavailable",
+            commonCrawl: "real",
+          },
+        },
+      ],
+    };
+
+    const result = parseAnalysisRunListResponse(withModeSummary);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].modeSummary).toEqual({
+        aiOverview: "live",
+        chatgpt: "real",
+        claude: "off",
+        gemini: "unavailable",
+        commonCrawl: "real",
+      });
+    }
+  });
+
+  it("accepts an item without modeSummary (older saved history)", () => {
+    const result = parseAnalysisRunListResponse(validListResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].modeSummary).toBeUndefined();
+    }
+  });
+
+  it("accepts modeSummary: null the same way as other optional fields", () => {
+    const withNullModeSummary = {
+      ...validListResponse(),
+      items: [{ ...validListResponse().items[0], modeSummary: null }],
+    };
+
+    const result = parseAnalysisRunListResponse(withNullModeSummary);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].modeSummary).toBeUndefined();
+    }
+  });
+
+  it("rejects a modeSummary missing one of its required keys", () => {
+    const invalid = {
+      ...validListResponse(),
+      items: [
+        {
+          ...validListResponse().items[0],
+          modeSummary: { aiOverview: "live", chatgpt: "real" },
+        },
+      ],
+    };
+
+    const result = parseAnalysisRunListResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("parseAnalysisRunDetailResponse", () => {

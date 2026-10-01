@@ -6,7 +6,7 @@ vi.mock("../../../lib/supabase/server", () => ({
   getServerSupabaseAccessToken: () => getServerSupabaseAccessTokenMock(),
 }));
 
-import { GET } from "./route";
+import { DELETE, GET } from "./route";
 
 function makeRequest(id: string): [Request, { params: Promise<{ id: string }> }] {
   return [
@@ -163,5 +163,147 @@ describe("GET /api/analysis-runs/[id]", () => {
     const text = await response.text();
 
     expect(text).not.toContain("supabase-access-token");
+  });
+});
+
+describe("DELETE /api/analysis-runs/[id]", () => {
+  const originalApiUrl = process.env.PYTHON_ANALYSIS_API_URL;
+  const originalToken = process.env.HISTORY_READ_TOKEN;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    getServerSupabaseAccessTokenMock.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    if (originalApiUrl === undefined) delete process.env.PYTHON_ANALYSIS_API_URL;
+    else process.env.PYTHON_ANALYSIS_API_URL = originalApiUrl;
+    if (originalToken === undefined) delete process.env.HISTORY_READ_TOKEN;
+    else process.env.HISTORY_READ_TOKEN = originalToken;
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("returns 503 when PYTHON_ANALYSIS_API_URL is unset", async () => {
+    delete process.env.PYTHON_ANALYSIS_API_URL;
+
+    const response = await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    expect(response.status).toBe(503);
+  });
+
+  it("sends a DELETE request to the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ deleted: true }), { status: 200 }));
+    global.fetch = fetchMock;
+
+    await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    const [url, requestInit] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      "http://python-api.test/analysis-runs/11111111-1111-1111-1111-111111111111",
+    );
+    expect(requestInit.method).toBe("DELETE");
+  });
+
+  it("attaches HISTORY_READ_TOKEN as the X-History-Read-Token header when set", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ deleted: true }), { status: 200 }));
+    global.fetch = fetchMock;
+
+    await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.get("X-History-Read-Token")).toBe("shared-secret-token");
+  });
+
+  it("forwards a successful deletion response as-is", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ deleted: true }), { status: 200 }));
+
+    const response = await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deleted: true });
+  });
+
+  it("forwards a 403 from the Python API as-is", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "analysis history read access denied" }), {
+        status: 403,
+      }),
+    );
+
+    const response = await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "analysis history read access denied" });
+  });
+
+  it("forwards a 404 from the Python API as-is", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "analysis run not found" }), { status: 404 }),
+    );
+
+    const response = await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "analysis run not found" });
+  });
+
+  it("never includes the token in the response returned to the caller", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "analysis history read access denied" }), {
+        status: 403,
+      }),
+    );
+
+    const response = await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+    const text = await response.text();
+
+    expect(text).not.toContain("shared-secret-token");
+  });
+
+  it("attaches Authorization: Bearer <token> when a Supabase access token is available", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    getServerSupabaseAccessTokenMock.mockResolvedValue("supabase-access-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ deleted: true }), { status: 200 }));
+    global.fetch = fetchMock;
+
+    await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.get("Authorization")).toBe("Bearer supabase-access-token");
+  });
+
+  it("returns 503 when the Python API request fails at the network level", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
+
+    const response = await DELETE(...makeRequest("11111111-1111-1111-1111-111111111111"));
+
+    expect(response.status).toBe(503);
   });
 });

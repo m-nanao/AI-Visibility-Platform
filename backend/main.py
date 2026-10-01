@@ -132,6 +132,7 @@ from services.analysis_history_repository import (
     get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
     list_analysis_runs as repository_list_analysis_runs,
     save_analysis_history,
+    soft_delete_analysis_run as repository_soft_delete_analysis_run,
 )
 from services.auth_settings import load_auth_settings
 from services.jwt_auth import JWTAuthError, extract_bearer_token, verify_supabase_jwt
@@ -1104,3 +1105,54 @@ def get_analysis_run(analysis_run_id: str, request: Request):
         result=detail["result"],
         meta=detail["meta"],
     )
+
+
+@app.delete("/analysis-runs/{analysis_run_id}")
+def delete_analysis_run(analysis_run_id: str, request: Request):
+    """Soft-deletes one saved analysis run (see
+    services.analysis_history_repository.soft_delete_analysis_run()) —
+    added so repeated full-ON/single-ON provider verification runs can
+    be cleared out of the history list without losing them permanently
+    (analysis_results/brands are untouched; `deleted_at` can be cleared
+    manually later if a delete needs undoing).
+
+    Uses the same `_resolve_history_access()` gate as every other
+    /analysis-runs endpoint, and the same JWT-mode authorization
+    pattern as the GET detail/comparison endpoints above: access is
+    checked against `analysis_run_id` itself (via
+    can_user_access_analysis_run()) before anything is deleted, so a
+    caller who can't see this run gets 403 without it being touched.
+
+    - mode="jwt": delete is only allowed when the caller can access the
+      run's project; otherwise 403.
+    - mode="history_token": unrestricted, same as every existing
+      HISTORY_READ_TOKEN-gated endpoint — allowed for internal/admin
+      use as the task that added this endpoint intended.
+    """
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        deleted = repository_soft_delete_analysis_run(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    if not deleted:
+        return error_response("analysis run not found", status_code=404)
+
+    return {"deleted": True}
