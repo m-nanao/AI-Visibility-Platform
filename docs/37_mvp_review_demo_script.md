@@ -83,7 +83,7 @@ Common Crawl補完: 公式ドメインから補完
 - **ChatGPT観測**: OpenAI APIによる1問観測（同様に、ChatGPTアプリ全体の認識を保証するものではない旨を画面に表示済み）。
 - **Claude観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Anthropic APIによる1問観測で、Claudeサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。履歴詳細・レポート画面でも同じ形式で再表示される（本番確認済み、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照）。
 - **Gemini観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Google Gemini APIによる1問観測で、Geminiサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。**出力上限やAPI側の都合で本文が途中終了する場合があり、その場合は注意文が表示される**（「Gemini APIの出力が途中で終了した可能性があります」——[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12」参照）。
-- **Web上の説明とAI回答のズレ**: AI Overview比較の直後・改善提案の直前に表示。Web上の情報環境（Common Crawl/入力URL）の代表文脈と、実際に観測できたChatGPT/Claude/Gemini/AI Overviewの回答内容を並べて表示し、両者のズレの見方と改善ヒントを提示する。新しい外部API呼び出しは追加していない補助情報であり、AIの内部認識を断定しない旨の注意書きを常に表示する。Web情報またはAI観測のいずれかが不足する場合は差分比較が表示できない旨を表示し、古い保存済み履歴（このフィールドを持たない）ではブロック自体が表示されない（`feature/web-ai-gap-section`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照）。
+- **Web上の説明とAI回答のズレ**: AI Overview比較の直後・改善提案の直前に表示。Web上の情報環境（Common Crawl/入力URL）の代表文脈と、実際に観測できたChatGPT/Claude/Gemini/AI Overviewの回答内容を並べて表示し、両者のズレの見方と改善ヒントを提示する。新しい外部API呼び出しは追加していない補助情報であり、AIの内部認識を断定しない旨の注意書きを常に表示する。Web情報またはAI観測のいずれかが不足する場合は差分比較が表示できない旨を表示し、古い保存済み履歴（このフィールドを持たない）ではブロック自体が表示されない（`feature/web-ai-gap-section`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照）。**ラベルは「（抜粋）」付きで文字数制限による抜粋であることを明示し、差分の見方は汎用語・ノイズ語を除外したうえで料金・契約条件/サービス内容/信頼性/対象顧客/地域という簡易カテゴリで判定するよう改善済み（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「17」参照）。**
 - **改善提案**: 横幅いっぱいで表示され、Web上の説明とAI回答のズレを改善するヒントとして提示する（`feature/history-ui-link-and-layout-polish`で調整済み）。
 
 ### 履歴一覧（`/history`）
@@ -113,7 +113,7 @@ Common Crawl補完: 公式ドメインから補完
 - 依頼者への共有・印刷を想定した1ページレイアウト。
 - PDF保存/印刷ボタンあり——ただし正式なPDF自動生成機能ではなく、ブラウザの印刷機能（`window.print()`）によるものである（[26_report_output_design.md](./26_report_output_design.md)参照）。
 - **「AI回答側の観測」セクションには、分析結果画面・履歴詳細画面と同じAI Overview / ChatGPT / Claude / Gemini各観測の注記（単発観測であること、各サービス全体の認識を保証しないこと）と、Gemini観測が途中終了した場合の注意文が表示される**（`chore/mvp-review-copy-final-check`、2026-09-18。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「15」参照。依頼者に共有される可能性が高いレポート画面でも同じ注意事項が伝わるようにした）。
-- **「AI回答側の観測」の直後・「前回比較」の直前に「Web上の説明とAI回答のズレ」セクションが追加され、印刷向けの簡潔な表示でWeb上の情報環境・AI回答の説明・ズレの見方・改善ヒントが表示される**（`feature/web-ai-gap-section`、2026-09-19。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照。古い保存済み履歴ではこのセクション自体が表示されない）。
+- **「AI回答側の観測」の直後・「前回比較」の直前に「Web上の説明とAI回答のズレ」セクションが追加され、印刷向けの簡潔な表示でWeb上の情報環境・AI回答の説明・ズレの見方・改善ヒントが表示される**（`feature/web-ai-gap-section`、2026-09-19。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照。古い保存済み履歴ではこのセクション自体が表示されない）。**レポート画面でも分析結果画面・履歴詳細と同じ「（抜粋）」ラベルを使用し、抜粋であることを明示する**（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`）。
 
 ## 6. MVP範囲と未対応範囲
 
@@ -135,6 +135,7 @@ Common Crawl補完: 公式ドメインから補完
 - 主要画面（分析・履歴一覧・履歴詳細・レポート）共通のヘッダーナビゲーション（分析・履歴・ログアウトへ常時1クリックで移動可能）と、履歴詳細・レポートのパンくず（`feature/app-navigation-header`、2026-09-18）
 - Web上の説明とAI回答のズレの表示（`feature/web-ai-gap-section`、2026-09-19）
 - 不要になった分析履歴の削除（soft delete、一覧・詳細からは見えなくなるが物理削除はしない）と、履歴一覧での観測モード（AI Overview / ChatGPT / Claude / Gemini / Common Crawl）バッジ表示（`feature/history-delete-and-mode-badges`、2026-09-19。詳細は[17_usage_guide.md](./17_usage_guide.md)「21」参照）
+- 全AI観測/Common Crawl同時ON時に分析直後の画面だけダミー表示になっていた不一致の修正（タイムアウト延長・フォールバック時の注意文表示）、およびWeb/AI差分ブロックの抜粋ラベル明示・ノイズ語除外・簡易カテゴリ差分判定の追加（`fix/analyze-immediate-result-and-web-ai-gap-quality`、2026-10-02。詳細は[17_usage_guide.md](./17_usage_guide.md)「22」参照）
 
 ### MVPではまだ限定的なこと
 
@@ -193,6 +194,11 @@ Common Crawl補完: 公式ドメインから補完
 
 **Render cold start（初回アクセスが遅い/一時的にダミーデータが表示される）:**
 - Render無料プランのスリープ復帰に約20〜25秒かかることがある。この間は`meta.sections`がすべて`mock`（開発用ダミーデータ）になる場合がある——実装のバグではない（[09_deployment.md](./09_deployment.md)参照）。デモ直前に一度アクセスして起こしておくことで回避できる。
+
+**AI Overview（DataForSEO Live）・ChatGPT・Claude・Gemini・Common Crawlを全てONにした直後の結果画面だけがダミーになる場合:**
+- 各観測が順番に（並列ではなく）呼ばれるため、全ONだと合計の所要時間が長くなり、分析直後の表示がタイムアウトでダミーへフォールバックすることがある（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`でタイムアウトを55秒へ延長済み。詳細は[17_usage_guide.md](./17_usage_guide.md)「22」参照）。
+- その場合でも分析自体は裏側で完了していることが多く、画面に「分析の取得に時間がかかったため、今回は開発用データを表示しています」という注意文が出る。しばらくしてから履歴一覧を確認すると、実際の結果が保存されていることが多い。
+- デモでは全providerを同時にONにする必要は基本的にない——単体ONでの確認を優先する。
 
 **履歴が出ない/履歴一覧が空に見える場合:**
 - ログイン状態を確認する（未ログインだと`/login`にリダイレクトされる）。

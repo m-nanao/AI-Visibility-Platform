@@ -18,8 +18,20 @@ Deliberately minimal / no new external calls:
   logic already used for the Web-side cooccurrenceRanking, instead of
   inventing a second tokenizer.
 - No semantic diff/embeddings/LLM summarization call — "the gap" is
-  just "keywords that show up a lot on one side and barely on the
-  other", a rough MVP heuristic (see _build_gap_summary below).
+  primarily a small, fixed category keyword lookup (see
+  _detect_top_category below), falling back to "keywords that show up
+  a lot on one side and barely on the other" (a rough MVP heuristic,
+  see _build_word_level_gap_summary) only when neither side's text
+  matches any known category.
+
+Tightened after a依頼者 report that the word-level fallback alone
+surfaced boilerplate/navigation words ("Vol"、「会社概要」、「千葉県」
+「柏市」等) as if they were meaningful differences — see
+_NOISE_KEYWORDS and _is_noise_keyword below. The category lookup is
+tried first specifically because it is far less prone to that failure
+mode: it only ever reports a difference when actual service/pricing/
+trust/audience/region vocabulary appears, never incidental sitewide
+boilerplate.
 
 Never asserts what an AI has "learned" or "understood", and never
 claims Common Crawl represents an AI's actual training data — every
@@ -64,6 +76,105 @@ MAX_AI_CONTEXT_CHARS = 200
 # short summary sentence, not an exhaustive report.
 GAP_KEYWORD_TOP_N = 5
 MAX_GAP_KEYWORDS_IN_SUMMARY = 3
+
+# Boilerplate/navigation/generic words that show up on almost any
+# corporate site regardless of what the brand actually does — reported
+# directly by a依頼者 as noise in the word-level diff ("Vol・会社概要・
+# 千葉県柏市" being surfaced as if it were a meaningful difference).
+# Matched case-insensitively against the already-normalized (lowercase)
+# keyword, so "Vol"/"VOL"/"vol" are all caught by the one "vol" entry.
+# Kept local to this module rather than added to
+# services/cooccurrence.py's own STOPWORDS — those are noise in the
+# context of *this* one-sided-difference heuristic specifically, not in
+# cooccurrence ranking generally (e.g. "会社概要" is a perfectly
+# reasonable top cooccurrence term; it just never represents an actual
+# Web-vs-AI content gap).
+_NOISE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "vol",
+        "会社概要",
+        "一般的",
+        "ブランド",
+        "商品",
+        "サービス",
+        "ページ",
+        "公式",
+        "情報",
+        "提供",
+        "企業",
+        "会社",
+        "株式会社",
+        "千葉県",
+        "柏市",
+        "お問い合わせ",
+        "ニュース",
+        "記事",
+        "一覧",
+        "詳細",
+        "トップ",
+        "ホーム",
+    }
+)
+
+
+def _is_noise_keyword(keyword: str) -> bool:
+    """True for a keyword that should never be reported as a
+    Web-vs-AI difference: the explicit boilerplate list above, a
+    single character (Japanese one-character tokens are almost never
+    meaningful on their own in this context), or a purely numeric
+    token (e.g. a stray "2026" or page number)."""
+    normalized = keyword.strip().lower()
+    if not normalized:
+        return True
+    if normalized in _NOISE_KEYWORDS:
+        return True
+    if len(normalized) <= 1:
+        return True
+    if normalized.isdigit():
+        return True
+    return False
+
+
+# Simple, rule-based category keyword lookup — mirrors
+# services/context_analysis.py's CATEGORY_KEYWORDS/classify_context()
+# pattern (small keyword lists, no AI/LLM call, ties go to the earlier
+# category in insertion order). Tried before the word-level fallback
+# below because a category-level difference ("Web emphasizes pricing,
+# AI emphasizes service type") is both less prone to boilerplate noise
+# and a more actionable improvement signal than a handful of
+# individually-distinctive words.
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "料金・契約条件": ["料金", "初期費用", "月額", "契約期間", "無料", "価格", "プラン"],
+    "サービス内容": [
+        "seo",
+        "コンサルティング",
+        "webマーケティング",
+        "制作",
+        "開発",
+        "ai検索対策",
+        "llmo",
+        "aio",
+        "集客",
+    ],
+    "信頼性": ["実績", "事例", "導入", "口コミ", "評判", "認定", "受賞", "専門家"],
+    "対象顧客": ["btob", "中小企業", "医療", "不動産", "教育", "ec", "法人", "企業向け"],
+    "地域": ["東京", "大阪", "千葉", "柏", "全国", "オンライン"],
+}
+
+# Category-specific improvement hints for the "one side has a clear
+# category, the other doesn't" case — special-cased to match the
+# task's own example wording closely; every other category falls back
+# to a generic template in _build_category_suggestion.
+_WEB_ONLY_CATEGORY_SUGGESTIONS: dict[str, str] = {
+    "料金・契約条件": (
+        "料金条件だけでなく、社名の近くに主要サービス名・対象顧客・支援内容も併記すると、"
+        "AI回答上の説明とのズレを減らせる可能性があります。"
+    ),
+    "地域": (
+        "所在地情報だけでなく、どのようなサービスを誰に提供しているかを社名の近くに補足すると、"
+        "AI回答上の説明とのズレを確認しやすくなります。"
+    ),
+}
 
 WEB_AI_GAP_NOTE = (
     "Web上の情報環境とAI回答の単発観測を比較した補助的な見立てです。"
@@ -170,24 +281,69 @@ def _distinctive_keywords(
     ranking: list[CooccurrenceKeyword], other_text: str, limit: int
 ) -> list[str]:
     """Keywords ranked highly in `ranking` that barely show up in
-    `other_text` (a simple case-insensitive substring check) — used for
-    both "Web側に多いがAI側に弱い語" and its mirror image. Not a claim
-    that the term is entirely absent from the other side, only that it
-    doesn't appear verbatim in the short excerpt being compared."""
+    `other_text` (a simple case-insensitive substring check) and aren't
+    boilerplate/noise (see _is_noise_keyword) — used for both "Web側に
+    多いがAI側に弱い語" and its mirror image. Not a claim that the term
+    is entirely absent from the other side, only that it doesn't appear
+    verbatim in the short excerpt being compared."""
     other_lower = other_text.lower()
-    return [kw.keyword for kw in ranking if kw.keyword.lower() not in other_lower][:limit]
+    return [
+        kw.keyword
+        for kw in ranking
+        if not _is_noise_keyword(kw.keyword) and kw.keyword.lower() not in other_lower
+    ][:limit]
 
 
-def _build_gap_summary(
+def _detect_top_category(text: str) -> str | None:
+    """Returns the category (a key of _CATEGORY_KEYWORDS) with the most
+    keyword hits in `text` (case-insensitive substring count, same
+    style as services/context_analysis.py's classify_context()), or
+    None when no category keyword appears at all. Ties go to the
+    earlier category in _CATEGORY_KEYWORDS (dict insertion order)."""
+    haystack = text.lower()
+    best_category: str | None = None
+    best_score = 0
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        score = sum(haystack.count(keyword) for keyword in keywords)
+        if score > best_score:
+            best_score = score
+            best_category = category
+    return best_category
+
+
+def _build_category_gap_summary(web_text: str, ai_text: str) -> str | None:
+    """Category-level gap summary — tried before the word-level
+    fallback (see module docstring). Returns None when neither side
+    matches a known category, or when both sides' top category is the
+    same (no interesting category-level gap to report; the word-level
+    fallback may still find something)."""
+    web_category = _detect_top_category(web_text)
+    ai_category = _detect_top_category(ai_text)
+
+    if web_category and ai_category and web_category != ai_category:
+        return f"Web上では{web_category}に関する説明が目立つ一方、AI回答では{ai_category}の説明が中心です。"
+    if web_category and not ai_category:
+        return (
+            f"Web上では{web_category}に関する説明が目立ちますが、"
+            "AI観測上の回答ではあまり触れられていません。"
+        )
+    if ai_category and not web_category:
+        return (
+            f"AI回答では{ai_category}の説明が中心ですが、"
+            "Web上で確認できる文脈との重なりは限定的です。"
+        )
+    return None
+
+
+def _build_word_level_gap_summary(
     brand_name: str,
     web_ranking: list[CooccurrenceKeyword],
     web_text: str,
-    ai_contexts: list[WebAiGapAiContext],
-) -> str | None:
-    if not ai_contexts:
-        return None
-
-    ai_text = " ".join(context.summary for context in ai_contexts)
+    ai_text: str,
+) -> str:
+    """Fallback used only when _build_category_gap_summary() found
+    nothing — the original keyword-distinctiveness heuristic, now with
+    boilerplate/noise filtering (see _distinctive_keywords)."""
     ai_ranking = compute_cooccurrence_ranking(brand_name, [ai_text], top_n=GAP_KEYWORD_TOP_N)
 
     web_only = _distinctive_keywords(web_ranking, ai_text, MAX_GAP_KEYWORDS_IN_SUMMARY)
@@ -211,10 +367,61 @@ def _build_gap_summary(
     return "Web上の文脈とAI観測上の回答傾向に、大きな差は確認できませんでした。"
 
 
+def _build_gap_summary(
+    brand_name: str,
+    web_ranking: list[CooccurrenceKeyword],
+    web_text: str,
+    ai_contexts: list[WebAiGapAiContext],
+) -> str | None:
+    if not ai_contexts:
+        return None
+
+    ai_text = " ".join(context.summary for context in ai_contexts)
+
+    category_summary = _build_category_gap_summary(web_text, ai_text)
+    if category_summary is not None:
+        return category_summary
+
+    return _build_word_level_gap_summary(brand_name, web_ranking, web_text, ai_text)
+
+
+def _build_category_suggestion(web_category: str | None, ai_category: str | None) -> str | None:
+    """Category-aware improvement hint, mirroring
+    _build_category_gap_summary()'s three cases. Returns None when
+    neither side has a detected category, or both match (nothing
+    category-specific to suggest)."""
+    if web_category and not ai_category:
+        return _WEB_ONLY_CATEGORY_SUGGESTIONS.get(web_category) or (
+            f"{web_category}に関する説明が中心になっているため、"
+            "主要サービス名・対象顧客・強みも社名の近くに併記すると、"
+            "AI回答上の説明とのズレを減らせる可能性があります。"
+        )
+    if ai_category and not web_category:
+        return (
+            f"AI回答で中心となっている{ai_category}の説明を、"
+            "公式サイト上でも会社概要・サービスページ・FAQで一貫して明記すると、"
+            "Web上の説明とAI回答上の説明を揃えやすくなります。"
+        )
+    if web_category and ai_category and web_category != ai_category:
+        return (
+            f"Web上では{web_category}、AI回答では{ai_category}が中心になっているため、"
+            "両方の観点を社名の近くに併記すると、Web上の説明とAI回答上の説明を揃えやすくなります。"
+        )
+    return None
+
+
 def _build_suggestions(
-    web_ranking: list[CooccurrenceKeyword], ai_text: str
+    web_ranking: list[CooccurrenceKeyword], web_text: str, ai_text: str
 ) -> list[str]:
     suggestions = [_GENERIC_SUGGESTION]
+
+    category_suggestion = _build_category_suggestion(
+        _detect_top_category(web_text), _detect_top_category(ai_text)
+    )
+    if category_suggestion is not None:
+        suggestions.append(category_suggestion)
+        return suggestions
+
     web_only = _distinctive_keywords(web_ranking, ai_text, 2)
     if web_only:
         suggestions.append(
@@ -245,7 +452,7 @@ def build_web_ai_gap(
     top_web_ranking = cooccurrence_ranking[:GAP_KEYWORD_TOP_N]
     ai_text = " ".join(context.summary for context in ai_contexts)
     gap_summary = _build_gap_summary(brand_name, top_web_ranking, web_context.summary, ai_contexts)
-    suggestions = _build_suggestions(top_web_ranking, ai_text)
+    suggestions = _build_suggestions(top_web_ranking, web_context.summary, ai_text)
 
     return WebAiGapResult(
         status="real",

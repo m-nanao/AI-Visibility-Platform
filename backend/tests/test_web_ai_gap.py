@@ -100,7 +100,9 @@ def test_ai_contexts_ordered_chatgpt_claude_gemini_ai_overview_and_excludes_mock
     assert all(context.status == "real" for context in result.aiContexts)
 
 
-def test_gap_summary_reports_distinctive_keywords_on_each_side():
+def test_gap_summary_uses_category_diff_when_both_sides_have_a_detectable_category():
+    # This is the task's own canonical example: Web emphasizes pricing/
+    # contract terms, the AI observation emphasizes service type.
     documents = [
         _make_document(
             "Acmeは契約期間の縛りなし・初期費用0円で利用できるサービスです。",
@@ -113,16 +115,56 @@ def test_gap_summary_reports_distinctive_keywords_on_each_side():
             "AcmeはSEOコンサルティングを中心にWebマーケティング支援を行う会社です。",
         )
     ]
-    web_ranking = [_keyword("初期費用", 3), _keyword("契約期間", 2)]
+
+    result = build_web_ai_gap("Acme", documents, [], ai_items)
+
+    assert result.status == "real"
+    assert result.gapSummary == (
+        "Web上では料金・契約条件に関する説明が目立つ一方、AI回答ではサービス内容の説明が中心です。"
+    )
+
+
+def test_gap_summary_category_diff_when_only_web_side_has_a_detectable_category():
+    documents = [_make_document("Acmeは月額プランで契約できます。", sourceType="web_fetch")]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての一般的な説明です。")]
+
+    result = build_web_ai_gap("Acme", documents, [], ai_items)
+
+    assert result.gapSummary == (
+        "Web上では料金・契約条件に関する説明が目立ちますが、AI観測上の回答ではあまり触れられていません。"
+    )
+
+
+def test_gap_summary_category_diff_when_only_ai_side_has_a_detectable_category():
+    documents = [_make_document("Acmeについての一般的な紹介です。", sourceType="web_fetch")]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeは中小企業向けの法人サービスです。")]
+
+    result = build_web_ai_gap("Acme", documents, [], ai_items)
+
+    assert result.gapSummary == (
+        "AI回答では対象顧客の説明が中心ですが、Web上で確認できる文脈との重なりは限定的です。"
+    )
+
+
+def test_gap_summary_falls_back_to_word_level_diff_when_both_sides_share_the_same_category():
+    # Both sides are dominated by the same category (サービス内容) — the
+    # category diff has nothing interesting to say, so this must fall
+    # through to the word-level heuristic instead of silently reporting
+    # "no difference" when a real (non-category) difference exists.
+    documents = [
+        _make_document("AcmeはSEOコンサルティングと集客支援を行います。", sourceType="web_fetch")
+    ]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "AcmeはWebマーケティングと制作を行う会社です。")]
+    web_ranking = [_keyword("コンサルティング", 5)]
 
     result = build_web_ai_gap("Acme", documents, web_ranking, ai_items)
 
-    assert result.status == "real"
-    assert result.gapSummary is not None
-    assert "初期費用" in result.gapSummary or "契約期間" in result.gapSummary
+    # Falls through to the word-level sentence shape, not the
+    # category-diff shape (which would say "...に関する説明が...").
+    assert "に関する説明が" not in (result.gapSummary or "")
 
 
-def test_gap_summary_falls_back_to_neutral_sentence_without_distinctive_keywords():
+def test_gap_summary_falls_back_to_neutral_sentence_without_distinctive_keywords_or_category():
     shared_text = "Acmeについての短い紹介文です。"
     documents = [_make_document(shared_text, sourceType="web_fetch")]
     ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, shared_text)]
@@ -131,6 +173,34 @@ def test_gap_summary_falls_back_to_neutral_sentence_without_distinctive_keywords
 
     assert result.status == "real"
     assert result.gapSummary == "Web上の文脈とAI観測上の回答傾向に、大きな差は確認できませんでした。"
+
+
+def test_gap_summary_word_level_fallback_excludes_noise_keywords():
+    # Regression test for the task's own reported example: boilerplate
+    # like "Vol"/"会社概要" must never be surfaced as a difference, even
+    # when ranked highly — only the genuinely distinctive, non-noise
+    # keyword should appear. Deliberately avoids any _CATEGORY_KEYWORDS
+    # match (e.g. a region name) so this exercises the word-level
+    # fallback specifically rather than the category diff.
+    documents = [
+        _make_document(
+            "Acme株式会社の会社概要ページです。Vol.3。独自技術を提供します。",
+            sourceType="web_fetch",
+        )
+    ]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての簡単な説明です。")]
+    web_ranking = [
+        _keyword("Vol", 10),
+        _keyword("会社概要", 9),
+        _keyword("独自技術", 6),
+    ]
+
+    result = build_web_ai_gap("Acme", documents, web_ranking, ai_items)
+
+    assert result.gapSummary is not None
+    for noisy in ("Vol", "会社概要"):
+        assert noisy not in result.gapSummary
+    assert "独自技術" in result.gapSummary
 
 
 def test_suggestions_always_include_generic_hint():
@@ -143,15 +213,64 @@ def test_suggestions_always_include_generic_hint():
     assert "社名の近く" in result.suggestions[0]
 
 
-def test_suggestions_add_second_hint_when_web_side_has_distinctive_keywords():
-    documents = [_make_document("Acmeは初期費用0円のサービスです。", sourceType="web_fetch")]
-    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "AcmeはSEOコンサルティングの会社です。")]
-    web_ranking = [_keyword("初期費用", 5)]
+def test_suggestions_add_category_hint_matching_the_tasks_pricing_example():
+    documents = [
+        _make_document(
+            "Acmeは契約期間の縛りなし・初期費用0円で利用できるサービスです。",
+            sourceType="web_fetch",
+        )
+    ]
+    # Deliberately category-free on the AI side, so this exercises the
+    # "web has a category, AI doesn't" branch specifically.
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての一般的な説明です。")]
+
+    result = build_web_ai_gap("Acme", documents, [], ai_items)
+
+    assert len(result.suggestions) == 2
+    assert "料金条件だけでなく" in result.suggestions[1]
+
+
+def test_suggestions_add_category_hint_for_region_only_web_category():
+    documents = [_make_document("Acmeは東京・大阪・柏に拠点があります。", sourceType="web_fetch")]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての一般的な説明です。")]
+
+    result = build_web_ai_gap("Acme", documents, [], ai_items)
+
+    assert len(result.suggestions) == 2
+    assert "所在地情報だけでなく" in result.suggestions[1]
+
+
+def test_suggestions_fall_back_to_word_level_hint_without_a_detectable_category():
+    documents = [_make_document("Acmeは独自技術0円のサービスです。", sourceType="web_fetch")]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての簡単な説明です。")]
+    web_ranking = [_keyword("独自技術", 5)]
 
     result = build_web_ai_gap("Acme", documents, web_ranking, ai_items)
 
     assert len(result.suggestions) == 2
-    assert "初期費用" in result.suggestions[1]
+    assert "独自技術" in result.suggestions[1]
+
+
+def test_suggestions_never_contain_noise_keywords():
+    documents = [
+        _make_document(
+            "Acme株式会社の会社概要ページ。千葉県柏市に所在します。独自技術を提供します。",
+            sourceType="web_fetch",
+        )
+    ]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての簡単な説明です。")]
+    web_ranking = [
+        _keyword("会社概要", 9),
+        _keyword("千葉県", 8),
+        _keyword("柏市", 7),
+        _keyword("独自技術", 6),
+    ]
+
+    result = build_web_ai_gap("Acme", documents, web_ranking, ai_items)
+
+    suggestions_text = " ".join(result.suggestions)
+    for noisy in ("会社概要", "千葉県", "柏市"):
+        assert noisy not in suggestions_text
 
 
 def test_web_context_summary_is_truncated_and_never_empty_for_blank_document():

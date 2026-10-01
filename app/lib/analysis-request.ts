@@ -117,3 +117,55 @@ export function buildAnalyzeRequestBody(
   if (geminiMode) body.geminiMode = geminiMode;
   return body;
 }
+
+// --- POST /api/analyze dummy-fallback signaling (shared between
+// app/api/analyze/route.ts and app/page.tsx, since a Next.js route
+// handler module may only export HTTP method handlers plus a small set
+// of framework-recognized names — arbitrary named constants exported
+// from route.ts are not importable elsewhere, so these live here
+// instead). See app/api/analyze/route.ts's PYTHON_API_TIMEOUT_MS
+// comment for the full background: with every verification selector
+// on at once, the Python API can legitimately take longer than this
+// route is willing to wait, in which case it falls back to dummy data
+// here *while the Python API keeps running and may still save a real
+// result to history* — these headers let app/page.tsx tell a依頼者
+// that what they're looking at is a fallback, not the real analysis.
+
+/** Present (value "1") only on a dummy-fallback /api/analyze response — absent on a real one. */
+export const ANALYZE_FALLBACK_HEADER = "X-Analyze-Fallback";
+/** Why the fallback happened — see PythonApiUnavailableReason in app/api/analyze/route.ts. */
+export const ANALYZE_FALLBACK_REASON_HEADER = "X-Analyze-Fallback-Reason";
+
+const ANALYZE_FALLBACK_REASON_MESSAGES: Record<string, string> = {
+  timeout:
+    "分析の取得に時間がかかったため、今回は開発用データを表示しています。分析自体は裏側で完了している場合があり、しばらくしてから履歴一覧で実際の結果を確認できることがあります。",
+  not_configured:
+    "分析APIが設定されていないため、開発用データを表示しています。",
+  request_failed:
+    "分析結果の取得に失敗したため、開発用データを表示しています。",
+  upstream_error:
+    "分析結果の取得に失敗したため、開発用データを表示しています。",
+  invalid_json:
+    "分析結果の取得に失敗したため、開発用データを表示しています。",
+  schema_mismatch:
+    "分析結果の取得に失敗したため、開発用データを表示しています。",
+};
+
+const ANALYZE_FALLBACK_DEFAULT_MESSAGE =
+  "分析結果の取得に失敗したため、開発用データを表示しています。";
+
+/**
+ * Turns the ANALYZE_FALLBACK_REASON_HEADER value (or null, when the
+ * header wasn't an expected key) into a safe-to-display message — used
+ * by app/page.tsx to explain a dummy-data result without the route
+ * handler needing to know anything about UI copy. Falls back to a
+ * generic message for an unrecognized/missing reason rather than
+ * showing nothing at all, since ANALYZE_FALLBACK_HEADER being present
+ * at all already means a fallback happened.
+ */
+export function getAnalyzeFallbackMessage(reason: string | null): string {
+  if (reason && reason in ANALYZE_FALLBACK_REASON_MESSAGES) {
+    return ANALYZE_FALLBACK_REASON_MESSAGES[reason];
+  }
+  return ANALYZE_FALLBACK_DEFAULT_MESSAGE;
+}

@@ -5,6 +5,10 @@ import { useParams } from "next/navigation";
 import AppHeader from "../../../components/AppHeader";
 import Breadcrumb from "../../../components/Breadcrumb";
 import ReportPrintButton from "../../../components/ReportPrintButton";
+import {
+  AI_CONTEXT_LABEL,
+  WEB_CONTEXT_LABEL,
+} from "../../../components/sections/WebAiGapSection";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
 import {
   ANALYSIS_GUIDE_INTRO,
@@ -315,7 +319,7 @@ function ReportContent({
             <div className="mt-1 space-y-2">
               <div>
                 <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                  Web上の情報環境
+                  {WEB_CONTEXT_LABEL}
                 </p>
                 <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
                   {result.webAiGap.webContext?.summary}
@@ -323,7 +327,7 @@ function ReportContent({
               </div>
               <div>
                 <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                  AI回答上の説明
+                  {AI_CONTEXT_LABEL}
                 </p>
                 {result.webAiGap.aiContexts.map((context) => (
                   <p key={context.platform} className="text-zinc-600 dark:text-zinc-300 print:text-black">

@@ -8,6 +8,10 @@ import {
 } from "vitest";
 import { POST } from "./route";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
+import {
+  ANALYZE_FALLBACK_HEADER,
+  ANALYZE_FALLBACK_REASON_HEADER,
+} from "../../lib/analysis-request";
 
 function makeRequest(body: unknown) {
   return new Request("http://localhost/api/analyze", {
@@ -61,6 +65,8 @@ describe("POST /api/analyze", () => {
     expect(response.status).toBe(200);
     expect(data.meta.documentsSource).toBe("development_sample");
     expect(data.meta.sections.cooccurrenceRanking).toBe("mock");
+    expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
+    expect(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)).toBe("not_configured");
   });
 
   it("passes through the Python API response when it is valid", async () => {
@@ -82,6 +88,11 @@ describe("POST /api/analyze", () => {
     expect(response.status).toBe(200);
     expect(data.meta.documentsSource).toBe("user_provided");
     expect(data.meta.sections.cooccurrenceRanking).toBe("real");
+    // A real response must never carry the fallback headers — the
+    // caller (app/page.tsx) relies on their *absence* to know this is
+    // a genuine result, not dummy data.
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+    expect(response.headers.has(ANALYZE_FALLBACK_REASON_HEADER)).toBe(false);
   });
 
   it("passes through meta.documentCount and meta.sourceTypes from the Python API", async () => {
@@ -1181,6 +1192,8 @@ describe("POST /api/analyze", () => {
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining("failed schema validation"),
     );
+    expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
+    expect(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)).toBe("schema_mismatch");
   });
 
   it("falls back to dummy data when the Python API is unreachable", async () => {
@@ -1192,6 +1205,7 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.documentsSource).toBe("development_sample");
+    expect(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)).toBe("request_failed");
   });
 
   it("falls back to dummy data and logs a timeout-specific reason when the Python API times out", async () => {
@@ -1209,6 +1223,8 @@ describe("POST /api/analyze", () => {
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining("timed out"),
     );
+    expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
+    expect(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)).toBe("timeout");
   });
 
   it("falls back to dummy data when the Python API returns a non-2xx status other than 400", async () => {
@@ -1220,6 +1236,7 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.documentsSource).toBe("development_sample");
+    expect(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)).toBe("upstream_error");
   });
 
   it("forwards a 400 from the Python API as-is instead of falling back to dummy data", async () => {
@@ -1292,5 +1309,68 @@ describe("POST /api/analyze", () => {
     expect(response.status).toBe(400);
     expect(data).toEqual({ error: "入力内容を確認してください" });
     expect(JSON.stringify(data)).not.toContain("type_error");
+  });
+
+  // --- Immediate-display / history-detail schema parity
+  // (fix/analyze-immediate-result-and-web-ai-gap-quality) — a real
+  // Python API response carrying every recently-added optional field
+  // (webAiGap, finishReason/isTruncated/note) must pass through this
+  // route exactly like the already-covered claudeProvider/
+  // geminiProvider/commonCrawlProvider cases above, never silently
+  // falling back to dummy data for a shape that
+  // app/lib/analysis-history.ts's resolveHistoryDetailFetchOutcome()
+  // (used for the exact same stored JSON on /history/[id]) already
+  // accepts via the same parseAnalysisResult(). ---
+
+  it("passes through a real webAiGap (with truncation fields on an aiOverviewComparison item) from the Python API instead of falling back to dummy data", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const pythonResult = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API)",
+          mentioned: true,
+          rank: null,
+          summary: "OpenAI is an AI research company.",
+          finishReason: "MAX_TOKENS",
+          isTruncated: true,
+          note: "Gemini APIの出力が途中で終了した可能性があります。",
+        },
+      ],
+      webAiGap: {
+        status: "real",
+        webContext: {
+          summary: "OpenAIは契約期間の縛りなし・初期費用0円で利用できます。",
+          sourceType: "web_fetch",
+        },
+        aiContexts: [
+          { platform: "gemini", summary: "OpenAIはAI研究を行う会社です。", status: "real" },
+        ],
+        gapSummary: "Web上では料金・契約条件に関する説明が目立つ一方、AI回答ではサービス内容の説明が中心です。",
+        suggestions: ["社名の近くに主要サービス名を明記する"],
+        note: "Web上の情報環境とAI回答の単発観測を比較した補助的な見立てです。AIの内部認識を直接示すものではありません。",
+      },
+      meta: pythonMetaOverride({
+        documentsSource: "user_provided",
+        sections: { cooccurrenceRanking: "real" },
+      }),
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pythonResult), { status: 200 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    // Real data must come through as-is — the surest sign a fallback
+    // did NOT happen is documentsSource staying "user_provided" rather
+    // than reverting to "development_sample", plus the absence of the
+    // fallback headers.
+    expect(data.meta.documentsSource).toBe("user_provided");
+    expect(data.webAiGap.status).toBe("real");
+    expect(data.webAiGap.gapSummary).toContain("料金・契約条件");
+    expect(data.aiOverviewComparison[0].isTruncated).toBe(true);
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 });
