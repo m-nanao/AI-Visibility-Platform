@@ -90,6 +90,8 @@ Common Crawl補完: 公式ドメインから補完
 
 - 過去の分析を確認できる。
 - 各項目の「詳細を見る」ボタンから詳細画面へ移動する（button風リンクに改善済み、`feature/history-ui-link-and-layout-polish`参照）。
+- 各項目に、その分析時にAI Overview / ChatGPT / Claude / Gemini / Common Crawlがどの状態だったかを示す短いバッジが表示される（`feature/history-delete-and-mode-badges`、2026-09-19。全ON検証・単体ON検証・失敗分析の切り分けに使える。詳細は[17_usage_guide.md](./17_usage_guide.md)「21」参照）。
+- 各項目の「削除」ボタンから、不要になった分析履歴を一覧から削除できる（確認ダイアログあり）。**物理削除ではなく、DB上は`deleted_at`を設定して一覧・詳細から見えなくするだけ**（`backend/migrations/003_add_deleted_at_to_analysis_runs.sql`）。
 
 ### 履歴詳細（`/history/[id]`）
 
@@ -131,6 +133,8 @@ Common Crawl補完: 公式ドメインから補完
 - Supabase Authによるログイン保護
 - backend側のJWT検証＋project権限判定（`user_id`が所属するprojectの履歴のみ閲覧可能）
 - 主要画面（分析・履歴一覧・履歴詳細・レポート）共通のヘッダーナビゲーション（分析・履歴・ログアウトへ常時1クリックで移動可能）と、履歴詳細・レポートのパンくず（`feature/app-navigation-header`、2026-09-18）
+- Web上の説明とAI回答のズレの表示（`feature/web-ai-gap-section`、2026-09-19）
+- 不要になった分析履歴の削除（soft delete、一覧・詳細からは見えなくなるが物理削除はしない）と、履歴一覧での観測モード（AI Overview / ChatGPT / Claude / Gemini / Common Crawl）バッジ表示（`feature/history-delete-and-mode-badges`、2026-09-19。詳細は[17_usage_guide.md](./17_usage_guide.md)「21」参照）
 
 ### MVPではまだ限定的なこと
 

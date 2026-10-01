@@ -3,6 +3,8 @@ import {
   HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
   HISTORY_COMPARISON_NOT_FOUND_MESSAGE,
   HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE,
+  HISTORY_DELETE_ERROR_MESSAGE,
+  HISTORY_DELETE_NOT_FOUND_MESSAGE,
   HISTORY_DETAIL_GENERIC_ERROR_MESSAGE,
   HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
   HISTORY_DETAIL_NOT_FOUND_MESSAGE,
@@ -25,12 +27,14 @@ import {
   formatCooccurrenceChangedTermLabel,
   formatCooccurrenceNewTermLabel,
   formatCooccurrenceRemovedTermLabel,
+  formatModeSummaryBadges,
   formatSignedDelta,
   formatSourceSummary,
   getStatusLabel,
   limitComparisonTerms,
   limitReportCooccurrenceTerms,
   printReport,
+  resolveDeleteAnalysisRunOutcome,
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
@@ -140,6 +144,127 @@ describe("formatAnalysisRunListItem", () => {
       status: "completed",
     });
     expect(withNeither.startedAtLabel).toBe("実行日時不明");
+  });
+
+  it("includes modeBadges derived from the item's modeSummary", () => {
+    const display = formatAnalysisRunListItem({
+      ...SAMPLE_ITEM,
+      modeSummary: {
+        aiOverview: "live",
+        chatgpt: "real",
+        claude: "off",
+        gemini: "unavailable",
+        commonCrawl: "real",
+      },
+    });
+
+    expect(display.modeBadges).toEqual([
+      { label: "AI Overview", value: "実測(Live)" },
+      { label: "ChatGPT", value: "ON" },
+      { label: "Claude", value: "OFF" },
+      { label: "Gemini", value: "未取得" },
+      { label: "Common Crawl", value: "ON" },
+    ]);
+  });
+
+  it("falls back to all-unknown modeBadges when modeSummary is absent (old history)", () => {
+    const display = formatAnalysisRunListItem({
+      id: "id",
+      brandName: "サイボウズ",
+      status: "completed",
+    });
+
+    expect(display.modeBadges).toEqual([
+      { label: "AI Overview", value: "不明" },
+      { label: "ChatGPT", value: "不明" },
+      { label: "Claude", value: "不明" },
+      { label: "Gemini", value: "不明" },
+      { label: "Common Crawl", value: "不明" },
+    ]);
+  });
+});
+
+describe("formatModeSummaryBadges", () => {
+  it("maps every known aiOverview value to its display label", () => {
+    const values = ["mock", "sandbox", "live", "off", "unavailable", "unknown"] as const;
+    const labels = values.map(
+      (aiOverview) =>
+        formatModeSummaryBadges({
+          aiOverview,
+          chatgpt: "unknown",
+          claude: "unknown",
+          gemini: "unknown",
+          commonCrawl: "unknown",
+        })[0].value,
+    );
+
+    expect(labels).toEqual(["mock", "実測(Sandbox)", "実測(Live)", "OFF", "未取得", "不明"]);
+  });
+
+  it("maps every known simple-provider value to its display label", () => {
+    const values = ["real", "off", "unavailable", "unknown"] as const;
+    const labels = values.map(
+      (chatgpt) =>
+        formatModeSummaryBadges({
+          aiOverview: "unknown",
+          chatgpt,
+          claude: "unknown",
+          gemini: "unknown",
+          commonCrawl: "unknown",
+        })[1].value,
+    );
+
+    expect(labels).toEqual(["ON", "OFF", "未取得", "不明"]);
+  });
+
+  it("shows an unrecognized value as-is rather than dropping it", () => {
+    const badges = formatModeSummaryBadges({
+      aiOverview: "unknown",
+      chatgpt: "some-future-value",
+      claude: "unknown",
+      gemini: "unknown",
+      commonCrawl: "unknown",
+    });
+
+    expect(badges[1]).toEqual({ label: "ChatGPT", value: "some-future-value" });
+  });
+});
+
+describe("resolveDeleteAnalysisRunOutcome", () => {
+  it("returns success for a 200 response", async () => {
+    const outcome = await resolveDeleteAnalysisRunOutcome(jsonResponse({ deleted: true }, 200));
+
+    expect(outcome).toEqual({ success: true });
+  });
+
+  it("returns a forbidden message for a 403 response", async () => {
+    const outcome = await resolveDeleteAnalysisRunOutcome(
+      jsonResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FORBIDDEN_MESSAGE });
+  });
+
+  it("returns a not-found message for a 404 response", async () => {
+    const outcome = await resolveDeleteAnalysisRunOutcome(
+      jsonResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_DELETE_NOT_FOUND_MESSAGE });
+  });
+
+  it("returns a generic error message when the response is null (network failure)", async () => {
+    const outcome = await resolveDeleteAnalysisRunOutcome(null);
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_DELETE_ERROR_MESSAGE });
+  });
+
+  it("returns a generic error message for any other failure status", async () => {
+    const outcome = await resolveDeleteAnalysisRunOutcome(
+      jsonResponse({ error: "something went wrong" }, 502),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_DELETE_ERROR_MESSAGE });
   });
 });
 

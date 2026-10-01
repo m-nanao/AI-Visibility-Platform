@@ -296,6 +296,68 @@ def test_list_success_excludes_result_json(monkeypatch):
     assert calls[0]["status"] == "completed"
 
 
+def test_list_success_includes_mode_summary_when_repository_provides_it(monkeypatch):
+    fake_items = [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "brandName": "サイボウズ",
+            "canonicalDomain": "cybozu.co.jp",
+            "status": "completed",
+            "visibilityScore": 86,
+            "sourceSummary": None,
+            "startedAt": "2026-09-09T00:00:00+09:00",
+            "completedAt": "2026-09-09T00:00:10+09:00",
+            "createdAt": "2026-09-09T00:00:10+09:00",
+            "modeSummary": {
+                "aiOverview": "live",
+                "chatgpt": "real",
+                "claude": "off",
+                "gemini": "unavailable",
+                "commonCrawl": "real",
+            },
+        }
+    ]
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", lambda **kwargs: fake_items)
+
+    response = client.get("/analysis-runs", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["modeSummary"] == {
+        "aiOverview": "live",
+        "chatgpt": "real",
+        "claude": "off",
+        "gemini": "unavailable",
+        "commonCrawl": "real",
+    }
+
+
+def test_list_success_mode_summary_omitted_for_old_history(monkeypatch):
+    """A repository row with no "modeSummary" key at all (e.g. a very
+    old code path that predates this field) must not break the list
+    response — modeSummary is simply absent/null on that item."""
+    fake_items = [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "brandName": "サイボウズ",
+            "canonicalDomain": None,
+            "status": "completed",
+            "visibilityScore": None,
+            "sourceSummary": None,
+            "startedAt": None,
+            "completedAt": None,
+            "createdAt": None,
+        }
+    ]
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", lambda **kwargs: fake_items)
+
+    response = client.get("/analysis-runs", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["modeSummary"] is None
+
+
 def test_list_success_default_query_params(monkeypatch):
     _enable_read_env(monkeypatch)
     calls = []

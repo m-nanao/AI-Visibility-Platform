@@ -418,6 +418,12 @@ def test_list_analysis_runs_raises_on_query_failure(monkeypatch):
 
 def test_list_analysis_runs_success(monkeypatch):
     _configure_read_env(monkeypatch)
+    meta_json = {
+        "sections": {},
+        "documentsSource": "web_fetch",
+        "generatedAt": "2026-09-09T00:00:00+00:00",
+        "chatgptProvider": {"mode": "openai", "status": "real", "reason": "ok"},
+    }
     row = (
         VALID_RUN_ID,
         "サイボウズ",
@@ -428,6 +434,7 @@ def test_list_analysis_runs_success(monkeypatch):
         STARTED_AT,
         COMPLETED_AT,
         COMPLETED_AT,
+        meta_json,
     )
     fake_cursor = _FakeReadCursor(fetchall_result=[row])
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -446,6 +453,13 @@ def test_list_analysis_runs_success(monkeypatch):
             "startedAt": STARTED_AT.isoformat(),
             "completedAt": COMPLETED_AT.isoformat(),
             "createdAt": COMPLETED_AT.isoformat(),
+            "modeSummary": {
+                "aiOverview": "unknown",
+                "chatgpt": "real",
+                "claude": "unknown",
+                "gemini": "unknown",
+                "commonCrawl": "unknown",
+            },
         }
     ]
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
@@ -490,7 +504,12 @@ def test_list_analysis_runs_applies_brand_and_status_filters(monkeypatch):
     assert params[1] == "completed"
 
 
-def test_list_analysis_runs_no_filters_omits_where_clause(monkeypatch):
+def test_list_analysis_runs_no_filters_only_excludes_deleted(monkeypatch):
+    """No optional filter (brand/status/project_ids) always still
+    excludes a soft-deleted run — see
+    backend/migrations/003_add_deleted_at_to_analysis_runs.sql — so the
+    where clause is never fully absent, but it also never gains a
+    brand/status/project_id condition when none is requested."""
     _configure_read_env(monkeypatch)
     fake_cursor = _FakeReadCursor(fetchall_result=[])
     monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
@@ -498,7 +517,10 @@ def test_list_analysis_runs_no_filters_omits_where_clause(monkeypatch):
     repo.list_analysis_runs()
 
     query, params = fake_cursor.executed[0]
-    assert "where" not in query.lower()
+    assert "ar.deleted_at is null" in query.lower()
+    assert "b.name = %s" not in query.lower()
+    assert "ar.status = %s" not in query.lower()
+    assert "project_id in" not in query.lower()
     # Only limit/offset params when no filters are given.
     assert len(params) == 2
 
@@ -785,3 +807,171 @@ def test_get_previous_analysis_run_for_brand_applies_project_id_filter(monkeypat
     query, params = fake_cursor.executed[0]
     assert "prev.project_id = %s" in query
     assert params == (VALID_RUN_ID, "project-1")
+
+
+# --- deleted_at exclusion (backend/migrations/003_add_deleted_at_to_analysis_runs.sql) ---
+
+
+def test_get_analysis_run_excludes_soft_deleted_runs(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.get_analysis_run(VALID_RUN_ID)
+
+    query, _ = fake_cursor.executed[0]
+    assert "ar.deleted_at is null" in query.lower()
+
+
+def test_get_previous_analysis_run_for_brand_excludes_soft_deleted_runs(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.get_previous_analysis_run_for_brand(VALID_RUN_ID)
+
+    query, _ = fake_cursor.executed[0]
+    assert "prev.deleted_at is null" in query.lower()
+
+
+# --- soft_delete_analysis_run -------------------------------------------
+
+
+class _FakeDeleteCursor:
+    """Distinguishes the UPDATE from the follow-up "already deleted?"
+    SELECT by inspecting the last executed query, since
+    soft_delete_analysis_run() calls fetchone() at most twice per call
+    with different expected results."""
+
+    def __init__(self, *, update_returns_row=False, already_deleted=False, raise_on_execute=None):
+        self.update_returns_row = update_returns_row
+        self.already_deleted = already_deleted
+        self.raise_on_execute = raise_on_execute
+        self.executed = []
+        self._last_query = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, query, params=None):
+        if self.raise_on_execute is not None:
+            raise self.raise_on_execute
+        self.executed.append((query, params))
+        self._last_query = query.strip().lower()
+
+    def fetchone(self):
+        if self._last_query.startswith("update analysis_runs"):
+            return ("some-id",) if self.update_returns_row else None
+        if self._last_query.startswith("select 1 from analysis_runs"):
+            return (1,) if self.already_deleted else None
+        return None
+
+
+class _FakeDeleteConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.committed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        self.committed = True
+
+
+class _FakeDeletePsycopg:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.connect_calls = []
+        self.last_connection = None
+
+    def connect(self, database_url, connect_timeout=None):
+        self.connect_calls.append((database_url, connect_timeout))
+        self.last_connection = _FakeDeleteConnection(self._cursor)
+        return self.last_connection
+
+
+def test_soft_delete_analysis_run_returns_false_for_invalid_uuid(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeDeletePsycopg(_FakeDeleteCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.soft_delete_analysis_run("not-a-uuid")
+
+    assert result is False
+    assert fake_psycopg.connect_calls == []
+
+
+def test_soft_delete_analysis_run_raises_when_driver_not_installed(monkeypatch):
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", None)
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+
+def test_soft_delete_analysis_run_raises_when_database_url_missing(monkeypatch):
+    _configure_read_env(monkeypatch, url=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeDeletePsycopg(_FakeDeleteCursor()))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+
+def test_soft_delete_analysis_run_raises_on_query_failure(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeDeleteCursor(raise_on_execute=RuntimeError("connection refused"))
+    monkeypatch.setattr(repo, "psycopg", _FakeDeletePsycopg(fake_cursor))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+
+def test_soft_delete_analysis_run_marks_deleted_and_commits(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeDeleteCursor(update_returns_row=True)
+    fake_psycopg = _FakeDeletePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+    assert result is True
+    assert fake_psycopg.last_connection.committed is True
+    query, params = fake_cursor.executed[0]
+    assert "set deleted_at = now()" in query.lower()
+    assert "where id = %s and deleted_at is null" in query.lower()
+    assert params == (VALID_RUN_ID,)
+    # Only the UPDATE should have run — no need for the follow-up
+    # "already deleted?" SELECT when the UPDATE itself succeeded.
+    assert len(fake_cursor.executed) == 1
+
+
+def test_soft_delete_analysis_run_already_deleted_is_a_successful_no_op(monkeypatch):
+    fake_cursor = _FakeDeleteCursor(update_returns_row=False, already_deleted=True)
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", _FakeDeletePsycopg(fake_cursor))
+
+    result = repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+    assert result is True
+    # The UPDATE affected nothing, so the follow-up SELECT must have run.
+    assert len(fake_cursor.executed) == 2
+
+
+def test_soft_delete_analysis_run_returns_false_when_not_found(monkeypatch):
+    fake_cursor = _FakeDeleteCursor(update_returns_row=False, already_deleted=False)
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", _FakeDeletePsycopg(fake_cursor))
+
+    result = repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+    assert result is False

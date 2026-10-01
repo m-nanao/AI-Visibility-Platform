@@ -24,6 +24,19 @@ function optionalFromPython<T extends z.ZodTypeAny>(schema: T) {
   return schema.nullish().transform((value) => value ?? undefined);
 }
 
+// Mirrors backend/models.py's AnalysisRunModeSummary — every field is
+// a plain string (not a fixed enum) on both sides, so an unrecognized
+// future value never fails validation here, only falls back to a raw
+// display at the UI layer (see app/lib/analysis-history.ts's
+// formatModeSummaryBadges()).
+const analysisRunModeSummarySchema = z.object({
+  aiOverview: z.string(),
+  chatgpt: z.string(),
+  claude: z.string(),
+  gemini: z.string(),
+  commonCrawl: z.string(),
+});
+
 const analysisRunListItemSchema = z.object({
   id: z.string(),
   brandName: z.string(),
@@ -34,6 +47,10 @@ const analysisRunListItemSchema = z.object({
   startedAt: optionalFromPython(z.string()),
   completedAt: optionalFromPython(z.string()),
   createdAt: optionalFromPython(z.string()),
+  // Absent entirely on older saved history that predates this field —
+  // optionalFromPython() handles both that and Pydantic's `null` for
+  // an unset `X | None = None` field the same way.
+  modeSummary: optionalFromPython(analysisRunModeSummarySchema),
 });
 
 export const analysisRunListResponseSchema = z.object({

@@ -5,6 +5,8 @@ import Link from "next/link";
 import AppHeader from "../components/AppHeader";
 import { DETAIL_LINK_BUTTON_CLASSNAME } from "../lib/link-button-styles";
 import {
+  HISTORY_DELETE_BUTTON_LABEL,
+  HISTORY_DELETE_CONFIRM_MESSAGE,
   HISTORY_PAGE_TITLE,
   HISTORY_PAGE_DESCRIPTION,
   HISTORY_EMPTY_STATE_TEXT,
@@ -12,6 +14,7 @@ import {
   HISTORY_LIST_DETAIL_LINK_TEXT,
   buildHistoryDetailPath,
   formatAnalysisRunListItem,
+  resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
 } from "../lib/analysis-history";
 import type { HistoryViewState } from "../lib/analysis-history";
@@ -23,6 +26,11 @@ import type { HistoryViewState } from "../lib/analysis-history";
 // docs/22_analysis_history_detail_ui_design.md.
 export default function HistoryPage() {
   const [view, setView] = useState<HistoryViewState>({ kind: "loading" });
+  // Tracks per-row delete-in-progress/error state, keyed by analysis
+  // run id — independent of `view` so an in-flight/failed delete never
+  // has to re-derive the whole list view state.
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +51,44 @@ export default function HistoryPage() {
       cancelled = true;
     };
   }, []);
+
+  // Confirms, calls DELETE /api/analysis-runs/{id}, and on success
+  // removes the row from the current list view immediately (switching
+  // to the empty view when it was the last one) rather than
+  // re-fetching the whole list. A failed delete never removes the row
+  // — the error is shown inline on that same row instead.
+  const handleDelete = async (id: string) => {
+    if (!window.confirm(HISTORY_DELETE_CONFIRM_MESSAGE)) return;
+
+    setDeletingIds((prev) => new Set(prev).add(id));
+    setDeleteErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+
+    const response = await fetch(`/api/analysis-runs/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).catch(() => null);
+    const outcome = await resolveDeleteAnalysisRunOutcome(response);
+
+    setDeletingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+    if (!outcome.success) {
+      setDeleteErrors((prev) => ({ ...prev, [id]: outcome.message }));
+      return;
+    }
+
+    setView((prev) => {
+      if (prev.kind !== "items") return prev;
+      const remaining = prev.items.filter((item) => item.id !== id);
+      return remaining.length === 0 ? { kind: "empty" } : { kind: "items", items: remaining };
+    });
+  };
 
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
@@ -88,12 +134,14 @@ export default function HistoryPage() {
           <ul className="space-y-3">
             {view.items.map((item) => {
               const display = formatAnalysisRunListItem(item);
+              const isDeleting = deletingIds.has(item.id);
+              const deleteError = deleteErrors[item.id];
               return (
                 <li
                   key={item.id}
                   className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
                       {display.brandNameLabel}
                     </p>
@@ -115,13 +163,43 @@ export default function HistoryPage() {
                       <span>{display.sourceSummaryLabel}</span>
                     )}
                   </div>
-                  <Link
-                    href={buildHistoryDetailPath(item.id)}
-                    className={DETAIL_LINK_BUTTON_CLASSNAME}
-                  >
-                    {HISTORY_LIST_DETAIL_LINK_TEXT}
-                    <span aria-hidden="true">→</span>
-                  </Link>
+                  {/* 観測モードバッジ — どのAI Overview/ChatGPT/Claude/
+                      Gemini/Common Crawlが有効だったかを一覧で見分ける
+                      ため（feature/history-delete-and-mode-badges）。古
+                      い履歴はformatModeSummaryBadges()がすべて「不明」
+                      にフォールバックするため表示は壊れない。 */}
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {display.modeBadges.map((badge) => (
+                      <span
+                        key={badge.label}
+                        className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                      >
+                        {badge.label}: {badge.value}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <Link
+                      href={buildHistoryDetailPath(item.id)}
+                      className={DETAIL_LINK_BUTTON_CLASSNAME}
+                    >
+                      {HISTORY_LIST_DETAIL_LINK_TEXT}
+                      <span aria-hidden="true">→</span>
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(item.id)}
+                      disabled={isDeleting}
+                      className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                    >
+                      {isDeleting ? "削除中..." : HISTORY_DELETE_BUTTON_LABEL}
+                    </button>
+                  </div>
+                  {deleteError && (
+                    <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
+                      {deleteError}
+                    </p>
+                  )}
                 </li>
               );
             })}

@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db_settings import load_db_settings
+from services.history_mode_summary import build_mode_summary
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +294,11 @@ def list_analysis_runs(
     analysis_results), newest first — see
     docs/20_analysis_history_read_api_design.md "5. GET /analysis-runs
     の設計案". Deliberately never includes result_json (see that
-    section's "返さないもの").
+    section's "返さないもの"). Always excludes a soft-deleted run
+    (analysis_runs.deleted_at is not null — see
+    backend/migrations/003_add_deleted_at_to_analysis_runs.sql and
+    soft_delete_analysis_run() below) regardless of mode/project_ids;
+    there is no "show deleted runs too" option on this endpoint.
 
     `limit` is clamped to [1, MAX_LIST_LIMIT] and `offset` to >= 0
     regardless of what's passed in — defense in depth alongside
@@ -325,7 +330,9 @@ def list_analysis_runs(
     limit = max(1, min(limit, MAX_LIST_LIMIT))
     offset = max(0, offset)
 
-    conditions: list[str] = []
+    # "ar.deleted_at is null" is unconditional (not behind an opt-out) —
+    # this endpoint never has a "show deleted runs too" mode.
+    conditions: list[str] = ["ar.deleted_at is null"]
     params: list[Any] = []
     if brand is not None:
         conditions.append("b.name = %s")
@@ -337,7 +344,7 @@ def list_analysis_runs(
         placeholders = ", ".join(["%s"] * len(project_ids))
         conditions.append(f"ar.project_id in ({placeholders})")
         params.extend(project_ids)
-    where_clause = f"where {' and '.join(conditions)}" if conditions else ""
+    where_clause = f"where {' and '.join(conditions)}"
 
     query = f"""
         select
@@ -349,7 +356,8 @@ def list_analysis_runs(
             ar.source_summary,
             ar.started_at,
             ar.completed_at,
-            ar.created_at
+            ar.created_at,
+            res.meta_json
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -379,6 +387,12 @@ def list_analysis_runs(
             "startedAt": row[6].isoformat() if row[6] is not None else None,
             "completedAt": row[7].isoformat() if row[7] is not None else None,
             "createdAt": row[8].isoformat() if row[8] is not None else None,
+            # Derived from meta_json only (see
+            # services/history_mode_summary.py) — meta_json itself is
+            # never included in the returned dict, keeping this
+            # endpoint's "never includes result_json/meta_json" payload
+            # discipline intact for everything except this small summary.
+            "modeSummary": build_mode_summary(row[9]),
         }
         for row in rows
     ]
@@ -394,7 +408,12 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
 
     A malformed (non-UUID) `analysis_run_id` is treated the same as
     "not found" (returns None without attempting a query) rather than
-    raising or reaching the DB with an invalid value.
+    raising or reaching the DB with an invalid value. A soft-deleted
+    run (analysis_runs.deleted_at is not null) is also treated as "not
+    found" here — see backend/migrations/003_add_deleted_at_to_analysis_runs.sql
+    and soft_delete_analysis_run() below — so main.py's existing "404
+    when None" handling already does the right thing without needing
+    its own deleted-run check.
 
     The returned dict also includes a top-level `"projectId"` (the
     run's `analysis_runs.project_id`, or `None` for a legacy row saved
@@ -433,7 +452,7 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
-        where ar.id = %s
+        where ar.id = %s and ar.deleted_at is null
         order by res.created_at desc
         limit 1
     """
@@ -483,7 +502,12 @@ def get_previous_analysis_run_for_brand(
 
     A single self-join query finds the previous row directly from
     `analysis_run_id`, so callers don't need to fetch the current run
-    first just to learn its brand_id/created_at.
+    first just to learn its brand_id/created_at. A soft-deleted
+    candidate (`prev.deleted_at is not null`) is skipped, so a deleted
+    run never surfaces as someone else's "previous" comparison target —
+    `analysis_run_id` itself being deleted is a separate case, already
+    handled upstream by get_analysis_run() returning None before this
+    function is ever called (see main.py).
 
     `project_id`, when given, additionally restricts the previous run
     to `prev.project_id = project_id` — used by main.py's
@@ -529,6 +553,7 @@ def get_previous_analysis_run_for_brand(
         left join analysis_results res on res.analysis_run_id = prev.id
         where prev.brand_id = current_run.brand_id
           and prev.created_at < current_run.created_at
+          and prev.deleted_at is null
           {project_filter}
         order by prev.created_at desc
         limit 1
@@ -551,3 +576,70 @@ def get_previous_analysis_run_for_brand(
         "startedAt": row[1].isoformat() if row[1] is not None else None,
         "result": row[2],
     }
+
+
+def soft_delete_analysis_run(analysis_run_id: str) -> bool:
+    """Soft-deletes one analysis_runs row by setting `deleted_at =
+    now()` — never `DELETE FROM analysis_runs` (see
+    backend/migrations/003_add_deleted_at_to_analysis_runs.sql).
+    `analysis_results`/`brands` are never touched.
+
+    Deliberately unscoped by project — main.py's DELETE
+    /analysis-runs/{id} is responsible for authorizing the caller
+    *before* calling this, exactly like the existing GET detail/
+    comparison endpoints authorize via
+    services.project_access.can_user_access_analysis_run() first and
+    only then fetch by bare id. This keeps the authorization check and
+    the id-shaped operation it gates as two separate, individually
+    reviewable steps, rather than re-deriving scoping rules inside two
+    different repository functions.
+
+    Returns True when the row was just soft-deleted by this call, OR
+    was already soft-deleted (a repeat DELETE is treated as a
+    successful no-op, not an error — see the task's "すでに削除済みなら
+    成功扱いでもよい"). Returns False when `analysis_run_id` doesn't
+    exist or is malformed.
+
+    Raises AnalysisHistoryReadError on any connection/query failure —
+    reuses this module's existing read-error type rather than adding a
+    new one, since every caller already has an
+    `except AnalysisHistoryReadError: return 503` in place.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set deleted_at = now()
+                    where id = %s and deleted_at is null
+                    returning id
+                    """,
+                    (analysis_run_id,),
+                )
+                deleted_now = cur.fetchone() is not None
+
+                already_deleted = False
+                if not deleted_now:
+                    # Not updated just now — tell "already deleted" apart
+                    # from "doesn't exist" with one more lookup, so a
+                    # repeat DELETE of the same run is still reported as
+                    # success.
+                    cur.execute(
+                        "select 1 from analysis_runs where id = %s and deleted_at is not null",
+                        (analysis_run_id,),
+                    )
+                    already_deleted = cur.fetchone() is not None
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to soft-delete analysis run")
+        raise AnalysisHistoryReadError("failed to delete analysis history") from exc
+
+    return deleted_now or already_deleted

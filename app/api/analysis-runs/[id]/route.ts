@@ -133,3 +133,88 @@ export async function GET(
 
   return NextResponse.json(parsed.data);
 }
+
+/**
+ * Thin proxy to the Python analysis API's DELETE /analysis-runs/{id}
+ * (soft delete — see backend/services/analysis_history_repository.py's
+ * soft_delete_analysis_run()). Mirrors GET above: same
+ * PYTHON_ANALYSIS_API_URL/HISTORY_READ_TOKEN/Authorization forwarding,
+ * same 503/403/404 passthrough. On success, forwards the Python API's
+ * `{"deleted": true}` body as-is (no schema beyond a boolean is worth
+ * validating here).
+ */
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+
+  const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
+  if (!baseUrl) {
+    return NextResponse.json(
+      { error: "analysis history read API is not configured" },
+      { status: 503 },
+    );
+  }
+
+  const historyReadToken = process.env.HISTORY_READ_TOKEN;
+  const accessToken = await getServerSupabaseAccessToken(request);
+  const headers: HeadersInit = {
+    ...(historyReadToken ? { [HISTORY_READ_TOKEN_HEADER]: historyReadToken } : {}),
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${baseUrl.replace(/\/$/, "")}/analysis-runs/${encodeURIComponent(id)}`,
+      { method: "DELETE", headers },
+    );
+  } catch {
+    console.warn("[analysis-runs/[id]] Python API DELETE request failed");
+    return NextResponse.json(
+      { error: "分析履歴を削除できませんでした。" },
+      { status: 503 },
+    );
+  }
+
+  if (response.status === 503) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : "analysis history read API is not enabled";
+    return NextResponse.json({ error: message }, { status: 503 });
+  }
+
+  if (response.status === 403) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : "analysis history read access denied";
+    return NextResponse.json({ error: message }, { status: 403 });
+  }
+
+  if (response.status === 404) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : "analysis run not found";
+    return NextResponse.json({ error: message }, { status: 404 });
+  }
+
+  if (!response.ok) {
+    console.warn(
+      `[analysis-runs/[id]] Python API DELETE returned HTTP ${response.status}`,
+    );
+    return NextResponse.json(
+      { error: "分析履歴を削除できませんでした。" },
+      { status: 502 },
+    );
+  }
+
+  const json = await response.json().catch(() => ({ deleted: true }));
+  return NextResponse.json(json);
+}
