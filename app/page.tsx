@@ -4,7 +4,12 @@ import { useState } from "react";
 import AppHeader from "./components/AppHeader";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
-import { buildAnalyzeRequestBody } from "./lib/analysis-request";
+import {
+  ANALYZE_FALLBACK_HEADER,
+  ANALYZE_FALLBACK_REASON_HEADER,
+  buildAnalyzeRequestBody,
+  getAnalyzeFallbackMessage,
+} from "./lib/analysis-request";
 import { getSectionStatusSummary } from "./lib/meta-label";
 import { STAGING_BANNER_TEXT } from "./lib/staging-banner";
 import type {
@@ -26,6 +31,13 @@ export default function Home() {
   // urls, so the loading message can say "fetching web pages" instead
   // of the generic message — url-based analysis can take much longer.
   const [isUrlAnalysis, setIsUrlAnalysis] = useState(false);
+  // Set from ANALYZE_FALLBACK_HEADER/ANALYZE_FALLBACK_REASON_HEADER
+  // (app/lib/analysis-request.ts) when /api/analyze had to fall back to
+  // dummy data — see that file's comment for why this can legitimately
+  // happen even though the Python API ends up completing and saving a
+  // real result (full-ON requests taking longer than this route is
+  // willing to wait). null on a real result.
+  const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
 
   const handleAnalyze = async (
     brandName: string,
@@ -39,6 +51,7 @@ export default function Home() {
   ) => {
     setStatus("loading");
     setError(null);
+    setFallbackMessage(null);
     setIsUrlAnalysis(urls.length > 0);
     try {
       // urls: [] is never sent — omitting the key entirely lets the
@@ -72,6 +85,12 @@ export default function Home() {
         throw new Error(errorBody?.error ?? "分析に失敗しました。");
       }
 
+      if (response.headers.get(ANALYZE_FALLBACK_HEADER)) {
+        setFallbackMessage(
+          getAnalyzeFallbackMessage(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)),
+        );
+      }
+
       const data: AnalysisResult = await response.json();
       setResult(data);
       setStatus("done");
@@ -88,6 +107,7 @@ export default function Home() {
     setStatus("idle");
     setResult(null);
     setError(null);
+    setFallbackMessage(null);
     setIsUrlAnalysis(false);
   };
 
@@ -147,6 +167,11 @@ export default function Home() {
                 リセット
               </button>
             </div>
+            {fallbackMessage && (
+              <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                {fallbackMessage}
+              </p>
+            )}
             <AnalysisDashboard result={result} />
           </div>
         )}

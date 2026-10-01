@@ -21,6 +21,16 @@ const SOURCE_TYPE_LABELS: Record<WebAiGapWebSourceType, string> = {
 const SECTION_DESCRIPTION =
   "Web上で確認できるブランド周辺の説明と、各AI観測での回答内容を並べて確認します。AIの内部認識を直接示すものではなく、改善の方向性を考えるための補助情報です。";
 
+// "（抜粋）" makes it explicit that these are short, length-limited
+// excerpts (backend/services/web_ai_gap.py's MAX_WEB_CONTEXT_CHARS/
+// MAX_AI_CONTEXT_CHARS, each ending in "…" when actually truncated) —
+// a依頼者 had read the un-labeled text as if it were cut off by
+// mistake rather than intentionally shortened. Reused as-is by the
+// report page (app/history/[id]/report/page.tsx) so both screens use
+// identical wording.
+export const WEB_CONTEXT_LABEL = "Web上の情報環境（抜粋）";
+export const AI_CONTEXT_LABEL = "AI回答上の説明（抜粋）";
+
 function AiContextItem({ context }: { context: WebAiGapAiContext }) {
   return (
     <li className="min-w-0">
@@ -49,7 +59,7 @@ export default function WebAiGapSection({ webAiGap }: { webAiGap?: WebAiGapResul
         <div className="space-y-4">
           <div>
             <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              Web上の情報環境
+              {WEB_CONTEXT_LABEL}
             </h4>
             <p className="mt-1 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
               {webAiGap.webContext?.summary}
@@ -64,7 +74,7 @@ export default function WebAiGapSection({ webAiGap }: { webAiGap?: WebAiGapResul
 
           <div>
             <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              AI回答上の説明
+              {AI_CONTEXT_LABEL}
             </h4>
             <ul className="mt-1 space-y-1 text-sm">
               {webAiGap.aiContexts.map((context) => (

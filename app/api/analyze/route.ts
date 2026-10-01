@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
+import {
+  ANALYZE_FALLBACK_HEADER,
+  ANALYZE_FALLBACK_REASON_HEADER,
+} from "../../lib/analysis-request";
 import type {
   AiOverviewProviderMode,
   AnalysisResult,
@@ -28,11 +32,47 @@ const SIMULATED_ANALYSIS_DELAY_MS = 900;
 // with limited concurrency (3 at a time, ~5s timeout each — see
 // backend/services/web_fetcher.py), so a slow/degraded batch of
 // fetches can legitimately take up to ~ceil(10/3) * 5s = 20s before
-// Python can respond. 3s (the original brandName-only timeout) was
-// nowhere near enough once URL fetching was added. 25s gives a little
-// headroom over that ~20s worst case while still failing fast enough
-// that a genuinely stuck Python API doesn't hang the request forever.
-const PYTHON_API_TIMEOUT_MS = 25_000;
+// Python can respond.
+//
+// On top of that, every AI observation/Common Crawl provider is called
+// *sequentially* by backend/main.py, each with its own per-request
+// timeout: DataForSEO ~12s, ChatGPT/Claude/Gemini ~20s each, Common
+// Crawl ~10s (see each service's own REQUEST_TIMEOUT_SECONDS /
+// DEFAULT_TIMEOUT_SECONDS — not changed here). With every verification
+// selector turned on at once (AI Overview=DataForSEO Live, ChatGPT,
+// Claude, Gemini, Common Crawl all ON), a request that previously only
+// waited on URL fetching now also waits on up to 5 more sequential
+// external calls — comfortably exceeding the old 25s budget even
+// though each individual call finishes well under its own timeout.
+//
+// When that happened, this route's AbortController fired at 25s and
+// returned the dummy fallback below *while the Python API kept running
+// to completion in the background* (FastAPI/uvicorn doesn't cancel a
+// handler just because the caller disconnected) and successfully saved
+// a real result to the DB — which is exactly why the saved history
+// entry showed real text while the just-analyzed screen showed dummy
+// data for the same request. 55s gives enough headroom for a realistic
+// full-ON request (it is not sized for every provider simultaneously
+// hitting its own worst-case timeout, which would exceed what any
+// reasonable serverless function duration can wait for) while still
+// failing fast enough that a genuinely stuck Python API doesn't hang
+// the request forever.
+const PYTHON_API_TIMEOUT_MS = 55_000;
+
+// Why the "unavailable" (dummy-fallback) outcome happened — attached
+// as a response header (never the response body/schema, so this never
+// risks breaking AnalysisResult parsing) purely so the caller
+// (app/page.tsx) can tell a依頼者 that what they're looking at is a
+// fallback, not a real analysis, without this route having to guess at
+// UI copy. Never includes the Python API's response body, headers, or
+// any secret — see the logging below.
+type PythonApiUnavailableReason =
+  | "not_configured"
+  | "timeout"
+  | "request_failed"
+  | "upstream_error"
+  | "invalid_json"
+  | "schema_mismatch";
 
 type PythonApiOutcome =
   | { kind: "success"; data: AnalysisResult }
@@ -43,7 +83,7 @@ type PythonApiOutcome =
   | { kind: "validationError"; message: string }
   // Unset URL, network error, timeout, non-2xx (other than 400),
   // invalid JSON, or a response that doesn't match AnalysisResult.
-  | { kind: "unavailable" };
+  | { kind: "unavailable"; reason: PythonApiUnavailableReason };
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
@@ -62,7 +102,7 @@ async function fetchFromPythonApi(
   geminiMode?: GeminiProviderMode,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
-  if (!baseUrl) return { kind: "unavailable" };
+  if (!baseUrl) return { kind: "unavailable", reason: "not_configured" };
 
   const controller = new AbortController();
   const timeoutId = setTimeout(
@@ -145,7 +185,7 @@ async function fetchFromPythonApi(
       console.warn(
         `[analyze] Python API returned HTTP ${response.status}; falling back to dummy data`,
       );
-      return { kind: "unavailable" };
+      return { kind: "unavailable", reason: "upstream_error" };
     }
 
     let json: unknown;
@@ -155,7 +195,7 @@ async function fetchFromPythonApi(
       console.warn(
         "[analyze] Python API returned invalid JSON; falling back to dummy data",
       );
-      return { kind: "unavailable" };
+      return { kind: "unavailable", reason: "invalid_json" };
     }
 
     const parsed = parseAnalysisResult(json);
@@ -163,18 +203,16 @@ async function fetchFromPythonApi(
       console.warn(
         `[analyze] Python API response failed schema validation; falling back to dummy data (${parsed.reason})`,
       );
-      return { kind: "unavailable" };
+      return { kind: "unavailable", reason: "schema_mismatch" };
     }
 
     return { kind: "success", data: parsed.data };
   } catch (err) {
-    const reason = err instanceof Error && err.name === "AbortError"
-      ? "request timed out"
-      : "request failed";
+    const isTimeout = err instanceof Error && err.name === "AbortError";
     console.warn(
-      `[analyze] Python API ${reason}; falling back to dummy data`,
+      `[analyze] Python API ${isTimeout ? "request timed out" : "request failed"}; falling back to dummy data`,
     );
-    return { kind: "unavailable" };
+    return { kind: "unavailable", reason: isTimeout ? "timeout" : "request_failed" };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -271,5 +309,10 @@ export async function POST(request: Request) {
     setTimeout(resolve, SIMULATED_ANALYSIS_DELAY_MS),
   );
 
-  return NextResponse.json(buildDummyAnalysis(trimmedBrandName));
+  return NextResponse.json(buildDummyAnalysis(trimmedBrandName), {
+    headers: {
+      [ANALYZE_FALLBACK_HEADER]: "1",
+      [ANALYZE_FALLBACK_REASON_HEADER]: outcome.reason,
+    },
+  });
 }

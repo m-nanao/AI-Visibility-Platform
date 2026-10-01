@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAnalyzeRequestBody,
+  getAnalyzeFallbackMessage,
   isAiOverviewModeSelectorEnabled,
   isChatGptModeSelectorEnabled,
   isClaudeModeSelectorEnabled,
@@ -501,5 +502,29 @@ describe("buildAnalyzeRequestBody", () => {
       claudeMode: "anthropic",
       geminiMode: "google",
     });
+  });
+});
+
+describe("getAnalyzeFallbackMessage", () => {
+  it("returns a timeout-specific message that mentions history may still have the real result", () => {
+    const message = getAnalyzeFallbackMessage("timeout");
+
+    expect(message).toContain("開発用データ");
+    expect(message).toContain("履歴一覧");
+  });
+
+  it("returns a distinct message for not_configured", () => {
+    expect(getAnalyzeFallbackMessage("not_configured")).toContain("設定されていない");
+  });
+
+  it("returns a generic failure message for every other known reason", () => {
+    for (const reason of ["request_failed", "upstream_error", "invalid_json", "schema_mismatch"]) {
+      expect(getAnalyzeFallbackMessage(reason)).toContain("開発用データ");
+    }
+  });
+
+  it("falls back to a generic message for an unrecognized or null reason", () => {
+    expect(getAnalyzeFallbackMessage(null)).toContain("開発用データ");
+    expect(getAnalyzeFallbackMessage("something-unexpected")).toContain("開発用データ");
   });
 });

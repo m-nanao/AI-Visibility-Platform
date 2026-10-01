@@ -201,6 +201,48 @@ frontend側は新規`app/components/sections/WebAiGapSection.tsx`を追加し、
 
 DB schema変更・migration追加・Supabase/Render/Vercel設定変更・RLS本番適用はいずれも行っていない（`result.webAiGap`は既存の`result_json`保存にそのまま含まれるだけで、テーブル定義自体は無変更）。backend/frontendともにテストを追加した（`backend/tests/test_web_ai_gap.py`新規10件、`backend/tests/test_main.py`に統合テスト2件、`app/lib/analysis-result-schema.test.ts`に7件）。
 
+## 17. 分析直後dummy fallback問題の修正とWeb/AI差分ブロック品質改善（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`）
+
+本番検証で、AI Overview取得モード=DataForSEO Live・ChatGPT=ON・Claude=ON・Gemini=ON・Common Crawl=ONと全ONにして分析したところ、**分析直後の結果画面だけ「すべて開発用データ（ダミー）」になる**が、同じ分析結果を履歴一覧から開くと履歴詳細には実データが入っている、という不一致が報告された。
+
+### 原因
+
+`app/api/analyze/route.ts`の`PYTHON_API_TIMEOUT_MS`（Next.js→Python APIのタイムアウト）が、URL取得のみを想定した25秒のままだったこと。
+
+- backend/main.pyは、AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを**順番に**（並列ではなく）呼び出す。それぞれの個別タイムアウトはDataForSEO約12秒・ChatGPT/Claude/Gemini各約20秒・Common Crawl約10秒（いずれも各serviceの既存`REQUEST_TIMEOUT_SECONDS`/`DEFAULT_TIMEOUT_SECONDS`、今回変更していない）。
+- 検証用selectorをすべてONにすると、URL取得に加えてこれら最大5つの外部呼び出しが直列に積み重なり、個々の呼び出しは正常に完了していても合計で25秒を上回ることがある。
+- Next.js側の`AbortController`が25秒で発火し、`/api/analyze`はPython APIからの応答を待たずに開発用ダミーデータへフォールバックして200を返す。
+- 一方、FastAPI/uvicornは呼び出し元（Next.js）が切断しても処理中のリクエストを自動キャンセルしないため、**Python側はそのまま最後まで計算を続け、`save_analysis_history()`で実際にDBへ保存する**。
+- 結果として、分析直後の画面はタイムアウトによるダミー、同じ分析のDB保存は実データ、という不一致が発生していた。
+
+つまり、**backend側のバグでも、スキーマ不整合でもなく**、Next.js側のタイムアウト設定が最近追加された複数AI観測・Common Crawlの直列呼び出し時間を考慮していなかったことが原因だった（調査過程で、分析直後用のZodスキーマ`parseAnalysisResult`と履歴詳細用のスキーマ検証（`app/lib/analysis-history.ts`の`resolveHistoryDetailFetchOutcome`）が全く同じ関数を呼んでいることを確認済み——スキーマ差分は存在しない）。
+
+### 修正内容
+
+- `PYTHON_API_TIMEOUT_MS`を25秒→55秒に延長し、上記の全ON直列呼び出しを現実的に待てるようにした（すべてのproviderが同時に最悪ケースのタイムアウトへ達するケースまでは保証しない——その場合は合計で100秒を超え得るため、通常のサーバーレス関数実行時間で待てる範囲を超える。Render/Vercel設定・DataForSEO/ChatGPT/Claude/Geminiの個別タイムアウトはいずれも変更していない）。
+- フォールバックが発生した場合、`/api/analyze`のレスポンスに`X-Analyze-Fallback: 1`・`X-Analyze-Fallback-Reason: timeout|not_configured|request_failed|upstream_error|invalid_json|schema_mismatch`のレスポンスヘッダーを付与するようにした（`AnalysisResult`のJSONスキーマ自体は変更していない——ヘッダーのみでの通知）。`app/page.tsx`はこのヘッダーを見て、分析結果画面に「分析の取得に時間がかかったため、今回は開発用データを表示しています。分析自体は裏側で完了している場合があり、しばらくしてから履歴一覧で実際の結果を確認できることがあります。」等の注意文を表示する（timeout以外の理由は「分析結果の取得に失敗したため、開発用データを表示しています。」という汎用文言）。
+- サーバーログの出力内容自体は変更していない（既存の`console.warn`はパス＋理由のみで、レスポンス本文・ヘッダー・APIキー等は元々出力していない）。
+
+### Web/AI差分ブロックの改善
+
+もう1つの本番フィードバックとして、「Web上の説明とAI回答のズレ」ブロックについて、(1) 抜粋が途中で切れて見える、(2) 差分語に「Vol・会社概要・千葉県柏市」のようなノイズ語や汎用語が出て改善案として使いにくい、という2点が挙がった。
+
+- **抜粋であることの明示**: `WebAiGapSection.tsx`のラベルを「Web上の情報環境」→「Web上の情報環境（抜粋）」、「AI回答上の説明」→「AI回答上の説明（抜粋）」に変更し、レポート画面（`/history/[id]/report`）でも同じラベル定数（`WEB_CONTEXT_LABEL`/`AI_CONTEXT_LABEL`）を再利用して統一した。末尾の省略記号「…」は`backend/services/web_ai_gap.py`の`_truncate()`が既に付与済みだったため、backend側の抜粋ロジック自体は変更していない。
+- **ノイズ語の除外**: `web_ai_gap.py`に`_NOISE_KEYWORDS`（Vol, 会社概要, 一般的, ブランド, 商品, サービス, ページ, 公式, 情報, 提供, 企業, 会社, 株式会社, 千葉県, 柏市, お問い合わせ, ニュース, 記事, 一覧, 詳細, トップ, ホーム）を追加し、`_distinctive_keywords()`が差分語を選ぶ際にこれらを除外するようにした。あわせて1文字語・数字のみの語も除外する（大文字小文字を無視した比較）。
+- **カテゴリベースの差分判定**: 単語の有無だけで差分を作ると汎用語・ノイズ語が出やすいため、`services/context_analysis.py`と同じ発想の軽量カテゴリキーワード辞書（料金・契約条件／サービス内容／信頼性／対象顧客／地域）を追加し、Web側・AI側それぞれのテキストで最も多く出現するカテゴリを検出、両者が異なる場合は「Web上では{カテゴリA}に関する説明が目立つ一方、AI回答では{カテゴリB}の説明が中心です。」という文を生成するようにした。カテゴリが検出できない場合（またはWeb/AI双方が同じカテゴリの場合）のみ、従来の単語差分（ノイズ語除外後）にフォールバックする。
+- **改善ヒントのカテゴリ対応**: 改善ヒントも同じカテゴリ判定を使い、「料金・契約条件がWeb側のみ」「地域がWeb側のみ」はタスクで指定された文言に近い専用文を、それ以外の組み合わせは汎用テンプレートを使うようにした。カテゴリ判定できない場合は従来の単語ベースのヒントにフォールバックする。
+- いずれも**新しい外部API呼び出しは追加していない**（既存の`cooccurrence.py`の`compute_cooccurrence_ranking()`・固定のキーワード辞書のみを使用）。「AIが誤解している」「AIに学習される」「必ず改善する」といった断定表現は引き続き使っていない。
+
+### テスト
+
+- `backend/tests/test_web_ai_gap.py`: カテゴリ差分（両側検出/片側のみ/同一カテゴリ時のフォールバック）、ノイズ語除外（gapSummary・suggestions双方）、改善ヒントのカテゴリ対応を追加・更新。
+- `backend/tests/test_analysis_history_repository.py`等は無変更（今回のタスクでrepository層は触れていない）。
+- `app/api/analyze/route.test.ts`: フォールバック時のレスポンスヘッダー（`X-Analyze-Fallback`/`X-Analyze-Fallback-Reason`）、real responseが`webAiGap`・Gemini途中終了フィールドを含んでいてもフォールバックしないことを確認する回帰テストを追加。
+- `app/lib/analysis-request.test.ts`: `getAnalyzeFallbackMessage()`の理由別メッセージを確認。
+- `app/components/sections/WebAiGapSection.test.ts`（新規）: ラベルに「（抜粋）」が含まれることを確認（このプロジェクトにReactコンポーネント描画テスト基盤がないため、既存の`app/lib/staging-banner.test.ts`と同じ「文言は定数として export してユニットテストする」パターンを踏襲）。
+
+DB schema変更・migration変更・Supabase/Render/Vercel設定変更・RLS本番適用・DataForSEO/ChatGPT/Claude/Gemini設定変更はいずれも行っていない。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）
