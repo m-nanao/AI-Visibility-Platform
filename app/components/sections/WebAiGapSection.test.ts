@@ -6,6 +6,7 @@ import {
   comparisonTargetsText,
   GAP_SUMMARY_DISCLAIMER,
   GAP_SUMMARY_LABEL,
+  WEB_CONTEXT_EXCERPT_DISCLAIMER,
   WEB_CONTEXT_LABEL,
 } from "./WebAiGapSection";
 
@@ -45,6 +46,11 @@ describe("WebAiGapSection excerpt labels", () => {
   it("discloses that the gap summary is a keyword/category heuristic, not a semantic judgement", () => {
     expect(GAP_SUMMARY_DISCLAIMER).toContain("簡易的な比較");
     expect(GAP_SUMMARY_DISCLAIMER).toContain("意味的な差分を完全に判断するものではありません");
+  });
+
+  it("discloses that the Web-side excerpt is not the full original page", () => {
+    expect(WEB_CONTEXT_EXCERPT_DISCLAIMER).toContain("抜粋");
+    expect(WEB_CONTEXT_EXCERPT_DISCLAIMER).toContain("元ページ全文ではありません");
   });
 });
 

@@ -975,3 +975,138 @@ def test_soft_delete_analysis_run_returns_false_when_not_found(monkeypatch):
     result = repo.soft_delete_analysis_run(VALID_RUN_ID)
 
     assert result is False
+
+
+# --- update_analysis_result (Gemini-only rerun) --------------------------
+
+
+class _FakeUpdateCursor:
+    def __init__(self, *, update_returns_row=True, raise_on_execute=None):
+        self.update_returns_row = update_returns_row
+        self.raise_on_execute = raise_on_execute
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, query, params=None):
+        if self.raise_on_execute is not None:
+            raise self.raise_on_execute
+        self.executed.append((query, params))
+
+    def fetchone(self):
+        return ("some-id",) if self.update_returns_row else None
+
+
+class _FakeUpdateConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.committed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        self.committed = True
+
+
+class _FakeUpdatePsycopg:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.connect_calls = []
+        self.last_connection = None
+
+    def connect(self, database_url, connect_timeout=None):
+        self.connect_calls.append((database_url, connect_timeout))
+        self.last_connection = _FakeUpdateConnection(self._cursor)
+        return self.last_connection
+
+
+def test_update_analysis_result_returns_false_for_invalid_uuid(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeUpdatePsycopg(_FakeUpdateCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.update_analysis_result(
+        "not-a-uuid", result_json={"a": 1}, meta_json=None
+    )
+
+    assert result is False
+    assert fake_psycopg.connect_calls == []
+
+
+def test_update_analysis_result_raises_when_driver_not_installed(monkeypatch):
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", None)
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.update_analysis_result(VALID_RUN_ID, result_json={}, meta_json=None)
+
+
+def test_update_analysis_result_raises_when_database_url_missing(monkeypatch):
+    _configure_read_env(monkeypatch, url=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeUpdatePsycopg(_FakeUpdateCursor()))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.update_analysis_result(VALID_RUN_ID, result_json={}, meta_json=None)
+
+
+def test_update_analysis_result_raises_on_query_failure(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeUpdateCursor(raise_on_execute=RuntimeError("connection refused"))
+    monkeypatch.setattr(repo, "psycopg", _FakeUpdatePsycopg(fake_cursor))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.update_analysis_result(VALID_RUN_ID, result_json={}, meta_json=None)
+
+
+def test_update_analysis_result_success_commits_and_passes_params(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeUpdateCursor(update_returns_row=True)
+    fake_psycopg = _FakeUpdatePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result_json = {"aiOverviewComparison": []}
+    meta_json = {"geminiProvider": {"mode": "google"}}
+
+    result = repo.update_analysis_result(
+        VALID_RUN_ID, result_json=result_json, meta_json=meta_json
+    )
+
+    assert result is True
+    assert fake_psycopg.last_connection.committed is True
+    query, params = fake_cursor.executed[0]
+    assert "update analysis_results" in query.lower()
+    assert "set result_json = %s, meta_json = %s" in query.lower()
+    assert params[2] == VALID_RUN_ID
+
+
+def test_update_analysis_result_returns_false_when_not_found(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeUpdateCursor(update_returns_row=False)
+    monkeypatch.setattr(repo, "psycopg", _FakeUpdatePsycopg(fake_cursor))
+
+    result = repo.update_analysis_result(VALID_RUN_ID, result_json={}, meta_json=None)
+
+    assert result is False
+
+
+def test_update_analysis_result_accepts_none_meta_json(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeUpdateCursor(update_returns_row=True)
+    monkeypatch.setattr(repo, "psycopg", _FakeUpdatePsycopg(fake_cursor))
+
+    result = repo.update_analysis_result(VALID_RUN_ID, result_json={"a": 1}, meta_json=None)
+
+    assert result is True
+    _, params = fake_cursor.executed[0]
+    assert params[1] is None

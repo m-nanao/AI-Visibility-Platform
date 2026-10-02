@@ -286,6 +286,35 @@ DB schema変更・migration変更・Supabase/Render/Vercel設定変更・RLS本�
 - どのAIプロバイダ（Claude/ChatGPT/Gemini等）を比較処理自体に使うか、コスト・レイテンシ・プロンプト設計は別途検討が必要。
 - 現状の簡易ヒューリスティック（カテゴリ→単語レベル）は、専用AI比較が使えない場合（未設定・エラー時等）のフォールバックとして残すことが望ましい。
 
+## 19. Gemini単体再実行機能の追加（2026-10-03、`feature/rerun-gemini-observation`）
+
+Gemini観測結果の途中終了（`isTruncated`）が疑われる場合、これまではGeminiの出力を取り直すために`/analyze`全体を再実行するしかなく、DataForSEO/ChatGPT/Claude/Common Crawlも無関係に再消費されてしまう問題があった。保存済みの履歴詳細画面から**Geminiだけ**を再実行できる機能を追加した。
+
+### backend: `POST /analysis-runs/{id}/rerun/gemini`
+
+- 新規`backend/services/gemini_rerun.py`の`rerun_gemini_for_analysis_run()`——`/analyze`と全く同じ`services/gemini_provider.py`の`build_gemini_observation()`を1回だけ呼び出す純粋関数（DB接続なし）。DataForSEO/ChatGPT/Claude/Common Crawl/web fetchはいずれも呼び出さない。
+- `gemini_mode`は、保存済み`input_snapshot.geminiMode`（元の`/analyze`リクエストが実際に使ったオーバーライド値）を`resolve_gemini_mode()`に渡して解決する——`ALLOW_GEMINI_MODE_OVERRIDE`のゲート自体は`resolve_gemini_mode()`内でそのまま有効なため、古い`input_snapshot`に`"geminiMode": "google"`が入っていても、現在の環境がオフならGemini呼び出しにはならない。
+- 成功時: 既存`result_json.aiOverviewComparison`からGeminiカード（`platform == "Gemini (Google API)"`）を探して置き換え、なければ追加する。`meta_json.geminiProvider`も新しい`mode`/`status`/`reason`/`environment`で更新する。
+- `webAiGap`は**ベストエフォートで部分更新**する——新規`backend/services/web_ai_gap.py`の`rebuild_web_ai_gap_for_updated_ai_contexts()`が、既存`webContext`（保存済みの抜粋。元の生Documentは保存されていないため再生成はしない）はそのまま再利用し、`aiContexts`/`gapSummary`/`suggestions`だけを更新後の`aiOverviewComparison`から再計算する。既存`webAiGap`が`"unavailable"`だった場合（Web側抜粋が元々ない）や、パースに失敗する古い形状の場合は、無理に変更せずそのまま残す。
+- 失敗時（Gemini無効・credentials未設定・request limit不正・API呼び出し自体の失敗）は`result_json`/`meta_json`をいずれも書き換えない——既存の保存済み結果は壊れない。HTTPレスポンスは502とし、backendの`reason`文字列（例:「Gemini request limit must be 1.」、既存`meta.geminiProvider.reason`と同種の安全なテキスト、API key/token等は含まない）をそのまま返す。
+- 認証: 既存`DELETE /analysis-runs/{id}`と全く同じ`_resolve_history_access()`ゲート・JWTモード権限判定（`can_user_access_analysis_run()`で`analysis_run_id`に対する事前アクセスチェック、権限なしは403）・`HISTORY_READ_TOKEN`モード（内部/管理用途として無制限）を踏襲。新しいDB schema変更・migrationは不要（既存`analysis_results`行の`result_json`/`meta_json`列をUPDATEするだけ）。
+- 新規`backend/services/analysis_history_repository.py`の`update_analysis_result()`——`analysis_runs.deleted_at is null`の行のみ対象とし、`visibility_score`等の他カラムは一切変更しない。
+
+### frontend
+
+- 新規`app/api/analysis-runs/[id]/rerun/gemini/route.ts`——既存`DELETE /api/analysis-runs/[id]`と同じ`PYTHON_ANALYSIS_API_URL`/`HISTORY_READ_TOKEN`/Authorizationの転送パターン。502のみbackendの`error`メッセージをそのまま転送する（Gemini固有の安全な理由文言のため）。
+- `app/components/sections/AIOverviewComparisonSection.tsx`に、履歴詳細画面からのみ渡される`geminiRerun`props（`GeminiRerunControlsState`）を追加——分析結果画面・レポート画面は`geminiRerun`を渡さないため、ボタンは`/history/[id]`にしか出ない。Geminiカードが存在する場合はカード内に、存在しない場合（`status === "unavailable"`等）はセクション上部のステータスバッジ付近に表示する（`app/lib/meta-label.ts`の`isGeminiRerunEligible()`で判定、`geminiProvider.status === "off"`の場合は出さない）。
+- ボタン文言「Geminiだけ再実行」、補足文「Geminiの回答のみを再取得します。他のAI観測やAI Overviewは再実行しません。」、確認ダイアログ「Geminiの回答のみを再取得します。Gemini APIを1回使用します。実行しますか？」、実行中「Gemini再実行中...」、成功時「Geminiの再実行が完了しました。」はすべて`app/lib/analysis-history.ts`に定数として定義（`GEMINI_RERUN_*`）。
+- `app/history/[id]/page.tsx`は`window.confirm()`確認後にPOSTし、成功時は再フェッチせず`view.result`をレスポンスの新しい`AnalysisResult`で置き換える。失敗時は既存の表示結果をそのまま保持し、エラーメッセージだけ表示する。
+
+### Web/AI差分ブロックの抜粋補足（急ぎではないが同時実施）
+
+「Web上の情報環境（比較に使用した抜粋）」が元ページ全文ではなく代表的な抜粋であることが画面上で分かりづらいという指摘を受け、ラベル直下に「この抜粋は、差分比較に使用した代表的な文脈です。元ページ全文ではありません。」という注意文（`WEB_CONTEXT_EXCERPT_DISCLAIMER`）を追加した。分析結果画面・履歴詳細画面（`WebAiGapSection.tsx`）・レポート画面の両方に表示する。
+
+### 今回対象外
+
+ChatGPT/Claude/AI Overview単体の再実行、分析後の非同期ジョブ化は今回実装していない。新しい外部API呼び出し（Gemini以外）・DB schema変更・migration追加・Supabase/Render/Vercel設定変更はいずれも行っていない。
+
 ## 関連ドキュメント
 
 - [03_api_design.md](./03_api_design.md) — API設計（AI Overview比較の現状）

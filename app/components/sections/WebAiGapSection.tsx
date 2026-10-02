@@ -37,6 +37,16 @@ const SECTION_DESCRIPTION =
 // wording.
 export const WEB_CONTEXT_LABEL = "Web上の情報環境（比較に使用した抜粋）";
 
+// Added per a依頼者 report that it wasn't obvious from "（比較に使用した
+// 抜粋）" alone that this text is a short, representative excerpt —
+// *not* the full page the excerpt was picked from (see
+// backend/services/web_ai_gap.py's _build_web_context(), which slices
+// out a short window around the brand mention). Shown directly under
+// WEB_CONTEXT_LABEL on both this component and the report page
+// (app/history/[id]/report/page.tsx).
+export const WEB_CONTEXT_EXCERPT_DISCLAIMER =
+  "この抜粋は、差分比較に使用した代表的な文脈です。元ページ全文ではありません。";
+
 export const AI_CONTEXT_NOTE =
   "比較対象のAI回答は、上のAI観測ブロックに表示されているChatGPT / Claude / Gemini / AI Overviewの回答です。";
 export const AI_COMPARISON_TARGETS_LABEL = "比較対象";
@@ -81,6 +91,9 @@ export default function WebAiGapSection({ webAiGap }: { webAiGap?: WebAiGapResul
             <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
               {WEB_CONTEXT_LABEL}
             </h4>
+            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              {WEB_CONTEXT_EXCERPT_DISCLAIMER}
+            </p>
             <p className="mt-1 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
               {webAiGap.webContext?.summary}
             </p>

@@ -10,6 +10,7 @@ import {
   AI_CONTEXT_NOTE,
   GAP_SUMMARY_DISCLAIMER,
   GAP_SUMMARY_LABEL,
+  WEB_CONTEXT_EXCERPT_DISCLAIMER,
   WEB_CONTEXT_LABEL,
 } from "../../../components/sections/WebAiGapSection";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
@@ -330,6 +331,9 @@ function ReportContent({
               <div>
                 <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                   {WEB_CONTEXT_LABEL}
+                </p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+                  {WEB_CONTEXT_EXCERPT_DISCLAIMER}
                 </p>
                 <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
                   {result.webAiGap.webContext?.summary}

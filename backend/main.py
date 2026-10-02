@@ -120,6 +120,7 @@ from models import (
     Document,
     DocumentsSource,
     GeminiProviderInfo,
+    GeminiRerunResponse,
     SectionStatus,
     UrlFetchResult,
 )
@@ -133,7 +134,9 @@ from services.analysis_history_repository import (
     list_analysis_runs as repository_list_analysis_runs,
     save_analysis_history,
     soft_delete_analysis_run as repository_soft_delete_analysis_run,
+    update_analysis_result as repository_update_analysis_result,
 )
+from services.gemini_rerun import rerun_gemini_for_analysis_run
 from services.auth_settings import load_auth_settings
 from services.jwt_auth import JWTAuthError, extract_bearer_token, verify_supabase_jwt
 from services.project_access import can_user_access_analysis_run, get_accessible_project_ids
@@ -1156,3 +1159,93 @@ def delete_analysis_run(analysis_run_id: str, request: Request):
         return error_response("analysis run not found", status_code=404)
 
     return {"deleted": True}
+
+
+GEMINI_RERUN_FAILED_MESSAGE = "failed to update analysis result after Gemini rerun"
+
+
+@app.post(
+    "/analysis-runs/{analysis_run_id}/rerun/gemini",
+    response_model=GeminiRerunResponse,
+)
+def rerun_gemini_observation(analysis_run_id: str, request: Request):
+    """Re-runs **only** the Gemini observation for one saved analysis
+    run, and persists the updated card in place — added so a suspected
+    mid-way-truncated Gemini answer can be re-fetched without re-running
+    the rest of `/analyze` (which would also re-call DataForSEO/ChatGPT/
+    Claude and re-fetch Common Crawl/web pages, consuming their request
+    budgets for no reason related to the problem being investigated).
+    See services/gemini_rerun.py for what is and isn't touched.
+
+    Uses the exact same `_resolve_history_access()` gate and JWT-mode
+    authorization pattern as DELETE /analysis-runs/{id} above: access is
+    checked against `analysis_run_id` itself (via
+    can_user_access_analysis_run()) before anything is read or written,
+    so a caller who can't see this run gets 403 without it being
+    touched, and HISTORY_READ_TOKEN mode remains unrestricted for
+    internal/admin use exactly as every other mutating history endpoint
+    already is.
+
+    Never calls DataForSEO/ChatGPT/Claude/Common Crawl/web fetch — only
+    services/gemini_provider.py's build_gemini_observation(), the same
+    function `/analyze` itself uses. A failed or disabled Gemini call
+    (see GeminiRerunOutcome.success) returns 502 without writing
+    anything, so the previously saved result is never corrupted or
+    cleared by a failed re-run.
+    """
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        detail = repository_get_analysis_run(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    if detail is None:
+        return error_response("analysis run not found", status_code=404)
+
+    outcome = rerun_gemini_for_analysis_run(
+        brand_name=detail["brand"]["name"],
+        input_snapshot=detail["run"]["inputSnapshot"],
+        result_json=detail["result"],
+        meta_json=detail["meta"],
+    )
+    if not outcome.success:
+        # outcome.reason is always a short, safe-to-display string (see
+        # GeminiRerunOutcome's docstring) — never an API key/token, and
+        # already the same kind of text meta.geminiProvider.reason
+        # surfaces from a normal /analyze call.
+        return error_response(outcome.reason, status_code=502)
+
+    try:
+        updated = repository_update_analysis_result(
+            analysis_run_id,
+            result_json=outcome.result_json,
+            meta_json=outcome.meta_json,
+        )
+    except AnalysisHistoryReadError:
+        return error_response(GEMINI_RERUN_FAILED_MESSAGE, status_code=503)
+
+    if not updated:
+        return error_response("analysis run not found", status_code=404)
+
+    return GeminiRerunResponse(
+        updated=True,
+        analysisRunId=analysis_run_id,
+        result=outcome.result_json,
+    )

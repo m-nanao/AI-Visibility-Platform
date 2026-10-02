@@ -15,6 +15,7 @@ import {
   getGeminiProviderStatusDisplay,
   getSectionStatusSummary,
   getUrlFetchSummary,
+  isGeminiRerunEligible,
 } from "./meta-label";
 import { buildDummyAnalysis } from "./dummy-data";
 import type { AIOverviewComparisonItem, AnalysisMeta } from "./types";
@@ -2092,5 +2093,40 @@ describe("getCommonCrawlAnalyzedPagesDisplay", () => {
     expect(getCommonCrawlProviderDisplay(meta)?.summary).toBe(
       "Common Crawl補完: 取得済み（3件）",
     );
+  });
+});
+
+describe("isGeminiRerunEligible", () => {
+  function geminiItem(overrides: Partial<AIOverviewComparisonItem> = {}): AIOverviewComparisonItem {
+    return {
+      platform: "Gemini (Google API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acmeについての説明です。",
+      ...overrides,
+    };
+  }
+
+  it("is true when a real Gemini card is present", () => {
+    const meta = { ...baseMeta(), geminiProvider: { mode: "google", status: "real", reason: "ok" } };
+    expect(isGeminiRerunEligible([geminiItem()], meta)).toBe(true);
+  });
+
+  it("is true when Gemini was attempted but failed (no card, status unavailable)", () => {
+    const meta = {
+      ...baseMeta(),
+      geminiProvider: { mode: "google", status: "unavailable", reason: "Gemini API key is not configured." },
+    };
+    expect(isGeminiRerunEligible([], meta)).toBe(true);
+  });
+
+  it("is false when Gemini mode is off", () => {
+    const meta = { ...baseMeta(), geminiProvider: { mode: "off", status: "off", reason: "Gemini observation is disabled." } };
+    expect(isGeminiRerunEligible([], meta)).toBe(false);
+  });
+
+  it("is false when geminiProvider is absent (old saved history)", () => {
+    const meta = { ...baseMeta(), geminiProvider: undefined };
+    expect(isGeminiRerunEligible([], meta)).toBe(false);
   });
 });

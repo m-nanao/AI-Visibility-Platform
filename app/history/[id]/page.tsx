@@ -8,6 +8,8 @@ import AppHeader from "../../components/AppHeader";
 import Breadcrumb from "../../components/Breadcrumb";
 import { REPORT_LINK_BUTTON_CLASSNAME } from "../../lib/link-button-styles";
 import {
+  GEMINI_RERUN_CONFIRM_MESSAGE,
+  GEMINI_RERUN_SUCCESS_MESSAGE,
   HISTORY_COMPARISON_COOCCURRENCE_CHANGED_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_LABEL,
   HISTORY_COMPARISON_COOCCURRENCE_NEW_LABEL,
@@ -27,6 +29,7 @@ import {
   formatCooccurrenceNewTermLabel,
   formatCooccurrenceRemovedTermLabel,
   limitComparisonTerms,
+  resolveGeminiRerunOutcome,
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
 } from "../../lib/analysis-history";
@@ -49,6 +52,14 @@ export default function HistoryDetailPage() {
   const [comparisonView, setComparisonView] = useState<HistoryComparisonViewState>({
     kind: "loading",
   });
+  // "Geminiだけ再実行" state — independent of `view` so an in-flight/
+  // failed rerun never has to re-derive the whole detail view state
+  // (same reasoning as app/history/page.tsx's deletingIds/deleteErrors).
+  const [geminiRerunStatus, setGeminiRerunStatus] = useState<"idle" | "pending">("idle");
+  const [geminiRerunError, setGeminiRerunError] = useState<string | undefined>(undefined);
+  const [geminiRerunSuccessMessage, setGeminiRerunSuccessMessage] = useState<
+    string | undefined
+  >(undefined);
 
   useEffect(() => {
     if (!id) return;
@@ -96,6 +107,36 @@ export default function HistoryDetailPage() {
     };
   }, [id]);
 
+  // Confirms, calls POST /api/analysis-runs/{id}/rerun/gemini, and on
+  // success swaps `view.result` for the updated AnalysisResult the
+  // backend returns — never re-fetches the whole detail, and a failed
+  // rerun never touches the currently displayed result (see
+  // app/lib/analysis-history.ts's resolveGeminiRerunOutcome()).
+  const handleRerunGemini = async () => {
+    if (!id) return;
+    if (!window.confirm(GEMINI_RERUN_CONFIRM_MESSAGE)) return;
+
+    setGeminiRerunStatus("pending");
+    setGeminiRerunError(undefined);
+    setGeminiRerunSuccessMessage(undefined);
+
+    const response = await fetch(
+      `/api/analysis-runs/${encodeURIComponent(id)}/rerun/gemini`,
+      { method: "POST" },
+    ).catch(() => null);
+    const outcome = await resolveGeminiRerunOutcome(response);
+
+    setGeminiRerunStatus("idle");
+
+    if (!outcome.success) {
+      setGeminiRerunError(outcome.message);
+      return;
+    }
+
+    setGeminiRerunSuccessMessage(GEMINI_RERUN_SUCCESS_MESSAGE);
+    setView((prev) => (prev.kind === "success" ? { ...prev, result: outcome.result } : prev));
+  };
+
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
       <AppHeader />
@@ -139,7 +180,15 @@ export default function HistoryDetailPage() {
               <ComparisonSection view={comparisonView} />
             </div>
             <div className="mt-6">
-              <AnalysisDashboard result={view.result} />
+              <AnalysisDashboard
+                result={view.result}
+                geminiRerun={{
+                  status: geminiRerunStatus,
+                  errorMessage: geminiRerunError,
+                  successMessage: geminiRerunSuccessMessage,
+                  onRerun: handleRerunGemini,
+                }}
+              />
             </div>
           </>
         )}

@@ -740,8 +740,11 @@ export const CLAUDE_PLATFORM_NOTE =
   "Claude APIを使い、Claude相当モデルに同じ観点で質問した1回分の観測結果です。Claudeサービス全体の認識やAIの内部状態を保証するものではありません。";
 
 // Must match backend/services/gemini_provider.py's GEMINI_PLATFORM_LABEL
-// exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above.
-const GEMINI_GOOGLE_PLATFORM_LABEL = "Gemini (Google API)";
+// exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above. Exported
+// (unlike the ChatGPT/Claude equivalents) so AIOverviewComparisonSection.tsx
+// can find the Gemini card specifically, to attach the "Geminiだけ再実行"
+// controls (see app/lib/analysis-history.ts) to it.
+export const GEMINI_GOOGLE_PLATFORM_LABEL = "Gemini (Google API)";
 // The frontend's own wording for this warning — deliberately NOT the
 // same text as backend/services/gemini_client.py's TRUNCATION_NOTE
 // (which is sent as item.note whenever isTruncated is true). That
@@ -994,4 +997,25 @@ export function getAiOverviewItemDetailDisplay(
     platformNote,
     truncationWarning,
   };
+}
+
+/**
+ * Whether the history detail page should offer "Geminiだけ再実行" at
+ * all (see AIOverviewComparisonSection.tsx's GeminiRerunControlsState
+ * and app/history/[id]/page.tsx) — true when either a real Gemini card
+ * is present, or Gemini was attempted but failed this request (status
+ * "unavailable", no card) and a rerun might fix it. False when Gemini
+ * was never attempted (meta.geminiProvider is undefined — e.g. very
+ * old saved history) or was off by configuration (status "off") —
+ * backend/services/gemini_provider.py's build_gemini_observation()
+ * never produces a card in either case, so there would be nothing
+ * meaningful to re-run.
+ */
+export function isGeminiRerunEligible(
+  items: AIOverviewComparisonItem[],
+  meta: AnalysisMeta,
+): boolean {
+  const hasGeminiCard = items.some((item) => item.platform === GEMINI_GOOGLE_PLATFORM_LABEL);
+  if (hasGeminiCard) return true;
+  return meta.geminiProvider !== undefined && meta.geminiProvider.status !== "off";
 }
