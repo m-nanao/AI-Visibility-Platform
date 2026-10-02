@@ -677,6 +677,17 @@ export interface AiOverviewItemDetailDisplay {
   // whose remaining continuation is too short to be worth a toggle.
   hasContinuation: boolean;
   continuationText?: string;
+  // The complete text with nothing hidden behind a "続きを見る" toggle —
+  // displaySummary followed by continuationText when hasContinuation is
+  // true (the trailing ellipsis that displaySummary shows for the
+  // toggled view is stripped first so the two pieces read as one
+  // sentence), or just displaySummary otherwise. Used by the report
+  // page (app/history/[id]/report/page.tsx), which is meant to be read
+  // standalone (shared/printed/saved as PDF) and so never offers a
+  // "続きを見る" toggle at all — the normal analysis result/history
+  // detail screens keep using displaySummary/hasContinuation/
+  // continuationText instead, unchanged.
+  fullText: string;
   // What to render in place of item.summary directly. Equal to
   // item.summary as-is when hasContinuation is true (the trailing
   // "…"/"..." correctly signals more text is available behind the
@@ -707,8 +718,10 @@ export interface AiOverviewItemDetailDisplay {
   // backend/services/gemini_client.py's _is_likely_truncated()) — a
   // heuristic-only warning that this one observation attempt's text may
   // have been cut off mid-way. Never means the AI "has no information"
-  // about the brand. Undefined for every non-truncated item, including
-  // old saved history that predates isTruncated/note.
+  // about the brand. Always GEMINI_TRUNCATION_NOTE's text (item.note's
+  // actual content is ignored — see that constant's comment). Undefined
+  // for every non-truncated item, including old saved history that
+  // predates isTruncated/note.
   truncationWarning?: string;
 }
 
@@ -729,13 +742,22 @@ export const CLAUDE_PLATFORM_NOTE =
 // Must match backend/services/gemini_provider.py's GEMINI_PLATFORM_LABEL
 // exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above.
 const GEMINI_GOOGLE_PLATFORM_LABEL = "Gemini (Google API)";
-// Matches backend/services/gemini_client.py's TRUNCATION_NOTE exactly —
-// used as a fallback if a future/older backend ever sends
-// isTruncated=true without a note (defensive only; the backend always
-// sets both together today).
+// The frontend's own wording for this warning — deliberately NOT the
+// same text as backend/services/gemini_client.py's TRUNCATION_NOTE
+// (which is sent as item.note whenever isTruncated is true). That
+// backend text still says "必要に応じて再実行するか..." as if
+// re-running just the Gemini observation were possible from this
+// screen; it isn't (Geminiだけの再実行機能は未実装、分析全体の再実行
+// のみ可能), and a依頼者 pointed out the mismatch. Since backend
+// changes are out of scope for this fix, getAiOverviewItemDetailDisplay
+// below always uses this constant for the warning text and ignores
+// item.note's content — isTruncated is still the only thing that
+// decides *whether* to show a warning at all, this only changes what
+// it says. See docs/17_usage_guide.md for the "Geminiのみ再実行は今後
+// の追加候補" note.
 export const GEMINI_TRUNCATION_NOTE =
   "Gemini APIの出力が途中で終了した可能性があります。" +
-  "必要に応じて再実行するか、出力上限を増やして検証してください。";
+  "必要に応じて、Geminiの出力上限を増やした状態で再分析してください。";
 
 export const GEMINI_PLATFORM_NOTE =
   "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。";
@@ -944,6 +966,10 @@ export function getAiOverviewItemDetailDisplay(
         : item.summary;
   }
 
+  const fullText = hasContinuation
+    ? `${displaySummary ? stripTrailingEllipsisForDisplay(displaySummary) : ""} ${continuationText}`.trim()
+    : displaySummary;
+
   const platformNote =
     item.platform === CHATGPT_OPENAI_PLATFORM_LABEL
       ? CHATGPT_PLATFORM_NOTE
@@ -953,13 +979,14 @@ export function getAiOverviewItemDetailDisplay(
           ? GEMINI_PLATFORM_NOTE
           : undefined;
 
-  const truncationWarning = item.isTruncated
-    ? item.note ?? GEMINI_TRUNCATION_NOTE
-    : undefined;
+  // item.note is ignored here on purpose — see GEMINI_TRUNCATION_NOTE's
+  // comment above.
+  const truncationWarning = item.isTruncated ? GEMINI_TRUNCATION_NOTE : undefined;
 
   return {
     hasContinuation,
     continuationText,
+    fullText,
     displaySummary,
     references,
     referenceSummary,

@@ -394,6 +394,15 @@ MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状
 - レポート画面（`/history/[id]/report`）も同じ構成に揃えており、`webAiGap`を持たない古い履歴では引き続きこのブロック自体が表示されない。
 - 新しい外部API呼び出しは追加していない。意味的な差分判定を行う専用AI比較処理への将来拡張案（design only）は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「18. Web/AI差分ブロックの重複表示整理とAI比較方式への設計追加」を参照。
 
+## 24. レポート画面のAI回答全文表示とGemini途中終了文言の調整（2026-10-02追記）
+
+本番確認で、(1)レポート画面（`/history/[id]/report`）のAI回答側観測が短い抜粋（`summary`）のみの表示になっており、全文（`fullSummary`）が確認できない、(2)Gemini途中終了時の警告文言「...必要に応じて再実行するか、出力上限を増やして検証してください。」が、Geminiだけを同画面で再実行する機能がまだない現状と合っていない、という2点が指摘された（`fix/report-full-ai-observation-and-gemini-warning-copy`）。
+
+- **レポート画面のAI回答全文表示**: 通常の分析結果画面・履歴詳細画面（`AnalysisDashboard`→`AIOverviewComparisonSection.tsx`）は、長い回答は短い抜粋＋「続きを見る」トグルで折りたたんで表示する（この挙動は変更していない）。一方、共有・印刷・PDF保存を前提とするレポート画面では「続きを読む」という操作ができないため、`app/lib/meta-label.ts`の`getAiOverviewItemDetailDisplay()`に新しいフィールド`fullText`（トグルなしの完結した全文）を追加し、レポート画面はこちらを使って常に全文を表示するようにした。Gemini途中終了警告は全文のすぐ下に表示される。
+- **Gemini途中終了警告文言の調整**: 「Gemini APIの出力が途中で終了した可能性があります。必要に応じて再実行するか、出力上限を増やして検証してください。」→「Gemini APIの出力が途中で終了した可能性があります。必要に応じて、Geminiの出力上限を増やした状態で再分析してください。」に変更した。**現時点ではGeminiだけを再実行する機能はなく、確認するには分析全体を再実行（再分析）する必要がある**——今回の文言はこの制約に合わせたもの。Gemini単体の再実行は今後の追加候補として記録するに留め、今回は実装していない。
+- backendの`backend/services/gemini_client.py`が生成する`note`フィールドの文言は変更していない（backend変更は対象外のため）。その代わり、frontend側で`item.note`の内容を使わず、常にfrontend自身の文言（`GEMINI_TRUNCATION_NOTE`）を表示するようにした——`isTruncated`フラグ自体は引き続き唯一の表示トリガーとして使っている。
+- 通常の分析結果画面・履歴詳細画面の表示（折りたたみ・「続きを見る」挙動）は変更していない。新しい外部API呼び出しは追加していない。DB schema・migration・Supabase/Render/Vercel設定・backend実装はいずれも変更していない。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
