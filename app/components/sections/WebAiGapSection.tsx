@@ -1,5 +1,5 @@
 import Card from "../Card";
-import type { WebAiGapAiContext, WebAiGapPlatform, WebAiGapResult, WebAiGapWebSourceType } from "../../lib/types";
+import type { WebAiGapPlatform, WebAiGapResult, WebAiGapWebSourceType } from "../../lib/types";
 
 // Display labels — internal WebAiGapPlatform/WebAiGapWebSourceType
 // keys (backend/services/web_ai_gap.py) are stable short strings, not
@@ -19,27 +19,47 @@ const SOURCE_TYPE_LABELS: Record<WebAiGapWebSourceType, string> = {
 };
 
 const SECTION_DESCRIPTION =
-  "Web上で確認できるブランド周辺の説明と、各AI観測での回答内容を並べて確認します。AIの内部認識を直接示すものではなく、改善の方向性を考えるための補助情報です。";
+  "Web上で確認できるブランド周辺の説明と、直前のAI観測ブロックでの回答内容を比較します。AIの内部認識を直接示すものではなく、改善の方向性を考えるための補助情報です。";
 
-// "（抜粋）" makes it explicit that these are short, length-limited
-// excerpts (backend/services/web_ai_gap.py's MAX_WEB_CONTEXT_CHARS/
-// MAX_AI_CONTEXT_CHARS, each ending in "…" when actually truncated) —
-// a依頼者 had read the un-labeled text as if it were cut off by
-// mistake rather than intentionally shortened. Reused as-is by the
-// report page (app/history/[id]/report/page.tsx) so both screens use
-// identical wording.
-export const WEB_CONTEXT_LABEL = "Web上の情報環境（抜粋）";
-export const AI_CONTEXT_LABEL = "AI回答上の説明（抜粋）";
+// "（比較に使用した抜粋）" makes it explicit both that this is a short,
+// length-limited excerpt (backend/services/web_ai_gap.py's
+// MAX_WEB_CONTEXT_CHARS, ending in "…" when actually truncated) and
+// that it is the Web-side half of a comparison whose AI-side half is
+// the AI観測 block shown immediately above this one — a依頼者 had
+// originally read the plain "（抜粋）" label as if the text were cut
+// off by mistake, and separately reported that this section used to
+// also show a second, re-excerpted list of the same ChatGPT/Claude/
+// Gemini/AI Overview answers already visible in that block above,
+// which read as pure duplication. That list has been removed below in
+// favor of AI_CONTEXT_NOTE/AI_COMPARISON_TARGETS_LABEL, which just
+// point back at it. Reused as-is by the report page
+// (app/history/[id]/report/page.tsx) so both screens use identical
+// wording.
+export const WEB_CONTEXT_LABEL = "Web上の情報環境（比較に使用した抜粋）";
 
-function AiContextItem({ context }: { context: WebAiGapAiContext }) {
-  return (
-    <li className="min-w-0">
-      <span className="font-medium text-zinc-700 dark:text-zinc-300">
-        {PLATFORM_LABELS[context.platform]}:
-      </span>{" "}
-      <span className="text-zinc-600 dark:text-zinc-400">{context.summary}</span>
-    </li>
-  );
+export const AI_CONTEXT_NOTE =
+  "比較対象のAI回答は、上のAI観測ブロックに表示されているChatGPT / Claude / Gemini / AI Overviewの回答です。";
+export const AI_COMPARISON_TARGETS_LABEL = "比較対象";
+
+export const GAP_SUMMARY_LABEL = "ズレの見方（簡易判定）";
+// Makes explicit that the gap summary below is a keyword/category
+// heuristic (backend/services/web_ai_gap.py's _build_gap_summary()),
+// not a semantic judgement — a依頼者 pointed out a real case where
+// this heuristic surfaced a registry-boilerplate difference
+// ("千葉県柏市・本社" vs "社名") instead of the actually meaningful
+// gap visible in the underlying excerpts (SEO/AI検索対策会社としての
+// 実態 vs. AI回答上は一般的なブランディング会社として扱われている
+// 傾向). Rather than claim the heuristic can fully capture that, this
+// disclaimer tells the reader to treat it as a starting point.
+export const GAP_SUMMARY_DISCLAIMER =
+  "以下は、Web上の抜粋とAI観測に含まれる語句・カテゴリをもとにした簡易的な比較です。意味的な差分を完全に判断するものではありません。";
+
+// Exported for unit testing (no React render-testing library in this
+// project, see WebAiGapSection.test.ts) — builds the "比較対象: ..."
+// line from whichever platforms actually have an aiContexts entry
+// (older saved history may have fewer than 4, or an empty array).
+export function comparisonTargetsText(webAiGap: WebAiGapResult): string {
+  return webAiGap.aiContexts.map((context) => PLATFORM_LABELS[context.platform]).join(" / ");
 }
 
 // Sits between AIOverviewComparisonSection and ImprovementSuggestionsSection
@@ -72,22 +92,20 @@ export default function WebAiGapSection({ webAiGap }: { webAiGap?: WebAiGapResul
             )}
           </div>
 
-          <div>
-            <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              {AI_CONTEXT_LABEL}
-            </h4>
-            <ul className="mt-1 space-y-1 text-sm">
-              {webAiGap.aiContexts.map((context) => (
-                <AiContextItem key={context.platform} context={context} />
-              ))}
-            </ul>
-          </div>
+          {webAiGap.aiContexts.length > 0 && (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              {AI_CONTEXT_NOTE}
+              <br />
+              {AI_COMPARISON_TARGETS_LABEL}: {comparisonTargetsText(webAiGap)}
+            </p>
+          )}
 
           {webAiGap.gapSummary && (
             <div>
               <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                ズレの見方
+                {GAP_SUMMARY_LABEL}
               </h4>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{GAP_SUMMARY_DISCLAIMER}</p>
               <p className="mt-1 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
                 {webAiGap.gapSummary}
               </p>

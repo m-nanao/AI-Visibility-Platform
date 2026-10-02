@@ -5,6 +5,8 @@ from services.gemini_provider import GEMINI_PLATFORM_LABEL
 from services.web_ai_gap import (
     WEB_AI_GAP_NOTE,
     WEB_AI_GAP_UNAVAILABLE_NOTE,
+    _WORD_LEVEL_FALLBACK_SUGGESTION,
+    _is_noise_keyword,
     build_web_ai_gap,
 )
 
@@ -241,6 +243,13 @@ def test_suggestions_add_category_hint_for_region_only_web_category():
 
 
 def test_suggestions_fall_back_to_word_level_hint_without_a_detectable_category():
+    # The word-level fallback suggestion must never cite the specific
+    # distinctive word verbatim (e.g. the old "「独自技術」など、Web上で
+    # 強調されている内容を..." phrasing) — a依頼者 reported that citing
+    # a word-level "difference" by name can read as an unnatural/noisy
+    # suggestion even when the word itself isn't boilerplate, since
+    # "distinctive" here only means a simple substring asymmetry was
+    # found, not that the word is meaningful content worth naming.
     documents = [_make_document("Acmeは独自技術0円のサービスです。", sourceType="web_fetch")]
     ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての簡単な説明です。")]
     web_ranking = [_keyword("独自技術", 5)]
@@ -248,7 +257,8 @@ def test_suggestions_fall_back_to_word_level_hint_without_a_detectable_category(
     result = build_web_ai_gap("Acme", documents, web_ranking, ai_items)
 
     assert len(result.suggestions) == 2
-    assert "独自技術" in result.suggestions[1]
+    assert result.suggestions[1] == _WORD_LEVEL_FALLBACK_SUGGESTION
+    assert "独自技術" not in result.suggestions[1]
 
 
 def test_suggestions_never_contain_noise_keywords():
@@ -282,6 +292,37 @@ def test_web_context_summary_is_truncated_and_never_empty_for_blank_document():
 
     assert result.webContext is not None
     assert len(result.webContext.summary) <= 200
+
+
+def test_is_noise_keyword_matches_compound_registry_token_via_substring():
+    # Regression test for the task's own reported example: the simple
+    # tokenizer can yield a compound run like "千葉県柏市" (no separator
+    # between prefecture and city) as a single keyword, which the old
+    # exact-match version of _NOISE_KEYWORDS missed even though "千葉県"
+    # and "柏市" were both individually listed. Substring matching
+    # catches it without needing every possible compound spelled out.
+    assert _is_noise_keyword("千葉県柏市")
+    assert _is_noise_keyword("千葉県柏市・本社")
+
+
+def test_suggestions_never_contain_noise_keywords_including_compound_registry_token():
+    documents = [
+        _make_document(
+            "Acme株式会社の会社概要ページ。千葉県柏市・本社にて独自技術を提供します。",
+            sourceType="web_fetch",
+        )
+    ]
+    ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "Acmeについての簡単な説明です。")]
+    web_ranking = [
+        _keyword("千葉県柏市・本社", 9),
+        _keyword("独自技術", 6),
+    ]
+
+    result = build_web_ai_gap("Acme", documents, web_ranking, ai_items)
+
+    suggestions_text = " ".join(result.suggestions)
+    assert "千葉県柏市" not in suggestions_text
+    assert "本社" not in suggestions_text
 
 
 def test_unavailable_when_common_crawl_document_is_blank_and_no_web_fetch_fallback():

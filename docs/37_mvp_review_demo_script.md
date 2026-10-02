@@ -83,7 +83,7 @@ Common Crawl補完: 公式ドメインから補完
 - **ChatGPT観測**: OpenAI APIによる1問観測（同様に、ChatGPTアプリ全体の認識を保証するものではない旨を画面に表示済み）。
 - **Claude観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Anthropic APIによる1問観測で、Claudeサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。履歴詳細・レポート画面でも同じ形式で再表示される（本番確認済み、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「10」参照）。
 - **Gemini観測**: 検証用selectorでONにした場合のみ表示（通常はoff）。Google Gemini APIによる1問観測で、Geminiサービス全体の認識やAIの内部状態を保証するものではない旨を画面に表示済み。**出力上限やAPI側の都合で本文が途中終了する場合があり、その場合は注意文が表示される**（「Gemini APIの出力が途中で終了した可能性があります」——[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「12」参照）。
-- **Web上の説明とAI回答のズレ**: AI Overview比較の直後・改善提案の直前に表示。Web上の情報環境（Common Crawl/入力URL）の代表文脈と、実際に観測できたChatGPT/Claude/Gemini/AI Overviewの回答内容を並べて表示し、両者のズレの見方と改善ヒントを提示する。新しい外部API呼び出しは追加していない補助情報であり、AIの内部認識を断定しない旨の注意書きを常に表示する。Web情報またはAI観測のいずれかが不足する場合は差分比較が表示できない旨を表示し、古い保存済み履歴（このフィールドを持たない）ではブロック自体が表示されない（`feature/web-ai-gap-section`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照）。**ラベルは「（抜粋）」付きで文字数制限による抜粋であることを明示し、差分の見方は汎用語・ノイズ語を除外したうえで料金・契約条件/サービス内容/信頼性/対象顧客/地域という簡易カテゴリで判定するよう改善済み（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「17」参照）。**
+- **Web上の説明とAI回答のズレ**: AI Overview比較の直後・改善提案の直前に表示。Web上の情報環境（Common Crawl/入力URL）の代表文脈と、直前のAI観測ブロックの内容を比較し、ズレの見方と改善ヒントを提示する。新しい外部API呼び出しは追加していない補助情報であり、AIの内部認識を断定しない旨の注意書きを常に表示する。Web情報またはAI観測のいずれかが不足する場合は差分比較が表示できない旨を表示し、古い保存済み履歴（このフィールドを持たない）ではブロック自体が表示されない（`feature/web-ai-gap-section`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照）。ラベルは「（抜粋）」付きで文字数制限による抜粋であることを明示し、差分の見方は汎用語・ノイズ語を除外したうえで料金・契約条件/サービス内容/信頼性/対象顧客/地域という簡易カテゴリで判定するよう改善済み（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「17」参照）。**AI回答側の個別抜粋の再掲は廃止し、「比較対象: ChatGPT / Claude / Gemini / AI Overview」のように比較対象のAI観測を示すだけの表示に変更。「ズレの見方」は「ズレの見方（簡易判定）」とラベルを変え、意味的な差分を完全に判断するものではない旨の注意文を追加。改善ヒントも差分語を直接引用しない汎用的な文言に変更済み（2026-10-02、`fix/web-ai-gap-section-simplify-and-ai-diff-design`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「18」参照）。**
 - **改善提案**: 横幅いっぱいで表示され、Web上の説明とAI回答のズレを改善するヒントとして提示する（`feature/history-ui-link-and-layout-polish`で調整済み）。
 
 ### 履歴一覧（`/history`）
@@ -113,7 +113,7 @@ Common Crawl補完: 公式ドメインから補完
 - 依頼者への共有・印刷を想定した1ページレイアウト。
 - PDF保存/印刷ボタンあり——ただし正式なPDF自動生成機能ではなく、ブラウザの印刷機能（`window.print()`）によるものである（[26_report_output_design.md](./26_report_output_design.md)参照）。
 - **「AI回答側の観測」セクションには、分析結果画面・履歴詳細画面と同じAI Overview / ChatGPT / Claude / Gemini各観測の注記（単発観測であること、各サービス全体の認識を保証しないこと）と、Gemini観測が途中終了した場合の注意文が表示される**（`chore/mvp-review-copy-final-check`、2026-09-18。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「15」参照。依頼者に共有される可能性が高いレポート画面でも同じ注意事項が伝わるようにした）。
-- **「AI回答側の観測」の直後・「前回比較」の直前に「Web上の説明とAI回答のズレ」セクションが追加され、印刷向けの簡潔な表示でWeb上の情報環境・AI回答の説明・ズレの見方・改善ヒントが表示される**（`feature/web-ai-gap-section`、2026-09-19。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照。古い保存済み履歴ではこのセクション自体が表示されない）。**レポート画面でも分析結果画面・履歴詳細と同じ「（抜粋）」ラベルを使用し、抜粋であることを明示する**（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`）。
+- **「AI回答側の観測」の直後・「前回比較」の直前に「Web上の説明とAI回答のズレ」セクションが追加され、印刷向けの簡潔な表示でWeb上の情報環境・ズレの見方・改善ヒントが表示される**（`feature/web-ai-gap-section`、2026-09-19。[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」参照。古い保存済み履歴ではこのセクション自体が表示されない）。**レポート画面でも分析結果画面・履歴詳細と同じ「（比較に使用した抜粋）」ラベル・「比較対象」の表示・「ズレの見方（簡易判定）」の注意文を使用し、分析結果画面と同様にAI回答個別抜粋の重複表示を避けている**（2026-10-02、`fix/analyze-immediate-result-and-web-ai-gap-quality`・`fix/web-ai-gap-section-simplify-and-ai-diff-design`）。
 
 ## 6. MVP範囲と未対応範囲
 
@@ -136,6 +136,7 @@ Common Crawl補完: 公式ドメインから補完
 - Web上の説明とAI回答のズレの表示（`feature/web-ai-gap-section`、2026-09-19）
 - 不要になった分析履歴の削除（soft delete、一覧・詳細からは見えなくなるが物理削除はしない）と、履歴一覧での観測モード（AI Overview / ChatGPT / Claude / Gemini / Common Crawl）バッジ表示（`feature/history-delete-and-mode-badges`、2026-09-19。詳細は[17_usage_guide.md](./17_usage_guide.md)「21」参照）
 - 全AI観測/Common Crawl同時ON時に分析直後の画面だけダミー表示になっていた不一致の修正（タイムアウト延長・フォールバック時の注意文表示）、およびWeb/AI差分ブロックの抜粋ラベル明示・ノイズ語除外・簡易カテゴリ差分判定の追加（`fix/analyze-immediate-result-and-web-ai-gap-quality`、2026-10-02。詳細は[17_usage_guide.md](./17_usage_guide.md)「22」参照）
+- Web/AI差分ブロックのAI回答抜粋重複表示の解消（比較対象のAI観測を示すだけの表示に変更）、「ズレの見方」が簡易判定であることの明記、改善ヒントからの差分語直接引用の廃止（`fix/web-ai-gap-section-simplify-and-ai-diff-design`、2026-10-02。詳細は[17_usage_guide.md](./17_usage_guide.md)「23」参照）
 
 ### MVPではまだ限定的なこと
 

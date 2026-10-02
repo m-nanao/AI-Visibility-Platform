@@ -113,20 +113,44 @@ _NOISE_KEYWORDS: frozenset[str] = frozenset(
         "詳細",
         "トップ",
         "ホーム",
+        # Added after a依頼者 report that a compound address/registry
+        # token ("千葉県柏市・本社") still leaked through — "本社"/
+        # "社名" are the same category of corporate-registry boilerplate
+        # as "会社概要"/"千葉県"/"柏市" above (never a meaningful
+        # Web-vs-AI content gap on their own).
+        "本社",
+        "社名",
+        "所在地",
+        "住所",
+        "法人名",
+        "設立",
+        "代表者",
     }
 )
 
 
 def _is_noise_keyword(keyword: str) -> bool:
     """True for a keyword that should never be reported as a
-    Web-vs-AI difference: the explicit boilerplate list above, a
-    single character (Japanese one-character tokens are almost never
-    meaningful on their own in this context), or a purely numeric
-    token (e.g. a stray "2026" or page number)."""
+    Web-vs-AI difference: the explicit boilerplate list above (matched
+    as a *substring* of the keyword, not just exact equality — see
+    below for why), a single character (Japanese one-character tokens
+    are almost never meaningful on their own in this context), or a
+    purely numeric token (e.g. a stray "2026" or page number).
+
+    Substring matching (rather than requiring the whole keyword to
+    equal a listed noise word) was added after a依頼者 report that a
+    compound token like "千葉県柏市" (the simple tokenizer's window
+    extraction can yield this as one run when there's no separator
+    between the prefecture and city names) still slipped past the
+    exact-match version of this list, even though both "千葉県" and
+    "柏市" are individually listed — this trades a small risk of an
+    unrelated word that happens to contain a noise substring for
+    reliably catching compound boilerplate like this.
+    """
     normalized = keyword.strip().lower()
     if not normalized:
         return True
-    if normalized in _NOISE_KEYWORDS:
+    if any(noise in normalized for noise in _NOISE_KEYWORDS):
         return True
     if len(normalized) <= 1:
         return True
@@ -194,6 +218,23 @@ WEB_AI_GAP_UNAVAILABLE_NOTE = (
 _GENERIC_SUGGESTION = (
     "社名の近くに、AI回答上でも出したい主要サービス名・対象顧客・強みを明示すると、"
     "Web上の説明とAI回答上の説明のズレを減らせる可能性があります。"
+)
+
+# Used by _build_suggestions() as the word-level fallback hint, in
+# place of citing the specific "distinctive" words directly (e.g. the
+# old "「千葉県柏市・本社」など、Web上で強調されている内容を..."
+# phrasing) — a依頼者 reported that citing word-level differences
+# verbatim can read as an unnatural/noisy suggestion even after
+# _is_noise_keyword() filtering, since "distinctive" here only ever
+# means "a simple substring check found an asymmetry", not that the
+# words themselves are meaningful content to call out by name. This
+# generic wording is used whenever the category-aware suggestion
+# (_build_category_suggestion) found nothing but a word-level asymmetry
+# still exists — it never names specific keywords.
+_WORD_LEVEL_FALLBACK_SUGGESTION = (
+    "Web上で目立つ要素と、AI回答上で目立つ要素が異なる場合は、"
+    "社名の近くに主要サービス名・対象顧客・強みを一貫して記載すると、"
+    "説明のズレを確認しやすくなります。"
 )
 
 
@@ -422,12 +463,13 @@ def _build_suggestions(
         suggestions.append(category_suggestion)
         return suggestions
 
+    # Word-level fallback: only decides *whether* to add a second
+    # suggestion (there is a one-sided asymmetry worth mentioning) —
+    # never cites the specific words themselves, see
+    # _WORD_LEVEL_FALLBACK_SUGGESTION's docstring comment above.
     web_only = _distinctive_keywords(web_ranking, ai_text, 2)
     if web_only:
-        suggestions.append(
-            f"「{'・'.join(web_only)}」など、Web上で強調されている内容を、"
-            "社名の近くやFAQ・会社概要ページでも一貫して記載することを検討してください。"
-        )
+        suggestions.append(_WORD_LEVEL_FALLBACK_SUGGESTION)
     return suggestions
 
 

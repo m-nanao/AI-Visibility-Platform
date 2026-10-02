@@ -6,7 +6,10 @@ import AppHeader from "../../../components/AppHeader";
 import Breadcrumb from "../../../components/Breadcrumb";
 import ReportPrintButton from "../../../components/ReportPrintButton";
 import {
-  AI_CONTEXT_LABEL,
+  AI_COMPARISON_TARGETS_LABEL,
+  AI_CONTEXT_NOTE,
+  GAP_SUMMARY_DISCLAIMER,
+  GAP_SUMMARY_LABEL,
   WEB_CONTEXT_LABEL,
 } from "../../../components/sections/WebAiGapSection";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
@@ -325,20 +328,23 @@ function ReportContent({
                   {result.webAiGap.webContext?.summary}
                 </p>
               </div>
-              <div>
-                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                  {AI_CONTEXT_LABEL}
+              {result.webAiGap.aiContexts.length > 0 && (
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+                  {AI_CONTEXT_NOTE}
+                  <br />
+                  {AI_COMPARISON_TARGETS_LABEL}:{" "}
+                  {result.webAiGap.aiContexts
+                    .map((context) => WEB_AI_GAP_PLATFORM_LABELS[context.platform])
+                    .join(" / ")}
                 </p>
-                {result.webAiGap.aiContexts.map((context) => (
-                  <p key={context.platform} className="text-zinc-600 dark:text-zinc-300 print:text-black">
-                    {WEB_AI_GAP_PLATFORM_LABELS[context.platform]}: {context.summary}
-                  </p>
-                ))}
-              </div>
+              )}
               {result.webAiGap.gapSummary && (
                 <div>
                   <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    ズレの見方
+                    {GAP_SUMMARY_LABEL}
+                  </p>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+                    {GAP_SUMMARY_DISCLAIMER}
                   </p>
                   <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
                     {result.webAiGap.gapSummary}
