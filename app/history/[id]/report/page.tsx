@@ -279,14 +279,21 @@ function ReportContent({
         {result.aiOverviewComparison.length > 0 ? (
           <div className="mt-2 space-y-2">
             {result.aiOverviewComparison.map((item) => {
-              const truncationWarning = getAiOverviewItemDetailDisplay(item).truncationWarning;
+              // Report screen is meant to be read standalone (shared/
+              // printed/saved as PDF), so it always shows the complete
+              // text (fullText) instead of the short summary + "続きを
+              // 見る" toggle that the normal analysis result/history
+              // detail screens use — a "続きを読む" affordance makes no
+              // sense once printed. The normal screens (AnalysisDashboard
+              // via AIOverviewComparisonSection.tsx) are unchanged.
+              const { fullText, truncationWarning } = getAiOverviewItemDetailDisplay(item);
               return (
                 <div key={item.platform}>
                   <p className="font-medium">
                     {item.platform}（{item.mentioned ? "言及あり" : "言及なし"}）
                   </p>
-                  <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
-                    {item.summary}
+                  <p className="whitespace-pre-wrap text-zinc-600 dark:text-zinc-300 print:text-black">
+                    {fullText}
                   </p>
                   {truncationWarning && (
                     <p className="mt-0.5 text-amber-700 dark:text-amber-400 print:text-black">

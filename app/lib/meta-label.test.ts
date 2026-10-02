@@ -837,16 +837,18 @@ describe("getAiOverviewItemDetailDisplay — truncationWarning (Gemini truncatio
     };
   }
 
-  it("returns the backend-provided note when isTruncated is true", () => {
+  it("ignores the backend-provided note text and always uses GEMINI_TRUNCATION_NOTE when isTruncated is true", () => {
+    // backend/services/gemini_client.py's TRUNCATION_NOTE still talks
+    // about re-running, which doesn't match the frontend (no Gemini-only
+    // re-run feature) — see GEMINI_TRUNCATION_NOTE's comment. The
+    // frontend's own wording wins regardless of what item.note says.
     const display = getAiOverviewItemDetailDisplay({
       ...baseItem(),
       isTruncated: true,
-      note: "Gemini APIの出力が途中で終了した可能性があります。",
+      note: "some backend-provided note text, whatever it says",
     });
 
-    expect(display.truncationWarning).toBe(
-      "Gemini APIの出力が途中で終了した可能性があります。",
-    );
+    expect(display.truncationWarning).toBe(GEMINI_TRUNCATION_NOTE);
   });
 
   it("falls back to GEMINI_TRUNCATION_NOTE when isTruncated is true but note is missing", () => {
@@ -881,6 +883,45 @@ describe("getAiOverviewItemDetailDisplay — truncationWarning (Gemini truncatio
     });
 
     expect(display.truncationWarning).toBeUndefined();
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — fullText (report screen, no 続きを見る toggle)", () => {
+  function baseItem(): AIOverviewComparisonItem {
+    return {
+      platform: "Google AI Mode (DataForSEO Sandbox)",
+      mentioned: true,
+      rank: 1,
+      summary: "Acme is a well-reviewed tool for teams.",
+    };
+  }
+
+  it("equals displaySummary when there is no continuation", () => {
+    const display = getAiOverviewItemDetailDisplay(baseItem());
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.fullText).toBe(display.displaySummary);
+    expect(display.fullText).toBe("Acme is a well-reviewed tool for teams.");
+  });
+
+  it("joins displaySummary and continuationText into one string, with the trailing ellipsis removed", () => {
+    const prefix = "Acme is a tool used by many teams worldwide for collaboration and planning";
+    const summary = `${prefix}…`;
+    const fullSummary = prefix + LONG_FILLER;
+
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), summary, fullSummary });
+
+    expect(display.hasContinuation).toBe(true);
+    expect(display.fullText).not.toContain("…");
+    expect(display.fullText).toBe(`${prefix} ${LONG_FILLER.trim()}`);
+  });
+
+  it("equals the full (short) fullSummary when it is shown inline with no toggle", () => {
+    const fullSummary = "Acme is a well-reviewed tool for teams, used by hundreds of companies.";
+    const display = getAiOverviewItemDetailDisplay({ ...baseItem(), fullSummary });
+
+    expect(display.hasContinuation).toBe(false);
+    expect(display.fullText).toBe(fullSummary);
   });
 });
 
