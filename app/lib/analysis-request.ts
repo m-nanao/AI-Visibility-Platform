@@ -137,8 +137,15 @@ export const ANALYZE_FALLBACK_HEADER = "X-Analyze-Fallback";
 export const ANALYZE_FALLBACK_REASON_HEADER = "X-Analyze-Fallback-Reason";
 
 const ANALYZE_FALLBACK_REASON_MESSAGES: Record<string, string> = {
+  // Reworded per improve/history-centered-analysis-flow — the old
+  // wording called the dummy data "開発用データ", which reads as if
+  // this screen were a dev/test artifact rather than a normal (if
+  // temporarily incomplete) analysis attempt. "一時的なプレビュー"
+  // matches this task's broader framing of the analysis result screen
+  // as a preview, with the history list screen as where the real,
+  // saved result can be found once the backend finishes.
   timeout:
-    "分析の取得に時間がかかったため、今回は開発用データを表示しています。分析自体は裏側で完了している場合があり、しばらくしてから履歴一覧で実際の結果を確認できることがあります。",
+    "分析の取得に時間がかかったため、この画面では一時的なプレビューを表示しています。分析自体は裏側で完了し、履歴に保存されている場合があります。しばらくしてから履歴一覧を確認してください。",
   not_configured:
     "分析APIが設定されていないため、開発用データを表示しています。",
   request_failed:

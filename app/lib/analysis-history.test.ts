@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ANALYSIS_RESULT_PREVIEW_NOTE,
   GEMINI_RERUN_BUTTON_LABEL,
   GEMINI_RERUN_CONFIRM_MESSAGE,
   GEMINI_RERUN_DISABLED_MESSAGE,
@@ -18,12 +19,18 @@ import {
   HISTORY_DETAIL_GENERIC_ERROR_MESSAGE,
   HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
   HISTORY_DETAIL_NOT_FOUND_MESSAGE,
+  HISTORY_DETAIL_OFFICIAL_NOTE,
   HISTORY_DISABLED_MESSAGE,
   HISTORY_EMPTY_STATE_TEXT,
   HISTORY_FORBIDDEN_MESSAGE,
   HISTORY_GENERIC_ERROR_MESSAGE,
   HISTORY_LIST_DETAIL_LINK_TEXT,
+  HISTORY_LIST_LINK_TEXT,
+  HISTORY_LIST_PATH,
   HISTORY_PAGE_TITLE,
+  POST_ANALYZE_HISTORY_CARD_HEADING,
+  POST_ANALYZE_HISTORY_LINK_HELPER_TEXT,
+  POST_ANALYZE_HISTORY_LINK_TEXT,
   REPORT_COMPARISON_UNAVAILABLE_MESSAGE,
   REPORT_DETAIL_UNAVAILABLE_MESSAGE,
   REPORT_LINK_TEXT,
@@ -615,6 +622,31 @@ describe("resolvePostAnalyzeHistoryLink", () => {
 
     expect(link).toEqual({ path: buildHistoryDetailPath("has space") });
     expect(link?.path).toBe("/history/has%20space");
+  });
+});
+
+describe("history-centered analysis flow copy (improve/history-centered-analysis-flow)", () => {
+  it("names the history detail screen as the official place to check results/report/rerun", () => {
+    expect(POST_ANALYZE_HISTORY_CARD_HEADING).toContain("履歴詳細");
+    expect(POST_ANALYZE_HISTORY_LINK_HELPER_TEXT).toContain("レポート表示");
+    expect(POST_ANALYZE_HISTORY_LINK_HELPER_TEXT).toContain("再実行");
+    expect(POST_ANALYZE_HISTORY_LINK_TEXT).toContain("履歴詳細");
+  });
+
+  it("frames the analysis result screen as a preview", () => {
+    expect(ANALYSIS_RESULT_PREVIEW_NOTE).toContain("プレビュー");
+    expect(ANALYSIS_RESULT_PREVIEW_NOTE).toContain("履歴詳細");
+  });
+
+  it("frames the history detail screen as the official confirmation screen", () => {
+    expect(HISTORY_DETAIL_OFFICIAL_NOTE).toContain("保存済み");
+    expect(HISTORY_DETAIL_OFFICIAL_NOTE).toContain("レポート表示");
+    expect(HISTORY_DETAIL_OFFICIAL_NOTE).toContain("再実行");
+  });
+
+  it("points the history-list link at /history", () => {
+    expect(HISTORY_LIST_PATH).toBe("/history");
+    expect(HISTORY_LIST_LINK_TEXT).toContain("履歴一覧");
   });
 });
 

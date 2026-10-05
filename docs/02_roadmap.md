@@ -165,14 +165,16 @@
   - レポート画面のAI回答全文表示とGemini途中終了文言の調整（`fix/report-full-ai-observation-and-gemini-warning-copy`、2026-10-02。レポート画面（共有・印刷・PDF保存前提）のAI観測表示を、短い抜粋＋「続きを見る」から常に全文表示（`getAiOverviewItemDetailDisplay()`の新規`fullText`フィールド）へ変更。Gemini途中終了警告の文言を「必要に応じて再実行するか...」から「必要に応じて、Geminiの出力上限を増やした状態で再分析してください。」へ変更し、Geminiだけの再実行機能がまだない現状に合わせた（単体再実行は未実装のまま、今後の追加候補）。通常の分析結果画面・履歴詳細画面の表示挙動は変更していない。**新しい外部API呼び出しは追加していない。backend・DB schema・migration・Supabase/Render/Vercel設定は変更していない。** 詳細は[17_usage_guide.md](./17_usage_guide.md)「24」参照）
   - Gemini単体再実行機能の追加とWeb/AI差分ブロックの抜粋補足（`feature/rerun-gemini-observation`、2026-10-03。履歴詳細画面（`/history/[id]`）から保存済み履歴のGemini観測だけを再取得できる新規`POST /analysis-runs/{id}/rerun/gemini`を追加した。DataForSEO/ChatGPT/Claude/Common Crawl/web fetchはいずれも呼ばない。認証は既存`DELETE /analysis-runs/{id}`と同じJWT/project access・`HISTORY_READ_TOKEN`方針を踏襲。失敗時は既存の保存済み結果を一切書き換えない。`webAiGap`は保存済みWeb側抜粋を再利用したベストエフォート更新に留める（元の生Documentが保存されていないため完全再生成はしない）。あわせてWeb/AI差分ブロックのWeb側抜粋が元ページ全文ではないことを明記する注意文を追加した。**新しい外部API呼び出しは追加していない（Gemini以外）。DB schema・migration・Supabase/Render/Vercel設定・認証ロジックの方針は変更していない。** ChatGPT/Claude/AI Overview単体の再実行は今回も対象外。詳細は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「19」参照）
   - 「Geminiだけ再実行」ボタンの表示条件を途中終了時のみに修正（`fix/show-gemini-rerun-only-when-truncated`、2026-10-06。前タスクで追加したボタンが、再実行後にGeminiの出力が正常化しても表示され続ける不具合を修正。`app/lib/meta-label.ts`の`isGeminiRerunEligible()`を、Gemini観測カードが存在し`isTruncated === true`の場合のみtrueを返すように変更し、カードがない場合（off/未取得）に表示していた経路は削除した。再実行成功後は更新後のAnalysisResultが新しい判定に使われるため、画面再読み込みなしでボタンが自動的に消える/残る。**Gemini再実行API自体・backend・認証ロジックは変更していない。** 詳細は[17_usage_guide.md](./17_usage_guide.md)「26」参照）
+  - 分析結果画面を「即時プレビュー」、履歴詳細を「正式な確認画面」として整理（`improve/history-centered-analysis-flow`、2026-10-07。全ON分析で分析直後画面がタイムアウト・fallback表示になることがある一方、backend側では処理が完了し履歴には正しい結果が保存されているケースがあることを踏まえ、完全な非同期ジョブ化（`analysisRunId`事前発行・分析中ステータス保存・ポーリング等）は今回対象外とし、導線と表示文言のみを整理した。分析結果画面に「正式な結果を履歴詳細で確認する」カードとプレビュー注意文を追加、タイムアウトfallback時の文言を「一時的なプレビュー」ベースに変更して履歴一覧リンクを追加、履歴詳細画面に正式確認画面であることを示す説明を追加。**backend変更なし。DB schema・migration・Supabase/Render/Vercel設定・Gemini再実行API仕様は変更していない。新しい外部API呼び出しも追加していない。** 詳細は[17_usage_guide.md](./17_usage_guide.md)「27」参照）
 - **Next（次のステップ、優先順）**:
   - [37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を使った依頼者への実際のMVPレビュー実施
+  - 完全な非同期分析ジョブ化の検討（`analysisRunId`の事前発行・分析中ステータス保存・ポーリングを含む。全ON時のタイムアウト・fallback問題の根本対応——`improve/history-centered-analysis-flow`で導線・文言のみ整理済み、[17_usage_guide.md](./17_usage_guide.md)「27」参照）
   - 履歴詳細から同じ条件で再分析するボタンの追加検討（今回のナビゲーション改善では対象外）
   - RLS policy本番適用判断
   - 複数organization / project運用整理
   - project管理・招待UI設計
   - 専用の横並び比較UI（列=AI、行=比較観点）への再設計検討
-- **Later（将来）**: RLS本格運用、project_membersによるプロジェクト別権限、client_viewer role、有効期限付き共有URL、PDF自動生成、レポートPDF保存、レポートテンプレート管理、Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
+- **Later（将来）**: 完全な非同期分析ジョブ化（async job queue）、RLS本格運用、project_membersによるプロジェクト別権限、client_viewer role、有効期限付き共有URL、PDF自動生成、レポートPDF保存、レポートテンプレート管理、Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
 
 目安: 2〜3週間
 
