@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  GEMINI_RERUN_BUTTON_LABEL,
+  GEMINI_RERUN_CONFIRM_MESSAGE,
+  GEMINI_RERUN_DISABLED_MESSAGE,
+  GEMINI_RERUN_FORBIDDEN_MESSAGE,
+  GEMINI_RERUN_GENERIC_ERROR_MESSAGE,
+  GEMINI_RERUN_HELPER_TEXT,
+  GEMINI_RERUN_INCOMPATIBLE_MESSAGE,
+  GEMINI_RERUN_NOT_FOUND_MESSAGE,
+  GEMINI_RERUN_PENDING_TEXT,
+  GEMINI_RERUN_SUCCESS_MESSAGE,
   HISTORY_COMPARISON_GENERIC_ERROR_MESSAGE,
   HISTORY_COMPARISON_NOT_FOUND_MESSAGE,
   HISTORY_COMPARISON_NO_PREVIOUS_MESSAGE,
@@ -35,6 +45,7 @@ import {
   limitReportCooccurrenceTerms,
   printReport,
   resolveDeleteAnalysisRunOutcome,
+  resolveGeminiRerunOutcome,
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
@@ -478,6 +489,101 @@ describe("resolveHistoryDetailFetchOutcome", () => {
     // app/lib/analysis-history-schema.test.ts's equivalent check on
     // the list side).
     expect(SAMPLE_DETAIL).toHaveProperty("result");
+  });
+});
+
+describe("Gemini rerun UI copy", () => {
+  it("matches the task's specified button/helper/confirm/pending/success text", () => {
+    expect(GEMINI_RERUN_BUTTON_LABEL).toBe("Geminiだけ再実行");
+    expect(GEMINI_RERUN_HELPER_TEXT).toBe(
+      "Geminiの回答のみを再取得します。他のAI観測やAI Overviewは再実行しません。",
+    );
+    expect(GEMINI_RERUN_CONFIRM_MESSAGE).toBe(
+      "Geminiの回答のみを再取得します。Gemini APIを1回使用します。実行しますか？",
+    );
+    expect(GEMINI_RERUN_PENDING_TEXT).toBe("Gemini再実行中...");
+    expect(GEMINI_RERUN_SUCCESS_MESSAGE).toContain("完了");
+  });
+});
+
+describe("resolveGeminiRerunOutcome", () => {
+  const SAMPLE_RERUN_RESPONSE = {
+    updated: true,
+    analysisRunId: SAMPLE_DETAIL.id,
+    result: buildDummyAnalysis("サイボウズ") as unknown as Record<string, unknown>,
+  };
+
+  it("returns a disabled failure when the response is 503", async () => {
+    const outcome = await resolveGeminiRerunOutcome(
+      jsonDetailResponse({ error: "analysis history read API is not enabled" }, 503),
+    );
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_DISABLED_MESSAGE });
+  });
+
+  it("returns a forbidden failure when the response is 403", async () => {
+    const outcome = await resolveGeminiRerunOutcome(
+      jsonDetailResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_FORBIDDEN_MESSAGE });
+  });
+
+  it("returns a notFound-style failure when the response is 404", async () => {
+    const outcome = await resolveGeminiRerunOutcome(
+      jsonDetailResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_NOT_FOUND_MESSAGE });
+  });
+
+  it("forwards the backend's own reason text for a 502 (Gemini call failed/disabled)", async () => {
+    const outcome = await resolveGeminiRerunOutcome(
+      jsonDetailResponse({ error: "Gemini request limit must be 1." }, 502),
+    );
+
+    expect(outcome).toEqual({ success: false, message: "Gemini request limit must be 1." });
+  });
+
+  it("falls back to a generic message when a 502 body has no usable error text", async () => {
+    const outcome = await resolveGeminiRerunOutcome(jsonDetailResponse({}, 502));
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns a generic failure when the network request itself failed (response is null)", async () => {
+    const outcome = await resolveGeminiRerunOutcome(null);
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns a generic failure for a non-403/404/502/503 failure status", async () => {
+    const outcome = await resolveGeminiRerunOutcome(jsonDetailResponse({ error: "boom" }, 500));
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns a generic failure when the envelope fails schema validation", async () => {
+    const outcome = await resolveGeminiRerunOutcome(jsonDetailResponse({ not: "valid" }, 200));
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns an incompatible failure when result doesn't match the current AnalysisResult shape", async () => {
+    const outcome = await resolveGeminiRerunOutcome(
+      jsonDetailResponse({ ...SAMPLE_RERUN_RESPONSE, result: { some: "old shape" } }, 200),
+    );
+
+    expect(outcome).toEqual({ success: false, message: GEMINI_RERUN_INCOMPATIBLE_MESSAGE });
+  });
+
+  it("returns success with the parsed result when everything validates", async () => {
+    const outcome = await resolveGeminiRerunOutcome(jsonDetailResponse(SAMPLE_RERUN_RESPONSE, 200));
+
+    expect(outcome.success).toBe(true);
+    if (outcome.success) {
+      expect(outcome.result.brandName).toBe("サイボウズ");
+    }
   });
 });
 

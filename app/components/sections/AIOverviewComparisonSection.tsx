@@ -1,9 +1,15 @@
 import Card from "../Card";
 import {
+  GEMINI_RERUN_BUTTON_LABEL,
+  GEMINI_RERUN_HELPER_TEXT,
+  GEMINI_RERUN_PENDING_TEXT,
+} from "../../lib/analysis-history";
+import {
   AI_OBSERVATION_COMMON_EXPLANATION_TEXT,
   AI_OVERVIEW_EXPLANATION_TEXT,
   CHATGPT_PLATFORM_NOTE,
   CLAUDE_PLATFORM_NOTE,
+  GEMINI_GOOGLE_PLATFORM_LABEL,
   GEMINI_PLATFORM_NOTE,
   OWN_DOMAIN_STATUS_LABELS,
   getAiOverviewItemDetailDisplay,
@@ -11,9 +17,24 @@ import {
   getChatGptProviderStatusDisplay,
   getClaudeProviderStatusDisplay,
   getGeminiProviderStatusDisplay,
+  isGeminiRerunEligible,
 } from "../../lib/meta-label";
 import type { AiOverviewProviderStatusDisplay } from "../../lib/meta-label";
 import type { AIOverviewComparisonItem, AnalysisMeta } from "../../lib/types";
+
+// Passed down from the history detail page only (app/history/[id]/page.tsx)
+// — the analysis result screen and the report page never pass this prop,
+// so neither shows the rerun controls (レポート画面には再実行ボタンは
+// 不要、分析直後の画面でも同様). `onRerun` is expected to show its own
+// window.confirm() before doing anything (see GEMINI_RERUN_CONFIRM_MESSAGE
+// in app/lib/analysis-history.ts) — this component only renders the
+// button/description/in-flight-state, it never confirms on its own.
+export type GeminiRerunControlsState = {
+  status: "idle" | "pending";
+  errorMessage?: string;
+  successMessage?: string;
+  onRerun: () => void;
+};
 
 function ProviderStatusBadge({ status }: { status: AiOverviewProviderStatusDisplay }) {
   return (
@@ -41,14 +62,26 @@ function ProviderStatusBadge({ status }: { status: AiOverviewProviderStatusDispl
 export default function AIOverviewComparisonSection({
   items,
   meta,
+  geminiRerun,
 }: {
   items: AIOverviewComparisonItem[];
   meta: AnalysisMeta;
+  geminiRerun?: GeminiRerunControlsState;
 }) {
   const providerStatus = getAiOverviewProviderStatusDisplay(meta);
   const chatgptStatus = getChatGptProviderStatusDisplay(meta);
   const claudeStatus = getClaudeProviderStatusDisplay(meta);
   const geminiStatus = getGeminiProviderStatusDisplay(meta);
+
+  const geminiItem = items.find((item) => item.platform === GEMINI_GOOGLE_PLATFORM_LABEL);
+  // isGeminiRerunEligible() covers both "a real Gemini card exists" and
+  // "Gemini was attempted but failed this request" (status
+  // "unavailable", no card) — the latter is exactly when offering a
+  // rerun is most useful. When there IS a card, the controls are
+  // attached directly to it below instead (see AIOverviewItemCard), so
+  // this only needs to handle the no-card case here.
+  const showGeminiRerunNearStatus =
+    geminiRerun !== undefined && !geminiItem && isGeminiRerunEligible(items, meta);
 
   return (
     <Card
@@ -72,18 +105,73 @@ export default function AIOverviewComparisonSection({
         </div>
       )}
 
+      {showGeminiRerunNearStatus && geminiRerun && (
+        <div className="mb-3">
+          <GeminiRerunControls controls={geminiRerun} highlight={false} />
+        </div>
+      )}
+
       {/* 1-column card layout (not a table) so long summaries/references
           wrap instead of forcing horizontal scroll — see docs/05_tasks.md. */}
       <div className="space-y-4">
         {items.map((item) => (
-          <AIOverviewItemCard key={item.platform} item={item} />
+          <AIOverviewItemCard
+            key={item.platform}
+            item={item}
+            geminiRerun={item.platform === GEMINI_GOOGLE_PLATFORM_LABEL ? geminiRerun : undefined}
+          />
         ))}
       </div>
     </Card>
   );
 }
 
-function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
+// "Geminiだけ再実行" — only ever rendered when the history detail page
+// passes `geminiRerun` (see GeminiRerunControlsState above). Attached to
+// the Gemini card itself when one exists, or shown near the status
+// badges above when Gemini was attempted but produced no card (status
+// "unavailable") — see showGeminiRerunNearStatus above.
+function GeminiRerunControls({
+  controls,
+  highlight,
+}: {
+  controls: GeminiRerunControlsState;
+  highlight: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-md border p-3 text-xs ${
+        highlight
+          ? "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950"
+          : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900"
+      }`}
+    >
+      <p className="text-zinc-600 dark:text-zinc-400">{GEMINI_RERUN_HELPER_TEXT}</p>
+      <button
+        type="button"
+        onClick={controls.onRerun}
+        disabled={controls.status === "pending"}
+        className="mt-2 rounded bg-zinc-800 px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+      >
+        {controls.status === "pending" ? GEMINI_RERUN_PENDING_TEXT : GEMINI_RERUN_BUTTON_LABEL}
+      </button>
+      {controls.errorMessage && (
+        <p className="mt-2 text-red-600 dark:text-red-400">{controls.errorMessage}</p>
+      )}
+      {controls.successMessage && (
+        <p className="mt-2 text-emerald-600 dark:text-emerald-400">{controls.successMessage}</p>
+      )}
+    </div>
+  );
+}
+
+function AIOverviewItemCard({
+  item,
+  geminiRerun,
+}: {
+  item: AIOverviewComparisonItem;
+  geminiRerun?: GeminiRerunControlsState;
+}) {
   const detail = getAiOverviewItemDetailDisplay(item);
 
   return (
@@ -138,6 +226,12 @@ function AIOverviewItemCard({ item }: { item: AIOverviewComparisonItem }) {
         <p className="mt-3 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
           {detail.truncationWarning}
         </p>
+      )}
+
+      {geminiRerun && (
+        <div className="mt-3">
+          <GeminiRerunControls controls={geminiRerun} highlight={item.isTruncated === true} />
+        </div>
       )}
 
       {detail.referenceSummary && (

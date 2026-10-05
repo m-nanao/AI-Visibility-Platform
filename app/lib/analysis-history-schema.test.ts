@@ -3,6 +3,7 @@ import {
   parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
   parseAnalysisRunListResponse,
+  parseGeminiRerunResponse,
 } from "./analysis-history-schema";
 
 function validDetailResponse() {
@@ -416,6 +417,52 @@ describe("parseAnalysisRunComparisonResponse", () => {
     };
 
     const result = parseAnalysisRunComparisonResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+});
+
+function validGeminiRerunResponse() {
+  return {
+    updated: true,
+    analysisRunId: "11111111-1111-1111-1111-111111111111",
+    result: { brandSummary: {}, cooccurrenceRanking: [] },
+  };
+}
+
+describe("parseGeminiRerunResponse", () => {
+  it("accepts a well-formed GeminiRerunResponse", () => {
+    const result = parseGeminiRerunResponse(validGeminiRerunResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.updated).toBe(true);
+      expect(result.data.analysisRunId).toBe("11111111-1111-1111-1111-111111111111");
+      expect(result.data.result).toEqual({ brandSummary: {}, cooccurrenceRanking: [] });
+    }
+  });
+
+  it("accepts any result shape without validating it against AnalysisResult (validated separately)", () => {
+    const withOldResultShape = {
+      ...validGeminiRerunResponse(),
+      result: { some: "completely different shape from a future task" },
+    };
+
+    const result = parseGeminiRerunResponse(withOldResultShape);
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a response missing required fields", () => {
+    const result = parseGeminiRerunResponse({ updated: true });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a response with the wrong field types", () => {
+    const invalid = { ...validGeminiRerunResponse(), updated: "yes" };
+
+    const result = parseGeminiRerunResponse(invalid);
 
     expect(result.success).toBe(false);
   });

@@ -790,6 +790,21 @@ class AnalysisRunDetailResponse(BaseModel):
     meta: dict[str, object] | None
 
 
+class GeminiRerunResponse(BaseModel):
+    """POST /analysis-runs/{id}/rerun/gemini — see
+    services/gemini_rerun.py. `result` holds the updated, full
+    result_json (same loose dict[str, object] shape as
+    AnalysisRunDetailResponse.result above, for the same reason: a
+    saved row's shape reflects whatever AnalysisResult looked like when
+    it was written). A non-2xx response (see main.py) means nothing was
+    updated — the previously saved result is unchanged.
+    """
+
+    updated: bool
+    analysisRunId: str
+    result: dict[str, object]
+
+
 class AnalysisRunComparisonRunSummary(BaseModel):
     """One side (`current`/`previous`) of GET
     /analysis-runs/{id}/comparison — see

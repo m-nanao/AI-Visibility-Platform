@@ -3,6 +3,7 @@ import type {
   AnalysisRunComparisonResponse,
   AnalysisRunDetailResponse,
   AnalysisRunListResponse,
+  GeminiRerunResponse,
 } from "./analysis-history";
 
 /**
@@ -229,6 +230,40 @@ export function parseAnalysisRunComparisonResponse(
   const result = analysisRunComparisonResponseSchema.safeParse(input);
   if (result.success) {
     return { success: true, data: result.data as AnalysisRunComparisonResponse };
+  }
+
+  const reason = result.error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+
+  return { success: false, reason };
+}
+
+/**
+ * Mirrors backend/models.py's GeminiRerunResponse (POST
+ * /analysis-runs/{id}/rerun/gemini) — see
+ * services/gemini_rerun.py. `result` is validated only as a loose
+ * object here, same split as analysisRunDetailResponseSchema above:
+ * whether it still parses as the current AnalysisResult shape is
+ * checked separately at the page level via parseAnalysisResult().
+ */
+export const geminiRerunResponseSchema = z.object({
+  updated: z.boolean(),
+  analysisRunId: z.string(),
+  result: z.record(z.string(), z.unknown()),
+});
+
+export type GeminiRerunParseResult =
+  | { success: true; data: GeminiRerunResponse }
+  | { success: false; reason: string };
+
+export function parseGeminiRerunResponse(input: unknown): GeminiRerunParseResult {
+  const result = geminiRerunResponseSchema.safeParse(input);
+  if (result.success) {
+    return {
+      success: true,
+      data: result.data as GeminiRerunResponse,
+    };
   }
 
   const reason = result.error.issues

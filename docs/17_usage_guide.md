@@ -403,6 +403,19 @@ MVPレビュー前に、画面表示文言がAIの内部学習内容・内部状
 - backendの`backend/services/gemini_client.py`が生成する`note`フィールドの文言は変更していない（backend変更は対象外のため）。その代わり、frontend側で`item.note`の内容を使わず、常にfrontend自身の文言（`GEMINI_TRUNCATION_NOTE`）を表示するようにした——`isTruncated`フラグ自体は引き続き唯一の表示トリガーとして使っている。
 - 通常の分析結果画面・履歴詳細画面の表示（折りたたみ・「続きを見る」挙動）は変更していない。新しい外部API呼び出しは追加していない。DB schema・migration・Supabase/Render/Vercel設定・backend実装はいずれも変更していない。
 
+## 25. Gemini単体再実行機能の追加（2026-10-03追記）
+
+前章（24）で「Geminiだけを再実行する機能はまだない」と記した制約を解消し、履歴詳細画面（`/history/[id]`）から**Geminiの観測結果だけ**を再取得できるようにした（`feature/rerun-gemini-observation`）。
+
+- **使い方**: Gemini観測カードがある場合はカードの中に、Geminiが未取得（`status: unavailable`）の場合はAI観測セクション上部のステータス表示付近に「Geminiだけ再実行」ボタンが表示される（Geminiが無効（`off`）の場合は表示されない）。ボタンを押すと「Geminiの回答のみを再取得します。Gemini APIを1回使用します。実行しますか？」という確認ダイアログが出る。実行すると「Gemini再実行中...」と表示されボタンは無効化され、完了すると画面上のGemini観測結果（および可能な範囲でWeb/AI差分ブロック）がその場で更新され、「Geminiの再実行が完了しました。」と表示される。
+- **DataForSEO（AI Overview） / ChatGPT / Claude / Common Crawlは再実行されない**——Geminiの1回分のAPI呼び出しのみが発生する。分析全体の再実行（再分析）とは別の、保存済み履歴1件に対する部分更新機能である。
+- 失敗した場合（Gemini無効、credentials未設定、request limit不正、API呼び出し自体の失敗等）は、画面上のエラーメッセージが表示されるだけで、**既存の表示結果は変わらない**（壊れたり消えたりしない）。
+- 権限: ログイン済みユーザーは自分がアクセスできるprojectの履歴のみGemini再実行を実行できる（他projectの履歴に対して実行しようとすると403）。`HISTORY_READ_TOKEN`による内部/管理用アクセス時は、既存の読み取り/削除APIと同様に制限なく実行できる。
+- レポート画面（`/history/[id]/report`）には再実行ボタンは出ない——ただし、履歴詳細画面でGeminiを再実行した後にレポート画面を開くと、更新後のGemini観測結果が反映される（同じ保存済みデータを参照しているため）。
+- ChatGPT/Claude/AI Overviewそれぞれの単体再実行は今回対象外（未実装）。分析後の非同期ジョブ化も対象外のまま。詳細（backend実装・webAiGapの部分更新の制約）は[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「19」参照。
+
+あわせて、「Web上の説明とAI回答のズレ」ブロックの「Web上の情報環境（比較に使用した抜粋）」が元ページ全文ではなく代表的な抜粋であることが分かりづらいという指摘を受け、ラベル直下に「この抜粋は、差分比較に使用した代表的な文脈です。元ページ全文ではありません。」という注意文を追加した（分析結果画面・履歴詳細画面・レポート画面とも同様）。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

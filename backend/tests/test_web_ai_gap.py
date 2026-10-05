@@ -1,4 +1,4 @@
-from models import AIOverviewComparisonItem, CooccurrenceKeyword, Document
+from models import AIOverviewComparisonItem, CooccurrenceKeyword, Document, WebAiGapResult
 from services.claude_provider import CLAUDE_PLATFORM_LABEL
 from services.chatgpt_provider import CHATGPT_PLATFORM_LABEL
 from services.gemini_provider import GEMINI_PLATFORM_LABEL
@@ -8,6 +8,7 @@ from services.web_ai_gap import (
     _WORD_LEVEL_FALLBACK_SUGGESTION,
     _is_noise_keyword,
     build_web_ai_gap,
+    rebuild_web_ai_gap_for_updated_ai_contexts,
 )
 
 
@@ -332,3 +333,79 @@ def test_unavailable_when_common_crawl_document_is_blank_and_no_web_fetch_fallba
     result = build_web_ai_gap("Acme", documents, [], ai_items)
 
     assert result.status == "unavailable"
+
+
+# --- rebuild_web_ai_gap_for_updated_ai_contexts (Gemini-only rerun) ------
+#
+# Supports POST /analysis-runs/{id}/rerun/gemini (services/gemini_rerun.py)
+# — after a saved run's Gemini card is replaced, this recomputes
+# aiContexts/gapSummary/suggestions from the already-saved webContext
+# excerpt (never the original raw Document[], which isn't persisted).
+
+
+def test_rebuild_updates_ai_contexts_and_gap_summary_with_new_gemini_card():
+    documents = [
+        _make_document(
+            "Acmeは契約期間の縛りなし・初期費用0円で利用できるサービスです。",
+            sourceType="web_fetch",
+        )
+    ]
+    original_ai_items = [
+        _ai_item(CHATGPT_PLATFORM_LABEL, "AcmeはSEOコンサルティングを中心に支援する会社です。")
+    ]
+    existing = build_web_ai_gap("Acme", documents, [], original_ai_items)
+    assert existing.status == "real"
+    assert len(existing.aiContexts) == 1
+
+    updated_ai_items = [
+        *original_ai_items,
+        _ai_item(GEMINI_PLATFORM_LABEL, "Acmeは中小企業向けの法人サービスを提供しています。"),
+    ]
+
+    updated = rebuild_web_ai_gap_for_updated_ai_contexts("Acme", existing, [], updated_ai_items)
+
+    assert updated.status == "real"
+    assert [c.platform for c in updated.aiContexts] == ["chatgpt", "gemini"]
+    # The Web-side excerpt itself is reused as-is, not re-derived.
+    assert updated.webContext == existing.webContext
+
+
+def test_rebuild_replaces_gemini_context_when_card_content_changed():
+    documents = [_make_document("Acmeについての公式文書です。", sourceType="web_fetch")]
+    original_ai_items = [_ai_item(GEMINI_PLATFORM_LABEL, "old Gemini summary")]
+    existing = build_web_ai_gap("Acme", documents, [], original_ai_items)
+    assert existing.status == "real"
+
+    updated_ai_items = [_ai_item(GEMINI_PLATFORM_LABEL, "new Gemini summary, fully re-fetched")]
+
+    updated = rebuild_web_ai_gap_for_updated_ai_contexts("Acme", existing, [], updated_ai_items)
+
+    assert len(updated.aiContexts) == 1
+    assert updated.aiContexts[0].summary == "new Gemini summary, fully re-fetched"
+
+
+def test_rebuild_leaves_result_unchanged_when_existing_status_is_unavailable():
+    existing = WebAiGapResult(status="unavailable", note=WEB_AI_GAP_UNAVAILABLE_NOTE)
+    updated_ai_items = [_ai_item(GEMINI_PLATFORM_LABEL, "Acmeは中小企業向けの法人サービスです。")]
+
+    updated = rebuild_web_ai_gap_for_updated_ai_contexts("Acme", existing, [], updated_ai_items)
+
+    # Can't invent a Web-side excerpt that was never saved — left as-is
+    # rather than flipping to "real" with an incomplete comparison.
+    assert updated is existing
+
+
+def test_rebuild_leaves_result_unchanged_when_no_real_ai_observation_remains():
+    documents = [_make_document("Acmeについての公式文書です。", sourceType="web_fetch")]
+    original_ai_items = [_ai_item(CHATGPT_PLATFORM_LABEL, "AcmeはChatGPT観測での説明です。")]
+    existing = build_web_ai_gap("Acme", documents, [], original_ai_items)
+    assert existing.status == "real"
+
+    # e.g. the mock AI Overview placeholder only — nothing real.
+    updated_ai_items = [_ai_item("Google AI Overview", "モックのAI Overviewカードです。")]
+
+    updated = rebuild_web_ai_gap_for_updated_ai_contexts("Acme", existing, [], updated_ai_items)
+
+    # Never silently downgrades a previously-real comparison to nothing
+    # just because this unrelated re-run feature ran.
+    assert updated is existing

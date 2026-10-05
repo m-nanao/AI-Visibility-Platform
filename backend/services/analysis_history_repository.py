@@ -643,3 +643,59 @@ def soft_delete_analysis_run(analysis_run_id: str) -> bool:
         raise AnalysisHistoryReadError("failed to delete analysis history") from exc
 
     return deleted_now or already_deleted
+
+
+def update_analysis_result(
+    analysis_run_id: str, *, result_json: dict[str, Any], meta_json: dict[str, Any] | None
+) -> bool:
+    """Overwrites one saved analysis run's result_json/meta_json in
+    place — added for the Gemini-only re-run feature (see
+    services/gemini_rerun.py and POST /analysis-runs/{id}/rerun/gemini)
+    so a single AI observation card can be refreshed without re-running
+    the rest of `/analyze`. Never touches analysis_runs/brands, and
+    never touches analysis_results.visibility_score (Gemini's card has
+    no bearing on it) — only result_json/meta_json on the existing row.
+
+    Returns True when a row was updated, False when `analysis_run_id`
+    doesn't exist, is malformed, is soft-deleted, or has no
+    analysis_results row yet — main.py turns False into a 404, mirroring
+    soft_delete_analysis_run()'s return-bool convention above.
+
+    Deliberately unscoped by project, exactly like
+    soft_delete_analysis_run() above — main.py's rerun endpoint is
+    responsible for authorizing the caller against `analysis_run_id`
+    *before* calling this.
+
+    Raises AnalysisHistoryReadError on any connection/query failure —
+    reuses this module's existing read-error type (every caller already
+    has `except AnalysisHistoryReadError: return 503` in place).
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_results
+                    set result_json = %s, meta_json = %s
+                    where analysis_run_id = %s
+                      and analysis_run_id in (
+                          select id from analysis_runs where deleted_at is null
+                      )
+                    returning id
+                    """,
+                    (Jsonb(result_json), _maybe_jsonb(meta_json), analysis_run_id),
+                )
+                updated = cur.fetchone() is not None
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to update analysis result after Gemini rerun")
+        raise AnalysisHistoryReadError("failed to update analysis result") from exc
+
+    return updated

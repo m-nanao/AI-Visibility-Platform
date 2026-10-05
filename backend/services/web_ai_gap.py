@@ -37,6 +37,16 @@ Never asserts what an AI has "learned" or "understood", and never
 claims Common Crawl represents an AI's actual training data — every
 user-facing string here only ever compares "Web上で確認できる文脈" and
 "AI観測上の回答傾向" (see WEB_AI_GAP_NOTE / WEB_AI_GAP_UNAVAILABLE_NOTE).
+
+rebuild_web_ai_gap_for_updated_ai_contexts() below supports the
+Gemini-only re-run feature (services/gemini_rerun.py): after a saved
+analysis run's Gemini card is replaced, this section's aiContexts/
+gapSummary/suggestions are recomputed from the already-stored
+webContext excerpt — **not** a full rebuild, since the original raw
+Document[]/Common Crawl/web-fetch text is never persisted, only the
+already-truncated excerpt. When a saved run's webAiGap was
+"unavailable" (no Web-side excerpt was ever captured), the re-run
+leaves it unavailable rather than attempting to invent one.
 """
 
 from models import (
@@ -503,4 +513,56 @@ def build_web_ai_gap(
         gapSummary=gap_summary,
         suggestions=suggestions,
         note=WEB_AI_GAP_NOTE,
+    )
+
+
+def rebuild_web_ai_gap_for_updated_ai_contexts(
+    brand_name: str,
+    existing: WebAiGapResult,
+    cooccurrence_ranking: list[CooccurrenceKeyword],
+    ai_overview_comparison: list[AIOverviewComparisonItem],
+) -> WebAiGapResult:
+    """Best-effort update of a *previously saved* WebAiGapResult after
+    one AI observation card changed (added per the Gemini-only re-run
+    feature, services/gemini_rerun.py / POST
+    /analysis-runs/{id}/rerun/gemini) — re-derives aiContexts/gapSummary/
+    suggestions from the already-stored Web-side excerpt
+    (`existing.webContext`) and the updated `ai_overview_comparison`,
+    without needing the original raw Document[] again.
+
+    This works because gapSummary/suggestions were always computed from
+    `webContext.summary` (an already-truncated excerpt, see
+    _build_web_context above) rather than the raw Document text — the
+    excerpt itself never needs to be re-picked, only the AI side.
+
+    Returns `existing` unchanged when there is nothing safe to update:
+    - `existing.status` isn't "real" (nothing was comparable before,
+      and there is no saved Document[] to build a fresh webContext from
+      — see module docstring's "Web側documentが保存されていない場合").
+    - `existing.webContext` is missing for any other reason.
+    - the updated `ai_overview_comparison` no longer has any real
+      single-shot observation at all (rather than flipping a
+      previously-"real" comparison to "unavailable", which would make
+      an unrelated re-run feature silently delete this section).
+    """
+    if existing.status != "real" or existing.webContext is None:
+        return existing
+
+    ai_contexts = _build_ai_contexts(ai_overview_comparison)
+    if not ai_contexts:
+        return existing
+
+    top_web_ranking = cooccurrence_ranking[:GAP_KEYWORD_TOP_N]
+    web_text = existing.webContext.summary
+    ai_text = " ".join(context.summary for context in ai_contexts)
+    gap_summary = _build_gap_summary(brand_name, top_web_ranking, web_text, ai_contexts)
+    suggestions = _build_suggestions(top_web_ranking, web_text, ai_text)
+
+    return WebAiGapResult(
+        status="real",
+        webContext=existing.webContext,
+        aiContexts=ai_contexts,
+        gapSummary=gap_summary,
+        suggestions=suggestions,
+        note=existing.note,
     )

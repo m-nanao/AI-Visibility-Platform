@@ -10,6 +10,7 @@ import {
   parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
   parseAnalysisRunListResponse,
+  parseGeminiRerunResponse,
 } from "./analysis-history-schema";
 import { parseAnalysisResult } from "./analysis-result-schema";
 import type { AnalysisResult, CooccurrenceKeyword } from "./types";
@@ -456,6 +457,99 @@ export async function resolveHistoryDetailFetchOutcome(
   }
 
   return { kind: "success", detail: parsed.data, result: resultParsed.data };
+}
+
+// --- Gemini-only re-run (history detail screen, POST
+// /api/analysis-runs/{id}/rerun/gemini) ---
+
+/** POST /analysis-runs/{id}/rerun/gemini — mirrors
+ * backend/models.py's GeminiRerunResponse. `result` is kept as a loose
+ * `Record<string, unknown>` for the same reason as
+ * AnalysisRunDetailResponse.result above — validated separately via
+ * parseAnalysisResult() in resolveGeminiRerunOutcome() below. */
+export type GeminiRerunResponse = {
+  updated: boolean;
+  analysisRunId: string;
+  result: Record<string, unknown>;
+};
+
+export const GEMINI_RERUN_BUTTON_LABEL = "Geminiだけ再実行";
+export const GEMINI_RERUN_HELPER_TEXT =
+  "Geminiの回答のみを再取得します。他のAI観測やAI Overviewは再実行しません。";
+export const GEMINI_RERUN_CONFIRM_MESSAGE =
+  "Geminiの回答のみを再取得します。Gemini APIを1回使用します。実行しますか？";
+export const GEMINI_RERUN_PENDING_TEXT = "Gemini再実行中...";
+export const GEMINI_RERUN_SUCCESS_MESSAGE = "Geminiの再実行が完了しました。";
+export const GEMINI_RERUN_FORBIDDEN_MESSAGE = HISTORY_FORBIDDEN_MESSAGE;
+export const GEMINI_RERUN_NOT_FOUND_MESSAGE = "この分析履歴は見つかりませんでした。";
+export const GEMINI_RERUN_DISABLED_MESSAGE =
+  "Geminiの再実行機能は現在利用できません。";
+export const GEMINI_RERUN_GENERIC_ERROR_MESSAGE =
+  "Geminiの再実行に失敗しました。時間をおいて再度お試しください。";
+export const GEMINI_RERUN_INCOMPATIBLE_MESSAGE =
+  "Geminiの再実行には成功しましたが、更新後の結果を表示できませんでした。履歴一覧から開き直してください。";
+
+export type GeminiRerunOutcome =
+  | { success: true; result: AnalysisResult }
+  | { success: false; message: string };
+
+/**
+ * Turns a fetch() Response (or null, on a network-level failure) from
+ * POST /api/analysis-runs/{id}/rerun/gemini into an outcome the
+ * history detail page can act on — mirrors
+ * resolveDeleteAnalysisRunOutcome()'s pure-function-for-testability
+ * shape. A 502 means the Gemini call itself failed/was disabled (see
+ * services/gemini_rerun.py's GeminiRerunOutcome) — the backend's own
+ * `error` message is forwarded as-is since it's always a short,
+ * safe-to-display reason (never an API key/token), the same kind of
+ * text meta.geminiProvider.reason already surfaces elsewhere. Every
+ * other non-2xx status uses a fixed, generic message instead, matching
+ * this module's existing convention for the other history endpoints.
+ */
+export async function resolveGeminiRerunOutcome(
+  response: Response | null,
+): Promise<GeminiRerunOutcome> {
+  if (!response) {
+    return { success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === 503) {
+    return { success: false, message: GEMINI_RERUN_DISABLED_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { success: false, message: GEMINI_RERUN_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { success: false, message: GEMINI_RERUN_NOT_FOUND_MESSAGE };
+  }
+
+  if (response.status === 502) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : GEMINI_RERUN_GENERIC_ERROR_MESSAGE;
+    return { success: false, message };
+  }
+
+  if (!response.ok) {
+    return { success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  const parsed = parseGeminiRerunResponse(json);
+  if (!parsed.success) {
+    return { success: false, message: GEMINI_RERUN_GENERIC_ERROR_MESSAGE };
+  }
+
+  const resultParsed = parseAnalysisResult(parsed.data.result);
+  if (!resultParsed.success) {
+    return { success: false, message: GEMINI_RERUN_INCOMPATIBLE_MESSAGE };
+  }
+
+  return { success: true, result: resultParsed.data };
 }
 
 // --- Post-analyze "open in history" link (analysis result screen,
