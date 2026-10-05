@@ -1002,20 +1002,16 @@ export function getAiOverviewItemDetailDisplay(
 /**
  * Whether the history detail page should offer "Geminiだけ再実行" at
  * all (see AIOverviewComparisonSection.tsx's GeminiRerunControlsState
- * and app/history/[id]/page.tsx) — true when either a real Gemini card
- * is present, or Gemini was attempted but failed this request (status
- * "unavailable", no card) and a rerun might fix it. False when Gemini
- * was never attempted (meta.geminiProvider is undefined — e.g. very
- * old saved history) or was off by configuration (status "off") —
- * backend/services/gemini_provider.py's build_gemini_observation()
- * never produces a card in either case, so there would be nothing
- * meaningful to re-run.
+ * and app/history/[id]/page.tsx) — true only when a Gemini card is
+ * present AND it's flagged as possibly truncated
+ * (item.isTruncated === true). A依頼者 reported that the button kept
+ * showing even after a successful re-run resolved the truncation —
+ * offering a rerun only makes sense while there's something to fix, so
+ * a normally-completed Gemini card (isTruncated false/undefined) or no
+ * Gemini card at all (off, or never attempted) must never show it. See
+ * app/lib/meta-label.test.ts for the full matrix of cases this covers.
  */
-export function isGeminiRerunEligible(
-  items: AIOverviewComparisonItem[],
-  meta: AnalysisMeta,
-): boolean {
-  const hasGeminiCard = items.some((item) => item.platform === GEMINI_GOOGLE_PLATFORM_LABEL);
-  if (hasGeminiCard) return true;
-  return meta.geminiProvider !== undefined && meta.geminiProvider.status !== "off";
+export function isGeminiRerunEligible(items: AIOverviewComparisonItem[]): boolean {
+  const geminiItem = items.find((item) => item.platform === GEMINI_GOOGLE_PLATFORM_LABEL);
+  return geminiItem?.isTruncated === true;
 }
