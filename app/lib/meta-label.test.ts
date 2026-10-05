@@ -2107,26 +2107,61 @@ describe("isGeminiRerunEligible", () => {
     };
   }
 
-  it("is true when a real Gemini card is present", () => {
-    const meta = { ...baseMeta(), geminiProvider: { mode: "google", status: "real", reason: "ok" } };
-    expect(isGeminiRerunEligible([geminiItem()], meta)).toBe(true);
-  });
-
-  it("is true when Gemini was attempted but failed (no card, status unavailable)", () => {
-    const meta = {
-      ...baseMeta(),
-      geminiProvider: { mode: "google", status: "unavailable", reason: "Gemini API key is not configured." },
+  function otherItem(overrides: Partial<AIOverviewComparisonItem> = {}): AIOverviewComparisonItem {
+    return {
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acmeについての説明です。",
+      ...overrides,
     };
-    expect(isGeminiRerunEligible([], meta)).toBe(true);
+  }
+
+  it("is true when the Gemini card is flagged isTruncated === true", () => {
+    expect(isGeminiRerunEligible([geminiItem({ isTruncated: true })])).toBe(true);
   });
 
-  it("is false when Gemini mode is off", () => {
-    const meta = { ...baseMeta(), geminiProvider: { mode: "off", status: "off", reason: "Gemini observation is disabled." } };
-    expect(isGeminiRerunEligible([], meta)).toBe(false);
+  it("is false when the Gemini card completed normally (isTruncated === false)", () => {
+    expect(isGeminiRerunEligible([geminiItem({ isTruncated: false })])).toBe(false);
   });
 
-  it("is false when geminiProvider is absent (old saved history)", () => {
-    const meta = { ...baseMeta(), geminiProvider: undefined };
-    expect(isGeminiRerunEligible([], meta)).toBe(false);
+  it("is false when the Gemini card has no isTruncated field at all", () => {
+    expect(isGeminiRerunEligible([geminiItem()])).toBe(false);
+  });
+
+  it("is false when there is no Gemini card at all", () => {
+    expect(isGeminiRerunEligible([otherItem()])).toBe(false);
+    expect(isGeminiRerunEligible([])).toBe(false);
+  });
+
+  it("is false when a non-Gemini card happens to be truncated (isTruncated is Gemini-only in practice, but checked by platform regardless)", () => {
+    expect(isGeminiRerunEligible([otherItem({ isTruncated: true })])).toBe(false);
+  });
+
+  it("only looks at the Gemini card even when other cards are present", () => {
+    expect(
+      isGeminiRerunEligible([otherItem(), geminiItem({ isTruncated: true })]),
+    ).toBe(true);
+    expect(
+      isGeminiRerunEligible([otherItem(), geminiItem({ isTruncated: false })]),
+    ).toBe(false);
+  });
+
+  it("re-evaluates to false after a rerun resolves the truncation, true if it's still truncated", () => {
+    const beforeRerun = [geminiItem({ isTruncated: true, summary: "cut off mid-" })];
+    expect(isGeminiRerunEligible(beforeRerun)).toBe(true);
+
+    // app/history/[id]/page.tsx swaps `view.result` (and so this
+    // `items` array) for the updated AnalysisResult the rerun endpoint
+    // returns — isGeminiRerunEligible() is re-derived from that new
+    // array on the next render, with no separate "was truncated"
+    // state to reset.
+    const afterSuccessfulRerun = [geminiItem({ isTruncated: false, summary: "complete answer" })];
+    expect(isGeminiRerunEligible(afterSuccessfulRerun)).toBe(false);
+
+    const afterStillTruncatedRerun = [
+      geminiItem({ isTruncated: true, summary: "still cut off mid-" }),
+    ];
+    expect(isGeminiRerunEligible(afterStillTruncatedRerun)).toBe(true);
   });
 });

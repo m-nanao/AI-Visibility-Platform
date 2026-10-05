@@ -73,15 +73,11 @@ export default function AIOverviewComparisonSection({
   const claudeStatus = getClaudeProviderStatusDisplay(meta);
   const geminiStatus = getGeminiProviderStatusDisplay(meta);
 
-  const geminiItem = items.find((item) => item.platform === GEMINI_GOOGLE_PLATFORM_LABEL);
-  // isGeminiRerunEligible() covers both "a real Gemini card exists" and
-  // "Gemini was attempted but failed this request" (status
-  // "unavailable", no card) — the latter is exactly when offering a
-  // rerun is most useful. When there IS a card, the controls are
-  // attached directly to it below instead (see AIOverviewItemCard), so
-  // this only needs to handle the no-card case here.
-  const showGeminiRerunNearStatus =
-    geminiRerun !== undefined && !geminiItem && isGeminiRerunEligible(items, meta);
+  // isGeminiRerunEligible() is true only while there's something to
+  // fix (a Gemini card flagged isTruncated === true) — a依頼者 reported
+  // the button staying visible even after a successful rerun resolved
+  // the truncation, so a normally-completed card must never show it.
+  const showGeminiRerun = geminiRerun !== undefined && isGeminiRerunEligible(items);
 
   return (
     <Card
@@ -105,12 +101,6 @@ export default function AIOverviewComparisonSection({
         </div>
       )}
 
-      {showGeminiRerunNearStatus && geminiRerun && (
-        <div className="mb-3">
-          <GeminiRerunControls controls={geminiRerun} highlight={false} />
-        </div>
-      )}
-
       {/* 1-column card layout (not a table) so long summaries/references
           wrap instead of forcing horizontal scroll — see docs/05_tasks.md. */}
       <div className="space-y-4">
@@ -118,7 +108,11 @@ export default function AIOverviewComparisonSection({
           <AIOverviewItemCard
             key={item.platform}
             item={item}
-            geminiRerun={item.platform === GEMINI_GOOGLE_PLATFORM_LABEL ? geminiRerun : undefined}
+            geminiRerun={
+              showGeminiRerun && item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
+                ? geminiRerun
+                : undefined
+            }
           />
         ))}
       </div>
@@ -127,25 +121,14 @@ export default function AIOverviewComparisonSection({
 }
 
 // "Geminiだけ再実行" — only ever rendered when the history detail page
-// passes `geminiRerun` (see GeminiRerunControlsState above). Attached to
-// the Gemini card itself when one exists, or shown near the status
-// badges above when Gemini was attempted but produced no card (status
-// "unavailable") — see showGeminiRerunNearStatus above.
-function GeminiRerunControls({
-  controls,
-  highlight,
-}: {
-  controls: GeminiRerunControlsState;
-  highlight: boolean;
-}) {
+// passes `geminiRerun` AND the Gemini card itself is flagged
+// isTruncated === true (see isGeminiRerunEligible() above and
+// GeminiRerunControlsState's doc comment). Attached directly to the
+// Gemini card (see AIOverviewItemCard) — never shown elsewhere, and
+// never shown for a normally-completed Gemini card.
+function GeminiRerunControls({ controls }: { controls: GeminiRerunControlsState }) {
   return (
-    <div
-      className={`rounded-md border p-3 text-xs ${
-        highlight
-          ? "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950"
-          : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900"
-      }`}
-    >
+    <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950">
       <p className="text-zinc-600 dark:text-zinc-400">{GEMINI_RERUN_HELPER_TEXT}</p>
       <button
         type="button"
@@ -230,7 +213,7 @@ function AIOverviewItemCard({
 
       {geminiRerun && (
         <div className="mt-3">
-          <GeminiRerunControls controls={geminiRerun} highlight={item.isTruncated === true} />
+          <GeminiRerunControls controls={geminiRerun} />
         </div>
       )}
 
