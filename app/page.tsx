@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import AppHeader from "./components/AppHeader";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
@@ -10,6 +11,15 @@ import {
   buildAnalyzeRequestBody,
   getAnalyzeFallbackMessage,
 } from "./lib/analysis-request";
+import {
+  ANALYSIS_RESULT_PREVIEW_NOTE,
+  HISTORY_LIST_LINK_TEXT,
+  HISTORY_LIST_PATH,
+  POST_ANALYZE_HISTORY_CARD_HEADING,
+  POST_ANALYZE_HISTORY_LINK_HELPER_TEXT,
+  POST_ANALYZE_HISTORY_LINK_TEXT,
+  resolvePostAnalyzeHistoryLink,
+} from "./lib/analysis-history";
 import { getSectionStatusSummary } from "./lib/meta-label";
 import { STAGING_BANNER_TEXT } from "./lib/staging-banner";
 import type {
@@ -150,6 +160,44 @@ export default function Home() {
 
         {status === "done" && result && (
           <div className="mt-8">
+            {/* Prominent callout — only when the result was actually
+                saved (result.analysisRunId set). Placed above
+                everything else in the result area, per
+                improve/history-centered-analysis-flow's "分析結果の
+                上部、できれば目立つカード形式" — the analysis result
+                screen is a preview; the history detail screen is
+                where the saved result/report/Gemini rerun actually
+                live. */}
+            {(() => {
+              const historyLink = resolvePostAnalyzeHistoryLink(result.analysisRunId);
+              if (!historyLink) return null;
+              return (
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+                  <div>
+                    <p className="text-sm font-medium text-blue-900 dark:text-blue-200">
+                      {POST_ANALYZE_HISTORY_CARD_HEADING}
+                    </p>
+                    <p className="mt-0.5 text-xs text-blue-800 dark:text-blue-300">
+                      {POST_ANALYZE_HISTORY_LINK_HELPER_TEXT}
+                    </p>
+                  </div>
+                  <Link
+                    href={historyLink.path}
+                    className="shrink-0 rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+                  >
+                    {POST_ANALYZE_HISTORY_LINK_TEXT}
+                  </Link>
+                </div>
+              );
+            })()}
+
+            {/* Always shown while a result is displayed, kept
+                deliberately short/muted so it doesn't compete with the
+                result content itself on a normal run. */}
+            <p className="mb-3 text-xs text-zinc-400 dark:text-zinc-500">
+              {ANALYSIS_RESULT_PREVIEW_NOTE}
+            </p>
+
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2 className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -168,9 +216,15 @@ export default function Home() {
               </button>
             </div>
             {fallbackMessage && (
-              <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                {fallbackMessage}
-              </p>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                <p>{fallbackMessage}</p>
+                <Link
+                  href={HISTORY_LIST_PATH}
+                  className="shrink-0 text-xs font-medium underline-offset-2 hover:underline"
+                >
+                  {HISTORY_LIST_LINK_TEXT}
+                </Link>
+              </div>
             )}
             <AnalysisDashboard result={result} />
           </div>

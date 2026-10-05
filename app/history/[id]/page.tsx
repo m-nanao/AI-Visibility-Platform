@@ -18,6 +18,7 @@ import {
   HISTORY_COMPARISON_INTRO_TEXT,
   HISTORY_COMPARISON_SECTION_TITLE,
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
+  HISTORY_DETAIL_OFFICIAL_NOTE,
   HISTORY_DETAIL_PAGE_TITLE,
   HISTORY_LOADING_TEXT,
   REPORT_LINK_TEXT,
@@ -148,6 +149,15 @@ export default function HistoryDetailPage() {
           <h1 className="mt-2 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
             {HISTORY_DETAIL_PAGE_TITLE}
           </h1>
+          {/* Frames this screen as the official place to re-check a
+              result now that the analysis result screen (app/page.tsx)
+              is described as a preview — see
+              improve/history-centered-analysis-flow. Purely a copy
+              addition; this screen's actual capabilities (レポート表示・
+              Geminiだけ再実行) are unchanged. */}
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            {HISTORY_DETAIL_OFFICIAL_NOTE}
+          </p>
         </div>
       </div>
 

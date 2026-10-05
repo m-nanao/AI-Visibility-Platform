@@ -507,10 +507,15 @@ describe("buildAnalyzeRequestBody", () => {
 
 describe("getAnalyzeFallbackMessage", () => {
   it("returns a timeout-specific message that mentions history may still have the real result", () => {
+    // Reworded per improve/history-centered-analysis-flow — no longer
+    // calls the dummy data "開発用データ" (that wording made this
+    // screen read like a dev/test artifact); says "一時的なプレビュー"
+    // instead and still points the reader at the history list.
     const message = getAnalyzeFallbackMessage("timeout");
 
-    expect(message).toContain("開発用データ");
+    expect(message).toContain("プレビュー");
     expect(message).toContain("履歴一覧");
+    expect(message).not.toContain("開発用データ");
   });
 
   it("returns a distinct message for not_configured", () => {

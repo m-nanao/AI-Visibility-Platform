@@ -310,6 +310,15 @@ export async function resolveHistoryFetchOutcome(
  */
 export const HISTORY_LIST_DETAIL_LINK_TEXT = "詳細を見る";
 
+/** The history list page's own path — used by the dummy-fallback
+ * notice on the analysis result screen (app/page.tsx) to link
+ * straight to `/history` rather than only mentioning it in prose, per
+ * improve/history-centered-analysis-flow. */
+export const HISTORY_LIST_PATH = "/history";
+
+/** Label for that same link. */
+export const HISTORY_LIST_LINK_TEXT = "履歴一覧を確認する";
+
 /** Builds the /history/{id} path for a list row's detail link.
  * `encodeURIComponent` guards against an id containing characters
  * that would otherwise be interpreted as path segments. */
@@ -321,6 +330,15 @@ export function buildHistoryDetailPath(id: string): string {
 
 export const HISTORY_DETAIL_PAGE_TITLE = "分析履歴の詳細";
 export const HISTORY_DETAIL_BACK_LINK_TEXT = "分析履歴一覧へ戻る";
+
+/** Shown near the page title on /history/[id] — frames this screen as
+ * the official place to re-check a result, see the report, or re-run
+ * Gemini, now that the analysis result screen (app/page.tsx) is
+ * described as a quick preview instead (see ANALYSIS_RESULT_PREVIEW_NOTE
+ * above). Added per improve/history-centered-analysis-flow — purely a
+ * copy change, the screen's actual capabilities are unchanged. */
+export const HISTORY_DETAIL_OFFICIAL_NOTE =
+  "保存済みの分析結果です。レポート表示や一部AI観測の再実行はこの画面から行えます。";
 
 export const HISTORY_DETAIL_NOT_FOUND_MESSAGE =
   "指定された分析履歴が見つかりません。";
@@ -555,10 +573,34 @@ export async function resolveGeminiRerunOutcome(
 // --- Post-analyze "open in history" link (analysis result screen,
 // docs/23_analysis_run_id_and_post_analyze_link_design.md "8. 分析結果
 // 画面のリンク表示方針") ---
+//
+// Reworded per improve/history-centered-analysis-flow (2026-10-07):
+// the analysis result screen (app/page.tsx) is being repositioned as
+// an "即時プレビュー" — the saved history detail screen is the
+// official place to re-check a result, view the report, or re-run
+// Gemini. These three constants are shared by both the small inline
+// link AnalysisDashboard.tsx already renders (unchanged file — not in
+// this task's allowed-files list) and the more prominent callout card
+// app/page.tsx adds above it (see POST_ANALYZE_HISTORY_CARD_HEADING).
 
-export const POST_ANALYZE_HISTORY_LINK_TEXT = "保存済み履歴で開く";
+export const POST_ANALYZE_HISTORY_LINK_TEXT = "履歴詳細で確認する";
 export const POST_ANALYZE_HISTORY_LINK_HELPER_TEXT =
-  "この分析結果は履歴に保存されています。保存済み履歴からは、前回比較やレポート表示も確認できます。";
+  "レポート表示やAI観測の再実行は、履歴詳細画面から行えます。";
+
+/** Heading for the prominent callout card app/page.tsx shows above
+ * AnalysisDashboard when a result was actually saved — see
+ * POST_ANALYZE_HISTORY_LINK_TEXT/HELPER_TEXT above for the rest of its
+ * copy. */
+export const POST_ANALYZE_HISTORY_CARD_HEADING = "正式な結果を履歴詳細で確認する";
+
+/** Shown near the top of the analysis result screen whenever a result
+ * is displayed (regardless of whether it was saved) — frames the
+ * screen itself as a quick, unsaved-aware preview rather than the
+ * canonical place to come back to a result later. Deliberately short
+ * and muted in app/page.tsx's styling so it doesn't compete with the
+ * actual result content on a normal (non-fallback) run. */
+export const ANALYSIS_RESULT_PREVIEW_NOTE =
+  "この画面は分析直後のプレビューです。保存済みの正式な結果は履歴詳細から確認できます。";
 
 export type PostAnalyzeHistoryLink = {
   path: string;
