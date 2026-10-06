@@ -1,8 +1,8 @@
 # 履歴の重要フラグ機能 設計メモ
 
-履歴一覧（`/history`）が検索・並び替え・mode badge・ドメイン検索まで整った現状を踏まえ、履歴が増えたときに重要な分析結果を後から見つけやすくするための「重要フラグ」機能の設計をまとめるドキュメントである。`docs/history-important-flag-design`（設計のみ、実装なし）に続き、`feature/history-important-flag`で**第1段階（重要フラグの切り替えのみ、DB案A）を実際に実装した**——詳細は「11. 第1段階の実装状況」参照。「重要のみ表示」フィルタ・メモ・タグは引き続き未実装（第2段階・第3段階）。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+履歴一覧（`/history`）が検索・並び替え・mode badge・ドメイン検索まで整った現状を踏まえ、履歴が増えたときに重要な分析結果を後から見つけやすくするための「重要フラグ」機能の設計をまとめるドキュメントである。`docs/history-important-flag-design`（設計のみ、実装なし）に続き、`feature/history-important-flag`で**第1段階（重要フラグの切り替えのみ、DB案A）**を、`feature/history-important-filter`で**第2段階（「重要のみ表示」フィルタ）**を実際に実装した——詳細は「11」「12」参照。メモ・タグは引き続き未実装（第3段階）。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-07（第1段階の実装を反映）**
+**最終更新日: 2026-10-07（第2段階の実装を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -188,20 +188,20 @@ PATCH /analysis-runs/{analysis_run_id}/important
 
 ### 8.3 フィルタ（「重要のみ表示」）
 
-- **推奨: 初回実装では入れない。第2段階とする。** 重要フラグの切り替え自体がまず単体で使えるようになることを優先し、「重要のみ表示」フィルタは、実際に重要フラグが使われ始めてから、既存の検索（`filterAnalysisRunListItems`）・並び替え（`sortAnalysisRunListItems`）と同じ「frontend側の既存データに対するフィルタ」として追加する——新しいAPIパラメータは不要（一覧APIがすでに`isImportant`を返していれば、frontend側でフィルタできる）。
+- **推奨: 初回実装では入れない。第2段階とする。** 重要フラグの切り替え自体がまず単体で使えるようになることを優先し、「重要のみ表示」フィルタは、実際に重要フラグが使われ始めてから、既存の検索（`filterAnalysisRunListItems`）・並び替え（`sortAnalysisRunListItems`）と同じ「frontend側の既存データに対するフィルタ」として追加する——新しいAPIパラメータは不要（一覧APIがすでに`isImportant`を返していれば、frontend側でフィルタできる）。**`feature/history-important-filter`で実装済み（「12」参照）。**
 
 ## 9. 実装段階（推奨）
 
-1. **第1段階**: 重要フラグの切り替えのみ（履歴一覧・履歴詳細の両方にUIを追加、DB案A、`PATCH /analysis-runs/{id}/important`）。
-2. **第2段階**: 「重要のみ表示」フィルタを履歴一覧に追加（frontend側のみ、新しいAPIは不要）。
+1. ~~**第1段階**: 重要フラグの切り替えのみ（履歴一覧・履歴詳細の両方にUIを追加、DB案A、`PATCH /analysis-runs/{id}/important`）。~~ → `feature/history-important-flag`で実装済み（「11」参照）。
+2. ~~**第2段階**: 「重要のみ表示」フィルタを履歴一覧に追加（frontend側のみ、新しいAPIは不要）。~~ → `feature/history-important-filter`で実装済み（「12」参照）。
 3. **第3段階**: メモ機能・タグ機能（必要になった場合。案Bへの移行、または別の新テーブルの追加を伴う可能性が高い——このドキュメントでは設計しない）。
 
 ## 10. 今回のスコープ外（`docs/history-important-flag-design`時点、設計のみのタスク）
 
-この章は最初の設計タスク（`docs/history-important-flag-design`）時点のスコープ外一覧である。このうち重要フラグ自体の実装は、後続の`feature/history-important-flag`で第1段階として完了した——「11. 第1段階の実装状況」参照。
+この章は最初の設計タスク（`docs/history-important-flag-design`）時点のスコープ外一覧である。このうち重要フラグ自体の実装は後続の`feature/history-important-flag`で第1段階として、「重要のみ表示」フィルタは`feature/history-important-filter`で第2段階として完了した——「11」「12」参照。
 
 - ~~重要フラグ自体の実装（backend API・DB migration・frontend UIのいずれも）~~ → `feature/history-important-flag`で実装済み（「11」参照）。
-- 「重要のみ表示」フィルタの実装（引き続き未実装、第2段階）。
+- ~~「重要のみ表示」フィルタの実装~~ → `feature/history-important-filter`で実装済み（「12」参照）。
 - メモ機能・タグ機能・カテゴリ機能の実装（引き続き未実装、第3段階）。
 - 非同期分析ジョブ化・AIによるWeb/AI差分比較（既存docsで別途扱われている対象外項目、本タスクとは無関係だが念のため明記）。
 - RLS本番適用・Supabase/Render/Vercel設定変更・新しい外部API呼び出し・Gemini再実行API仕様変更・認証ロジック変更（第1段階実装でも変更していない、「11」参照）。
@@ -210,12 +210,25 @@ PATCH /analysis-runs/{analysis_run_id}/important
 
 設計（本ドキュメント「5〜8」）どおりに、重要フラグの**第1段階**（切り替えのみ、DB案A）を実装した。
 
-- **migration**: `backend/migrations/004_add_is_important_to_analysis_runs.sql`を追加した。`analysis_runs.is_important boolean not null default false`列と、`(project_id, is_important, created_at desc)`の複合indexを追加する——003以前の全migrationと同じ「design artifact only」の扱いで、**このタスクでも実DB（検証用・本番Supabaseいずれも）への適用は行っていない**。
-  - **本番Supabaseへ適用する場合の手順（手動、Claude Codeでは実行しない）**: 既存の[30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md)と同じ流れで、(1) 本番Supabaseのバックアップ確認、(2) Supabase Dashboardの SQL Editor で`004_add_is_important_to_analysis_runs.sql`の内容を実行、(3) `select column_name from information_schema.columns where table_name = 'analysis_runs' and column_name = 'is_important';`で列追加を確認、(4) 既存行が`is_important = false`になっていることを確認、(5) 本番Vercelで`/history`・`/history/[id]`が従来通り表示されること（新しい列が追加されただけで既存表示は変わらないこと）を確認する。適用後は本ドキュメントに適用日・結果を追記すること。
+- **migration**: `backend/migrations/004_add_is_important_to_analysis_runs.sql`を追加した。`analysis_runs.is_important boolean not null default false`列と、`(project_id, is_important, created_at desc)`の複合indexを追加する——003以前の全migrationと同じ「design artifact only」の扱いで、**このタスク（`feature/history-important-flag`）自体では実DBへの適用は行っていない**。
+  - **本番Supabaseへの適用状況**: 本番Supabaseへは、Claude Codeの作業範囲外でユーザー側により適用済み（`feature/history-important-filter`タスク開始時点で確認済み）。本番適用の手順自体は[30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md)と同じ流れ（バックアップ確認→Supabase Dashboard SQL Editorでの実行→列追加確認→既存行`is_important = false`確認→本番Vercelでの表示確認）を踏襲した想定。
 - **backend**: `backend/models.py`に`AnalysisRunListItem.isImportant: bool = False`・`AnalysisRunDetailResponse.isImportant: bool = False`・新規`AnalysisRunImportantRequest`/`AnalysisRunImportantResponse`を追加。`backend/services/analysis_history_repository.py`の`list_analysis_runs()`/`get_analysis_run()`が`analysis_runs.is_important`を選択して返すように変更し、新規`set_analysis_run_important()`（案Aのまま、`analysis_run_marks`は作成しない）を追加した。`backend/main.py`に新規`PATCH /analysis-runs/{analysis_run_id}/important`を追加——設計どおり、既存の`_resolve_history_access()`＋`can_user_access_analysis_run()`をそのまま再利用し、新しい権限判定ロジックは追加していない（`HISTORY_READ_TOKEN`モードは無制限、JWTモードはproject access確認、権限なしは403、存在しない/soft deleted済みの履歴は404）。migration未適用のDBに対する呼び出しは、既存の`AnalysisHistoryReadError`→503の経路でそのまま処理される（新しい特別処理は追加していない）。
 - **frontend**: `app/lib/analysis-history.ts`/`analysis-history-schema.ts`に`isImportant`（schemaは`.default(false)`）と`resolveSetAnalysisRunImportantOutcome()`/`getImportantToggleLabel()`を追加。新規proxy route `app/api/analysis-runs/[id]/important/route.ts`（既存のDELETE/Gemini再実行proxyと同じHISTORY_READ_TOKEN/Authorization転送パターン）。`/history`（履歴一覧）・`/history/[id]`（履歴詳細）の両方に★/☆トグルボタンを追加し、クリックで即座にoptimistic updateし、PATCH失敗時は元の状態に戻してエラーメッセージを表示する（設計どおり）。レポート画面（`/history/[id]/report`）は変更していない——編集ボタンは出ない。
-- **変更していないもの**: DB schema変更以外のSupabase設定・Render/Vercel設定変更、新しい外部API呼び出し、Gemini再実行API仕様、認証ロジックの方針（いずれも設計どおり未変更）。「重要のみ表示」フィルタ・メモ・タグは今回も未実装（第2段階・第3段階のまま）。
+- **変更していないもの**: DB schema変更以外のSupabase設定・Render/Vercel設定変更、新しい外部API呼び出し、Gemini再実行API仕様、認証ロジックの方針（いずれも設計どおり未変更）。「重要のみ表示」フィルタ・メモ・タグは本タスクでは未実装（第2段階・第3段階）——「重要のみ表示」フィルタは後続の`feature/history-important-filter`で実装済み（「12」参照）。
 - **テスト**: backend（`tests/test_migrations.py`・`tests/test_analysis_history_repository.py`・新規`tests/test_main_analysis_runs_important_api.py`）・frontend（`app/lib/analysis-history.test.ts`・`analysis-history-schema.test.ts`・新規`app/api/analysis-runs/[id]/important/route.test.ts`）に追加。
+
+## 12. 第2段階の実装状況（`feature/history-important-filter`、2026-10-07）
+
+設計（本ドキュメント「8.3」「9」）どおりに、「重要のみ表示」フィルタ（**第2段階**）を実装した。
+
+- **frontend**: `app/lib/analysis-history.ts`に`filterAnalysisRunListItemsByImportance()`（`"all"`/`"importantOnly"`の2値、新しいbackendパラメータ不要・既存`GET /analysis-runs`のレスポンスに対するfrontend側フィルタのみ）、`resolveHistoryListEmptyText()`（重要のみON×検索クエリの有無で0件時の文言を切り替え）、`HistoryImportantFilter`型・関連ラベル定数を追加。`app/history/page.tsx`に「すべて/重要のみ」の2択トグル（検索欄・並び替えセレクトの隣に配置）を追加した。
+- **フィルタの組み合わせ順**: 設計の推奨どおり、元の履歴一覧 → 重要のみフィルタ → 検索フィルタ → 並び替え → 件数表示、の順で適用する（`importantFilteredItems` → `filterAnalysisRunListItems()` → `sortAnalysisRunListItems()`）。
+- **件数表示**: 既存の`formatHistoryCountLabel(totalCount, visibleCount)`をそのまま使い、`totalCount`には常に元の全件数（`allItems.length`、重要のみフィルタ適用前）を渡す——これにより「重要のみON＋検索で2件に絞られた」場合に「12件中 2件を表示」のように、全体件数を基準にした表示になる。件数表示ロジック自体は変更していない。
+- **0件時の表示**: `resolveHistoryListEmptyText()`が、(1) 重要のみOFF: 既存の「条件に一致する履歴がありません。」、(2) 重要のみON・検索クエリなし: 「重要に設定された履歴がありません。」、(3) 重要のみON・検索クエリあり: 「条件に一致する重要な履歴がありません。」、の3パターンを返す。
+- **重要フラグ切替との相互作用**: 重要のみ表示中に表示中の履歴の重要フラグをOFFにした場合、既存の`handleToggleImportant()`（optimistic update）がそのまま`view.items`を更新し、`importantFilteredItems`（`useMemo`で`allItems`/`importantFilter`から再計算）がそれを反映して自動的にそのカードを一覧から除外する——この挙動のために新しいコードは追加していない（既存のoptimistic update機構と、本タスクで追加した`useMemo`チェーンの組み合わせで自然に成立する）。PATCH失敗時のrollbackも同様に、`isImportant`が元に戻ることで一覧に再表示される。
+- **変更していないもの**: backend（`backend/`配下は無変更）・DB schema・migration・重要フラグ更新API（`PATCH /analysis-runs/{id}/important`）仕様・Gemini再実行API仕様・認証ロジック・Supabase/Render/Vercel設定・外部API呼び出し、いずれも変更していない。
+- **対象外**: メモ機能・タグ機能・カテゴリ機能・ユーザー別重要フラグ・`analysis_run_marks`テーブル・一括操作——いずれも今回も実装していない（第3段階、「9」参照）。
+- **テスト**: frontend（`app/lib/analysis-history.test.ts`に`filterAnalysisRunListItemsByImportance()`/`resolveHistoryListEmptyText()`のテストを追加）。backendテストは変更なし（backend自体を変更していないため）。
 
 ## 関連ドキュメント
 

@@ -93,7 +93,8 @@ Common Crawl補完: 公式ドメインから補完
 - 各項目の「詳細を見る」ボタンから詳細画面へ移動する（button風リンクに改善済み、`feature/history-ui-link-and-layout-polish`参照）。
 - 各項目に、その分析時にAI Overview / ChatGPT / Claude / Gemini / Common Crawlがどの状態だったかを示す短いバッジが表示される（`feature/history-delete-and-mode-badges`、2026-09-19。全ON検証・単体ON検証・失敗分析の切り分けに使える。詳細は[17_usage_guide.md](./17_usage_guide.md)「21」参照）。
 - 各項目の「削除」ボタンから、不要になった分析履歴を一覧から削除できる（確認ダイアログあり）。**物理削除ではなく、DB上は`deleted_at`を設定して一覧・詳細から見えなくするだけ**（`backend/migrations/003_add_deleted_at_to_analysis_runs.sql`）。
-- **ブランド名・ドメインで検索できる**（検索欄placeholder「ブランド名で履歴を検索」。`cybozu.co.jp`/`www.cybozu.co.jp`/`https://cybozu.co.jp/`等、入力URLのドメインのどの表記でもヒットする。該当なしの場合は「条件に一致する履歴がありません。」と表示）。**「新しい順」「古い順」で並び替えでき、件数表示（「12件の履歴」/「12件中 3件を表示」）も確認できる**——いずれも既存のGET /analysis-runsのデータをfrontend側でフィルタ・並び替えするだけで、新しいbackend検索APIやDB schema変更は伴わない（`improve/history-list-search-and-sort`、2026-10-07。ドメイン検索が効かない不具合は`fix/history-domain-search`、2026-10-07で修正済み。タグ・カテゴリ・重要フラグ等は今回未実装。詳細は[17_usage_guide.md](./17_usage_guide.md)「28」「29」参照）。
+- **ブランド名・ドメインで検索できる**（検索欄placeholder「ブランド名で履歴を検索」。`cybozu.co.jp`/`www.cybozu.co.jp`/`https://cybozu.co.jp/`等、入力URLのドメインのどの表記でもヒットする。該当なしの場合は「条件に一致する履歴がありません。」と表示）。**「新しい順」「古い順」で並び替えでき、件数表示（「12件の履歴」/「12件中 3件を表示」）も確認できる**——いずれも既存のGET /analysis-runsのデータをfrontend側でフィルタ・並び替えするだけで、新しいbackend検索APIやDB schema変更は伴わない（`improve/history-list-search-and-sort`、2026-10-07。ドメイン検索が効かない不具合は`fix/history-domain-search`、2026-10-07で修正済み。詳細は[17_usage_guide.md](./17_usage_guide.md)「28」「29」参照）。
+- **各項目に★「重要にする」/「重要を解除」ボタンがあり、クリックすると重要な履歴として印をつけられる**（`feature/history-important-flag`、2026-10-07。クリック後すぐに見た目が切り替わり、失敗時は元に戻ってエラー表示）。**検索欄・並び替えの近くにある「すべて/重要のみ」トグルで、重要フラグを付けた履歴だけに絞り込める**（`feature/history-important-filter`、2026-10-07。既存の検索・並び替え・件数表示と組み合わせて使える。重要な履歴が0件の場合は「重要に設定された履歴がありません。」、検索と併用して0件の場合は「条件に一致する重要な履歴がありません。」と表示）。メモ・タグ機能は今回未実装。いずれもDB schema変更・新しいbackend検索APIは伴わない（「重要のみ表示」フィルタはfrontend側のみの変更）。詳細は[17_usage_guide.md](./17_usage_guide.md)「30」参照。
 
 ### 履歴詳細（`/history/[id]`）
 
@@ -144,8 +145,10 @@ Common Crawl補完: 公式ドメインから補完
 - 履歴詳細画面からGeminiの観測結果だけを再取得できる「Geminiだけ再実行」機能の追加（DataForSEO/ChatGPT/Claude/Common Crawlは再実行しない。`feature/rerun-gemini-observation`、2026-10-03。詳細は[17_usage_guide.md](./17_usage_guide.md)「25」参照）
 - 「Geminiだけ再実行」ボタンの表示条件を、Gemini出力が途中終了している可能性がある場合（`isTruncated === true`）のみに修正（正常取得後はボタンを表示しない。`fix/show-gemini-rerun-only-when-truncated`、2026-10-06。詳細は[17_usage_guide.md](./17_usage_guide.md)「26」参照）
 - 分析結果画面を「即時プレビュー」、履歴詳細を「正式な確認画面」として整理（導線・表示文言のみの変更。完全な非同期ジョブ化は対象外。`improve/history-centered-analysis-flow`、2026-10-07。詳細は[17_usage_guide.md](./17_usage_guide.md)「27」参照）
-- 履歴一覧にブランド名検索・新しい順/古い順の並び替え・件数表示を追加（既存のGET /analysis-runsデータをfrontend側でフィルタ・並び替えするのみ、新しいbackend検索API・DB schema変更なし。タグ・カテゴリ・重要フラグは今回未実装。`improve/history-list-search-and-sort`、2026-10-07。詳細は[17_usage_guide.md](./17_usage_guide.md)「28」参照）
+- 履歴一覧にブランド名検索・新しい順/古い順の並び替え・件数表示を追加（既存のGET /analysis-runsデータをfrontend側でフィルタ・並び替えするのみ、新しいbackend検索API・DB schema変更なし。タグ・カテゴリ・重要フラグはこの時点では未実装。`improve/history-list-search-and-sort`、2026-10-07。詳細は[17_usage_guide.md](./17_usage_guide.md)「28」参照）
 - 履歴一覧のドメイン検索が確実に効くように修正（`canonicalDomain`が実質常に空だったため、保存済み`input_snapshot`からURLを取り出した`sourceUrls`を新設し、`www.`あり/なし・`https://`+末尾スラッシュ等の表記差を吸収して検索。DB schema変更なし。`fix/history-domain-search`、2026-10-07。詳細は[17_usage_guide.md](./17_usage_guide.md)「29」参照）
+- 履歴一覧・履歴詳細に重要フラグ（★マーク）の切り替えを追加（DB設計案A=`analysis_runs.is_important`列、新規`PATCH /analysis-runs/{id}/important`は既存の削除/Gemini再実行エンドポイントと同じ権限判定を再利用。クリックで即時反映のoptimistic update、失敗時はrollback。`feature/history-important-flag`、2026-10-07。設計・実装状況は[38_history_marking_design.md](./38_history_marking_design.md)「11」、使い方は[17_usage_guide.md](./17_usage_guide.md)「30」参照）
+- 履歴一覧に「重要のみ表示」フィルタを追加（既存の検索・並び替えと同じfrontend側フィルタのみ、新しいbackend API・DB schema変更なし。重要のみ表示中に重要フラグをOFFにするとそのカードは一覧から消える。メモ・タグ機能は今回も未実装。`feature/history-important-filter`、2026-10-07。設計・実装状況は[38_history_marking_design.md](./38_history_marking_design.md)「12」、使い方は[17_usage_guide.md](./17_usage_guide.md)「30」参照）
 
 ### MVPではまだ限定的なこと
 

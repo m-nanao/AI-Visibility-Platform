@@ -459,15 +459,18 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - **古い履歴の扱い**: `input_snapshot`に`urls`が存在しない（またはそもそも`input_snapshot`がない）古い履歴では`sourceUrls`が空配列になり、ドメイン検索の対象にはならない——エラーにはならず、ブランド名検索は引き続き機能する。
 - **変更していないもの**: DB schema・migration、認証ロジック、`HISTORY_READ_TOKEN`gate、Gemini再実行API仕様、新しい外部API呼び出し。backend側の変更は`GET /analysis-runs`のレスポンスに既存JSON列由来のoptionalフィールドを1つ追加しただけで、新しいテーブル・カラムの追加はない。
 
-## 30. 履歴の重要フラグ機能（2026-10-07追記、2026-10-07第1段階実装）
+## 30. 履歴の重要フラグ機能・「重要のみ表示」フィルタ（2026-10-07追記、第1・第2段階実装済み）
 
-履歴が増えてきたときに、重要な分析結果を後から見つけやすくするための「重要フラグ」機能。設計は[38_history_marking_design.md](./38_history_marking_design.md)としてまとめ（`docs/history-important-flag-design`）、その後`feature/history-important-flag`で第1段階（切り替えのみ）を実装した。
+履歴が増えてきたときに、重要な分析結果を後から見つけやすくするための「重要フラグ」機能。設計は[38_history_marking_design.md](./38_history_marking_design.md)としてまとめ（`docs/history-important-flag-design`）、その後`feature/history-important-flag`で第1段階（切り替えのみ）、`feature/history-important-filter`で第2段階（「重要のみ表示」フィルタ）を実装した。
 
-- **使い方**: 履歴一覧（`/history`）の各カード、および履歴詳細（`/history/[id]`）のタイトル付近にある「重要にする」/「重要を解除」ボタンをクリックすると、その履歴に★マークが付く（もう一度クリックすると外せる）。依頼者レビュー用・比較用・レポート候補として残したい履歴に軽く目印をつけることを目的とする。
+- **重要フラグの使い方**: 履歴一覧（`/history`）の各カード、および履歴詳細（`/history/[id]`）のタイトル付近にある「重要にする」/「重要を解除」ボタンをクリックすると、その履歴に★マークが付く（もう一度クリックすると外せる）。依頼者レビュー用・比較用・レポート候補として残したい履歴に軽く目印をつけることを目的とする。
 - クリックすると画面上はすぐに反映される（通信を待たずに見た目が切り替わる）。通信が失敗した場合は元の状態に戻り、画面にエラーメッセージが表示される。
 - レポート画面（印刷・PDF保存用、`/history/[id]/report`）には重要フラグの編集ボタンは置いていない。
-- **まだ実装していないもの**: 「重要のみ表示」フィルタ（履歴一覧の検索・並び替えの隣に絞り込みを追加する機能）、メモ機能、タグ機能——これらは次の段階として設計docsに記録済み（[38_history_marking_design.md](./38_history_marking_design.md)「9」参照）。
-- **本番で使うために必要なこと**: 重要フラグの保存にはDB側の新しい列（`analysis_runs.is_important`）が必要で、そのmigration（`backend/migrations/004_add_is_important_to_analysis_runs.sql`）は作成済みだが、**検証用/本番Supabaseいずれにもまだ適用していない**——本番適用手順は[38_history_marking_design.md](./38_history_marking_design.md)「11」に手動手順として記録済み。migration適用前の環境でこの機能を使おうとすると、エラー（重要フラグの更新に失敗しました）になる。
+- **「重要のみ表示」フィルタの使い方**: 履歴一覧（`/history`）の検索欄・並び替えセレクトの近くに「すべて/重要のみ」の切り替えボタンがある。「重要のみ」を選ぶと、★マークが付いた履歴だけが表示される。既存のブランド名/ドメイン検索・並び替え・件数表示と組み合わせて使える（重要のみ表示中にさらに検索欄で絞り込むことも可能）。
+  - 重要な履歴が1件もない場合は「重要に設定された履歴がありません。」、重要のみ表示＋検索条件で0件になった場合は「条件に一致する重要な履歴がありません。」と表示される。
+  - 重要のみ表示中に、表示されている履歴の重要フラグを解除すると、その履歴は一覧から消える（再度重要にすれば戻る）。
+- **まだ実装していないもの**: メモ機能・タグ機能——次の段階として設計docsに記録済み（[38_history_marking_design.md](./38_history_marking_design.md)「9」参照）。
+- **本番で使うために必要なこと**: 重要フラグの保存にはDB側の新しい列（`analysis_runs.is_important`）が必要で、そのmigration（`backend/migrations/004_add_is_important_to_analysis_runs.sql`）は本番Supabaseへ適用済み（ユーザー側で適用、`feature/history-important-filter`タスク開始時点で確認）。「重要のみ表示」フィルタはfrontend側のみの変更で、追加のmigration・backend変更は不要。
 
 ## 関連ドキュメント
 

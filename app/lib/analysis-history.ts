@@ -340,6 +340,64 @@ export function filterAnalysisRunListItems(
   });
 }
 
+// --- "重要のみ表示" filter (feature/history-important-filter) ---
+//
+// Frontend-only, same convention as the search/sort filters above — no
+// new backend query parameter, no DB schema change. Applied *before*
+// the search filter (see filterAnalysisRunListItems() above) so the
+// count label's "総件数" stays the full unfiltered list while
+// "表示件数" reflects both filters combined — see
+// app/history/page.tsx's composition order.
+
+export type HistoryImportantFilter = "all" | "importantOnly";
+
+export const HISTORY_IMPORTANT_FILTER_DEFAULT: HistoryImportantFilter = "all";
+export const HISTORY_IMPORTANT_FILTER_ALL_LABEL = "すべて";
+export const HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL = "重要のみ";
+
+/** Keeps only `isImportant === true` items when `filter` is
+ * `"importantOnly"`; returns `items` unchanged for `"all"`. A missing
+ * `isImportant` (older saved run / pre-migration backend response,
+ * see AnalysisRunListItem.isImportant's comment) is treated as not
+ * important, same as every other isImportant read in this module. */
+export function filterAnalysisRunListItemsByImportance(
+  items: AnalysisRunListItem[],
+  filter: HistoryImportantFilter,
+): AnalysisRunListItem[] {
+  if (filter !== "importantOnly") return items;
+  return items.filter((item) => item.isImportant === true);
+}
+
+export const HISTORY_IMPORTANT_ONLY_EMPTY_TEXT = "重要に設定された履歴がありません。";
+export const HISTORY_IMPORTANT_ONLY_SEARCH_NO_RESULTS_TEXT =
+  "条件に一致する重要な履歴がありません。";
+
+/**
+ * Picks the right "0件" message for the history list's current
+ * filter combination — mirrors HISTORY_SEARCH_NO_RESULTS_TEXT's
+ * existing wording so the three variants read as one consistent
+ * family rather than unrelated messages:
+ * - importantOnly + a search query: "条件に一致する重要な履歴がありません。"
+ * - importantOnly, no search query: "重要に設定された履歴がありません。"
+ * - otherwise (search query, no importantOnly): the existing
+ *   HISTORY_SEARCH_NO_RESULTS_TEXT.
+ * Callers only reach this when the combined filter result is actually
+ * empty — it does not itself decide whether to render anything.
+ */
+export function resolveHistoryListEmptyText(
+  importantFilter: HistoryImportantFilter,
+  searchQuery: string,
+): string {
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  if (importantFilter === "importantOnly" && hasSearchQuery) {
+    return HISTORY_IMPORTANT_ONLY_SEARCH_NO_RESULTS_TEXT;
+  }
+  if (importantFilter === "importantOnly") {
+    return HISTORY_IMPORTANT_ONLY_EMPTY_TEXT;
+  }
+  return HISTORY_SEARCH_NO_RESULTS_TEXT;
+}
+
 export type HistorySortOrder = "newest" | "oldest";
 
 export const HISTORY_SORT_NEWEST_LABEL = "新しい順";
