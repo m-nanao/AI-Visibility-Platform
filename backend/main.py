@@ -109,6 +109,8 @@ from models import (
     AnalysisRunComparisonResponse,
     AnalysisRunDetailResponse,
     AnalysisRunInfo,
+    AnalysisRunImportantRequest,
+    AnalysisRunImportantResponse,
     AnalysisRunListItem,
     AnalysisRunListResponse,
     AnalysisSectionStatuses,
@@ -133,6 +135,7 @@ from services.analysis_history_repository import (
     get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
     list_analysis_runs as repository_list_analysis_runs,
     save_analysis_history,
+    set_analysis_run_important as repository_set_analysis_run_important,
     soft_delete_analysis_run as repository_soft_delete_analysis_run,
     update_analysis_result as repository_update_analysis_result,
 )
@@ -1107,6 +1110,7 @@ def get_analysis_run(analysis_run_id: str, request: Request):
         run=AnalysisRunInfo(**detail["run"]),
         result=detail["result"],
         meta=detail["meta"],
+        isImportant=detail.get("isImportant", False),
     )
 
 
@@ -1159,6 +1163,64 @@ def delete_analysis_run(analysis_run_id: str, request: Request):
         return error_response("analysis run not found", status_code=404)
 
     return {"deleted": True}
+
+
+IMPORTANT_UPDATE_FAILED_MESSAGE = "failed to update analysis history"
+
+
+@app.patch(
+    "/analysis-runs/{analysis_run_id}/important",
+    response_model=AnalysisRunImportantResponse,
+)
+def set_analysis_run_important(
+    analysis_run_id: str, body: AnalysisRunImportantRequest, request: Request
+):
+    """Marks (or unmarks) one saved analysis run as important — see
+    docs/38_history_marking_design.md 案A and "7. API設計案". Backed by
+    services.analysis_history_repository.set_analysis_run_important(),
+    which sets `analysis_runs.is_important` directly (backend/migrations/
+    004_add_is_important_to_analysis_runs.sql).
+
+    Uses the exact same `_resolve_history_access()` gate and JWT-mode
+    authorization pattern as DELETE /analysis-runs/{id} and POST
+    /analysis-runs/{id}/rerun/gemini above: access is checked against
+    `analysis_run_id` itself (via can_user_access_analysis_run()) before
+    anything is written, so a caller who can't see this run gets 403
+    without it being touched, and HISTORY_READ_TOKEN mode remains
+    unrestricted for internal/admin use exactly as every other mutating
+    history endpoint already is.
+    """
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        updated = repository_set_analysis_run_important(
+            analysis_run_id, is_important=body.isImportant
+        )
+    except AnalysisHistoryReadError:
+        return error_response(IMPORTANT_UPDATE_FAILED_MESSAGE, status_code=503)
+
+    if not updated:
+        return error_response("analysis run not found", status_code=404)
+
+    return AnalysisRunImportantResponse(
+        analysisRunId=analysis_run_id, isImportant=body.isImportant
+    )
 
 
 GEMINI_RERUN_FAILED_MESSAGE = "failed to update analysis result after Gemini rerun"

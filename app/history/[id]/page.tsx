@@ -20,6 +20,7 @@ import {
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
   HISTORY_DETAIL_OFFICIAL_NOTE,
   HISTORY_DETAIL_PAGE_TITLE,
+  HISTORY_IMPORTANT_BADGE_LABEL,
   HISTORY_LOADING_TEXT,
   REPORT_LINK_TEXT,
   buildHistoryReportPath,
@@ -29,10 +30,12 @@ import {
   formatCooccurrenceChangedTermLabel,
   formatCooccurrenceNewTermLabel,
   formatCooccurrenceRemovedTermLabel,
+  getImportantToggleLabel,
   limitComparisonTerms,
   resolveGeminiRerunOutcome,
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
+  resolveSetAnalysisRunImportantOutcome,
 } from "../../lib/analysis-history";
 import type {
   AnalysisRunDetailViewState,
@@ -61,6 +64,10 @@ export default function HistoryDetailPage() {
   const [geminiRerunSuccessMessage, setGeminiRerunSuccessMessage] = useState<
     string | undefined
   >(undefined);
+  // Important-flag toggle state — independent of `view` for the same
+  // reason as geminiRerun* above. The toggle applies optimistically
+  // (see handleToggleImportant below) straight onto `view.detail`.
+  const [importantError, setImportantError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     if (!id) return;
@@ -138,6 +145,40 @@ export default function HistoryDetailPage() {
     setView((prev) => (prev.kind === "success" ? { ...prev, result: outcome.result } : prev));
   };
 
+  // Flips `detail.isImportant` immediately (optimistic update), then
+  // calls PATCH /api/analysis-runs/{id}/important — mirrors
+  // app/history/page.tsx's handleToggleImportant. On failure, flips it
+  // back and shows an inline error; no confirmation dialog, same
+  // reasoning as the list page's toggle.
+  const handleToggleImportant = async () => {
+    if (!id || view.kind !== "success") return;
+    const currentIsImportant = view.detail.isImportant ?? false;
+    const nextIsImportant = !currentIsImportant;
+
+    setImportantError(undefined);
+    setView((prev) =>
+      prev.kind === "success"
+        ? { ...prev, detail: { ...prev.detail, isImportant: nextIsImportant } }
+        : prev,
+    );
+
+    const response = await fetch(`/api/analysis-runs/${encodeURIComponent(id)}/important`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isImportant: nextIsImportant }),
+    }).catch(() => null);
+    const outcome = await resolveSetAnalysisRunImportantOutcome(response);
+
+    if (!outcome.success) {
+      setImportantError(outcome.message);
+      setView((prev) =>
+        prev.kind === "success"
+          ? { ...prev, detail: { ...prev.detail, isImportant: currentIsImportant } }
+          : prev,
+      );
+    }
+  };
+
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
       <AppHeader />
@@ -185,7 +226,13 @@ export default function HistoryDetailPage() {
 
         {view.kind === "success" && (
           <>
-            <BasicInfo id={id} detail={view.detail} result={view.result} />
+            <BasicInfo
+              id={id}
+              detail={view.detail}
+              result={view.result}
+              onToggleImportant={handleToggleImportant}
+              importantError={importantError}
+            />
             <div className="mt-6">
               <ComparisonSection view={comparisonView} />
             </div>
@@ -211,23 +258,51 @@ function BasicInfo({
   id,
   detail,
   result,
+  onToggleImportant,
+  importantError,
 }: {
   id: string | undefined;
   detail: Extract<AnalysisRunDetailViewState, { kind: "success" }>["detail"];
   result: Extract<AnalysisRunDetailViewState, { kind: "success" }>["result"];
+  onToggleImportant: () => void;
+  importantError: string | undefined;
 }) {
   const display = formatAnalysisRunDetailBasicInfo(detail, result);
+  const isImportant = detail.isImportant ?? false;
 
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-center justify-between">
-        <p className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
-          {display.brandNameLabel}
-        </p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+            {display.brandNameLabel}
+          </p>
+          {/* 重要フラグ切替 — タイトル周辺に置き、下のレポートリンク・
+              AnalysisDashboard内のGeminiだけ再実行ボタンとは別の位置
+              にする（feature/history-important-flag,
+              docs/38_history_marking_design.md 案A「2. UI方針」）。 */}
+          <button
+            type="button"
+            onClick={onToggleImportant}
+            aria-pressed={isImportant}
+            className="rounded-md border border-amber-300 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+          >
+            <span aria-hidden="true">{isImportant ? "★" : "☆"} </span>
+            {getImportantToggleLabel(isImportant)}
+          </button>
+          {isImportant && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+              {HISTORY_IMPORTANT_BADGE_LABEL}
+            </span>
+          )}
+        </div>
         <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
           {display.statusLabel}
         </span>
       </div>
+      {importantError && (
+        <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{importantError}</p>
+      )}
       {display.canonicalDomainLabel && (
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
           {display.canonicalDomainLabel}

@@ -476,6 +476,7 @@ def test_list_analysis_runs_success(monkeypatch):
         COMPLETED_AT,
         meta_json,
         input_snapshot,
+        True,
     )
     fake_cursor = _FakeReadCursor(fetchall_result=[row])
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -502,6 +503,7 @@ def test_list_analysis_runs_success(monkeypatch):
                 "commonCrawl": "unknown",
             },
             "sourceUrls": ["https://cybozu.co.jp/"],
+            "isImportant": True,
         }
     ]
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
@@ -699,6 +701,7 @@ def test_get_analysis_run_success(monkeypatch):
         {"brandName": "サイボウズ", "meta": {}},
         {"documentsSource": "web_fetch"},
         project_id,
+        True,
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -723,6 +726,7 @@ def test_get_analysis_run_success(monkeypatch):
         "result": {"brandName": "サイボウズ", "meta": {}},
         "meta": {"documentsSource": "web_fetch"},
         "projectId": project_id,
+        "isImportant": True,
     }
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
 
@@ -746,6 +750,7 @@ def test_get_analysis_run_project_id_is_none_for_legacy_row(monkeypatch):
         {"brandName": "サイボウズ", "meta": {}},
         {"documentsSource": "web_fetch"},
         None,
+        False,
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
     monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
@@ -1015,6 +1020,138 @@ def test_soft_delete_analysis_run_returns_false_when_not_found(monkeypatch):
     monkeypatch.setattr(repo, "psycopg", _FakeDeletePsycopg(fake_cursor))
 
     result = repo.soft_delete_analysis_run(VALID_RUN_ID)
+
+    assert result is False
+
+
+# --- set_analysis_run_important ------------------------------------------
+
+
+class _FakeImportantCursor:
+    def __init__(self, *, update_returns_row=True, raise_on_execute=None):
+        self.update_returns_row = update_returns_row
+        self.raise_on_execute = raise_on_execute
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, query, params=None):
+        if self.raise_on_execute is not None:
+            raise self.raise_on_execute
+        self.executed.append((query, params))
+
+    def fetchone(self):
+        return ("some-id",) if self.update_returns_row else None
+
+
+class _FakeImportantConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.committed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        self.committed = True
+
+
+class _FakeImportantPsycopg:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.connect_calls = []
+        self.last_connection = None
+
+    def connect(self, database_url, connect_timeout=None):
+        self.connect_calls.append((database_url, connect_timeout))
+        self.last_connection = _FakeImportantConnection(self._cursor)
+        return self.last_connection
+
+
+def test_set_analysis_run_important_returns_false_for_invalid_uuid(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeImportantPsycopg(_FakeImportantCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.set_analysis_run_important("not-a-uuid", is_important=True)
+
+    assert result is False
+    assert fake_psycopg.connect_calls == []
+
+
+def test_set_analysis_run_important_raises_when_driver_not_installed(monkeypatch):
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", None)
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.set_analysis_run_important(VALID_RUN_ID, is_important=True)
+
+
+def test_set_analysis_run_important_raises_when_database_url_missing(monkeypatch):
+    _configure_read_env(monkeypatch, url=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(_FakeImportantCursor()))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.set_analysis_run_important(VALID_RUN_ID, is_important=True)
+
+
+def test_set_analysis_run_important_raises_on_query_failure(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(raise_on_execute=RuntimeError("column does not exist"))
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.set_analysis_run_important(VALID_RUN_ID, is_important=True)
+
+
+def test_set_analysis_run_important_marks_true_commits_and_passes_params(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=True)
+    fake_psycopg = _FakeImportantPsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.set_analysis_run_important(VALID_RUN_ID, is_important=True)
+
+    assert result is True
+    assert fake_psycopg.last_connection.committed is True
+    query, params = fake_cursor.executed[0]
+    assert "set is_important = %s" in query.lower()
+    assert "where id = %s and deleted_at is null" in query.lower()
+    assert params == (True, VALID_RUN_ID)
+
+
+def test_set_analysis_run_important_marks_false_passes_params(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=True)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    result = repo.set_analysis_run_important(VALID_RUN_ID, is_important=False)
+
+    assert result is True
+    query, params = fake_cursor.executed[0]
+    assert params == (False, VALID_RUN_ID)
+
+
+def test_set_analysis_run_important_returns_false_when_not_found_or_deleted(monkeypatch):
+    """The `where ... and deleted_at is null` clause means a
+    soft-deleted run's UPDATE affects 0 rows, the same as a genuinely
+    nonexistent id — both surface as False here, which main.py turns
+    into 404 either way."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=False)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    result = repo.set_analysis_run_important(VALID_RUN_ID, is_important=True)
 
     assert result is False
 

@@ -7,6 +7,7 @@ import { DETAIL_LINK_BUTTON_CLASSNAME } from "../lib/link-button-styles";
 import {
   HISTORY_DELETE_BUTTON_LABEL,
   HISTORY_DELETE_CONFIRM_MESSAGE,
+  HISTORY_IMPORTANT_BADGE_LABEL,
   HISTORY_PAGE_TITLE,
   HISTORY_PAGE_DESCRIPTION,
   HISTORY_EMPTY_STATE_TEXT,
@@ -21,8 +22,10 @@ import {
   filterAnalysisRunListItems,
   formatAnalysisRunListItem,
   formatHistoryCountLabel,
+  getImportantToggleLabel,
   resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
+  resolveSetAnalysisRunImportantOutcome,
   sortAnalysisRunListItems,
 } from "../lib/analysis-history";
 import type { HistorySortOrder, HistoryViewState } from "../lib/analysis-history";
@@ -39,6 +42,11 @@ export default function HistoryPage() {
   // has to re-derive the whole list view state.
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
+  // Tracks per-row important-flag update errors, keyed by analysis run
+  // id — independent of `view` since the toggle itself applies
+  // optimistically straight to `view.items` (see handleToggleImportant
+  // below) rather than waiting for the PATCH to resolve.
+  const [importantErrors, setImportantErrors] = useState<Record<string, string>>({});
   // Search/sort are purely client-side over the already-fetched page of
   // items (no new backend search API, no re-fetch) — see
   // app/lib/analysis-history.ts's filterAnalysisRunListItems()/
@@ -102,6 +110,52 @@ export default function HistoryPage() {
       const remaining = prev.items.filter((item) => item.id !== id);
       return remaining.length === 0 ? { kind: "empty" } : { kind: "items", items: remaining };
     });
+  };
+
+  // Flips `isImportant` on the matching row immediately (optimistic
+  // update), then calls PATCH /api/analysis-runs/{id}/important. On
+  // failure, flips it back to the pre-click value and shows an inline
+  // error on that row — the row's displayed state and the backend's
+  // state never silently disagree past that point. No confirmation
+  // dialog (unlike handleDelete above): toggling is reversible with
+  // another click, so a confirm would only add friction.
+  const handleToggleImportant = async (id: string, currentIsImportant: boolean) => {
+    const nextIsImportant = !currentIsImportant;
+
+    setImportantErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setView((prev) => {
+      if (prev.kind !== "items") return prev;
+      return {
+        kind: "items",
+        items: prev.items.map((item) =>
+          item.id === id ? { ...item, isImportant: nextIsImportant } : item,
+        ),
+      };
+    });
+
+    const response = await fetch(`/api/analysis-runs/${encodeURIComponent(id)}/important`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isImportant: nextIsImportant }),
+    }).catch(() => null);
+    const outcome = await resolveSetAnalysisRunImportantOutcome(response);
+
+    if (!outcome.success) {
+      setImportantErrors((prev) => ({ ...prev, [id]: outcome.message }));
+      setView((prev) => {
+        if (prev.kind !== "items") return prev;
+        return {
+          kind: "items",
+          items: prev.items.map((item) =>
+            item.id === id ? { ...item, isImportant: currentIsImportant } : item,
+          ),
+        };
+      });
+    }
   };
 
   // Recomputed from `view.items` on every render — cheap at this list's
@@ -199,15 +253,29 @@ export default function HistoryPage() {
               const display = formatAnalysisRunListItem(item);
               const isDeleting = deletingIds.has(item.id);
               const deleteError = deleteErrors[item.id];
+              const isImportant = item.isImportant ?? false;
+              const importantError = importantErrors[item.id];
               return (
                 <li
                   key={item.id}
                   className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                      {display.brandNameLabel}
-                    </p>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                        {display.brandNameLabel}
+                      </p>
+                      {/* 重要フラグbadge — isImportant===trueの場合のみ表示
+                          (feature/history-important-flag,
+                          docs/38_history_marking_design.md 案A)。切替
+                          ボタンは削除/詳細リンクと混同しない下部の行に
+                          置く。 */}
+                      {isImportant && (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                          ★ {HISTORY_IMPORTANT_BADGE_LABEL}
+                        </span>
+                      )}
+                    </div>
                     <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
                       {display.statusLabel}
                     </span>
@@ -251,6 +319,15 @@ export default function HistoryPage() {
                     </Link>
                     <button
                       type="button"
+                      onClick={() => handleToggleImportant(item.id, isImportant)}
+                      aria-pressed={isImportant}
+                      className="rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+                    >
+                      <span aria-hidden="true">{isImportant ? "★" : "☆"} </span>
+                      {getImportantToggleLabel(isImportant)}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleDelete(item.id)}
                       disabled={isDeleting}
                       className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
@@ -258,6 +335,11 @@ export default function HistoryPage() {
                       {isDeleting ? "削除中..." : HISTORY_DELETE_BUTTON_LABEL}
                     </button>
                   </div>
+                  {importantError && (
+                    <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
+                      {importantError}
+                    </p>
+                  )}
                   {deleteError && (
                     <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
                       {deleteError}

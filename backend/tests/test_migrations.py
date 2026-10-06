@@ -11,6 +11,7 @@ from pathlib import Path
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 MIGRATION_PATH = MIGRATIONS_DIR / "001_initial_analysis_history.sql"
 ORGANIZATIONS_MIGRATION_PATH = MIGRATIONS_DIR / "002_add_organizations_projects.sql"
+IMPORTANT_FLAG_MIGRATION_PATH = MIGRATIONS_DIR / "004_add_is_important_to_analysis_runs.sql"
 
 
 def test_migration_file_exists():
@@ -110,6 +111,49 @@ def test_organizations_migration_does_not_force_not_null_project_id():
 
 def test_organizations_migration_does_not_drop_or_delete_anything():
     sql = ORGANIZATIONS_MIGRATION_PATH.read_text().lower()
+    assert "drop table" not in sql
+    assert "drop column" not in sql
+    assert "delete from" not in sql
+
+
+# --- 004_add_is_important_to_analysis_runs.sql
+# (docs/38_history_marking_design.md 案A, feature/history-important-flag) ---
+
+
+def test_important_flag_migration_file_exists():
+    assert IMPORTANT_FLAG_MIGRATION_PATH.exists()
+
+
+def test_important_flag_migration_adds_is_important_column():
+    sql = IMPORTANT_FLAG_MIGRATION_PATH.read_text().lower()
+    assert "alter table analysis_runs" in sql
+    assert "add column if not exists is_important boolean not null default false" in sql
+
+
+def test_important_flag_migration_adds_expected_index():
+    sql = IMPORTANT_FLAG_MIGRATION_PATH.read_text().lower()
+    assert "create index if not exists idx_analysis_runs_project_important_created_at" in sql
+
+
+def test_important_flag_migration_does_not_enable_rls_or_add_policies():
+    sql = IMPORTANT_FLAG_MIGRATION_PATH.read_text().lower()
+    assert "enable row level security" not in sql
+    assert "create policy" not in sql
+
+
+def test_important_flag_migration_does_not_create_marks_table():
+    """案B (analysis_run_marks) is deliberately out of scope for this
+    stage — see docs/38_history_marking_design.md "9. 実装段階". The
+    migration's comment block mentions `analysis_run_marks` by name to
+    explain why it's excluded, so this only asserts no CREATE TABLE
+    statement for it exists, rather than the string being entirely
+    absent."""
+    sql = IMPORTANT_FLAG_MIGRATION_PATH.read_text().lower()
+    assert "create table if not exists analysis_run_marks" not in sql
+
+
+def test_important_flag_migration_does_not_drop_or_delete_anything():
+    sql = IMPORTANT_FLAG_MIGRATION_PATH.read_text().lower()
     assert "drop table" not in sql
     assert "drop column" not in sql
     assert "delete from" not in sql

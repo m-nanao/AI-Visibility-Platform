@@ -755,6 +755,12 @@ class AnalysisRunListItem(BaseModel):
     # so an older saved run with no `urls` in its input_snapshot (or no
     # input_snapshot at all) still round-trips cleanly.
     sourceUrls: list[str] = []
+    # Whether this run has been marked important (analysis_runs.is_important,
+    # backend/migrations/004_add_is_important_to_analysis_runs.sql — see
+    # docs/38_history_marking_design.md 案A). Defaults to False so a run
+    # read before this migration is applied (or any future legacy row)
+    # still round-trips cleanly rather than raising.
+    isImportant: bool = False
 
 
 class AnalysisRunListResponse(BaseModel):
@@ -798,6 +804,26 @@ class AnalysisRunDetailResponse(BaseModel):
     run: AnalysisRunInfo
     result: dict[str, object]
     meta: dict[str, object] | None
+    # Same field/default as AnalysisRunListItem.isImportant above — see
+    # that field's docstring and docs/38_history_marking_design.md.
+    isImportant: bool = False
+
+
+class AnalysisRunImportantRequest(BaseModel):
+    """PATCH /analysis-runs/{id}/important request body — see
+    docs/38_history_marking_design.md "7. API設計案"."""
+
+    isImportant: bool
+
+
+class AnalysisRunImportantResponse(BaseModel):
+    """PATCH /analysis-runs/{id}/important response — see
+    docs/38_history_marking_design.md "7. API設計案". Mirrors
+    GeminiRerunResponse's convention of echoing back the id alongside
+    the field that was changed."""
+
+    analysisRunId: str
+    isImportant: bool
 
 
 class GeminiRerunResponse(BaseModel):
