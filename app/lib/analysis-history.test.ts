@@ -28,6 +28,11 @@ import {
   HISTORY_LIST_LINK_TEXT,
   HISTORY_LIST_PATH,
   HISTORY_PAGE_TITLE,
+  HISTORY_SEARCH_NO_RESULTS_TEXT,
+  HISTORY_SEARCH_PLACEHOLDER,
+  HISTORY_SORT_DEFAULT_ORDER,
+  HISTORY_SORT_NEWEST_LABEL,
+  HISTORY_SORT_OLDEST_LABEL,
   POST_ANALYZE_HISTORY_CARD_HEADING,
   POST_ANALYZE_HISTORY_LINK_HELPER_TEXT,
   POST_ANALYZE_HISTORY_LINK_TEXT,
@@ -44,9 +49,11 @@ import {
   formatCooccurrenceChangedTermLabel,
   formatCooccurrenceNewTermLabel,
   formatCooccurrenceRemovedTermLabel,
+  formatHistoryCountLabel,
   formatModeSummaryBadges,
   formatSignedDelta,
   formatSourceSummary,
+  filterAnalysisRunListItems,
   getStatusLabel,
   limitComparisonTerms,
   limitReportCooccurrenceTerms,
@@ -59,6 +66,7 @@ import {
   resolvePostAnalyzeHistoryLink,
   resolveReportComparisonMessage,
   resolveReportDetailMessage,
+  sortAnalysisRunListItems,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
@@ -245,6 +253,132 @@ describe("formatModeSummaryBadges", () => {
     });
 
     expect(badges[1]).toEqual({ label: "ChatGPT", value: "some-future-value" });
+  });
+});
+
+describe("history list search/sort copy (improve/history-list-search-and-sort)", () => {
+  it("matches the task's specified placeholder/no-results/sort labels", () => {
+    expect(HISTORY_SEARCH_PLACEHOLDER).toBe("ブランド名で履歴を検索");
+    expect(HISTORY_SEARCH_NO_RESULTS_TEXT).toBe("条件に一致する履歴がありません。");
+    expect(HISTORY_SORT_NEWEST_LABEL).toBe("新しい順");
+    expect(HISTORY_SORT_OLDEST_LABEL).toBe("古い順");
+    expect(HISTORY_SORT_DEFAULT_ORDER).toBe("newest");
+  });
+});
+
+describe("filterAnalysisRunListItems", () => {
+  function item(overrides: Partial<AnalysisRunListItem> = {}): AnalysisRunListItem {
+    return {
+      id: "id",
+      brandName: "サイボウズ",
+      status: "completed",
+      ...overrides,
+    };
+  }
+
+  it("returns every item when the query is blank", () => {
+    const items = [item({ id: "a" }), item({ id: "b" })];
+    expect(filterAnalysisRunListItems(items, "")).toEqual(items);
+    expect(filterAnalysisRunListItems(items, "   ")).toEqual(items);
+  });
+
+  it("matches brandName case-insensitively", () => {
+    const items = [item({ id: "a", brandName: "Cybozu" }), item({ id: "b", brandName: "freee" })];
+    expect(filterAnalysisRunListItems(items, "cybozu")).toEqual([items[0]]);
+  });
+
+  it("matches canonicalDomain (stand-in for 'analyzed URL' on this list shape)", () => {
+    const items = [
+      item({ id: "a", brandName: "サイボウズ", canonicalDomain: "cybozu.co.jp" }),
+      item({ id: "b", brandName: "freee" }),
+    ];
+    expect(filterAnalysisRunListItems(items, "cybozu.co.jp")).toEqual([items[0]]);
+  });
+
+  it("matches the startedAt/createdAt timestamp text", () => {
+    const items = [
+      item({ id: "a", startedAt: "2026-09-09T00:00:00+09:00" }),
+      item({ id: "b", startedAt: "2026-01-01T00:00:00+09:00" }),
+    ];
+    expect(filterAnalysisRunListItems(items, "2026-09-09")).toEqual([items[0]]);
+  });
+
+  it("returns an empty array when nothing matches", () => {
+    expect(filterAnalysisRunListItems([item()], "存在しないブランド")).toEqual([]);
+  });
+
+  it("never throws on an item missing every optional field", () => {
+    expect(filterAnalysisRunListItems([item()], "サイボウズ")).toEqual([item()]);
+  });
+});
+
+describe("sortAnalysisRunListItems", () => {
+  function item(id: string, startedAt?: string): AnalysisRunListItem {
+    return { id, brandName: "Acme", status: "completed", startedAt };
+  }
+
+  it("sorts newest first by default order", () => {
+    const items = [
+      item("old", "2026-01-01T00:00:00+09:00"),
+      item("new", "2026-09-09T00:00:00+09:00"),
+    ];
+    expect(sortAnalysisRunListItems(items, "newest").map((i) => i.id)).toEqual(["new", "old"]);
+  });
+
+  it("sorts oldest first when asked", () => {
+    const items = [
+      item("new", "2026-09-09T00:00:00+09:00"),
+      item("old", "2026-01-01T00:00:00+09:00"),
+    ];
+    expect(sortAnalysisRunListItems(items, "oldest").map((i) => i.id)).toEqual(["old", "new"]);
+  });
+
+  it("falls back to createdAt when startedAt is absent", () => {
+    const items = [
+      { id: "old", brandName: "Acme", status: "completed", createdAt: "2026-01-01T00:00:00+09:00" },
+      { id: "new", brandName: "Acme", status: "completed", createdAt: "2026-09-09T00:00:00+09:00" },
+    ];
+    expect(sortAnalysisRunListItems(items, "newest").map((i) => i.id)).toEqual(["new", "old"]);
+  });
+
+  it("sorts an item with no timestamp at all to the end in both orders", () => {
+    const items = [
+      item("no-timestamp"),
+      item("has-timestamp", "2026-01-01T00:00:00+09:00"),
+    ];
+    expect(sortAnalysisRunListItems(items, "newest").map((i) => i.id)).toEqual([
+      "has-timestamp",
+      "no-timestamp",
+    ]);
+    expect(sortAnalysisRunListItems(items, "oldest").map((i) => i.id)).toEqual([
+      "has-timestamp",
+      "no-timestamp",
+    ]);
+  });
+
+  it("never mutates the input array", () => {
+    const items = [item("a", "2026-01-01T00:00:00+09:00"), item("b", "2026-09-09T00:00:00+09:00")];
+    const original = [...items];
+    sortAnalysisRunListItems(items, "newest");
+    expect(items).toEqual(original);
+  });
+});
+
+describe("formatHistoryCountLabel", () => {
+  it("shows a single count when nothing is filtered out", () => {
+    expect(formatHistoryCountLabel(12, 12)).toBe("12件の履歴");
+  });
+
+  it("shows both totals once a search narrows the list", () => {
+    expect(formatHistoryCountLabel(12, 3)).toBe("12件中 3件を表示");
+  });
+
+  it("handles zero matches", () => {
+    expect(formatHistoryCountLabel(12, 0)).toBe("12件中 0件を表示");
+  });
+
+  it("handles a zero-item history", () => {
+    expect(formatHistoryCountLabel(0, 0)).toBe("0件の履歴");
   });
 });
 

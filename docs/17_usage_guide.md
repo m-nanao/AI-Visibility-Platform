@@ -437,6 +437,17 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - **今回のスコープ外**: 完全な非同期分析ジョブ化、`analysisRunId`を分析開始前に発行する処理、分析中ステータスの保存、ポーリング——いずれも将来の拡張候補として記録するに留める。これらが実現すれば、分析直後の画面でタイムアウトが発生する根本原因（全ON時の直列呼び出しが`/analyze`のレスポンス時間を超えること）自体に対処できる可能性があるが、今回はdocsへの記録のみ。
 - 変更はいずれも表示文言・導線のみで、backend・DB schema・migration・Supabase/Render/Vercel設定・Gemini再実行API（`POST /analysis-runs/{id}/rerun/gemini`）の仕様・STAGING_ACCESS_CODE/HISTORY_READ_TOKEN gateはいずれも変更していない。新しい外部API呼び出しも追加していない。
 
+## 28. 履歴一覧に検索・並び替え・表示補助を追加（2026-10-07追記）
+
+前章（27）で履歴詳細を「正式な確認画面」として位置づけたことに合わせ、履歴一覧（`/history`）から目的の分析結果を探しやすくした（`improve/history-list-search-and-sort`）。タグ・カテゴリ・重要フラグ等の永続的な管理機能は今回追加せず、**既存のGET /analysis-runsが返すデータだけを使ったfrontend側のフィルタ・並び替え**に留めている——新しいbackend検索API・DB schema変更はなし。
+
+- **ブランド名検索**: 一覧上部の検索欄（placeholder「ブランド名で履歴を検索」）に入力すると、`brandName`・`canonicalDomain`・`startedAt`/`createdAt`の表示テキストを対象に大文字小文字を区別しない部分一致で絞り込む。検索結果が0件の場合は「条件に一致する履歴がありません。」と表示する（保存済み履歴が0件の場合の既存メッセージとは別の文言）。
+- **並び替え**: 「新しい順」「古い順」をセレクトボックスで選べる（初期値は新しい順）。`GET /analysis-runs`は既に新しい順で返すが、frontend側で`startedAt`（なければ`createdAt`）を使って明示的に並び替える——API側の順序保証に暗黙に依存しない。タイムスタンプを持たない古い履歴は、どちらの並び順でも末尾に表示される。
+- **件数表示**: 検索していない場合は「12件の履歴」、検索で絞り込んでいる場合は「12件中 3件を表示」のように表示する。
+- **mode badgeの折り返し対応**: 既存のAI Overview/ChatGPT/Claude/Gemini/Common Crawlバッジ表記自体は変更せず、狭い画面でバッジの文字が折り返されても崩れないよう`break-words`/`max-w-full`を付与した。
+- 履歴詳細リンク・削除ボタン・レポート導線（履歴詳細から先）はいずれも変更していない。Gemini単体再実行機能（履歴詳細画面側）にも影響なし。
+- **今回対象外**: タグ・カテゴリ・重要フラグ・メモ機能、履歴の一括削除、backend側の本格的な検索API実装、ページネーションの大幅な変更。いずれも将来の拡張候補として記録するに留める。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

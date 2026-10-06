@@ -208,6 +208,101 @@ export function formatModeSummaryBadges(
   ];
 }
 
+// --- History list search / sort / count (improve/history-list-search-and-sort) ---
+//
+// Deliberately frontend-only filtering/sorting over the page of items
+// GET /analysis-runs already returned (no new backend search API, no
+// DB schema change — see this task's "重要方針"). All three functions
+// below are pure (no fetch, no state) so they're unit-testable without
+// rendering, same convention as formatAnalysisRunListItem() above.
+
+export const HISTORY_SEARCH_PLACEHOLDER = "ブランド名で履歴を検索";
+export const HISTORY_SEARCH_NO_RESULTS_TEXT = "条件に一致する履歴がありません。";
+
+/**
+ * Case-insensitive substring match against brandName, canonicalDomain,
+ * and the already-formatted startedAt/createdAt label — matches this
+ * task's "検索対象: brandName、可能なら createdAt / analyzed URL の
+ * 表示テキスト" (canonicalDomain is the closest available stand-in for
+ * "analyzed URL" on this list-item shape, which has no urls field).
+ * A blank/whitespace-only query matches everything (unfiltered).
+ */
+export function filterAnalysisRunListItems(
+  items: AnalysisRunListItem[],
+  query: string,
+): AnalysisRunListItem[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return items;
+
+  return items.filter((item) => {
+    const haystack = [
+      item.brandName,
+      item.canonicalDomain,
+      item.startedAt,
+      item.createdAt,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalized);
+  });
+}
+
+export type HistorySortOrder = "newest" | "oldest";
+
+export const HISTORY_SORT_NEWEST_LABEL = "新しい順";
+export const HISTORY_SORT_OLDEST_LABEL = "古い順";
+export const HISTORY_SORT_DEFAULT_ORDER: HistorySortOrder = "newest";
+
+/**
+ * Sorts by startedAt (falling back to createdAt), newest or oldest
+ * first. Applied unconditionally even though GET /analysis-runs
+ * already returns newest-first (see
+ * docs/20_analysis_history_read_api_design.md) — per this task's
+ * "DB/API側がすでに新しい順で返していても、frontend側で明示的に並び
+ * 替える" — so this never silently relies on an ordering guarantee the
+ * backend doesn't explicitly document as part of this UI's contract.
+ * An item with neither timestamp sorts after every item that has one,
+ * in both orders, rather than before (would read as "most recent").
+ * Uses a stable copy-then-sort (Array.prototype.toSorted isn't
+ * available in every target runtime) — never mutates `items`.
+ */
+export function sortAnalysisRunListItems(
+  items: AnalysisRunListItem[],
+  order: HistorySortOrder,
+): AnalysisRunListItem[] {
+  const timestampOf = (item: AnalysisRunListItem): number | null => {
+    const raw = item.startedAt ?? item.createdAt;
+    const parsed = raw ? Date.parse(raw) : NaN;
+    return Number.isNaN(parsed) ? null : parsed;
+  };
+
+  return [...items].sort((a, b) => {
+    const ta = timestampOf(a);
+    const tb = timestampOf(b);
+    // Missing-timestamp items always sort last, in either order — a
+    // plain numeric sentinel (e.g. -Infinity) would otherwise flip
+    // which end they land on depending on `order`, since that only
+    // negates the comparator.
+    if (ta === null && tb === null) return 0;
+    if (ta === null) return 1;
+    if (tb === null) return -1;
+    const diff = ta - tb;
+    return order === "newest" ? -diff : diff;
+  });
+}
+
+/** "12件の履歴" when showing everything, "12件中 3件を表示" once a
+ * search narrows the list — `totalCount`/`visibleCount` are passed in
+ * rather than computed here so the caller decides what "total" means
+ * (e.g. before vs. after a future server-side page size). */
+export function formatHistoryCountLabel(totalCount: number, visibleCount: number): string {
+  if (visibleCount === totalCount) {
+    return `${totalCount}件の履歴`;
+  }
+  return `${totalCount}件中 ${visibleCount}件を表示`;
+}
+
 // --- Delete (DELETE /analysis-runs/{id}, feature/history-delete-and-mode-badges) ---
 
 export const HISTORY_DELETE_BUTTON_LABEL = "削除";
