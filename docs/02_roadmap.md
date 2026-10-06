@@ -168,6 +168,7 @@
   - 分析結果画面を「即時プレビュー」、履歴詳細を「正式な確認画面」として整理（`improve/history-centered-analysis-flow`、2026-10-07。全ON分析で分析直後画面がタイムアウト・fallback表示になることがある一方、backend側では処理が完了し履歴には正しい結果が保存されているケースがあることを踏まえ、完全な非同期ジョブ化（`analysisRunId`事前発行・分析中ステータス保存・ポーリング等）は今回対象外とし、導線と表示文言のみを整理した。分析結果画面に「正式な結果を履歴詳細で確認する」カードとプレビュー注意文を追加、タイムアウトfallback時の文言を「一時的なプレビュー」ベースに変更して履歴一覧リンクを追加、履歴詳細画面に正式確認画面であることを示す説明を追加。**backend変更なし。DB schema・migration・Supabase/Render/Vercel設定・Gemini再実行API仕様は変更していない。新しい外部API呼び出しも追加していない。** 詳細は[17_usage_guide.md](./17_usage_guide.md)「27」参照）
   - 履歴一覧に検索・並び替え・表示補助を追加（`improve/history-list-search-and-sort`、2026-10-07。履歴詳細を正式な確認画面として位置づけたことに合わせ、履歴一覧（`/history`）から目的の分析結果を探しやすくした。タグ・カテゴリ・重要フラグ等の永続的な管理機能は追加せず、既存`GET /analysis-runs`のデータだけを使ったfrontend側のブランド名検索（`brandName`/`canonicalDomain`/タイムスタンプ表示テキストの部分一致）・新しい順/古い順の並び替え・件数表示（「12件の履歴」/「12件中 3件を表示」）を追加した。既存のmode badge表記はそのまま、折り返し崩れのみ対応。**backend変更なし。新しいbackend検索API・DB schema・migration・Supabase/Render/Vercel設定・Gemini再実行API仕様は変更していない。新しい外部API呼び出しも追加していない。** 詳細は[17_usage_guide.md](./17_usage_guide.md)「28」参照）
   - 履歴一覧のドメイン検索が確実に効くように修正（`fix/history-domain-search`、2026-10-07。前タスクのドメイン検索が本番でヒットしない不具合を修正。原因は`brands.canonical_domain`が保存時に常に`None`固定で実質常に空だったこと。既存の`analysis_runs.input_snapshot`から入力URLを取り出す`sourceUrls`（`list[str] = []`、新しいDBカラムではなくoptionalレスポンスフィールド）を`GET /analysis-runs`に追加し、frontend側で`www.`あり/なし・`https://`+末尾スラッシュ等の表記差を吸収する検索ロジック（`buildDomainSearchVariants()`）に変更した。**backend変更は既存JSON列由来のoptionalフィールド追加のみ。DB schema・migration・Supabase/Render/Vercel設定・Gemini再実行API仕様・認証ロジックは変更していない。新しい外部API呼び出しも追加していない。** 詳細は[17_usage_guide.md](./17_usage_guide.md)「29」参照）
+  - 履歴の重要フラグ機能の設計（`docs/history-important-flag-design`、2026-10-07。docsのみ・コード変更なし）。履歴が増えた場合に重要な分析結果を見つけやすくする「重要フラグ」機能について、実装前に目的・UI方針（履歴一覧/履歴詳細/レポート画面）・DB設計案A（`analysis_runs.is_important`列追加）とB（`analysis_run_marks`テーブル追加）の比較・推奨案（案Aで開始し必要になれば案Bへ移行、移行コストの整理込み）・API設計案（`PATCH /analysis-runs/{id}/important`、既存の`_resolve_history_access()`/`can_user_access_analysis_run()`権限方針を再利用）・frontend設計案（optimistic update・失敗時のrollback・段階的ロールアウト）を新規[38_history_marking_design.md](./38_history_marking_design.md)として整理した。**DB schema変更・migration追加・API実装・UI実装・外部API呼び出し追加・Supabase/Render/Vercel設定変更・認証ロジック変更・Gemini再実行仕様変更はいずれも行っていない。**）
 - **Next（次のステップ、優先順）**:
   - [37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を使った依頼者への実際のMVPレビュー実施
   - 完全な非同期分析ジョブ化の検討（`analysisRunId`の事前発行・分析中ステータス保存・ポーリングを含む。全ON時のタイムアウト・fallback問題の根本対応——`improve/history-centered-analysis-flow`で導線・文言のみ整理済み、[17_usage_guide.md](./17_usage_guide.md)「27」参照）
@@ -176,7 +177,8 @@
   - 複数organization / project運用整理
   - project管理・招待UI設計
   - 専用の横並び比較UI（列=AI、行=比較観点）への再設計検討
-  - 履歴一覧へのタグ・カテゴリ・重要フラグ・メモ機能の追加検討（`improve/history-list-search-and-sort`では検索・並び替え・件数表示のみ実装、永続的な管理機能は対象外とした。実装する場合はDB schema変更が必要になる見込み）
+  - 履歴の重要フラグ機能の実装（設計は[38_history_marking_design.md](./38_history_marking_design.md)として完了済み——`docs/history-important-flag-design`、2026-10-07。推奨はDB案A（`analysis_runs.is_important`列追加）での第1段階実装から開始し、実装時はDB migration・API・UIの3点セットが必要になる見込み）
+  - 履歴一覧へのタグ・カテゴリ・メモ機能の追加検討（永続的な管理機能のうち重要フラグ以外。実装する場合はDB schema変更が必要になる見込み）
   - backend側の本格的な検索API実装の検討（現在はfrontend側フィルタのみ。件数が増えた場合にページネーション込みで再検討）
 - **Later（将来）**: 完全な非同期分析ジョブ化（async job queue）、履歴のタグ/カテゴリ/重要フラグ/メモ管理、RLS本格運用、project_membersによるプロジェクト別権限、client_viewer role、有効期限付き共有URL、PDF自動生成、レポートPDF保存、レポートテンプレート管理、Document保存（Common Crawl由来含む）、AI Overview / ChatGPT観測履歴、Common Crawl取得結果の再利用、pgvector / 類似文書検索、文脈分析・汎用情報源トラッキングの専用テーブル化
 
