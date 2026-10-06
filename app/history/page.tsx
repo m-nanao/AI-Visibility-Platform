@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AppHeader from "../components/AppHeader";
 import { DETAIL_LINK_BUTTON_CLASSNAME } from "../lib/link-button-styles";
@@ -12,12 +12,20 @@ import {
   HISTORY_EMPTY_STATE_TEXT,
   HISTORY_LOADING_TEXT,
   HISTORY_LIST_DETAIL_LINK_TEXT,
+  HISTORY_SEARCH_NO_RESULTS_TEXT,
+  HISTORY_SEARCH_PLACEHOLDER,
+  HISTORY_SORT_DEFAULT_ORDER,
+  HISTORY_SORT_NEWEST_LABEL,
+  HISTORY_SORT_OLDEST_LABEL,
   buildHistoryDetailPath,
+  filterAnalysisRunListItems,
   formatAnalysisRunListItem,
+  formatHistoryCountLabel,
   resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
+  sortAnalysisRunListItems,
 } from "../lib/analysis-history";
-import type { HistoryViewState } from "../lib/analysis-history";
+import type { HistorySortOrder, HistoryViewState } from "../lib/analysis-history";
 
 // Client component fetching this Next.js app's own Route Handler
 // (app/api/analysis-runs/route.ts), same pattern as app/page.tsx
@@ -31,6 +39,12 @@ export default function HistoryPage() {
   // has to re-derive the whole list view state.
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
+  // Search/sort are purely client-side over the already-fetched page of
+  // items (no new backend search API, no re-fetch) — see
+  // app/lib/analysis-history.ts's filterAnalysisRunListItems()/
+  // sortAnalysisRunListItems().
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortOrder, setSortOrder] = useState<HistorySortOrder>(HISTORY_SORT_DEFAULT_ORDER);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +104,17 @@ export default function HistoryPage() {
     });
   };
 
+  // Recomputed from `view.items` on every render — cheap at this list's
+  // scale (a single fetched page, see the limit=20 query below) and
+  // keeps search/sort entirely derived state rather than something
+  // that could drift from `view` after a delete.
+  const allItems = useMemo(() => (view.kind === "items" ? view.items : []), [view]);
+  const visibleItems = useMemo(
+    () => sortAnalysisRunListItems(filterAnalysisRunListItems(allItems, searchQuery), sortOrder),
+    [allItems, searchQuery, sortOrder],
+  );
+  const countLabel = formatHistoryCountLabel(allItems.length, visibleItems.length);
+
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
       <AppHeader />
@@ -131,8 +156,46 @@ export default function HistoryPage() {
         )}
 
         {view.kind === "items" && (
-          <ul className="space-y-3">
-            {view.items.map((item) => {
+          <>
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="sm:max-w-xs sm:flex-1">
+                <label htmlFor="historySearch" className="sr-only">
+                  {HISTORY_SEARCH_PLACEHOLDER}
+                </label>
+                <input
+                  id="historySearch"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder={HISTORY_SEARCH_PLACEHOLDER}
+                  className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="historySortOrder" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  並び替え
+                </label>
+                <select
+                  id="historySortOrder"
+                  value={sortOrder}
+                  onChange={(event) => setSortOrder(event.target.value as HistorySortOrder)}
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                >
+                  <option value="newest">{HISTORY_SORT_NEWEST_LABEL}</option>
+                  <option value="oldest">{HISTORY_SORT_OLDEST_LABEL}</option>
+                </select>
+              </div>
+            </div>
+            <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">{countLabel}</p>
+
+            {visibleItems.length === 0 && (
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                {HISTORY_SEARCH_NO_RESULTS_TEXT}
+              </p>
+            )}
+
+            <ul className="space-y-3">
+            {visibleItems.map((item) => {
               const display = formatAnalysisRunListItem(item);
               const isDeleting = deletingIds.has(item.id);
               const deleteError = deleteErrors[item.id];
@@ -168,11 +231,11 @@ export default function HistoryPage() {
                       ため（feature/history-delete-and-mode-badges）。古
                       い履歴はformatModeSummaryBadges()がすべて「不明」
                       にフォールバックするため表示は壊れない。 */}
-                  <div className="mt-2 flex flex-wrap gap-1.5">
+                  <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
                     {display.modeBadges.map((badge) => (
                       <span
                         key={badge.label}
-                        className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                        className="max-w-full rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] break-words text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
                       >
                         {badge.label}: {badge.value}
                       </span>
@@ -203,7 +266,8 @@ export default function HistoryPage() {
                 </li>
               );
             })}
-          </ul>
+            </ul>
+          </>
         )}
       </main>
     </div>
