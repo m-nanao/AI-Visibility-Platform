@@ -395,7 +395,8 @@ def list_analysis_runs(
             ar.completed_at,
             ar.created_at,
             res.meta_json,
-            ar.input_snapshot
+            ar.input_snapshot,
+            ar.is_important
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -437,6 +438,10 @@ def list_analysis_runs(
             # modeSummary above. Added for fix/history-domain-search
             # since canonicalDomain is never actually populated today.
             "sourceUrls": _extract_source_urls(row[10]),
+            # analysis_runs.is_important (backend/migrations/
+            # 004_add_is_important_to_analysis_runs.sql) — see
+            # docs/38_history_marking_design.md 案A.
+            "isImportant": bool(row[11]),
         }
         for row in rows
     ]
@@ -492,7 +497,8 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
             ar.completed_at,
             res.result_json,
             res.meta_json,
-            ar.project_id
+            ar.project_id,
+            ar.is_important
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -530,6 +536,10 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
         "result": row[9],
         "meta": row[10],
         "projectId": str(row[11]) if row[11] is not None else None,
+        # analysis_runs.is_important (backend/migrations/
+        # 004_add_is_important_to_analysis_runs.sql) — see
+        # docs/38_history_marking_design.md 案A.
+        "isImportant": bool(row[12]),
     }
 
 
@@ -687,6 +697,63 @@ def soft_delete_analysis_run(analysis_run_id: str) -> bool:
         raise AnalysisHistoryReadError("failed to delete analysis history") from exc
 
     return deleted_now or already_deleted
+
+
+def set_analysis_run_important(analysis_run_id: str, *, is_important: bool) -> bool:
+    """Sets one analysis_runs row's `is_important` flag — see
+    backend/migrations/004_add_is_important_to_analysis_runs.sql and
+    docs/38_history_marking_design.md 案A/"7. API設計案". Backs PATCH
+    /analysis-runs/{id}/important.
+
+    Returns True when a row was updated, False when `analysis_run_id`
+    doesn't exist, is malformed, or is soft-deleted (`deleted_at is not
+    null`) — main.py turns False into a 404, mirroring
+    soft_delete_analysis_run()/update_analysis_result()'s return-bool
+    convention above. A soft-deleted run is treated as "not found" here
+    (not updatable), the same as get_analysis_run() already treats it,
+    so a deleted history entry can't be resurrected into the important
+    list through this endpoint.
+
+    Deliberately unscoped by project, exactly like
+    soft_delete_analysis_run()/update_analysis_result() above — main.py's
+    PATCH endpoint is responsible for authorizing the caller against
+    `analysis_run_id` *before* calling this.
+
+    Raises AnalysisHistoryReadError on any connection/query failure —
+    reuses this module's existing read-error type (every caller already
+    has `except AnalysisHistoryReadError: return 503` in place). This
+    includes the case where migration 004 hasn't been applied yet (the
+    `is_important` column doesn't exist) — the underlying
+    "column ... does not exist" error is logged server-side (never
+    returned to the caller) and surfaces to the API caller as the same
+    503 every other DB failure does.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set is_important = %s
+                    where id = %s and deleted_at is null
+                    returning id
+                    """,
+                    (is_important, analysis_run_id),
+                )
+                updated = cur.fetchone() is not None
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to update analysis run important flag")
+        raise AnalysisHistoryReadError("failed to update analysis history") from exc
+
+    return updated
 
 
 def update_analysis_result(

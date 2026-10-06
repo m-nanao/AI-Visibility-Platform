@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   AnalysisRunComparisonResponse,
   AnalysisRunDetailResponse,
+  AnalysisRunImportantResponse,
   AnalysisRunListResponse,
   GeminiRerunResponse,
 } from "./analysis-history";
@@ -59,6 +60,14 @@ const analysisRunListItemSchema = z.object({
   // fix/history-domain-search). See
   // services/analysis_history_repository.py's _extract_source_urls().
   sourceUrls: z.array(z.string()).default([]),
+  // backend/models.py declares this as `isImportant: bool = False`
+  // (not `X | None`), so Pydantic always serializes a real boolean,
+  // never `null` — `.default(false)` only has to cover the key being
+  // absent entirely (an older Python API build from before
+  // feature/history-important-flag, or a run saved before migration
+  // 004 was applied). See backend/migrations/
+  // 004_add_is_important_to_analysis_runs.sql.
+  isImportant: z.boolean().default(false),
 });
 
 export const analysisRunListResponseSchema = z.object({
@@ -126,6 +135,8 @@ export const analysisRunDetailResponseSchema = z.object({
   run: analysisRunInfoSchema,
   result: z.record(z.string(), z.unknown()),
   meta: optionalFromPython(z.record(z.string(), z.unknown())),
+  // Same field/default as analysisRunListItemSchema.isImportant above.
+  isImportant: z.boolean().default(false),
 });
 
 export type AnalysisRunDetailParseResult =
@@ -271,6 +282,35 @@ export function parseGeminiRerunResponse(input: unknown): GeminiRerunParseResult
       success: true,
       data: result.data as GeminiRerunResponse,
     };
+  }
+
+  const reason = result.error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+
+  return { success: false, reason };
+}
+
+/**
+ * Mirrors backend/models.py's AnalysisRunImportantResponse (PATCH
+ * /analysis-runs/{id}/important) — see
+ * docs/38_history_marking_design.md 案A and "7. API設計案".
+ */
+export const analysisRunImportantResponseSchema = z.object({
+  analysisRunId: z.string(),
+  isImportant: z.boolean(),
+});
+
+export type AnalysisRunImportantParseResult =
+  | { success: true; data: AnalysisRunImportantResponse }
+  | { success: false; reason: string };
+
+export function parseAnalysisRunImportantResponse(
+  input: unknown,
+): AnalysisRunImportantParseResult {
+  const result = analysisRunImportantResponseSchema.safeParse(input);
+  if (result.success) {
+    return { success: true, data: result.data as AnalysisRunImportantResponse };
   }
 
   const reason = result.error.issues

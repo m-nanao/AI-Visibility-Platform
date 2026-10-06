@@ -1,8 +1,8 @@
 # 履歴の重要フラグ機能 設計メモ
 
-履歴一覧（`/history`）が検索・並び替え・mode badge・ドメイン検索まで整った現状を踏まえ、履歴が増えたときに重要な分析結果を後から見つけやすくするための「重要フラグ」機能について、**実装前の設計のみ**をまとめるドキュメントである。このタスク（`docs/history-important-flag-design`）では一切実装を行わない——DB schema変更・migration追加・API実装・UI実装のいずれも対象外。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+履歴一覧（`/history`）が検索・並び替え・mode badge・ドメイン検索まで整った現状を踏まえ、履歴が増えたときに重要な分析結果を後から見つけやすくするための「重要フラグ」機能の設計をまとめるドキュメントである。`docs/history-important-flag-design`（設計のみ、実装なし）に続き、`feature/history-important-flag`で**第1段階（重要フラグの切り替えのみ、DB案A）を実際に実装した**——詳細は「11. 第1段階の実装状況」参照。「重要のみ表示」フィルタ・メモ・タグは引き続き未実装（第2段階・第3段階）。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-08**
+**最終更新日: 2026-10-07（第1段階の実装を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -196,13 +196,26 @@ PATCH /analysis-runs/{analysis_run_id}/important
 2. **第2段階**: 「重要のみ表示」フィルタを履歴一覧に追加（frontend側のみ、新しいAPIは不要）。
 3. **第3段階**: メモ機能・タグ機能（必要になった場合。案Bへの移行、または別の新テーブルの追加を伴う可能性が高い——このドキュメントでは設計しない）。
 
-## 10. 今回のスコープ外（このdocsタスクでは実装しない）
+## 10. 今回のスコープ外（`docs/history-important-flag-design`時点、設計のみのタスク）
 
-- 重要フラグ自体の実装（backend API・DB migration・frontend UIのいずれも）。
-- 「重要のみ表示」フィルタの実装。
-- メモ機能・タグ機能・カテゴリ機能の実装。
+この章は最初の設計タスク（`docs/history-important-flag-design`）時点のスコープ外一覧である。このうち重要フラグ自体の実装は、後続の`feature/history-important-flag`で第1段階として完了した——「11. 第1段階の実装状況」参照。
+
+- ~~重要フラグ自体の実装（backend API・DB migration・frontend UIのいずれも）~~ → `feature/history-important-flag`で実装済み（「11」参照）。
+- 「重要のみ表示」フィルタの実装（引き続き未実装、第2段階）。
+- メモ機能・タグ機能・カテゴリ機能の実装（引き続き未実装、第3段階）。
 - 非同期分析ジョブ化・AIによるWeb/AI差分比較（既存docsで別途扱われている対象外項目、本タスクとは無関係だが念のため明記）。
-- RLS本番適用・Supabase/Render/Vercel設定変更・新しい外部API呼び出し・Gemini再実行API仕様変更・認証ロジック変更。
+- RLS本番適用・Supabase/Render/Vercel設定変更・新しい外部API呼び出し・Gemini再実行API仕様変更・認証ロジック変更（第1段階実装でも変更していない、「11」参照）。
+
+## 11. 第1段階の実装状況（`feature/history-important-flag`、2026-10-07）
+
+設計（本ドキュメント「5〜8」）どおりに、重要フラグの**第1段階**（切り替えのみ、DB案A）を実装した。
+
+- **migration**: `backend/migrations/004_add_is_important_to_analysis_runs.sql`を追加した。`analysis_runs.is_important boolean not null default false`列と、`(project_id, is_important, created_at desc)`の複合indexを追加する——003以前の全migrationと同じ「design artifact only」の扱いで、**このタスクでも実DB（検証用・本番Supabaseいずれも）への適用は行っていない**。
+  - **本番Supabaseへ適用する場合の手順（手動、Claude Codeでは実行しない）**: 既存の[30_supabase_production_migration_002_runbook.md](./30_supabase_production_migration_002_runbook.md)と同じ流れで、(1) 本番Supabaseのバックアップ確認、(2) Supabase Dashboardの SQL Editor で`004_add_is_important_to_analysis_runs.sql`の内容を実行、(3) `select column_name from information_schema.columns where table_name = 'analysis_runs' and column_name = 'is_important';`で列追加を確認、(4) 既存行が`is_important = false`になっていることを確認、(5) 本番Vercelで`/history`・`/history/[id]`が従来通り表示されること（新しい列が追加されただけで既存表示は変わらないこと）を確認する。適用後は本ドキュメントに適用日・結果を追記すること。
+- **backend**: `backend/models.py`に`AnalysisRunListItem.isImportant: bool = False`・`AnalysisRunDetailResponse.isImportant: bool = False`・新規`AnalysisRunImportantRequest`/`AnalysisRunImportantResponse`を追加。`backend/services/analysis_history_repository.py`の`list_analysis_runs()`/`get_analysis_run()`が`analysis_runs.is_important`を選択して返すように変更し、新規`set_analysis_run_important()`（案Aのまま、`analysis_run_marks`は作成しない）を追加した。`backend/main.py`に新規`PATCH /analysis-runs/{analysis_run_id}/important`を追加——設計どおり、既存の`_resolve_history_access()`＋`can_user_access_analysis_run()`をそのまま再利用し、新しい権限判定ロジックは追加していない（`HISTORY_READ_TOKEN`モードは無制限、JWTモードはproject access確認、権限なしは403、存在しない/soft deleted済みの履歴は404）。migration未適用のDBに対する呼び出しは、既存の`AnalysisHistoryReadError`→503の経路でそのまま処理される（新しい特別処理は追加していない）。
+- **frontend**: `app/lib/analysis-history.ts`/`analysis-history-schema.ts`に`isImportant`（schemaは`.default(false)`）と`resolveSetAnalysisRunImportantOutcome()`/`getImportantToggleLabel()`を追加。新規proxy route `app/api/analysis-runs/[id]/important/route.ts`（既存のDELETE/Gemini再実行proxyと同じHISTORY_READ_TOKEN/Authorization転送パターン）。`/history`（履歴一覧）・`/history/[id]`（履歴詳細）の両方に★/☆トグルボタンを追加し、クリックで即座にoptimistic updateし、PATCH失敗時は元の状態に戻してエラーメッセージを表示する（設計どおり）。レポート画面（`/history/[id]/report`）は変更していない——編集ボタンは出ない。
+- **変更していないもの**: DB schema変更以外のSupabase設定・Render/Vercel設定変更、新しい外部API呼び出し、Gemini再実行API仕様、認証ロジックの方針（いずれも設計どおり未変更）。「重要のみ表示」フィルタ・メモ・タグは今回も未実装（第2段階・第3段階のまま）。
+- **テスト**: backend（`tests/test_migrations.py`・`tests/test_analysis_history_repository.py`・新規`tests/test_main_analysis_runs_important_api.py`）・frontend（`app/lib/analysis-history.test.ts`・`analysis-history-schema.test.ts`・新規`app/api/analysis-runs/[id]/important/route.test.ts`）に追加。
 
 ## 関連ドキュメント
 

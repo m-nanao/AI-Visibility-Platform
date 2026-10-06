@@ -9,6 +9,7 @@
 import {
   parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
+  parseAnalysisRunImportantResponse,
   parseAnalysisRunListResponse,
   parseGeminiRerunResponse,
 } from "./analysis-history-schema";
@@ -65,6 +66,16 @@ export type AnalysisRunListItem = {
   // app/lib/analysis-history-schema.ts), never `undefined` in
   // practice, but the type stays optional for defense in depth.
   sourceUrls?: string[];
+  // analysis_runs.is_important (backend/migrations/
+  // 004_add_is_important_to_analysis_runs.sql) — see
+  // docs/38_history_marking_design.md 案A and
+  // feature/history-important-flag. Optional for the same reason as
+  // sourceUrls above: an older saved run / a backend response from
+  // before this field existed won't have the key at all. The Zod
+  // schema `.default(false)`s it, so in practice this is always a real
+  // boolean once parsed — callers should read it as
+  // `item.isImportant ?? false` for defense in depth.
+  isImportant?: boolean;
 };
 
 export type AnalysisRunListResponse = {
@@ -428,6 +439,86 @@ export async function resolveDeleteAnalysisRunOutcome(
   return { success: true };
 }
 
+/** PATCH /analysis-runs/{id}/important — mirrors backend/models.py's
+ * AnalysisRunImportantResponse. */
+export type AnalysisRunImportantResponse = {
+  analysisRunId: string;
+  isImportant: boolean;
+};
+
+// --- Important flag (PATCH /analysis-runs/{id}/important,
+// feature/history-important-flag, docs/38_history_marking_design.md
+// 案A) ---
+//
+// First stage only: toggle on the history list and detail screens,
+// with optimistic update + rollback on failure (see
+// docs/38_history_marking_design.md "9. 実装段階"). An "important
+// only" filter, notes, and tags are later stages, not implemented
+// here.
+
+/** Small badge shown on a history list card when `isImportant` is
+ * true — see app/history/page.tsx. No equivalent badge is shown when
+ * false (an absent badge, not a "not important" badge, keeps the
+ * common case visually quiet). */
+export const HISTORY_IMPORTANT_BADGE_LABEL = "重要";
+
+export const HISTORY_IMPORTANT_MARK_LABEL = "重要にする";
+export const HISTORY_IMPORTANT_UNMARK_LABEL = "重要を解除";
+
+/** Button label for the important-flag toggle, reflecting the
+ * *current* state (so clicking it describes the action the click
+ * performs) — mirrors how HISTORY_DELETE_BUTTON_LABEL is static
+ * (delete only ever does one thing) but this toggle does not have a
+ * single fixed label. */
+export function getImportantToggleLabel(isImportant: boolean): string {
+  return isImportant ? HISTORY_IMPORTANT_UNMARK_LABEL : HISTORY_IMPORTANT_MARK_LABEL;
+}
+
+export const HISTORY_IMPORTANT_NOT_FOUND_MESSAGE = "この分析履歴は見つかりませんでした。";
+export const HISTORY_IMPORTANT_ERROR_MESSAGE =
+  "重要フラグの更新に失敗しました。時間をおいて再度お試しください。";
+
+export type SetAnalysisRunImportantOutcome =
+  | { success: true; isImportant: boolean }
+  | { success: false; message: string };
+
+/**
+ * Turns a fetch() Response (or null, on a network-level failure) from
+ * PATCH /api/analysis-runs/{id}/important into an outcome the page can
+ * act on — mirrors resolveDeleteAnalysisRunOutcome()'s
+ * pure-function-for-testability shape. Callers apply this
+ * optimistically (flip the displayed state before this resolves) and
+ * roll back to the previous state on `{ success: false }` — see
+ * app/history/page.tsx / app/history/[id]/page.tsx.
+ */
+export async function resolveSetAnalysisRunImportantOutcome(
+  response: Response | null,
+): Promise<SetAnalysisRunImportantOutcome> {
+  if (!response) {
+    return { success: false, message: HISTORY_IMPORTANT_ERROR_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { success: false, message: HISTORY_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { success: false, message: HISTORY_IMPORTANT_NOT_FOUND_MESSAGE };
+  }
+
+  if (!response.ok) {
+    return { success: false, message: HISTORY_IMPORTANT_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  const parsed = parseAnalysisRunImportantResponse(json);
+  if (!parsed.success) {
+    return { success: false, message: HISTORY_IMPORTANT_ERROR_MESSAGE };
+  }
+
+  return { success: true, isImportant: parsed.data.isImportant };
+}
+
 export type HistoryViewState =
   | { kind: "loading" }
   | { kind: "disabled"; message: string; detail: string }
@@ -562,6 +653,9 @@ export type AnalysisRunDetailResponse = {
   run: AnalysisRunInfo;
   result: Record<string, unknown>;
   meta?: Record<string, unknown>;
+  // Same field/default as AnalysisRunListItem.isImportant above — see
+  // that field's comment and docs/38_history_marking_design.md.
+  isImportant?: boolean;
 };
 
 export type AnalysisRunDetailBasicInfoDisplay = {

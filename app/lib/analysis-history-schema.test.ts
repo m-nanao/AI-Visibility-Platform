@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
+  parseAnalysisRunImportantResponse,
   parseAnalysisRunListResponse,
   parseGeminiRerunResponse,
 } from "./analysis-history-schema";
@@ -276,6 +277,31 @@ describe("parseAnalysisRunListResponse", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- isImportant (feature/history-important-flag, DB design 案A) ---
+
+  it("accepts an item with isImportant: true", () => {
+    const withImportant = {
+      ...validListResponse(),
+      items: [{ ...validListResponse().items[0], isImportant: true }],
+    };
+
+    const result = parseAnalysisRunListResponse(withImportant);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].isImportant).toBe(true);
+    }
+  });
+
+  it("defaults isImportant to false when the key is absent (backend predating this field)", () => {
+    const result = parseAnalysisRunListResponse(validListResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].isImportant).toBe(false);
+    }
+  });
 });
 
 describe("parseAnalysisRunDetailResponse", () => {
@@ -351,6 +377,29 @@ describe("parseAnalysisRunDetailResponse", () => {
     const result = parseAnalysisRunDetailResponse(invalid);
 
     expect(result.success).toBe(false);
+  });
+
+  // --- isImportant (feature/history-important-flag, DB design 案A) ---
+
+  it("accepts a response with isImportant: true", () => {
+    const result = parseAnalysisRunDetailResponse({
+      ...validDetailResponse(),
+      isImportant: true,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.isImportant).toBe(true);
+    }
+  });
+
+  it("defaults isImportant to false when the key is absent (backend predating this field)", () => {
+    const result = parseAnalysisRunDetailResponse(validDetailResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.isImportant).toBe(false);
+    }
   });
 });
 
@@ -515,6 +564,56 @@ describe("parseGeminiRerunResponse", () => {
     const invalid = { ...validGeminiRerunResponse(), updated: "yes" };
 
     const result = parseGeminiRerunResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+});
+
+// --- PATCH /analysis-runs/{id}/important (feature/history-important-flag,
+// DB design 案A, docs/38_history_marking_design.md) ---
+
+function validImportantResponse() {
+  return {
+    analysisRunId: "11111111-1111-1111-1111-111111111111",
+    isImportant: true,
+  };
+}
+
+describe("parseAnalysisRunImportantResponse", () => {
+  it("accepts a well-formed AnalysisRunImportantResponse (isImportant: true)", () => {
+    const result = parseAnalysisRunImportantResponse(validImportantResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.analysisRunId).toBe("11111111-1111-1111-1111-111111111111");
+      expect(result.data.isImportant).toBe(true);
+    }
+  });
+
+  it("accepts isImportant: false", () => {
+    const result = parseAnalysisRunImportantResponse({
+      ...validImportantResponse(),
+      isImportant: false,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.isImportant).toBe(false);
+    }
+  });
+
+  it("rejects a response missing isImportant", () => {
+    const result = parseAnalysisRunImportantResponse({
+      analysisRunId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a response with the wrong field types", () => {
+    const invalid = { ...validImportantResponse(), isImportant: "yes" };
+
+    const result = parseAnalysisRunImportantResponse(invalid);
 
     expect(result.success).toBe(false);
   });

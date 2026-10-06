@@ -60,6 +60,7 @@ import {
   limitComparisonTerms,
   limitReportCooccurrenceTerms,
   printReport,
+  getImportantToggleLabel,
   resolveDeleteAnalysisRunOutcome,
   resolveGeminiRerunOutcome,
   resolveHistoryComparisonFetchOutcome,
@@ -68,7 +69,13 @@ import {
   resolvePostAnalyzeHistoryLink,
   resolveReportComparisonMessage,
   resolveReportDetailMessage,
+  resolveSetAnalysisRunImportantOutcome,
   sortAnalysisRunListItems,
+  HISTORY_IMPORTANT_BADGE_LABEL,
+  HISTORY_IMPORTANT_ERROR_MESSAGE,
+  HISTORY_IMPORTANT_MARK_LABEL,
+  HISTORY_IMPORTANT_NOT_FOUND_MESSAGE,
+  HISTORY_IMPORTANT_UNMARK_LABEL,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
@@ -577,6 +584,78 @@ describe("resolveDeleteAnalysisRunOutcome", () => {
     );
 
     expect(outcome).toEqual({ success: false, message: HISTORY_DELETE_ERROR_MESSAGE });
+  });
+});
+
+describe("getImportantToggleLabel (feature/history-important-flag)", () => {
+  it("returns the mark label when currently not important", () => {
+    expect(getImportantToggleLabel(false)).toBe(HISTORY_IMPORTANT_MARK_LABEL);
+  });
+
+  it("returns the unmark label when currently important", () => {
+    expect(getImportantToggleLabel(true)).toBe(HISTORY_IMPORTANT_UNMARK_LABEL);
+  });
+});
+
+describe("HISTORY_IMPORTANT_BADGE_LABEL", () => {
+  it("is the Japanese badge text shown when a run is marked important", () => {
+    expect(HISTORY_IMPORTANT_BADGE_LABEL).toBe("重要");
+  });
+});
+
+describe("resolveSetAnalysisRunImportantOutcome (feature/history-important-flag)", () => {
+  it("returns success with the updated isImportant for a 200 response", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id, isImportant: true }, 200),
+    );
+
+    expect(outcome).toEqual({ success: true, isImportant: true });
+  });
+
+  it("returns success with isImportant: false when unmarking", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id, isImportant: false }, 200),
+    );
+
+    expect(outcome).toEqual({ success: true, isImportant: false });
+  });
+
+  it("returns a forbidden message for a 403 response", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FORBIDDEN_MESSAGE });
+  });
+
+  it("returns a not-found message for a 404 response", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_IMPORTANT_NOT_FOUND_MESSAGE });
+  });
+
+  it("returns a generic error message when the response is null (network failure)", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(null);
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_IMPORTANT_ERROR_MESSAGE });
+  });
+
+  it("returns a generic error message for any other failure status", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ error: "something went wrong" }, 502),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_IMPORTANT_ERROR_MESSAGE });
+  });
+
+  it("returns a generic error message when the success body fails schema validation", async () => {
+    const outcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id }, 200),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_IMPORTANT_ERROR_MESSAGE });
   });
 });
 
