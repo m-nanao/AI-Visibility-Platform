@@ -1,8 +1,8 @@
 # 履歴の重要フラグ機能 設計メモ
 
-履歴一覧（`/history`）が検索・並び替え・mode badge・ドメイン検索まで整った現状を踏まえ、履歴が増えたときに重要な分析結果を後から見つけやすくするための「重要フラグ」機能の設計をまとめるドキュメントである。`docs/history-important-flag-design`（設計のみ、実装なし）に続き、`feature/history-important-flag`で**第1段階（重要フラグの切り替えのみ、DB案A）**を、`feature/history-important-filter`で**第2段階（「重要のみ表示」フィルタ）**を実際に実装した——詳細は「11」「12」参照。メモ・タグは引き続き未実装（第3段階）。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+履歴一覧（`/history`）が検索・並び替え・mode badge・ドメイン検索まで整った現状を踏まえ、履歴が増えたときに重要な分析結果を後から見つけやすくするための「重要フラグ」機能の設計をまとめるドキュメントである。`docs/history-important-flag-design`（設計のみ、実装なし）に続き、`feature/history-important-flag`で**第1段階（重要フラグの切り替えのみ、DB案A）**を、`feature/history-important-filter`で**第2段階（「重要のみ表示」フィルタ）**を実際に実装した——詳細は「11」「12」参照。メモ機能（第3段階）は、依頼者要望がまだないため実装を保留し、将来候補として「13」に短く記録した。タグ機能も引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-07（第2段階の実装を反映）**
+**最終更新日: 2026-10-07（メモ機能を将来候補として記録）**
 
 ## 1. このドキュメントの目的
 
@@ -202,7 +202,7 @@ PATCH /analysis-runs/{analysis_run_id}/important
 
 - ~~重要フラグ自体の実装（backend API・DB migration・frontend UIのいずれも）~~ → `feature/history-important-flag`で実装済み（「11」参照）。
 - ~~「重要のみ表示」フィルタの実装~~ → `feature/history-important-filter`で実装済み（「12」参照）。
-- メモ機能・タグ機能・カテゴリ機能の実装（引き続き未実装、第3段階）。
+- メモ機能・タグ機能・カテゴリ機能の実装（引き続き未実装、第3段階。メモ機能は将来候補として「13」に短く記録済み——依頼者要望がまだないため実装は保留）。
 - 非同期分析ジョブ化・AIによるWeb/AI差分比較（既存docsで別途扱われている対象外項目、本タスクとは無関係だが念のため明記）。
 - RLS本番適用・Supabase/Render/Vercel設定変更・新しい外部API呼び出し・Gemini再実行API仕様変更・認証ロジック変更（第1段階実装でも変更していない、「11」参照）。
 
@@ -229,6 +229,20 @@ PATCH /analysis-runs/{analysis_run_id}/important
 - **変更していないもの**: backend（`backend/`配下は無変更）・DB schema・migration・重要フラグ更新API（`PATCH /analysis-runs/{id}/important`）仕様・Gemini再実行API仕様・認証ロジック・Supabase/Render/Vercel設定・外部API呼び出し、いずれも変更していない。
 - **対象外**: メモ機能・タグ機能・カテゴリ機能・ユーザー別重要フラグ・`analysis_run_marks`テーブル・一括操作——いずれも今回も実装していない（第3段階、「9」参照）。
 - **テスト**: frontend（`app/lib/analysis-history.test.ts`に`filterAnalysisRunListItemsByImportance()`/`resolveHistoryListEmptyText()`のテストを追加）。backendテストは変更なし（backend自体を変更していないため）。
+
+## 13. メモ機能（将来候補、保留・2026-10-07追記）
+
+メモ機能は、重要フラグ（第1段階）・「重要のみ表示」フィルタ（第2段階）に続く**第3段階の候補**として、設計docsの作成当初から位置づけられていた（「9. 実装段階」参照）。今回（`docs/ai-gap-comparison-design`タスク）、今後の実装候補として短く記録する——**新規の詳細設計は行わない**。
+
+- **現時点では依頼者からの要望がないため、実装は保留する。**
+- **想定用途**:
+  - 依頼者確認用の補足。
+  - なぜ重要フラグを付けたかの理由。
+  - 再確認・再分析が必要な理由。
+  - レポート候補のメモ。
+- **初期実装する場合の案**: 履歴詳細（`/history/[id]`）で内部メモを編集できるようにし、履歴一覧（`/history`）には「メモあり」のような軽い表示のみ出す（メモ本文は一覧に出さない）。
+- **レポート画面（`/history/[id]/report`）には初期実装では出さない方が安全**——内部向けメモが、依頼者への共有・印刷を目的とするレポートに意図せず表示されるリスクを避ける（既存の「レポート画面には編集操作を一切置かない」方針とも整合する）。
+- **実装する場合はDB/migrationが必要になる可能性がある**——重要フラグの案A（`analysis_runs.is_important`列）と同様に、`analysis_runs`への列追加（例: `memo text`）で足りる可能性が高いが、メモが長文になる・編集履歴を持たせたい等の要件が出た場合は、案B（`analysis_run_marks`に似た別テーブル）の検討が必要になる——この判断は実装タスクを始める時点で改めて行う。
 
 ## 関連ドキュメント
 
