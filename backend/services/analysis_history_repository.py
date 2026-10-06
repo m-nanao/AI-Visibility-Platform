@@ -282,6 +282,38 @@ def get_connection():
     return psycopg.connect(database_url, connect_timeout=5)
 
 
+def _extract_source_urls(input_snapshot: Any) -> list[str]:
+    """Pulls the input URL strings back out of a saved
+    analysis_runs.input_snapshot blob — added for
+    fix/history-domain-search so the history list can offer domain
+    search even though brands.canonical_domain is never actually
+    populated today (main.py's save_analysis_history() call always
+    passes `canonical_domain=None`).
+
+    `input_snapshot` is the exact dict main.py built from the original
+    `/analyze` request body (see its `{"brandName": ..., "urls": ...,
+    ...}` literal) — `urls` there is `AnalyzeRequest.urls` verbatim,
+    the raw strings the caller typed in, not yet parsed into hostnames
+    (hostname extraction is a frontend concern, see
+    app/lib/analysis-history.ts's buildDomainSearchVariants()).
+
+    Deliberately defensive about shape: `input_snapshot` is untyped
+    JSON from the database, and this function is reached for every
+    saved run regardless of how old it is or what shape its
+    input_snapshot happens to have. Returns `[]` (never raises) for
+    anything other than a dict with a `urls` key holding a list of
+    strings — covers input_snapshot being None, `urls` being absent
+    (schema predates it — never actually happened, but defensive
+    anyway), or a non-list/non-string entry.
+    """
+    if not isinstance(input_snapshot, dict):
+        return []
+    urls = input_snapshot.get("urls")
+    if not isinstance(urls, list):
+        return []
+    return [url for url in urls if isinstance(url, str) and url.strip()]
+
+
 def list_analysis_runs(
     *,
     limit: int = DEFAULT_LIST_LIMIT,
@@ -294,7 +326,12 @@ def list_analysis_runs(
     analysis_results), newest first — see
     docs/20_analysis_history_read_api_design.md "5. GET /analysis-runs
     の設計案". Deliberately never includes result_json (see that
-    section's "返さないもの"). Always excludes a soft-deleted run
+    section's "返さないもの"). Each item's `sourceUrls` is derived from
+    `analysis_runs.input_snapshot` (see _extract_source_urls() above)
+    — added so the frontend history list can search by domain even
+    though `canonicalDomain` (from `brands.canonical_domain`) is never
+    actually populated by save_analysis_history() today. Always
+    excludes a soft-deleted run
     (analysis_runs.deleted_at is not null — see
     backend/migrations/003_add_deleted_at_to_analysis_runs.sql and
     soft_delete_analysis_run() below) regardless of mode/project_ids;
@@ -357,7 +394,8 @@ def list_analysis_runs(
             ar.started_at,
             ar.completed_at,
             ar.created_at,
-            res.meta_json
+            res.meta_json,
+            ar.input_snapshot
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -393,6 +431,12 @@ def list_analysis_runs(
             # endpoint's "never includes result_json/meta_json" payload
             # discipline intact for everything except this small summary.
             "modeSummary": build_mode_summary(row[9]),
+            # Derived from input_snapshot only (see
+            # _extract_source_urls() above) — input_snapshot itself is
+            # never included in the returned dict, same discipline as
+            # modeSummary above. Added for fix/history-domain-search
+            # since canonicalDomain is never actually populated today.
+            "sourceUrls": _extract_source_urls(row[10]),
         }
         for row in rows
     ]

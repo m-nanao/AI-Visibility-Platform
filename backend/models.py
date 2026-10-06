@@ -745,6 +745,16 @@ class AnalysisRunListItem(BaseModel):
     # docstring for how this is computed and why it always falls back
     # to "unknown" rather than ever being omitted in practice.
     modeSummary: AnalysisRunModeSummary | None = None
+    # The raw input URL strings this run was analyzed with (verbatim
+    # from the original /analyze request's `urls`, via
+    # analysis_runs.input_snapshot — see
+    # services/analysis_history_repository.py's _extract_source_urls()).
+    # Added for fix/history-domain-search as a domain-search fallback,
+    # since `canonicalDomain` above is never actually populated by
+    # save_analysis_history() today. Defaults to `[]`, never omitted,
+    # so an older saved run with no `urls` in its input_snapshot (or no
+    # input_snapshot at all) still round-trips cleanly.
+    sourceUrls: list[str] = []
 
 
 class AnalysisRunListResponse(BaseModel):

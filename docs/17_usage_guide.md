@@ -441,12 +441,23 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 
 前章（27）で履歴詳細を「正式な確認画面」として位置づけたことに合わせ、履歴一覧（`/history`）から目的の分析結果を探しやすくした（`improve/history-list-search-and-sort`）。タグ・カテゴリ・重要フラグ等の永続的な管理機能は今回追加せず、**既存のGET /analysis-runsが返すデータだけを使ったfrontend側のフィルタ・並び替え**に留めている——新しいbackend検索API・DB schema変更はなし。
 
-- **ブランド名検索**: 一覧上部の検索欄（placeholder「ブランド名で履歴を検索」）に入力すると、`brandName`・`canonicalDomain`・`startedAt`/`createdAt`の表示テキストを対象に大文字小文字を区別しない部分一致で絞り込む。検索結果が0件の場合は「条件に一致する履歴がありません。」と表示する（保存済み履歴が0件の場合の既存メッセージとは別の文言）。
+- **ブランド名検索**: 一覧上部の検索欄（placeholder「ブランド名で履歴を検索」）に入力すると、`brandName`・`canonicalDomain`・`startedAt`/`createdAt`の表示テキストを対象に大文字小文字を区別しない部分一致で絞り込む（ドメイン検索については28章公開当初`canonicalDomain`が実質常に空だったため期待通りヒットしないケースがあった——29章で修正済み）。検索結果が0件の場合は「条件に一致する履歴がありません。」と表示する（保存済み履歴が0件の場合の既存メッセージとは別の文言）。
 - **並び替え**: 「新しい順」「古い順」をセレクトボックスで選べる（初期値は新しい順）。`GET /analysis-runs`は既に新しい順で返すが、frontend側で`startedAt`（なければ`createdAt`）を使って明示的に並び替える——API側の順序保証に暗黙に依存しない。タイムスタンプを持たない古い履歴は、どちらの並び順でも末尾に表示される。
 - **件数表示**: 検索していない場合は「12件の履歴」、検索で絞り込んでいる場合は「12件中 3件を表示」のように表示する。
 - **mode badgeの折り返し対応**: 既存のAI Overview/ChatGPT/Claude/Gemini/Common Crawlバッジ表記自体は変更せず、狭い画面でバッジの文字が折り返されても崩れないよう`break-words`/`max-w-full`を付与した。
 - 履歴詳細リンク・削除ボタン・レポート導線（履歴詳細から先）はいずれも変更していない。Gemini単体再実行機能（履歴詳細画面側）にも影響なし。
 - **今回対象外**: タグ・カテゴリ・重要フラグ・メモ機能、履歴の一括削除、backend側の本格的な検索API実装、ページネーションの大幅な変更。いずれも将来の拡張候補として記録するに留める。
+
+## 29. 履歴一覧のドメイン検索が確実に効くように修正（2026-10-07追記）
+
+前章（28）のブランド名検索は問題なく動作していたが、「cybozu.co.jp」のようなドメイン検索が本番で期待通りヒットしないことが確認された（`fix/history-domain-search`）。
+
+- **原因**: 検索ロジック自体は`canonicalDomain`を対象にしていたが、`canonicalDomain`（`brands.canonical_domain`）は`/analyze`の保存処理（`save_analysis_history()`）が常に`canonical_domain=None`で呼び出しているため、実質的に常に空だった——つまり検索対象として機能するデータがそもそも存在していなかった。
+- **修正**: 保存済みの`analysis_runs.input_snapshot`（分析実行時の入力URLをそのまま保持しているJSON列、新しいDBカラムは追加していない）から入力URLを取り出し、`GET /analysis-runs`のレスポンスに新しいoptionalフィールド`sourceUrls`（文字列配列、デフォルト`[]`）として追加した（`backend/models.py`・`backend/services/analysis_history_repository.py`の`_extract_source_urls()`）。
+- **frontend側の検索対象拡張**: `app/lib/analysis-history.ts`に`extractHostname()`（URL文字列からhostnameを取り出す、スキームなしの素のドメイン文字列も許容）・`buildDomainSearchVariants()`（1つのURL/ドメインから、素のドメイン・`www.`あり/なし・`http(s)://...`+末尾スラッシュつきの全パターンを合成する）を追加し、`filterAnalysisRunListItems()`が`canonicalDomain`だけでなく`sourceUrls`の各エントリもこの合成パターンで検索するようにした。これにより、保存されているURLの実際の表記（例: `https://www.cybozu.co.jp/`）に関わらず、`cybozu`・`cybozu.co.jp`・`www.cybozu.co.jp`・`https://cybozu.co.jp/`・`https://www.cybozu.co.jp/`のいずれで検索してもヒットする。
+- **カード表示**: 既存の「対象ドメイン」表示欄（`canonicalDomainLabel`）は、`canonicalDomain`が空の場合に`sourceUrls`の先頭URLのhostnameへ自動的にフォールバックするようにした（表示位置・見た目は変更していない）。
+- **古い履歴の扱い**: `input_snapshot`に`urls`が存在しない（またはそもそも`input_snapshot`がない）古い履歴では`sourceUrls`が空配列になり、ドメイン検索の対象にはならない——エラーにはならず、ブランド名検索は引き続き機能する。
+- **変更していないもの**: DB schema・migration、認証ロジック、`HISTORY_READ_TOKEN`gate、Gemini再実行API仕様、新しい外部API呼び出し。backend側の変更は`GET /analysis-runs`のレスポンスに既存JSON列由来のoptionalフィールドを1つ追加しただけで、新しいテーブル・カラムの追加はない。
 
 ## 関連ドキュメント
 

@@ -53,6 +53,18 @@ export type AnalysisRunListItem = {
   completedAt?: string;
   createdAt?: string;
   modeSummary?: AnalysisRunModeSummary;
+  // The raw input URL strings this run was analyzed with — see
+  // backend/models.py's AnalysisRunListItem.sourceUrls /
+  // services/analysis_history_repository.py's _extract_source_urls().
+  // Added for fix/history-domain-search: `canonicalDomain` above is
+  // never actually populated by the backend's save path today, so
+  // this is the only reliable source for domain search/display.
+  // Optional (not just possibly-empty) so an older saved history run
+  // served by a pre-fix/history-domain-search backend build still
+  // round-trips — defaults to `[]` via the Zod schema either way (see
+  // app/lib/analysis-history-schema.ts), never `undefined` in
+  // practice, but the type stays optional for defense in depth.
+  sourceUrls?: string[];
 };
 
 export type AnalysisRunListResponse = {
@@ -121,6 +133,70 @@ export function formatSourceSummary(
   return entries.map(([sourceType, count]) => `${sourceType}: ${count}`).join(" / ");
 }
 
+// --- Domain extraction (fix/history-domain-search) -----------------------
+//
+// item.canonicalDomain is never actually populated by the backend's
+// save path today (save_analysis_history() is always called with
+// canonical_domain=None) — item.sourceUrls (the raw input URL strings,
+// see backend/models.py's AnalysisRunListItem.sourceUrls) is the
+// reliable source for both the card's "対象ドメイン" display and
+// domain search below.
+
+/** Pulls the hostname out of a URL string, tolerating a bare domain
+ * with no scheme (e.g. a hypothetical "cybozu.co.jp" with no
+ * "https://") by retrying with one assumed. Returns null for anything
+ * that still doesn't parse as a URL either way — never throws. */
+export function extractHostname(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).hostname || null;
+  } catch {
+    try {
+      return new URL(`https://${rawUrl}`).hostname || null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Builds every form of `rawUrl`'s domain this task's search box
+ * should match — bare hostname, "www."-prefixed/stripped, and both
+ * under http(s) with a trailing slash — regardless of which exact
+ * form `rawUrl` itself happens to be stored as. Synthesizing these
+ * rather than only matching `rawUrl` literally is what makes
+ * "cybozu.co.jp"/"www.cybozu.co.jp"/"https://cybozu.co.jp/"/
+ * "https://www.cybozu.co.jp/" all find a run whose input_snapshot
+ * only ever recorded one of those forms. Returns just `[rawUrl]`
+ * (lowercased) when `rawUrl` doesn't parse as a URL/hostname at all. */
+export function buildDomainSearchVariants(rawUrl: string): string[] {
+  const lowered = rawUrl.toLowerCase();
+  const hostname = extractHostname(lowered);
+  if (!hostname) return [lowered];
+
+  const bare = hostname.startsWith("www.") ? hostname.slice(4) : hostname;
+  const withWww = `www.${bare}`;
+
+  return [
+    lowered,
+    bare,
+    withWww,
+    `http://${bare}/`,
+    `https://${bare}/`,
+    `http://${withWww}/`,
+    `https://${withWww}/`,
+  ];
+}
+
+/** The first domain worth showing on a history card — `canonicalDomain`
+ * when the backend happened to have one (currently never, but the
+ * field still exists), otherwise the hostname of the first entry in
+ * `sourceUrls`. Returns undefined when neither is available (e.g. a
+ * development_sample-only run with no input URLs at all). */
+function representativeDomainLabel(item: AnalysisRunListItem): string | undefined {
+  if (item.canonicalDomain) return item.canonicalDomain;
+  const firstUrl = item.sourceUrls?.[0];
+  return firstUrl ? extractHostname(firstUrl) ?? undefined : undefined;
+}
+
 export type AnalysisRunListItemDisplay = {
   brandNameLabel: string;
   canonicalDomainLabel?: string;
@@ -136,7 +212,7 @@ export function formatAnalysisRunListItem(
 ): AnalysisRunListItemDisplay {
   return {
     brandNameLabel: item.brandName,
-    canonicalDomainLabel: item.canonicalDomain,
+    canonicalDomainLabel: representativeDomainLabel(item),
     statusLabel: getStatusLabel(item.status),
     visibilityScoreLabel:
       typeof item.visibilityScore === "number"
@@ -220,11 +296,17 @@ export const HISTORY_SEARCH_PLACEHOLDER = "ブランド名で履歴を検索";
 export const HISTORY_SEARCH_NO_RESULTS_TEXT = "条件に一致する履歴がありません。";
 
 /**
- * Case-insensitive substring match against brandName, canonicalDomain,
- * and the already-formatted startedAt/createdAt label — matches this
- * task's "検索対象: brandName、可能なら createdAt / analyzed URL の
- * 表示テキスト" (canonicalDomain is the closest available stand-in for
- * "analyzed URL" on this list-item shape, which has no urls field).
+ * Case-insensitive substring match against brandName, the
+ * already-formatted startedAt/createdAt label, and every domain-search
+ * variant (see buildDomainSearchVariants() above) of canonicalDomain
+ * and each entry in sourceUrls. Matches this task's "検索対象:
+ * brandName、可能なら createdAt / analyzed URL の表示テキスト" —
+ * sourceUrls carries the actual input URLs (canonicalDomain is never
+ * actually populated by the backend today, see
+ * representativeDomainLabel()'s comment above), and the synthesized
+ * variants are what let "cybozu"/"cybozu.co.jp"/"www.cybozu.co.jp"/
+ * "https://cybozu.co.jp/"/"https://www.cybozu.co.jp/" all match a run
+ * whose input_snapshot only ever recorded one particular form.
  * A blank/whitespace-only query matches everything (unfiltered).
  */
 export function filterAnalysisRunListItems(
@@ -235,12 +317,11 @@ export function filterAnalysisRunListItems(
   if (!normalized) return items;
 
   return items.filter((item) => {
-    const haystack = [
-      item.brandName,
-      item.canonicalDomain,
-      item.startedAt,
-      item.createdAt,
-    ]
+    const domainVariants = [
+      ...(item.canonicalDomain ? buildDomainSearchVariants(item.canonicalDomain) : []),
+      ...(item.sourceUrls ?? []).flatMap(buildDomainSearchVariants),
+    ];
+    const haystack = [item.brandName, item.startedAt, item.createdAt, ...domainVariants]
       .filter((value): value is string => Boolean(value))
       .join(" ")
       .toLowerCase();

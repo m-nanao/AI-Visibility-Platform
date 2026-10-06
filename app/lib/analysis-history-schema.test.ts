@@ -224,6 +224,58 @@ describe("parseAnalysisRunListResponse", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- sourceUrls (fix/history-domain-search) ---
+
+  it("accepts an item with sourceUrls", () => {
+    const withSourceUrls = {
+      ...validListResponse(),
+      items: [
+        { ...validListResponse().items[0], sourceUrls: ["https://www.cybozu.co.jp/"] },
+      ],
+    };
+
+    const result = parseAnalysisRunListResponse(withSourceUrls);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].sourceUrls).toEqual(["https://www.cybozu.co.jp/"]);
+    }
+  });
+
+  it("defaults sourceUrls to [] when the key is absent (backend predating this field)", () => {
+    const result = parseAnalysisRunListResponse(validListResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].sourceUrls).toEqual([]);
+    }
+  });
+
+  it("accepts an empty sourceUrls array (development_sample-only run)", () => {
+    const withEmptySourceUrls = {
+      ...validListResponse(),
+      items: [{ ...validListResponse().items[0], sourceUrls: [] }],
+    };
+
+    const result = parseAnalysisRunListResponse(withEmptySourceUrls);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].sourceUrls).toEqual([]);
+    }
+  });
+
+  it("rejects sourceUrls with a non-string entry", () => {
+    const invalid = {
+      ...validListResponse(),
+      items: [{ ...validListResponse().items[0], sourceUrls: [123] }],
+    };
+
+    const result = parseAnalysisRunListResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("parseAnalysisRunDetailResponse", () => {

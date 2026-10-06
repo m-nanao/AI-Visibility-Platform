@@ -413,6 +413,45 @@ def test_list_analysis_runs_raises_on_query_failure(monkeypatch):
         repo.list_analysis_runs()
 
 
+# --- _extract_source_urls (fix/history-domain-search) ---------------------
+
+
+def test_extract_source_urls_returns_the_urls_list():
+    assert repo._extract_source_urls(
+        {"brandName": "サイボウズ", "urls": ["https://cybozu.co.jp/", "https://cybozu.co.jp/about"]}
+    ) == ["https://cybozu.co.jp/", "https://cybozu.co.jp/about"]
+
+
+def test_extract_source_urls_returns_empty_list_when_urls_key_absent():
+    # Predates this field being added to input_snapshot — should never
+    # happen in practice (urls has always been part of the saved
+    # snapshot), but defensive anyway.
+    assert repo._extract_source_urls({"brandName": "サイボウズ"}) == []
+
+
+def test_extract_source_urls_returns_empty_list_for_non_dict_input():
+    assert repo._extract_source_urls(None) == []
+    assert repo._extract_source_urls("not a dict") == []
+    assert repo._extract_source_urls([1, 2, 3]) == []
+
+
+def test_extract_source_urls_returns_empty_list_when_urls_is_not_a_list():
+    assert repo._extract_source_urls({"urls": "https://cybozu.co.jp/"}) == []
+    assert repo._extract_source_urls({"urls": None}) == []
+
+
+def test_extract_source_urls_filters_out_non_string_and_blank_entries():
+    assert repo._extract_source_urls({"urls": ["https://cybozu.co.jp/", "", "   ", None, 123]}) == [
+        "https://cybozu.co.jp/"
+    ]
+
+
+def test_extract_source_urls_returns_empty_list_for_an_empty_urls_list():
+    # e.g. a development_sample-only run — urls was sent as [] (never
+    # actually possible per AnalyzeRequest validation, but defensive).
+    assert repo._extract_source_urls({"urls": []}) == []
+
+
 # --- list_analysis_runs: success cases ------------------------------------
 
 
@@ -424,6 +463,7 @@ def test_list_analysis_runs_success(monkeypatch):
         "generatedAt": "2026-09-09T00:00:00+00:00",
         "chatgptProvider": {"mode": "openai", "status": "real", "reason": "ok"},
     }
+    input_snapshot = {"brandName": "サイボウズ", "urls": ["https://cybozu.co.jp/"]}
     row = (
         VALID_RUN_ID,
         "サイボウズ",
@@ -435,6 +475,7 @@ def test_list_analysis_runs_success(monkeypatch):
         COMPLETED_AT,
         COMPLETED_AT,
         meta_json,
+        input_snapshot,
     )
     fake_cursor = _FakeReadCursor(fetchall_result=[row])
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -460,6 +501,7 @@ def test_list_analysis_runs_success(monkeypatch):
                 "gemini": "unknown",
                 "commonCrawl": "unknown",
             },
+            "sourceUrls": ["https://cybozu.co.jp/"],
         }
     ]
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]

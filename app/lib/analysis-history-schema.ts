@@ -52,6 +52,13 @@ const analysisRunListItemSchema = z.object({
   // optionalFromPython() handles both that and Pydantic's `null` for
   // an unset `X | None = None` field the same way.
   modeSummary: optionalFromPython(analysisRunModeSummarySchema),
+  // backend/models.py declares this as `list[str] = []` (not
+  // `X | None`), so Pydantic always serializes a real array, never
+  // `null` — `.default([])` only has to cover the key being absent
+  // entirely (an older Python API build from before
+  // fix/history-domain-search). See
+  // services/analysis_history_repository.py's _extract_source_urls().
+  sourceUrls: z.array(z.string()).default([]),
 });
 
 export const analysisRunListResponseSchema = z.object({
