@@ -358,6 +358,58 @@ def test_list_success_mode_summary_omitted_for_old_history(monkeypatch):
     assert response.json()["items"][0]["modeSummary"] is None
 
 
+def test_list_success_includes_source_urls_when_repository_provides_them(monkeypatch):
+    """sourceUrls (fix/history-domain-search) — derived from
+    input_snapshot by the repository layer, forwarded as-is here."""
+    fake_items = [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "brandName": "サイボウズ",
+            "canonicalDomain": None,
+            "status": "completed",
+            "visibilityScore": 86,
+            "sourceSummary": None,
+            "startedAt": "2026-09-09T00:00:00+09:00",
+            "completedAt": "2026-09-09T00:00:10+09:00",
+            "createdAt": "2026-09-09T00:00:10+09:00",
+            "sourceUrls": ["https://www.cybozu.co.jp/"],
+        }
+    ]
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", lambda **kwargs: fake_items)
+
+    response = client.get("/analysis-runs", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["sourceUrls"] == ["https://www.cybozu.co.jp/"]
+
+
+def test_list_success_source_urls_defaults_to_empty_list_for_old_history(monkeypatch):
+    """A repository row with no "sourceUrls" key at all (older code
+    path, or input_snapshot had no urls) must not break the list
+    response — sourceUrls defaults to [], never omitted or null."""
+    fake_items = [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "brandName": "サイボウズ",
+            "canonicalDomain": None,
+            "status": "completed",
+            "visibilityScore": None,
+            "sourceSummary": None,
+            "startedAt": None,
+            "completedAt": None,
+            "createdAt": None,
+        }
+    ]
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", lambda **kwargs: fake_items)
+
+    response = client.get("/analysis-runs", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["sourceUrls"] == []
+
+
 def test_list_success_default_query_params(monkeypatch):
     _enable_read_env(monkeypatch)
     calls = []

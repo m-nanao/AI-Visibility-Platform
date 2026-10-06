@@ -40,8 +40,10 @@ import {
   REPORT_DETAIL_UNAVAILABLE_MESSAGE,
   REPORT_LINK_TEXT,
   REPORT_PRINT_BUTTON_LABEL,
+  buildDomainSearchVariants,
   buildHistoryDetailPath,
   buildHistoryReportPath,
+  extractHostname,
   formatAnalysisRunDetailBasicInfo,
   formatAnalysisRunListItem,
   formatComparisonImprovementsLabel,
@@ -155,6 +157,39 @@ describe("formatAnalysisRunListItem", () => {
     expect(display.sourceSummaryLabel).toBeUndefined();
   });
 
+  it("falls back to the first sourceUrls entry's hostname for canonicalDomainLabel when canonicalDomain is absent (the realistic case — see fix/history-domain-search)", () => {
+    const display = formatAnalysisRunListItem({
+      id: "id",
+      brandName: "サイボウズ",
+      status: "completed",
+      sourceUrls: ["https://www.cybozu.co.jp/", "https://example.com/"],
+    });
+
+    expect(display.canonicalDomainLabel).toBe("www.cybozu.co.jp");
+  });
+
+  it("prefers canonicalDomain over sourceUrls when both are present", () => {
+    const display = formatAnalysisRunListItem({
+      id: "id",
+      brandName: "サイボウズ",
+      status: "completed",
+      canonicalDomain: "cybozu.co.jp",
+      sourceUrls: ["https://example.com/"],
+    });
+
+    expect(display.canonicalDomainLabel).toBe("cybozu.co.jp");
+  });
+
+  it("omits canonicalDomainLabel when neither canonicalDomain nor sourceUrls is available", () => {
+    const display = formatAnalysisRunListItem({
+      id: "id",
+      brandName: "サイボウズ",
+      status: "completed",
+    });
+
+    expect(display.canonicalDomainLabel).toBeUndefined();
+  });
+
   it("falls back to createdAt, then a placeholder, for startedAtLabel", () => {
     const withCreatedOnly = formatAnalysisRunListItem({
       id: "id",
@@ -266,6 +301,52 @@ describe("history list search/sort copy (improve/history-list-search-and-sort)",
   });
 });
 
+describe("extractHostname", () => {
+  it("extracts the hostname from a well-formed URL", () => {
+    expect(extractHostname("https://www.cybozu.co.jp/")).toBe("www.cybozu.co.jp");
+    expect(extractHostname("https://cybozu.co.jp/about/company")).toBe("cybozu.co.jp");
+    expect(extractHostname("http://cybozu.co.jp")).toBe("cybozu.co.jp");
+  });
+
+  it("tolerates a bare domain with no scheme", () => {
+    expect(extractHostname("cybozu.co.jp")).toBe("cybozu.co.jp");
+    expect(extractHostname("www.cybozu.co.jp")).toBe("www.cybozu.co.jp");
+  });
+
+  it("returns null for a string that isn't a URL or domain at all", () => {
+    expect(extractHostname("not a url at all")).toBeNull();
+    expect(extractHostname("")).toBeNull();
+  });
+});
+
+describe("buildDomainSearchVariants", () => {
+  it("includes the bare domain, www.-prefixed domain, and both under http(s) with a trailing slash", () => {
+    const variants = buildDomainSearchVariants("https://www.cybozu.co.jp/");
+
+    expect(variants).toContain("cybozu.co.jp");
+    expect(variants).toContain("www.cybozu.co.jp");
+    expect(variants).toContain("https://cybozu.co.jp/");
+    expect(variants).toContain("https://www.cybozu.co.jp/");
+    expect(variants).toContain("http://cybozu.co.jp/");
+    expect(variants).toContain("http://www.cybozu.co.jp/");
+  });
+
+  it("produces the same variant set regardless of which form was stored", () => {
+    const fromBare = new Set(buildDomainSearchVariants("https://cybozu.co.jp/"));
+    const fromWww = new Set(buildDomainSearchVariants("https://www.cybozu.co.jp/"));
+
+    expect(fromBare).toEqual(fromWww);
+  });
+
+  it("lowercases everything", () => {
+    expect(buildDomainSearchVariants("https://WWW.Cybozu.Co.JP/")).toContain("www.cybozu.co.jp");
+  });
+
+  it("falls back to just the lowercased input when it doesn't parse as a URL/hostname", () => {
+    expect(buildDomainSearchVariants("Not A URL")).toEqual(["not a url"]);
+  });
+});
+
 describe("filterAnalysisRunListItems", () => {
   function item(overrides: Partial<AnalysisRunListItem> = {}): AnalysisRunListItem {
     return {
@@ -293,6 +374,85 @@ describe("filterAnalysisRunListItems", () => {
       item({ id: "b", brandName: "freee" }),
     ];
     expect(filterAnalysisRunListItems(items, "cybozu.co.jp")).toEqual([items[0]]);
+  });
+
+  describe("domain search via sourceUrls (fix/history-domain-search)", () => {
+    // canonicalDomain is never actually populated by the backend's
+    // save path today — sourceUrls (the raw input URL strings) is the
+    // realistic case this bug report was about.
+    function cybozuItem(): AnalysisRunListItem {
+      return item({
+        id: "cybozu",
+        brandName: "サイボウズ",
+        sourceUrls: ["https://www.cybozu.co.jp/"],
+      });
+    }
+
+    it("matches a bare domain query", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "cybozu.co.jp")).toEqual([cybozuItem()]);
+    });
+
+    it("matches a bare substring query", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "cybozu")).toEqual([cybozuItem()]);
+    });
+
+    it("matches with a www. prefix even though the stored URL already has one", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "www.cybozu.co.jp")).toEqual([
+        cybozuItem(),
+      ]);
+    });
+
+    it("matches without a www. prefix even though the stored URL has one", () => {
+      // The reverse of the above — the stored sourceUrls entry has
+      // "www.", but a query without it must still hit, since
+      // buildDomainSearchVariants() synthesizes both forms.
+      expect(filterAnalysisRunListItems([cybozuItem()], "cybozu.co.jp")).toEqual([cybozuItem()]);
+    });
+
+    it("matches a full https:// URL with trailing slash, bare domain", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "https://cybozu.co.jp/")).toEqual([
+        cybozuItem(),
+      ]);
+    });
+
+    it("matches a full https:// URL with trailing slash, www. domain", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "https://www.cybozu.co.jp/")).toEqual([
+        cybozuItem(),
+      ]);
+    });
+
+    it("is case-insensitive", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "CYBOZU.CO.JP")).toEqual([cybozuItem()]);
+    });
+
+    it("does not match an unrelated domain", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "freee.co.jp")).toEqual([]);
+    });
+
+    it("still matches brandName when sourceUrls is present (brandName search is unaffected)", () => {
+      expect(filterAnalysisRunListItems([cybozuItem()], "サイボウズ")).toEqual([cybozuItem()]);
+    });
+
+    it("searches every entry when sourceUrls has more than one URL", () => {
+      const multi = item({
+        id: "multi",
+        sourceUrls: ["https://example.com/", "https://cybozu.co.jp/about"],
+      });
+      expect(filterAnalysisRunListItems([multi], "cybozu.co.jp")).toEqual([multi]);
+    });
+
+    it("never throws when sourceUrls is undefined (older saved history)", () => {
+      expect(filterAnalysisRunListItems([item({ id: "old" })], "cybozu.co.jp")).toEqual([]);
+      expect(
+        filterAnalysisRunListItems([item({ id: "old", sourceUrls: undefined })], "cybozu"),
+      ).toEqual([]);
+    });
+
+    it("never throws for a sourceUrls entry that isn't a valid URL", () => {
+      const malformed = item({ id: "malformed", sourceUrls: ["not a url at all"] });
+      expect(() => filterAnalysisRunListItems([malformed], "cybozu")).not.toThrow();
+      expect(filterAnalysisRunListItems([malformed], "not a url")).toEqual([malformed]);
+    });
   });
 
   it("matches the startedAt/createdAt timestamp text", () => {
