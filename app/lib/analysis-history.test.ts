@@ -73,9 +73,16 @@ import {
   sortAnalysisRunListItems,
   HISTORY_IMPORTANT_BADGE_LABEL,
   HISTORY_IMPORTANT_ERROR_MESSAGE,
+  HISTORY_IMPORTANT_FILTER_ALL_LABEL,
+  HISTORY_IMPORTANT_FILTER_DEFAULT,
+  HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL,
   HISTORY_IMPORTANT_MARK_LABEL,
   HISTORY_IMPORTANT_NOT_FOUND_MESSAGE,
+  HISTORY_IMPORTANT_ONLY_EMPTY_TEXT,
+  HISTORY_IMPORTANT_ONLY_SEARCH_NO_RESULTS_TEXT,
   HISTORY_IMPORTANT_UNMARK_LABEL,
+  filterAnalysisRunListItemsByImportance,
+  resolveHistoryListEmptyText,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
@@ -476,6 +483,80 @@ describe("filterAnalysisRunListItems", () => {
 
   it("never throws on an item missing every optional field", () => {
     expect(filterAnalysisRunListItems([item()], "サイボウズ")).toEqual([item()]);
+  });
+});
+
+describe("HISTORY_IMPORTANT_FILTER_DEFAULT / labels (feature/history-important-filter)", () => {
+  it("defaults to showing all items", () => {
+    expect(HISTORY_IMPORTANT_FILTER_DEFAULT).toBe("all");
+  });
+
+  it("has the expected Japanese labels", () => {
+    expect(HISTORY_IMPORTANT_FILTER_ALL_LABEL).toBe("すべて");
+    expect(HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL).toBe("重要のみ");
+  });
+});
+
+describe("filterAnalysisRunListItemsByImportance (feature/history-important-filter)", () => {
+  function item(overrides: Partial<AnalysisRunListItem> = {}): AnalysisRunListItem {
+    return {
+      id: "id",
+      brandName: "サイボウズ",
+      status: "completed",
+      ...overrides,
+    };
+  }
+
+  it("returns every item unchanged when filter is 'all'", () => {
+    const items = [
+      item({ id: "a", isImportant: true }),
+      item({ id: "b", isImportant: false }),
+      item({ id: "c" }),
+    ];
+
+    expect(filterAnalysisRunListItemsByImportance(items, "all")).toEqual(items);
+  });
+
+  it("keeps only isImportant: true items when filter is 'importantOnly'", () => {
+    const important = item({ id: "a", isImportant: true });
+    const items = [important, item({ id: "b", isImportant: false }), item({ id: "c" })];
+
+    expect(filterAnalysisRunListItemsByImportance(items, "importantOnly")).toEqual([important]);
+  });
+
+  it("treats a missing isImportant as not important (importantOnly excludes it)", () => {
+    const items = [item({ id: "a" })];
+
+    expect(filterAnalysisRunListItemsByImportance(items, "importantOnly")).toEqual([]);
+  });
+
+  it("returns an empty array when nothing is important", () => {
+    const items = [item({ id: "a", isImportant: false }), item({ id: "b" })];
+
+    expect(filterAnalysisRunListItemsByImportance(items, "importantOnly")).toEqual([]);
+  });
+});
+
+describe("resolveHistoryListEmptyText (feature/history-important-filter)", () => {
+  it("returns the plain search message when importantOnly is off", () => {
+    expect(resolveHistoryListEmptyText("all", "存在しないブランド")).toBe(
+      HISTORY_SEARCH_NO_RESULTS_TEXT,
+    );
+  });
+
+  it("returns the importantOnly-specific message when there is no search query", () => {
+    expect(resolveHistoryListEmptyText("importantOnly", "")).toBe(
+      HISTORY_IMPORTANT_ONLY_EMPTY_TEXT,
+    );
+    expect(resolveHistoryListEmptyText("importantOnly", "   ")).toBe(
+      HISTORY_IMPORTANT_ONLY_EMPTY_TEXT,
+    );
+  });
+
+  it("returns the importantOnly + search combined message when both are active", () => {
+    expect(resolveHistoryListEmptyText("importantOnly", "サイボウズ")).toBe(
+      HISTORY_IMPORTANT_ONLY_SEARCH_NO_RESULTS_TEXT,
+    );
   });
 });
 

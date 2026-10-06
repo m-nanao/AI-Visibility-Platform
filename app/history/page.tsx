@@ -8,27 +8,35 @@ import {
   HISTORY_DELETE_BUTTON_LABEL,
   HISTORY_DELETE_CONFIRM_MESSAGE,
   HISTORY_IMPORTANT_BADGE_LABEL,
+  HISTORY_IMPORTANT_FILTER_ALL_LABEL,
+  HISTORY_IMPORTANT_FILTER_DEFAULT,
+  HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL,
   HISTORY_PAGE_TITLE,
   HISTORY_PAGE_DESCRIPTION,
   HISTORY_EMPTY_STATE_TEXT,
   HISTORY_LOADING_TEXT,
   HISTORY_LIST_DETAIL_LINK_TEXT,
-  HISTORY_SEARCH_NO_RESULTS_TEXT,
   HISTORY_SEARCH_PLACEHOLDER,
   HISTORY_SORT_DEFAULT_ORDER,
   HISTORY_SORT_NEWEST_LABEL,
   HISTORY_SORT_OLDEST_LABEL,
   buildHistoryDetailPath,
   filterAnalysisRunListItems,
+  filterAnalysisRunListItemsByImportance,
   formatAnalysisRunListItem,
   formatHistoryCountLabel,
   getImportantToggleLabel,
   resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
+  resolveHistoryListEmptyText,
   resolveSetAnalysisRunImportantOutcome,
   sortAnalysisRunListItems,
 } from "../lib/analysis-history";
-import type { HistorySortOrder, HistoryViewState } from "../lib/analysis-history";
+import type {
+  HistoryImportantFilter,
+  HistorySortOrder,
+  HistoryViewState,
+} from "../lib/analysis-history";
 
 // Client component fetching this Next.js app's own Route Handler
 // (app/api/analysis-runs/route.ts), same pattern as app/page.tsx
@@ -53,6 +61,12 @@ export default function HistoryPage() {
   // sortAnalysisRunListItems().
   const [searchQuery, setSearchQuery] = useState("");
   const [sortOrder, setSortOrder] = useState<HistorySortOrder>(HISTORY_SORT_DEFAULT_ORDER);
+  // "重要のみ表示" toggle (feature/history-important-filter) — same
+  // frontend-only composition as search/sort: applied to `allItems`
+  // before the search filter, see visibleItems below.
+  const [importantFilter, setImportantFilter] = useState<HistoryImportantFilter>(
+    HISTORY_IMPORTANT_FILTER_DEFAULT,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -163,11 +177,27 @@ export default function HistoryPage() {
   // keeps search/sort entirely derived state rather than something
   // that could drift from `view` after a delete.
   const allItems = useMemo(() => (view.kind === "items" ? view.items : []), [view]);
+  // Composition order per docs/38_history_marking_design.md「9」/this
+  // task's "2. 既存検索・並び替えと組み合わせる": 重要のみフィルタ →
+  // 検索フィルタ → 並び替え。`totalCount` passed to
+  // formatHistoryCountLabel() below stays the *full* unfiltered
+  // `allItems.length`, not the importantOnly-filtered count — so
+  // "12件中 2件を表示" reflects both filters combined against the
+  // original total, matching this task's example.
+  const importantFilteredItems = useMemo(
+    () => filterAnalysisRunListItemsByImportance(allItems, importantFilter),
+    [allItems, importantFilter],
+  );
   const visibleItems = useMemo(
-    () => sortAnalysisRunListItems(filterAnalysisRunListItems(allItems, searchQuery), sortOrder),
-    [allItems, searchQuery, sortOrder],
+    () =>
+      sortAnalysisRunListItems(
+        filterAnalysisRunListItems(importantFilteredItems, searchQuery),
+        sortOrder,
+      ),
+    [importantFilteredItems, searchQuery, sortOrder],
   );
   const countLabel = formatHistoryCountLabel(allItems.length, visibleItems.length);
+  const emptyResultsText = resolveHistoryListEmptyText(importantFilter, searchQuery);
 
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
@@ -225,26 +255,63 @@ export default function HistoryPage() {
                   className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <label htmlFor="historySortOrder" className="text-xs text-zinc-500 dark:text-zinc-400">
-                  並び替え
-                </label>
-                <select
-                  id="historySortOrder"
-                  value={sortOrder}
-                  onChange={(event) => setSortOrder(event.target.value as HistorySortOrder)}
-                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+              <div className="flex flex-wrap items-center gap-3">
+                {/* 「重要のみ表示」フィルタ（feature/history-important-filter）
+                    — すべて/重要のみの2択トグル。検索欄・並び替えの近く
+                    に配置する（design: docs/38_history_marking_design.md
+                    「9」）。 */}
+                <div
+                  role="group"
+                  aria-label="重要のみ表示"
+                  className="inline-flex rounded-md border border-zinc-300 text-xs dark:border-zinc-700"
                 >
-                  <option value="newest">{HISTORY_SORT_NEWEST_LABEL}</option>
-                  <option value="oldest">{HISTORY_SORT_OLDEST_LABEL}</option>
-                </select>
+                  <button
+                    type="button"
+                    onClick={() => setImportantFilter("all")}
+                    aria-pressed={importantFilter === "all"}
+                    className={`rounded-l-md px-3 py-1.5 font-medium transition-colors ${
+                      importantFilter === "all"
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    {HISTORY_IMPORTANT_FILTER_ALL_LABEL}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportantFilter("importantOnly")}
+                    aria-pressed={importantFilter === "importantOnly"}
+                    className={`rounded-r-md border-l border-zinc-300 px-3 py-1.5 font-medium transition-colors dark:border-zinc-700 ${
+                      importantFilter === "importantOnly"
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    <span aria-hidden="true">★ </span>
+                    {HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="historySortOrder" className="text-xs text-zinc-500 dark:text-zinc-400">
+                    並び替え
+                  </label>
+                  <select
+                    id="historySortOrder"
+                    value={sortOrder}
+                    onChange={(event) => setSortOrder(event.target.value as HistorySortOrder)}
+                    className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                  >
+                    <option value="newest">{HISTORY_SORT_NEWEST_LABEL}</option>
+                    <option value="oldest">{HISTORY_SORT_OLDEST_LABEL}</option>
+                  </select>
+                </div>
               </div>
             </div>
             <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">{countLabel}</p>
 
             {visibleItems.length === 0 && (
               <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                {HISTORY_SEARCH_NO_RESULTS_TEXT}
+                {emptyResultsText}
               </p>
             )}
 
