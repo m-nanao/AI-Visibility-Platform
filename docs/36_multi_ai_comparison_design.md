@@ -286,6 +286,8 @@ DB schema変更・migration変更・Supabase/Render/Vercel設定変更・RLS本�
 - どのAIプロバイダ（Claude/ChatGPT/Gemini等）を比較処理自体に使うか、コスト・レイテンシ・プロンプト設計は別途検討が必要。
 - 現状の簡易ヒューリスティック（カテゴリ→単語レベル）は、専用AI比較が使えない場合（未設定・エラー時等）のフォールバックとして残すことが望ましい。
 
+**2026-10-07追記**: 上記の素案を、入力データ・出力形式・実行タイミング（案A/B/C比較）・provider方針・保存方式・UI設計・権限方針まで具体化した設計を[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)として整理した（`docs/ai-gap-comparison-design`、設計のみ・実装なし）。推奨は、履歴詳細での手動生成（案B、ここで触れた「履歴詳細画面での後生成」に相当）から始め、将来的に非同期ジョブ化（ここで触れた「非同期分析化」）と統合する案C拡張へ進む、という段階的な方針。
+
 ## 19. Gemini単体再実行機能の追加（2026-10-03、`feature/rerun-gemini-observation`）
 
 Gemini観測結果の途中終了（`isTruncated`）が疑われる場合、これまではGeminiの出力を取り直すために`/analyze`全体を再実行するしかなく、DataForSEO/ChatGPT/Claude/Common Crawlも無関係に再消費されてしまう問題があった。保存済みの履歴詳細画面から**Geminiだけ**を再実行できる機能を追加した。
