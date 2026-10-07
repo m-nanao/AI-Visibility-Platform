@@ -590,6 +590,38 @@ class WebAiGapResult(BaseModel):
     note: str
 
 
+class WebAiGapAiComparison(BaseModel):
+    """AI-generated (not rule-based) comparison of the same Web excerpt
+    vs. AI observation summaries used by WebAiGapResult above — see
+    services/ai_gap_comparison.py and
+    docs/39_ai_gap_comparison_design.md. Generated only on-demand, by
+    POST /analysis-runs/{id}/web-ai-gap/ai-comparison, never during a
+    normal `/analyze` request.
+
+    Stored as `result_json.webAiGapAiComparison`, a field separate from
+    (and never overwriting) `result_json.webAiGap` — docs/39's DB
+    design 案C — so a failed/low-quality AI comparison can never take
+    down the existing rule-based comparison. Only ever constructed by
+    a successful services/ai_gap_comparison.py call (a failed attempt
+    is never persisted — see that module), so `status` has no
+    "unavailable" value here, unlike WebAiGapStatus above.
+    """
+
+    status: Literal["real"] = "real"
+    method: Literal["ai_comparison"] = "ai_comparison"
+    matchedPoints: list[str] = []
+    webStrongAiWeak: list[str] = []
+    aiStrongWebWeak: list[str] = []
+    gapSummary: str | None = None
+    recommendations: list[str] = []
+    # Always the same fixed, safe-to-display reminder regardless of
+    # what the model itself produced — see
+    # services/ai_gap_comparison.py's CAUTION_TEXT, which overwrites
+    # whatever the model returned for this field rather than trusting
+    # it verbatim.
+    caution: str
+
+
 class ImprovementSuggestion(BaseModel):
     title: str
     description: str
@@ -615,6 +647,12 @@ class AnalysisResult(BaseModel):
     # services/web_ai_gap.py. Optional so old saved history (predating
     # this field) still parses/renders unchanged.
     webAiGap: WebAiGapResult | None = None
+    # AI-generated comparison, generated on-demand from the history
+    # detail screen only (see services/ai_gap_comparison.py) — never
+    # populated by a normal `/analyze` request, so this is always None
+    # immediately after analysis and only ever set later via POST
+    # /analysis-runs/{id}/web-ai-gap/ai-comparison.
+    webAiGapAiComparison: WebAiGapAiComparison | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -839,6 +877,22 @@ class GeminiRerunResponse(BaseModel):
     updated: bool
     analysisRunId: str
     result: dict[str, object]
+
+
+class WebAiGapAiComparisonResponse(BaseModel):
+    """POST /analysis-runs/{id}/web-ai-gap/ai-comparison — see
+    services/ai_gap_comparison.py. Unlike GeminiRerunResponse above,
+    this returns only the newly generated comparison (not the full
+    result), since the caller (history detail page) only needs to
+    update its own `webAiGapAiComparison` slot — see
+    docs/39_ai_gap_comparison_design.md "5. 出力形式設計". A non-2xx
+    response (see main.py) means nothing was generated or saved — the
+    existing rule-based `webAiGap` and any previously generated
+    `webAiGapAiComparison` are both unchanged.
+    """
+
+    analysisRunId: str
+    webAiGapAiComparison: WebAiGapAiComparison
 
 
 class AnalysisRunComparisonRunSummary(BaseModel):

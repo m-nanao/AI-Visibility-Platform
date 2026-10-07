@@ -12,9 +12,10 @@ import {
   parseAnalysisRunImportantResponse,
   parseAnalysisRunListResponse,
   parseGeminiRerunResponse,
+  parseWebAiGapAiComparisonUpdateResponse,
 } from "./analysis-history-schema";
 import { parseAnalysisResult } from "./analysis-result-schema";
-import type { AnalysisResult, CooccurrenceKeyword } from "./types";
+import type { AnalysisResult, CooccurrenceKeyword, WebAiGapAiComparison } from "./types";
 
 /** Which observation providers were actually in effect for one saved
  * analysis run — mirrors backend/models.py's AnalysisRunModeSummary
@@ -898,6 +899,99 @@ export async function resolveGeminiRerunOutcome(
   return { success: true, result: resultParsed.data };
 }
 
+// --- AI-powered Web/AI gap comparison (history detail screen, POST
+// /api/analysis-runs/{id}/web-ai-gap/ai-comparison,
+// feature/manual-ai-gap-comparison,
+// docs/39_ai_gap_comparison_design.md) ---
+//
+// Manual/on-demand only — never called from the analysis result screen
+// or from a normal analysis run. Generates
+// AnalysisResult.webAiGapAiComparison from the already-saved
+// webAiGap excerpt, without touching the existing rule-based webAiGap
+// itself.
+
+/** POST /analysis-runs/{id}/web-ai-gap/ai-comparison — mirrors
+ * backend/models.py's WebAiGapAiComparisonResponse. */
+export type WebAiGapAiComparisonUpdateResponse = {
+  analysisRunId: string;
+  webAiGapAiComparison: WebAiGapAiComparison;
+};
+
+export const AI_GAP_COMPARISON_GENERATE_BUTTON_LABEL = "AIで差分を生成";
+export const AI_GAP_COMPARISON_REGENERATE_BUTTON_LABEL = "AI差分を再生成";
+export const AI_GAP_COMPARISON_CONFIRM_MESSAGE =
+  "保存済みのWeb抜粋とAI観測結果をもとに、AIによる差分比較を生成します。Claude APIを1回使用します。実行しますか？";
+export const AI_GAP_COMPARISON_PENDING_TEXT = "AI差分比較を生成中...";
+export const AI_GAP_COMPARISON_SUCCESS_MESSAGE = "AI差分比較の生成が完了しました。";
+export const AI_GAP_COMPARISON_FORBIDDEN_MESSAGE = HISTORY_FORBIDDEN_MESSAGE;
+export const AI_GAP_COMPARISON_NOT_FOUND_MESSAGE = "この分析履歴は見つかりませんでした。";
+export const AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE =
+  "AI差分比較の生成に失敗しました。時間をおいて再度お試しください。";
+
+/** Button label reflecting whether a comparison has already been
+ * generated — mirrors getImportantToggleLabel()'s "describe the
+ * action the click performs" convention. */
+export function getAiGapComparisonButtonLabel(hasComparison: boolean): string {
+  return hasComparison
+    ? AI_GAP_COMPARISON_REGENERATE_BUTTON_LABEL
+    : AI_GAP_COMPARISON_GENERATE_BUTTON_LABEL;
+}
+
+export type AiGapComparisonOutcome =
+  | { success: true; comparison: WebAiGapAiComparison }
+  | { success: false; message: string };
+
+/**
+ * Turns a fetch() Response (or null, on a network-level failure) from
+ * POST /api/analysis-runs/{id}/web-ai-gap/ai-comparison into an
+ * outcome the history detail page can act on — mirrors
+ * resolveGeminiRerunOutcome()'s shape. Both 503 (not even attempted —
+ * e.g. Anthropic API key not configured, or the existing simple
+ * judgement isn't usable as input yet) and 502 (the Anthropic call was
+ * attempted and failed) forward the backend's own `error` message
+ * as-is, since it is always a short, safe-to-display reason (never an
+ * API key/token) — unlike resolveGeminiRerunOutcome(), which only does
+ * this for 502 (that endpoint's 503 always means the same fixed
+ * "disabled" state, while this endpoint's 503 has several distinct
+ * causes worth surfacing to the caller).
+ */
+export async function resolveAiGapComparisonOutcome(
+  response: Response | null,
+): Promise<AiGapComparisonOutcome> {
+  if (!response) {
+    return { success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { success: false, message: AI_GAP_COMPARISON_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { success: false, message: AI_GAP_COMPARISON_NOT_FOUND_MESSAGE };
+  }
+
+  if (response.status === 503 || response.status === 502) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE;
+    return { success: false, message };
+  }
+
+  if (!response.ok) {
+    return { success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  const parsed = parseWebAiGapAiComparisonUpdateResponse(json);
+  if (!parsed.success) {
+    return { success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE };
+  }
+
+  return { success: true, comparison: parsed.data.webAiGapAiComparison };
+}
+
 // --- Post-analyze "open in history" link (analysis result screen,
 // docs/23_analysis_run_id_and_post_analyze_link_design.md "8. 分析結果
 // 画面のリンク表示方針") ---
@@ -1191,6 +1285,11 @@ export const REPORT_SECTION_TITLES = {
   // placed right after aiObservation, before comparison/improvements,
   // mirroring the analysis result screen's AnalysisDashboard ordering.
   webAiGap: "Web上の説明とAI回答のズレ",
+  // AI-generated comparison (webAiGapAiComparison,
+  // feature/manual-ai-gap-comparison) — only rendered when already
+  // generated; placed right after webAiGap, before comparison/
+  // improvements, same ordering reasoning.
+  webAiGapAiComparison: "AIによる差分比較",
   comparison: "前回比較",
   improvements: "改善提案",
   notes: "注意事項",

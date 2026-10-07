@@ -233,6 +233,22 @@ const webAiGapResultSchema = z.object({
   note: z.string(),
 });
 
+// AI-generated (not rule-based) comparison — see
+// backend/services/ai_gap_comparison.py and
+// docs/39_ai_gap_comparison_design.md. Only ever present after a
+// manual "AIで差分を生成" from the history detail screen; absent on
+// every freshly analyzed result and on older saved history.
+const webAiGapAiComparisonSchema = z.object({
+  status: z.literal("real"),
+  method: z.literal("ai_comparison"),
+  matchedPoints: z.array(z.string()).default([]),
+  webStrongAiWeak: z.array(z.string()).default([]),
+  aiStrongWebWeak: z.array(z.string()).default([]),
+  gapSummary: optionalFromPython(z.string()),
+  recommendations: z.array(z.string()).default([]),
+  caution: z.string(),
+});
+
 export const analysisResultSchema = z.object({
   brandName: z.string(),
   summary: brandSummarySchema,
@@ -251,6 +267,11 @@ export const analysisResultSchema = z.object({
   // Absent entirely on older saved results predating this field, which
   // parses the same as undefined (no block rendered).
   webAiGap: optionalFromPython(webAiGapResultSchema),
+  // AI-generated comparison (see webAiGapAiComparisonSchema above).
+  // Absent entirely on every freshly analyzed result and on older
+  // saved history, which parses the same as undefined (no block
+  // rendered until generated).
+  webAiGapAiComparison: optionalFromPython(webAiGapAiComparisonSchema),
 });
 
 export type AnalysisResultParseResult =

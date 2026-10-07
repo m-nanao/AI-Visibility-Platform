@@ -125,6 +125,7 @@ from models import (
     GeminiRerunResponse,
     SectionStatus,
     UrlFetchResult,
+    WebAiGapAiComparisonResponse,
 )
 from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
 from services.analysis_history_comparison import build_comparison_response
@@ -139,6 +140,7 @@ from services.analysis_history_repository import (
     soft_delete_analysis_run as repository_soft_delete_analysis_run,
     update_analysis_result as repository_update_analysis_result,
 )
+from services.ai_gap_comparison import generate_ai_gap_comparison
 from services.gemini_rerun import rerun_gemini_for_analysis_run
 from services.auth_settings import load_auth_settings
 from services.jwt_auth import JWTAuthError, extract_bearer_token, verify_supabase_jwt
@@ -1310,4 +1312,95 @@ def rerun_gemini_observation(analysis_run_id: str, request: Request):
         updated=True,
         analysisRunId=analysis_run_id,
         result=outcome.result_json,
+    )
+
+
+AI_GAP_COMPARISON_FAILED_MESSAGE = "failed to update analysis result after AI comparison"
+
+
+@app.post(
+    "/analysis-runs/{analysis_run_id}/web-ai-gap/ai-comparison",
+    response_model=WebAiGapAiComparisonResponse,
+)
+def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
+    """Generates an AI-powered (not rule-based) comparison of one saved
+    analysis run's Web excerpt and AI observation summaries, and
+    persists it alongside (never over) the existing rule-based
+    `webAiGap` — see services/ai_gap_comparison.py and
+    docs/39_ai_gap_comparison_design.md. Manual/on-demand only: never
+    called from `/analyze` itself.
+
+    Uses the exact same `_resolve_history_access()` gate and JWT-mode
+    authorization pattern as DELETE /analysis-runs/{id}, POST
+    /analysis-runs/{id}/rerun/gemini, and PATCH
+    /analysis-runs/{id}/important above: access is checked against
+    `analysis_run_id` itself (via can_user_access_analysis_run())
+    before anything is read or written, so a caller who can't see this
+    run gets 403 without it being touched, and HISTORY_READ_TOKEN mode
+    remains unrestricted for internal/admin use exactly as every other
+    mutating history endpoint already is.
+
+    Never calls DataForSEO/ChatGPT/Claude observation/Gemini
+    observation/Common Crawl/web fetch — only
+    services/ai_gap_comparison.py's generate_ai_gap_comparison(), whose
+    only external call is a single Anthropic Messages API request built
+    entirely from the already-saved result_json. A failure that was
+    never attempted (missing/insufficient input, or Anthropic API key
+    not configured — see AiGapComparisonOutcome.unavailable) returns
+    503; a failure where the Anthropic call was attempted and failed
+    returns 502. Either way, nothing is written — the previously saved
+    result (including any earlier webAiGapAiComparison) is unchanged.
+    """
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        detail = repository_get_analysis_run(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    if detail is None:
+        return error_response("analysis run not found", status_code=404)
+
+    outcome = generate_ai_gap_comparison(
+        brand_name=detail["brand"]["name"],
+        result_json=detail["result"],
+    )
+    if not outcome.success:
+        status_code = 503 if outcome.unavailable else 502
+        return error_response(outcome.reason, status_code=status_code)
+
+    updated_result_json = dict(detail["result"])
+    updated_result_json["webAiGapAiComparison"] = outcome.comparison.model_dump()
+
+    try:
+        updated = repository_update_analysis_result(
+            analysis_run_id,
+            result_json=updated_result_json,
+            meta_json=detail["meta"],
+        )
+    except AnalysisHistoryReadError:
+        return error_response(AI_GAP_COMPARISON_FAILED_MESSAGE, status_code=503)
+
+    if not updated:
+        return error_response("analysis run not found", status_code=404)
+
+    return WebAiGapAiComparisonResponse(
+        analysisRunId=analysis_run_id,
+        webAiGapAiComparison=outcome.comparison,
     )

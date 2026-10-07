@@ -5,6 +5,7 @@ import type {
   AnalysisRunImportantResponse,
   AnalysisRunListResponse,
   GeminiRerunResponse,
+  WebAiGapAiComparisonUpdateResponse,
 } from "./analysis-history";
 
 /**
@@ -311,6 +312,50 @@ export function parseAnalysisRunImportantResponse(
   const result = analysisRunImportantResponseSchema.safeParse(input);
   if (result.success) {
     return { success: true, data: result.data as AnalysisRunImportantResponse };
+  }
+
+  const reason = result.error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+
+  return { success: false, reason };
+}
+
+/**
+ * Mirrors backend/models.py's WebAiGapAiComparisonResponse (POST
+ * /analysis-runs/{id}/web-ai-gap/ai-comparison) — see
+ * services/ai_gap_comparison.py and
+ * docs/39_ai_gap_comparison_design.md. Unlike geminiRerunResponseSchema
+ * above, `webAiGapAiComparison` is validated field-by-field (not as a
+ * loose record) since the history detail/report pages render it
+ * directly, rather than passing it through parseAnalysisResult().
+ */
+const webAiGapAiComparisonSchema = z.object({
+  status: z.literal("real"),
+  method: z.literal("ai_comparison"),
+  matchedPoints: z.array(z.string()).default([]),
+  webStrongAiWeak: z.array(z.string()).default([]),
+  aiStrongWebWeak: z.array(z.string()).default([]),
+  gapSummary: optionalFromPython(z.string()),
+  recommendations: z.array(z.string()).default([]),
+  caution: z.string(),
+});
+
+export const webAiGapAiComparisonResponseSchema = z.object({
+  analysisRunId: z.string(),
+  webAiGapAiComparison: webAiGapAiComparisonSchema,
+});
+
+export type WebAiGapAiComparisonUpdateParseResult =
+  | { success: true; data: WebAiGapAiComparisonUpdateResponse }
+  | { success: false; reason: string };
+
+export function parseWebAiGapAiComparisonUpdateResponse(
+  input: unknown,
+): WebAiGapAiComparisonUpdateParseResult {
+  const result = webAiGapAiComparisonResponseSchema.safeParse(input);
+  if (result.success) {
+    return { success: true, data: result.data as WebAiGapAiComparisonUpdateResponse };
   }
 
   const reason = result.error.issues
