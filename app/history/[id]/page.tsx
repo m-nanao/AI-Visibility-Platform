@@ -8,6 +8,8 @@ import AppHeader from "../../components/AppHeader";
 import Breadcrumb from "../../components/Breadcrumb";
 import { REPORT_LINK_BUTTON_CLASSNAME } from "../../lib/link-button-styles";
 import {
+  AI_GAP_COMPARISON_CONFIRM_MESSAGE,
+  AI_GAP_COMPARISON_SUCCESS_MESSAGE,
   GEMINI_RERUN_CONFIRM_MESSAGE,
   GEMINI_RERUN_SUCCESS_MESSAGE,
   HISTORY_COMPARISON_COOCCURRENCE_CHANGED_LABEL,
@@ -32,6 +34,7 @@ import {
   formatCooccurrenceRemovedTermLabel,
   getImportantToggleLabel,
   limitComparisonTerms,
+  resolveAiGapComparisonOutcome,
   resolveGeminiRerunOutcome,
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
@@ -68,6 +71,13 @@ export default function HistoryDetailPage() {
   // reason as geminiRerun* above. The toggle applies optimistically
   // (see handleToggleImportant below) straight onto `view.detail`.
   const [importantError, setImportantError] = useState<string | undefined>(undefined);
+  // "AIで差分を生成" state — same independent-of-`view` reasoning as
+  // geminiRerun*/importantError above (feature/manual-ai-gap-comparison).
+  const [aiGapComparisonStatus, setAiGapComparisonStatus] = useState<"idle" | "pending">("idle");
+  const [aiGapComparisonError, setAiGapComparisonError] = useState<string | undefined>(undefined);
+  const [aiGapComparisonSuccessMessage, setAiGapComparisonSuccessMessage] = useState<
+    string | undefined
+  >(undefined);
 
   useEffect(() => {
     if (!id) return;
@@ -179,6 +189,41 @@ export default function HistoryDetailPage() {
     }
   };
 
+  // Confirms, calls POST /api/analysis-runs/{id}/web-ai-gap/ai-comparison,
+  // and on success swaps `view.result.webAiGapAiComparison` for the
+  // newly generated comparison — mirrors handleRerunGemini above.
+  // Never touches the existing rule-based `view.result.webAiGap`. A
+  // failed generation never clears a previously generated comparison
+  // (see app/lib/analysis-history.ts's resolveAiGapComparisonOutcome()).
+  const handleGenerateAiGapComparison = async () => {
+    if (!id) return;
+    if (!window.confirm(AI_GAP_COMPARISON_CONFIRM_MESSAGE)) return;
+
+    setAiGapComparisonStatus("pending");
+    setAiGapComparisonError(undefined);
+    setAiGapComparisonSuccessMessage(undefined);
+
+    const response = await fetch(
+      `/api/analysis-runs/${encodeURIComponent(id)}/web-ai-gap/ai-comparison`,
+      { method: "POST" },
+    ).catch(() => null);
+    const outcome = await resolveAiGapComparisonOutcome(response);
+
+    setAiGapComparisonStatus("idle");
+
+    if (!outcome.success) {
+      setAiGapComparisonError(outcome.message);
+      return;
+    }
+
+    setAiGapComparisonSuccessMessage(AI_GAP_COMPARISON_SUCCESS_MESSAGE);
+    setView((prev) =>
+      prev.kind === "success"
+        ? { ...prev, result: { ...prev.result, webAiGapAiComparison: outcome.comparison } }
+        : prev,
+    );
+  };
+
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
       <AppHeader />
@@ -244,6 +289,12 @@ export default function HistoryDetailPage() {
                   errorMessage: geminiRerunError,
                   successMessage: geminiRerunSuccessMessage,
                   onRerun: handleRerunGemini,
+                }}
+                aiGapComparison={{
+                  status: aiGapComparisonStatus,
+                  errorMessage: aiGapComparisonError,
+                  successMessage: aiGapComparisonSuccessMessage,
+                  onGenerate: handleGenerateAiGapComparison,
                 }}
               />
             </div>

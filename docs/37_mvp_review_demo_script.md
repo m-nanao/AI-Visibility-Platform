@@ -149,6 +149,7 @@ Common Crawl補完: 公式ドメインから補完
 - 履歴一覧のドメイン検索が確実に効くように修正（`canonicalDomain`が実質常に空だったため、保存済み`input_snapshot`からURLを取り出した`sourceUrls`を新設し、`www.`あり/なし・`https://`+末尾スラッシュ等の表記差を吸収して検索。DB schema変更なし。`fix/history-domain-search`、2026-10-07。詳細は[17_usage_guide.md](./17_usage_guide.md)「29」参照）
 - 履歴一覧・履歴詳細に重要フラグ（★マーク）の切り替えを追加（DB設計案A=`analysis_runs.is_important`列、新規`PATCH /analysis-runs/{id}/important`は既存の削除/Gemini再実行エンドポイントと同じ権限判定を再利用。クリックで即時反映のoptimistic update、失敗時はrollback。`feature/history-important-flag`、2026-10-07。設計・実装状況は[38_history_marking_design.md](./38_history_marking_design.md)「11」、使い方は[17_usage_guide.md](./17_usage_guide.md)「30」参照）
 - 履歴一覧に「重要のみ表示」フィルタを追加（既存の検索・並び替えと同じfrontend側フィルタのみ、新しいbackend API・DB schema変更なし。重要のみ表示中に重要フラグをOFFにするとそのカードは一覧から消える。メモ・タグ機能は今回も未実装。`feature/history-important-filter`、2026-10-07。設計・実装状況は[38_history_marking_design.md](./38_history_marking_design.md)「12」、使い方は[17_usage_guide.md](./17_usage_guide.md)「30」参照）
+- 履歴詳細からAIによるWeb/AI差分比較を手動生成（「AIで差分を生成」ボタン、既存のClaude API設定を利用した1回のAnthropic呼び出し。保存済みのWeb抜粋・AI観測結果のみを入力とし、Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測は再実行しない。生成結果は既存の簡易判定`webAiGap`とは別フィールド`webAiGapAiComparison`に保存されるため、簡易判定は失敗時も残る。レポート画面には生成ボタンはなく、生成済みの場合のみ結果を表示。通常分析には組み込まない。DB schema変更・migrationなし。`feature/manual-ai-gap-comparison`、2026-10-07。設計・実装状況は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「13」、使い方は[17_usage_guide.md](./17_usage_guide.md)「31」参照）
 
 ### MVPではまだ限定的なこと
 
@@ -160,7 +161,7 @@ Common Crawl補完: 公式ドメインから補完
 - project作成・招待UIは未実装——現状は既存のdefault organization/projectに登録済みのユーザーのみが利用できる。
 - 決済・利用量制限は未実装。
 - 履歴詳細から同じ条件（同じブランド名・URL・各種mode）で再分析するボタンは未実装——今回のナビゲーション改善（`feature/app-navigation-header`）では対象外とし、今後の拡張候補として残す（[02_roadmap.md](./02_roadmap.md)参照）。
-- 「Web上の説明とAI回答のズレ」ブロックは現在、語句・カテゴリベースの簡易判定（ヒューリスティック）であり、語句が重ならない意味的なズレ（例: Web上では「SEO対策」「AI検索対策」が明確なのに、AI回答では一般的な「ブランディング会社」として説明される、というようなケース）までは拾えない。取得済みのWeb抜粋・AI回答をAIに比較させる方式の設計は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)として整理済みだが、まだ実装していない（`docs/ai-gap-comparison-design`、2026-10-07。設計のみ）。
+- 「Web上の説明とAI回答のズレ」ブロックの既定表示は依然、語句・カテゴリベースの簡易判定（ヒューリスティック）であり、語句が重ならない意味的なズレ（例: Web上では「SEO対策」「AI検索対策」が明確なのに、AI回答では一般的な「ブランディング会社」として説明される、というようなケース）までは拾えない。この限界に対応するため、履歴詳細から手動でAIに意味的な差分を比較させる機能（`feature/manual-ai-gap-comparison`、2026-10-07）を追加した——ただしこれは手動生成のみで、通常分析には組み込まれていない（上記「MVPでできること」参照）。AI比較を生成していない履歴は、依然として簡易判定のみの表示のままである。
 - 履歴へのメモ機能（依頼者確認用の補足・重要フラグを付けた理由等を残す機能）は、現時点で依頼者要望がないため実装を保留している——今後の候補として[38_history_marking_design.md](./38_history_marking_design.md)「13」に記録済み。
 
 ## 7. 依頼者に確認してもらうレビュー項目

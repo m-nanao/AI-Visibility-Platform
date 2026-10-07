@@ -5,6 +5,7 @@ import {
   parseAnalysisRunImportantResponse,
   parseAnalysisRunListResponse,
   parseGeminiRerunResponse,
+  parseWebAiGapAiComparisonUpdateResponse,
 } from "./analysis-history-schema";
 
 function validDetailResponse() {
@@ -614,6 +615,94 @@ describe("parseAnalysisRunImportantResponse", () => {
     const invalid = { ...validImportantResponse(), isImportant: "yes" };
 
     const result = parseAnalysisRunImportantResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+});
+
+// --- POST /analysis-runs/{id}/web-ai-gap/ai-comparison
+// (feature/manual-ai-gap-comparison, docs/39_ai_gap_comparison_design.md) ---
+
+function validAiGapComparisonResponse() {
+  return {
+    analysisRunId: "11111111-1111-1111-1111-111111111111",
+    webAiGapAiComparison: {
+      status: "real",
+      method: "ai_comparison",
+      matchedPoints: ["matched"],
+      webStrongAiWeak: ["web strong"],
+      aiStrongWebWeak: ["ai strong"],
+      gapSummary: "gap",
+      recommendations: ["recommend"],
+      caution: "AIによる比較であり、AIの内部認識を直接示すものではありません。",
+    },
+  };
+}
+
+describe("parseWebAiGapAiComparisonUpdateResponse", () => {
+  it("accepts a well-formed WebAiGapAiComparisonResponse", () => {
+    const result = parseWebAiGapAiComparisonUpdateResponse(validAiGapComparisonResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.analysisRunId).toBe("11111111-1111-1111-1111-111111111111");
+      expect(result.data.webAiGapAiComparison.matchedPoints).toEqual(["matched"]);
+      expect(result.data.webAiGapAiComparison.gapSummary).toBe("gap");
+    }
+  });
+
+  it("defaults empty list fields and accepts a null gapSummary", () => {
+    const withNulls = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        webStrongAiWeak: [],
+        aiStrongWebWeak: [],
+        gapSummary: null,
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(withNulls);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.webStrongAiWeak).toEqual([]);
+      expect(result.data.webAiGapAiComparison.gapSummary).toBeUndefined();
+    }
+  });
+
+  it("rejects a response missing required fields", () => {
+    const result = parseWebAiGapAiComparisonUpdateResponse({
+      analysisRunId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a response with the wrong status/method literal values", () => {
+    const invalidStatus = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        status: "unavailable",
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(invalidStatus);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a response with the wrong field types", () => {
+    const invalid = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        matchedPoints: "not a list",
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(invalid);
 
     expect(result.success).toBe(false);
   });

@@ -13,6 +13,13 @@ import {
   WEB_CONTEXT_EXCERPT_DISCLAIMER,
   WEB_CONTEXT_LABEL,
 } from "../../../components/sections/WebAiGapSection";
+import {
+  AI_COMPARISON_AI_STRONG_LABEL,
+  AI_COMPARISON_GAP_SUMMARY_LABEL,
+  AI_COMPARISON_MATCHED_POINTS_LABEL,
+  AI_COMPARISON_RECOMMENDATIONS_LABEL,
+  AI_COMPARISON_WEB_STRONG_LABEL,
+} from "../../../components/sections/WebAiGapAiComparisonSection";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
 import {
   ANALYSIS_GUIDE_INTRO,
@@ -379,6 +386,82 @@ function ReportContent({
               </p>
             </div>
           )}
+        </section>
+      )}
+
+      {/* AIによる差分比較 (webAiGapAiComparison) — webAiGapとは独立の別
+          フィールドで、生成済みの場合のみ表示する。このレポート画面には
+          生成ボタンは出さない（feature/manual-ai-gap-comparison「重要
+          方針」）。未生成の場合はこのセクション自体を表示しない（上の
+          webAiGapのみが表示される）。 */}
+      {result.webAiGapAiComparison && (
+        <section className="break-inside-avoid">
+          <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
+            {REPORT_SECTION_TITLES.webAiGapAiComparison}
+          </h2>
+          <div className="mt-1 space-y-2">
+            {result.webAiGapAiComparison.matchedPoints.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  {AI_COMPARISON_MATCHED_POINTS_LABEL}
+                </p>
+                <ul className="list-disc space-y-0.5 pl-5 text-zinc-600 dark:text-zinc-300 print:text-black">
+                  {result.webAiGapAiComparison.matchedPoints.map((point) => (
+                    <li key={point}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {result.webAiGapAiComparison.webStrongAiWeak.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  {AI_COMPARISON_WEB_STRONG_LABEL}
+                </p>
+                <ul className="list-disc space-y-0.5 pl-5 text-zinc-600 dark:text-zinc-300 print:text-black">
+                  {result.webAiGapAiComparison.webStrongAiWeak.map((point) => (
+                    <li key={point}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {result.webAiGapAiComparison.aiStrongWebWeak.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  {AI_COMPARISON_AI_STRONG_LABEL}
+                </p>
+                <ul className="list-disc space-y-0.5 pl-5 text-zinc-600 dark:text-zinc-300 print:text-black">
+                  {result.webAiGapAiComparison.aiStrongWebWeak.map((point) => (
+                    <li key={point}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {result.webAiGapAiComparison.gapSummary && (
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  {AI_COMPARISON_GAP_SUMMARY_LABEL}
+                </p>
+                <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+                  {result.webAiGapAiComparison.gapSummary}
+                </p>
+              </div>
+            )}
+            {result.webAiGapAiComparison.recommendations.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  {AI_COMPARISON_RECOMMENDATIONS_LABEL}
+                </p>
+                <ul className="list-disc space-y-0.5 pl-5 text-zinc-600 dark:text-zinc-300 print:text-black">
+                  {result.webAiGapAiComparison.recommendations.map((recommendation) => (
+                    <li key={recommendation}>{recommendation}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+              {result.webAiGapAiComparison.caution}
+            </p>
+          </div>
         </section>
       )}
 

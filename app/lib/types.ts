@@ -438,6 +438,24 @@ export interface WebAiGapResult {
   note: string;
 }
 
+// AI-generated (not rule-based) comparison of the same Web excerpt vs.
+// AI observation summaries used by WebAiGapResult above — see
+// backend/services/ai_gap_comparison.py and
+// docs/39_ai_gap_comparison_design.md. Generated only on-demand (the
+// "AIで差分を生成" button on the history detail screen,
+// app/history/[id]/page.tsx) — never present on a freshly analyzed
+// result from app/page.tsx, and never overwrites `webAiGap` above.
+export interface WebAiGapAiComparison {
+  status: "real";
+  method: "ai_comparison";
+  matchedPoints: string[];
+  webStrongAiWeak: string[];
+  aiStrongWebWeak: string[];
+  gapSummary?: string;
+  recommendations: string[];
+  caution: string;
+}
+
 export interface AnalysisResult {
   brandName: string;
   summary: BrandSummary;
@@ -456,4 +474,9 @@ export interface AnalysisResult {
   // older saved history that predates this field — components must
   // treat that the same as "nothing to show" rather than an error.
   webAiGap?: WebAiGapResult;
+  // AI-powered comparison (see WebAiGapAiComparison above) — undefined
+  // whenever it hasn't been generated yet (always the case immediately
+  // after analysis; only ever set after a manual generation from the
+  // history detail screen).
+  webAiGapAiComparison?: WebAiGapAiComparison;
 }

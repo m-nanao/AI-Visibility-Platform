@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AI_GAP_COMPARISON_FORBIDDEN_MESSAGE,
+  AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE,
+  AI_GAP_COMPARISON_GENERATE_BUTTON_LABEL,
+  AI_GAP_COMPARISON_NOT_FOUND_MESSAGE,
+  AI_GAP_COMPARISON_REGENERATE_BUTTON_LABEL,
   ANALYSIS_RESULT_PREVIEW_NOTE,
   GEMINI_RERUN_BUTTON_LABEL,
   GEMINI_RERUN_CONFIRM_MESSAGE,
@@ -83,6 +88,8 @@ import {
   HISTORY_IMPORTANT_UNMARK_LABEL,
   filterAnalysisRunListItemsByImportance,
   resolveHistoryListEmptyText,
+  getAiGapComparisonButtonLabel,
+  resolveAiGapComparisonOutcome,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
@@ -1044,6 +1051,108 @@ describe("resolveGeminiRerunOutcome", () => {
     expect(outcome.success).toBe(true);
     if (outcome.success) {
       expect(outcome.result.brandName).toBe("サイボウズ");
+    }
+  });
+});
+
+describe("getAiGapComparisonButtonLabel (feature/manual-ai-gap-comparison)", () => {
+  it("returns the generate label when there is no comparison yet", () => {
+    expect(getAiGapComparisonButtonLabel(false)).toBe(AI_GAP_COMPARISON_GENERATE_BUTTON_LABEL);
+  });
+
+  it("returns the regenerate label once a comparison already exists", () => {
+    expect(getAiGapComparisonButtonLabel(true)).toBe(AI_GAP_COMPARISON_REGENERATE_BUTTON_LABEL);
+  });
+});
+
+describe("resolveAiGapComparisonOutcome (feature/manual-ai-gap-comparison)", () => {
+  const SAMPLE_AI_COMPARISON_RESPONSE = {
+    analysisRunId: SAMPLE_DETAIL.id,
+    webAiGapAiComparison: {
+      status: "real",
+      method: "ai_comparison",
+      matchedPoints: ["matched"],
+      webStrongAiWeak: ["web strong"],
+      aiStrongWebWeak: ["ai strong"],
+      gapSummary: "gap",
+      recommendations: ["recommend"],
+      caution: "AIによる比較であり、AIの内部認識を直接示すものではありません。",
+    },
+  };
+
+  it("returns a forbidden failure when the response is 403", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ success: false, message: AI_GAP_COMPARISON_FORBIDDEN_MESSAGE });
+  });
+
+  it("returns a notFound-style failure when the response is 404", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({ success: false, message: AI_GAP_COMPARISON_NOT_FOUND_MESSAGE });
+  });
+
+  it("forwards the backend's own reason text for a 503 (not even attempted)", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse({ error: "Anthropic API key is not configured." }, 503),
+    );
+
+    expect(outcome).toEqual({
+      success: false,
+      message: "Anthropic API key is not configured.",
+    });
+  });
+
+  it("forwards the backend's own reason text for a 502 (call attempted and failed)", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse({ error: "Anthropic API request failed with HTTP 500." }, 502),
+    );
+
+    expect(outcome).toEqual({
+      success: false,
+      message: "Anthropic API request failed with HTTP 500.",
+    });
+  });
+
+  it("falls back to a generic message when a 503/502 body has no usable error text", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(jsonDetailResponse({}, 503));
+
+    expect(outcome).toEqual({ success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns a generic failure when the network request itself failed (response is null)", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(null);
+
+    expect(outcome).toEqual({ success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns a generic failure for a non-403/404/502/503 failure status", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(jsonDetailResponse({ error: "boom" }, 500));
+
+    expect(outcome).toEqual({ success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns a generic failure when the success body fails schema validation", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse({ not: "valid" }, 200),
+    );
+
+    expect(outcome).toEqual({ success: false, message: AI_GAP_COMPARISON_GENERIC_ERROR_MESSAGE });
+  });
+
+  it("returns success with the parsed comparison when everything validates", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse(SAMPLE_AI_COMPARISON_RESPONSE, 200),
+    );
+
+    expect(outcome.success).toBe(true);
+    if (outcome.success) {
+      expect(outcome.comparison.matchedPoints).toEqual(["matched"]);
+      expect(outcome.comparison.gapSummary).toBe("gap");
     }
   });
 });

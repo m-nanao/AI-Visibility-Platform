@@ -1,8 +1,8 @@
 # AIによるWeb/AI差分比較 設計メモ
 
-「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式について、**実装前の設計のみ**をまとめるドキュメントである。このタスク（`docs/ai-gap-comparison-design`）では一切実装を行わない——DB schema変更・migration追加・API実装・UI実装・外部AI API呼び出しのいずれも対象外。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-07**
+**最終更新日: 2026-10-07（第2段階の実装を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -172,19 +172,33 @@ AI比較に渡す入力候補を、既存の保存済みデータから組み立
 
 ## 11. 実装段階
 
-1. **第1段階**: docs設計のみ（本ドキュメント、このタスク）。
-2. **第2段階**: 履歴詳細でAI差分比較を手動生成（案B: ボタン押下時のみ実行）。生成結果を保存（案C: `webAiGapAiComparison`として既存`webAiGap`と並存）。レポートに反映（生成済みなら表示、未生成なら簡易判定を表示）。
-3. **第3段階**: 再生成、provider切替（固定1providerから環境変数選択への拡張）、出力品質改善。
+1. ~~**第1段階**: docs設計のみ（本ドキュメント、このタスク）。~~ → `docs/ai-gap-comparison-design`で完了。
+2. ~~**第2段階**: 履歴詳細でAI差分比較を手動生成（案B: ボタン押下時のみ実行）。生成結果を保存（案C: `webAiGapAiComparison`として既存`webAiGap`と並存）。レポートに反映（生成済みなら表示、未生成なら簡易判定を表示）。~~ → `feature/manual-ai-gap-comparison`で実装済み（「13」参照）。
+3. **第3段階**: 再生成（実装済み——ボタン文言が「AI差分を再生成」に変わり、生成し直せる。「13」参照）、provider切替（固定1providerから環境変数選択への拡張、未実装）、出力品質改善（未実装）。
 4. **第4段階**: 非同期ジョブ化（[02_roadmap.md](./02_roadmap.md)の「完全な非同期分析ジョブ化」）との統合、分析完了後の自動生成も検討（「6. 実行タイミング比較」の案Cへの移行）。
 
-## 12. 今回のスコープ外（このdocsタスクでは実装しない）
+## 12. 今回のスコープ外（`docs/ai-gap-comparison-design`時点、設計のみのタスク）
 
-- AI差分比較自体の実装（backend API・frontend UIのいずれも）。
-- 外部AI API呼び出しの追加。
-- DB schema変更・migration追加（案Cの`webAiGapAiComparison`フィールド追加を含む実装）。
-- メモ機能・タグ機能・カテゴリ機能の実装（メモ機能は将来候補として別途記録、[38_history_marking_design.md](./38_history_marking_design.md)「13」参照）。
-- 非同期分析ジョブ化。
-- 既存の簡易判定ロジック（`backend/services/web_ai_gap.py`）の変更——今回は一切変更していない。
+この章は最初の設計タスク（`docs/ai-gap-comparison-design`）時点のスコープ外一覧である。このうちAI差分比較自体の実装は、後続の`feature/manual-ai-gap-comparison`で第2段階として完了した——「13. 第2段階の実装状況」参照。
+
+- ~~AI差分比較自体の実装（backend API・frontend UIのいずれも）~~ → `feature/manual-ai-gap-comparison`で実装済み（「13」参照）。
+- ~~外部AI API呼び出しの追加~~ → Claude (Anthropic API) への1回の呼び出しとして実装済み（手動生成時のみ、「13」参照）。
+- ~~DB schema変更・migration追加（案Cの`webAiGapAiComparison`フィールド追加を含む実装）~~ → DB schema変更・migrationなしで実装済み（既存JSONB列`result_json`内のフィールド追加のみ、「13」参照）。
+- メモ機能・タグ機能・カテゴリ機能の実装（引き続き未実装。メモ機能は将来候補として別途記録、[38_history_marking_design.md](./38_history_marking_design.md)「13」参照）。
+- 非同期分析ジョブ化（引き続き未実装、第4段階）。
+- 既存の簡易判定ロジック（`backend/services/web_ai_gap.py`）の変更（第2段階実装でも変更していない、「13」参照）。
+
+## 13. 第2段階の実装状況（`feature/manual-ai-gap-comparison`、2026-10-07）
+
+設計（本ドキュメント「4〜10」）どおりに、AI差分比較の**第2段階**（履歴詳細からの手動生成のみ、DB案C、Claude固定provider）を実装した。
+
+- **migration/DB schema変更なし**: `backend/migrations/`配下への追加は行っていない。保存先は既存の`analysis_results.result_json`（JSONB列）内に新しいキー`webAiGapAiComparison`を追加するだけで、新しいDBカラム・テーブルは不要（設計「8. 保存方式」の案Cどおり）。既存の`webAiGap`は一切上書きしていない。
+- **backend**: 新規`backend/services/ai_gap_comparison.py`の`generate_ai_gap_comparison()`——入力は保存済み`result_json["webAiGap"]`の`webContext.summary`/`aiContexts[].summary`のみ（新しいWeb fetch/Common Crawl/DataForSEO/AI観測の再呼び出しは一切行わない）。唯一の外部呼び出しは、既存の`services/claude_settings.py`（`CLAUDE_API_KEY`/`CLAUDE_MODEL`/`CLAUDE_MAX_OUTPUT_TOKENS`、新しい環境変数は追加していない）を再利用したClaude Messages APIへの1回のリクエスト——既存の`services/claude_provider.py`（`CLAUDE_PROVIDER_MODE`/`ALLOW_CLAUDE_MODE_OVERRIDE`によるAI観測機能のゲート）とは完全に独立しており、このゲートを変更・再利用していない。Claude APIキー未設定、または既存の簡易判定`webAiGap`が`status="real"`でない/抜粋が空の場合は、呼び出しを試みることなく`unavailable=True`を返す設計とし、`backend/main.py`はこれを503に、実際にAnthropic呼び出しを試みて失敗した場合（ネットワークエラー・非200応答・JSON解析失敗・出力の構造化失敗）は502に振り分ける。`backend/models.py`に`WebAiGapAiComparison`（`status`/`method`/`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`/`gapSummary`/`recommendations`/`caution`）・`AnalysisResult.webAiGapAiComparison`（optional）・`WebAiGapAiComparisonResponse`を追加。`backend/main.py`に新規`POST /analysis-runs/{analysis_run_id}/web-ai-gap/ai-comparison`を追加——設計どおり、既存の`_resolve_history_access()`＋`can_user_access_analysis_run()`をそのまま再利用し、新しい権限判定ロジックは追加していない（`HISTORY_READ_TOKEN`モードは無制限、JWTモードはproject access確認、権限なしは403、存在しない/soft deleted済みの履歴は404）。保存は既存の`update_analysis_result()`（`backend/services/analysis_history_repository.py`）をそのまま再利用し、新しいrepository関数は追加していない。
+- **Claudeへのprompt**: 出力はJSONのみを厳格に指示し（コードフェンス禁止）、AIの内部認識を断定しない・保証表現を使わない・Web側/AI側の比較であることを明記する・各リストは最大5件程度、という制約を与えている。モデルの出力に関わらず、`caution`フィールドは常に固定文言で上書きする（モデルが不適切な注意書きを返した場合でも安全な文言を保証する）。
+- **frontend**: `app/lib/types.ts`/`analysis-result-schema.ts`に`WebAiGapAiComparison`型・schema（`.optionalFromPython()`、未生成の場合は従来どおり簡易判定のみ）を追加。新規proxy route `app/api/analysis-runs/[id]/web-ai-gap/ai-comparison/route.ts`（既存のDELETE/Gemini再実行/重要フラグ更新proxyと同じHISTORY_READ_TOKEN/Authorization転送パターン、503/502いずれもbackendの具体的な理由文をそのまま転送）。新規コンポーネント`app/components/sections/WebAiGapAiComparisonSection.tsx`（既存の`WebAiGapSection`とは独立した別コンポーネント・別フィールド）を追加し、`AnalysisDashboard`に新規optional prop`aiGapComparison`（既存の`geminiRerun`と同じ「履歴詳細ページのみが渡す」パターン）経由で「AIで差分を生成」/「AI差分を再生成」ボタン・生成中/成功/失敗表示を組み込んだ。`app/history/[id]/page.tsx`に生成ハンドラを追加（`handleRerunGemini`と同じ確認ダイアログ→pending→成功時は`view.result.webAiGapAiComparison`を更新・失敗時は既存状態を保持するパターン）。`app/history/[id]/report/page.tsx`には生成ボタンなしの表示専用ブロックを追加し、未生成の場合は何も表示しない。分析直後画面（`app/page.tsx`が使う`AnalysisDashboard`）は`aiGapComparison`を渡さないため、ボタンは一切表示されない。
+- **変更していないもの**: DB schema・migration、Supabase/Render/Vercel設定、重要フラグ更新API仕様、Gemini再実行API仕様、認証ロジックの方針、DataForSEO/OpenAI/Claude/Gemini providerの既存設定（`CLAUDE_PROVIDER_MODE`等）、STAGING_ACCESS_CODE/HISTORY_READ_TOKEN gate仕様、既存の簡易判定ロジック（`backend/services/web_ai_gap.py`）——いずれも設計どおり未変更。通常分析（`/analyze`）への自動組み込みも行っていない。
+- **対象外（今回も実装していない）**: 非同期ジョブ化、通常分析時の自動AI差分生成、provider切替UI、OpenAI版/Gemini版実装、ChatGPT/Claude/Gemini/AI Overview単体観測の再実行追加、メモ/タグ/カテゴリ機能。
+- **テスト**: backend（新規`tests/test_ai_gap_comparison.py`——サービス関数の単体テスト、新規`tests/test_main_analysis_runs_ai_gap_comparison_api.py`——エンドポイントのHTTPレベルテスト）・frontend（`app/lib/analysis-history.ts`/`analysis-history-schema.ts`それぞれの新規関数テスト、新規proxy routeテスト）に追加。
 
 ## 関連ドキュメント
 

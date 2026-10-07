@@ -12,11 +12,14 @@ import ContextAnalysisSection from "./sections/ContextAnalysisSection";
 import AIOverviewComparisonSection from "./sections/AIOverviewComparisonSection";
 import type { GeminiRerunControlsState } from "./sections/AIOverviewComparisonSection";
 import WebAiGapSection from "./sections/WebAiGapSection";
+import WebAiGapAiComparisonSection from "./sections/WebAiGapAiComparisonSection";
+import type { AiGapComparisonControlsState } from "./sections/WebAiGapAiComparisonSection";
 import ImprovementSuggestionsSection from "./sections/ImprovementSuggestionsSection";
 
 export default function AnalysisDashboard({
   result,
   geminiRerun,
+  aiGapComparison,
 }: {
   result: AnalysisResult;
   // Only ever passed by the history detail page
@@ -25,6 +28,12 @@ export default function AnalysisDashboard({
   // appears there, and the report page doesn't use AnalysisDashboard at
   // all. See AIOverviewComparisonSection.tsx's GeminiRerunControlsState.
   geminiRerun?: GeminiRerunControlsState;
+  // Only ever passed by the history detail page, same reasoning as
+  // geminiRerun above — see WebAiGapAiComparisonSection.tsx's
+  // AiGapComparisonControlsState. The "AIで差分を生成" button never
+  // appears on the analysis result screen
+  // (feature/manual-ai-gap-comparison's 重要方針: 通常分析には組み込まない).
+  aiGapComparison?: AiGapComparisonControlsState;
 }) {
   // Only rendered when result.analysisRunId is a saved analysis_runs.id
   // (DB save succeeded) — see
@@ -74,6 +83,17 @@ export default function AnalysisDashboard({
           WebAiGapSection自体が何もレンダリングしない。 */}
       <div className="lg:col-span-2">
         <WebAiGapSection webAiGap={result.webAiGap} />
+      </div>
+      {/* AIによる差分比較 ("webAiGapAiComparison", 上のwebAiGapとは独立の
+          別フィールド) — 履歴詳細画面でのみ生成ボタン(aiGapComparison)を
+          渡す。comparison/controlsのいずれも無い場合(分析直後画面・未生成
+          の履歴詳細)はWebAiGapAiComparisonSection自体が何もレンダリング
+          しない（feature/manual-ai-gap-comparison）。 */}
+      <div className="lg:col-span-2">
+        <WebAiGapAiComparisonSection
+          comparison={result.webAiGapAiComparison}
+          controls={aiGapComparison}
+        />
       </div>
       {/* 改善提案は他セクションより文章量が多くなりやすく、狭い2カラム
           グリッド内だと1件あたりの説明文が読みにくくなるため、
