@@ -483,6 +483,7 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - **本番で使うために必要なこと**: AI比較の生成には既存のClaude API設定（`CLAUDE_API_KEY`等、Claude観測機能と共通）が必要——未設定の場合は「AIで差分を生成」をクリックしてもエラーになる（新しい環境変数は追加していない）。
 - **2026-10-08に修正した不具合**: 本番で「AIで差分を生成」を押すと毎回「AI比較の出力を解釈できませんでした。」になる不具合があった（Claude自体は正常に応答していたが、応答テキストに前置き文・後置き文・markdownコードフェンスが混ざることがあり、backend側のJSON解釈が厳格すぎて失敗していた）。backend側のJSON抽出・項目の受け入れ方を緩くする修正（`fix/ai-gap-comparison-json-parse`）により解消済み——エラーメッセージも「AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。」に変更した。それでも失敗する場合は、時間をおいて再度試すか、簡易判定のみで確認する。
 - **2026-10-08、さらに診断を強化（`fix/ai-gap-comparison-diagnostics`）**: 上記の修正後も本番で失敗が続いたため、失敗段階（Claude応答のcontent抽出／JSON抽出／出力validation）を区別できる安全な診断ログを追加した（詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「15」参照）。画面に表示される文言・失敗時の挙動（簡易判定が残る、ボタンがすぐ再度押せる）は変わっていない。開発者がRenderログを見れば、Claude APIキー等のsecretやAI回答全文を含まない形で失敗理由（識別コード）を確認できるようになった。
+- **2026-10-08、ClaudeがJSONを返さない場合の自然文fallbackを追加（`fix/ai-gap-comparison-text-fallback`）**: 本番ログの確認により、Claudeが`{`〜`}`形のJSONを一切含まない自然文だけを返すケース（`reason=no_json_object_found`）があることが分かった。この場合、十分な長さの自然文で、かつ拒否・謝罪文ではないと判断できれば、「AIによる差分比較（文章形式）」として、Claudeが返した自然文をそのまま表示するようにした（通常の一致点/Web側が強い点/AI側が強い点等の構造化表示とは見た目で区別される）。短すぎる場合や拒否文っぽい場合は、従来どおり失敗として扱われる（簡易判定は残り、ボタンはすぐ再度押せる）。**Claude API呼び出しは引き続き1回のまま**（JSON整形のための2回目の呼び出しは行っていない）。レポート画面（`/history/[id]/report`）でも同じ文章形式で表示される。
 - **まだ実装していないもの**: provider切替（Claude固定のまま）、通常分析実行時の自動生成、非同期ジョブ化との統合——次の段階として設計docsに記録済み（[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「11」参照）。
 
 ## 関連ドキュメント

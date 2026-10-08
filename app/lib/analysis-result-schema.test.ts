@@ -580,4 +580,74 @@ describe("parseAnalysisResult", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- webAiGapAiComparison, method="ai_comparison_text_fallback"
+  // (fix/ai-gap-comparison-text-fallback) ---
+
+  it('accepts webAiGapAiComparison with method="ai_comparison_text_fallback" and textSummary', () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGapAiComparison: {
+        status: "real",
+        method: "ai_comparison_text_fallback",
+        matchedPoints: [],
+        webStrongAiWeak: [],
+        aiStrongWebWeak: [],
+        gapSummary: "Claudeが構造化JSONではなく文章形式で比較結果を返しました。",
+        recommendations: ["上記の文章形式の比較結果を確認してください。"],
+        textSummary: "Web上では...と説明されていますが、AI回答では...",
+        caution: "AIによる比較であり、AIの内部認識を直接示すものではありません。",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison?.method).toBe("ai_comparison_text_fallback");
+      expect(result.data.webAiGapAiComparison?.textSummary).toContain("Web上では");
+    }
+  });
+
+  it("accepts a normal webAiGapAiComparison with no textSummary field", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGapAiComparison: {
+        status: "real",
+        method: "ai_comparison",
+        matchedPoints: ["matched"],
+        webStrongAiWeak: [],
+        aiStrongWebWeak: [],
+        recommendations: ["recommend"],
+        caution: "AIによる比較であり、AIの内部認識を直接示すものではありません。",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison?.method).toBe("ai_comparison");
+      expect(result.data.webAiGapAiComparison?.textSummary).toBeUndefined();
+    }
+  });
+
+  it("rejects webAiGapAiComparison with an unrecognized method value", () => {
+    const invalid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGapAiComparison: {
+        status: "real",
+        method: "something_else",
+        matchedPoints: [],
+        webStrongAiWeak: [],
+        aiStrongWebWeak: [],
+        recommendations: [],
+        caution: "caution",
+      },
+    };
+
+    const result = parseAnalysisResult(invalid);
+
+    expect(result.success).toBe(false);
+  });
 });

@@ -332,12 +332,16 @@ export function parseAnalysisRunImportantResponse(
  */
 const webAiGapAiComparisonSchema = z.object({
   status: z.literal("real"),
-  method: z.literal("ai_comparison"),
+  method: z.enum(["ai_comparison", "ai_comparison_text_fallback"]),
   matchedPoints: z.array(z.string()).default([]),
   webStrongAiWeak: z.array(z.string()).default([]),
   aiStrongWebWeak: z.array(z.string()).default([]),
   gapSummary: optionalFromPython(z.string()),
   recommendations: z.array(z.string()).default([]),
+  // Only present when method === "ai_comparison_text_fallback" (fix/
+  // ai-gap-comparison-text-fallback) — see WebAiGapAiComparison in
+  // app/lib/types.ts.
+  textSummary: optionalFromPython(z.string()),
   caution: z.string(),
 });
 

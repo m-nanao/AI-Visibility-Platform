@@ -66,6 +66,23 @@ tell "no text block was present at all" apart from "found a text block
 but it was blank" apart from "found text but it had no JSON-looking
 substring" apart from "found something JSON-shaped but it didn't
 parse" without ever seeing a secret or the raw output.
+
+**Text fallback for REASON_NO_JSON_OBJECT_FOUND
+(fix/ai-gap-comparison-text-fallback).** Production logs confirmed a
+case where the Anthropic call succeeded, a text block was present and
+non-empty (e.g. raw_length=947), and yet no `{`...`}`-shaped substring
+existed anywhere in it — i.e. Claude answered in natural language
+instead of attempting JSON at all. No amount of additional JSON
+parsing leniency can recover a comparison from that, so for this
+*specific* reason only (never REASON_JSON_DECODE_FAILED, which still
+means a genuine, reportable failure), this module now accepts the raw
+text itself as a safe, best-effort fallback result rather than
+discarding it — see _try_build_text_fallback() below. This still
+reuses the single Anthropic response already received; it never makes
+a second Claude call to "fix" the output into JSON. The resulting
+WebAiGapAiComparison has `method="ai_comparison_text_fallback"` and
+`textSummary` set instead of the structured list fields, so the
+frontend can render it distinctly from a normal structured comparison.
 """
 
 from __future__ import annotations
@@ -101,6 +118,56 @@ MAX_ITEMS_PER_LIST = 5
 CAUTION_TEXT = (
     "AIによる比較であり、AIの内部認識を直接示すものではありません。"
 )
+
+# --- Text fallback (fix/ai-gap-comparison-text-fallback) ---
+#
+# Only used when parse_ai_gap_comparison_json() reports
+# REASON_NO_JSON_OBJECT_FOUND (no `{`...`}`-shaped substring anywhere —
+# see module docstring). REASON_JSON_DECODE_FAILED (something
+# JSON-shaped was found but didn't parse) is never eligible — that
+# still means a genuine parse failure worth reporting as such.
+METHOD_TEXT_FALLBACK = "ai_comparison_text_fallback"
+
+# Below this length, a "no JSON found" response is too short to be a
+# useful comparison on its own (e.g. a one-line acknowledgement) — not
+# worth presenting as a result, so it's still treated as a failure.
+MIN_TEXT_FALLBACK_LENGTH = 80
+
+# Above this length, the fallback text is truncated (with a trailing
+# "…") before being persisted/displayed — keeps a pathologically long
+# natural-language response bounded without needing a second Claude
+# call to shorten it.
+MAX_TEXT_FALLBACK_LENGTH = 4000
+
+_TEXT_FALLBACK_GAP_SUMMARY = (
+    "Claudeが構造化JSONではなく文章形式で比較結果を返しました。"
+    "以下の文章形式の比較結果をご確認ください。"
+)
+_TEXT_FALLBACK_RECOMMENDATION = "上記の文章形式の比較結果を確認してください。"
+
+# Simple substring check against the *start* of the response only
+# (see _looks_like_refusal()) — catches an outright refusal/apology
+# without trying to be a thorough classifier (the task explicitly
+# calls for a simple check, not an elaborate one). Mixed case/width
+# variants are intentionally limited to what's plausible from a model
+# response, not an exhaustive list.
+_REFUSAL_HEAD_PHRASES = (
+    "i can't",
+    "i cannot",
+    "i'm unable",
+    "i am unable",
+    "i'm sorry",
+    "i am sorry",
+    "申し訳ありません",
+    "申し訳ございません",
+    "すみません",
+    "ごめんなさい",
+    "お答えできません",
+    "回答できません",
+    "対応できません",
+    "できません",
+)
+_REFUSAL_HEAD_WINDOW = 80
 
 # --- Safe, short internal reason codes (fix/ai-gap-comparison-diagnostics) -
 #
@@ -166,6 +233,8 @@ SYSTEM_PROMPT = (
     "- Markdown記法(コードフェンス```、見出し#、箇条書き-/*等)を一切使わないこと。\n"
     "- JSON以外の説明文・前置き・後置き・箇条書き本文を一切出力しないこと。"
     "「以下が比較結果です」のような文も不要です。\n"
+    "- JSON以外の文章形式では絶対に返さないこと。"
+    "どうしても判断が難しい場合でも、必ず上記のJSON形式に収めて回答すること。\n"
     "- 各キーの値は日本語の文字列、または日本語文字列の配列にすること。\n"
     "- \"recommendations\"は必ず要素数1件以上の配列にすること(空配列にしないこと)。\n"
     "- \"gapSummary\"は必ず文字列にすること(nullや省略は不可)。\n"
@@ -364,6 +433,54 @@ def _coerce_str_list(value: Any) -> list[str]:
     ]
 
 
+def _looks_like_refusal(text: str) -> bool:
+    """Simple, intentionally non-exhaustive check for an outright
+    refusal/apology at the *start* of Claude's response (e.g. "申し訳
+    ありませんが..." or "I can't help with that.") — only the first
+    `_REFUSAL_HEAD_WINDOW` characters are checked, so a hedge sentence
+    like "〜できませんが、以下のように見立てられます" later in a
+    substantive response doesn't falsely disqualify it. Per the task's
+    own guidance, this is deliberately simple rather than a thorough
+    classifier."""
+    head = text[:_REFUSAL_HEAD_WINDOW].lower()
+    return any(phrase in head for phrase in _REFUSAL_HEAD_PHRASES)
+
+
+def _build_text_fallback_comparison(text: str) -> WebAiGapAiComparison:
+    """Builds a WebAiGapAiComparison from Claude's raw natural-language
+    text when no JSON object could be found in it at all — see module
+    docstring's "Text fallback" section. Truncates to
+    MAX_TEXT_FALLBACK_LENGTH (with a trailing "…") rather than storing
+    an unbounded amount of text."""
+    truncated = text[:MAX_TEXT_FALLBACK_LENGTH]
+    if len(text) > MAX_TEXT_FALLBACK_LENGTH:
+        truncated = truncated.rstrip() + "…"
+    return WebAiGapAiComparison(
+        method=METHOD_TEXT_FALLBACK,
+        matchedPoints=[],
+        webStrongAiWeak=[],
+        aiStrongWebWeak=[],
+        gapSummary=_TEXT_FALLBACK_GAP_SUMMARY,
+        recommendations=[_TEXT_FALLBACK_RECOMMENDATION],
+        textSummary=truncated,
+        caution=CAUTION_TEXT,
+    )
+
+
+def _try_build_text_fallback(text: str) -> WebAiGapAiComparison | None:
+    """Returns a text-fallback WebAiGapAiComparison when `text` (already
+    stripped by the caller) is eligible, or None when it isn't — too
+    short (< MIN_TEXT_FALLBACK_LENGTH) or looks like an outright
+    refusal/apology (see _looks_like_refusal()). Only called for
+    REASON_NO_JSON_OBJECT_FOUND; a genuine decode failure
+    (REASON_JSON_DECODE_FAILED) is never eligible for this fallback."""
+    if len(text) < MIN_TEXT_FALLBACK_LENGTH:
+        return None
+    if _looks_like_refusal(text):
+        return None
+    return _build_text_fallback_comparison(text)
+
+
 def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | None]:
     """Parses Claude's raw text output into a WebAiGapAiComparison.
     Returns `(comparison, None)` on success, or `(None, reason)` where
@@ -383,9 +500,20 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
     model produced (see module docstring); `status`/`method` keep their
     WebAiGapAiComparison defaults ("real"/"ai_comparison") regardless
     of what's in `parsed`.
+
+    When no JSON object is found at all (REASON_NO_JSON_OBJECT_FOUND),
+    tries the text fallback (see _try_build_text_fallback()) before
+    giving up — this still counts as success (`reason` is None) with
+    `comparison.method == METHOD_TEXT_FALLBACK`, letting the caller
+    distinguish a text-fallback success from a normal structured one
+    purely by inspecting `comparison.method`.
     """
     parsed, reason = parse_ai_gap_comparison_json(text)
     if parsed is None:
+        if reason == REASON_NO_JSON_OBJECT_FOUND:
+            fallback = _try_build_text_fallback(text.strip())
+            if fallback is not None:
+                return fallback, None
         return None, reason
 
     gap_summary = parsed.get("gapSummary")
@@ -668,6 +796,17 @@ def generate_ai_gap_comparison(
         )
         return AiGapComparisonOutcome(
             success=False, reason=_PARSE_FAILED_REASON, internal_reason=parse_reason
+        )
+
+    if comparison.method == METHOD_TEXT_FALLBACK:
+        # Not a failure — logged at info level (never a warning) since
+        # this is an accepted, safe fallback outcome, not a problem.
+        # Only the length is logged, never the text itself.
+        logger.info(
+            "AI gap comparison used text fallback: analysis_run_id=%s model=%s raw_length=%d",
+            analysis_run_id,
+            settings.model,
+            len(extraction.text),
         )
 
     return AiGapComparisonOutcome(
