@@ -11,7 +11,10 @@ import httpx
 from services import ai_gap_comparison
 from services.ai_gap_comparison import (
     CAUTION_TEXT,
+    MAX_TEXT_FALLBACK_LENGTH,
     MESSAGES_API_URL,
+    METHOD_TEXT_FALLBACK,
+    MIN_TEXT_FALLBACK_LENGTH,
     REASON_CREDENTIALS_MISSING,
     REASON_EMPTY_MODEL_OUTPUT,
     REASON_JSON_DECODE_FAILED,
@@ -329,6 +332,155 @@ def test_returns_failure_when_model_output_is_not_valid_json(monkeypatch):
     assert outcome.success is False
     assert outcome.unavailable is False
     assert outcome.internal_reason == REASON_NO_JSON_OBJECT_FOUND
+
+
+# --- text fallback for REASON_NO_JSON_OBJECT_FOUND (fix/ai-gap-comparison-
+# text-fallback) ------------------------------------------------------------
+
+
+def _long_natural_language_comparison() -> str:
+    return (
+        "Web上では当社がSEO対策・AI検索対策・AIO/GEO/LLMOに強いWeb集客支援会社として"
+        "説明されていますが、ChatGPTやClaudeの回答では、一般的なブランディング会社"
+        "として紹介される傾向があります。具体的には、ロゴやCI/VIといった言葉が中心に"
+        "なっており、SEOやAI検索対策という強みがAI回答側では十分に反映されていません。"
+        "改善のためには、社名の近くにSEO対策・AI検索対策・AIO/GEO/LLMOという語を"
+        "一貫して記載することが有効と考えられます。"
+    )
+
+
+def test_returns_success_with_text_fallback_when_no_json_object_but_sufficient_text(monkeypatch):
+    long_text = _long_natural_language_comparison()
+    assert len(long_text) >= MIN_TEXT_FALLBACK_LENGTH
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": long_text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison is not None
+    assert outcome.comparison.method == METHOD_TEXT_FALLBACK
+    assert outcome.comparison.status == "real"
+    assert outcome.comparison.textSummary == long_text
+    assert outcome.comparison.matchedPoints == []
+    assert outcome.comparison.webStrongAiWeak == []
+    assert outcome.comparison.aiStrongWebWeak == []
+    assert outcome.comparison.recommendations != []
+    assert outcome.comparison.caution == CAUTION_TEXT
+
+
+def test_text_fallback_truncates_overly_long_text(monkeypatch):
+    long_text = "あ" * (MAX_TEXT_FALLBACK_LENGTH + 500)
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": long_text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.textSummary is not None
+    assert len(outcome.comparison.textSummary) == MAX_TEXT_FALLBACK_LENGTH + 1
+    assert outcome.comparison.textSummary.endswith("…")
+
+
+def test_text_fallback_not_used_when_text_is_too_short(monkeypatch):
+    short_text = "申し訳ございませんが比較できません。"
+    assert len(short_text) < MIN_TEXT_FALLBACK_LENGTH
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": short_text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.comparison is None
+    assert outcome.internal_reason == REASON_NO_JSON_OBJECT_FOUND
+
+
+def test_text_fallback_not_used_when_text_looks_like_a_refusal(monkeypatch):
+    refusal_text = "申し訳ございませんが、" + _long_natural_language_comparison()
+    assert len(refusal_text) >= MIN_TEXT_FALLBACK_LENGTH
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": refusal_text}]}
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.comparison is None
+    assert outcome.internal_reason == REASON_NO_JSON_OBJECT_FOUND
+
+
+def test_text_fallback_not_used_when_text_looks_like_an_english_refusal(monkeypatch):
+    refusal_text = "I can't provide a reliable comparison " * 5
+    assert len(refusal_text) >= MIN_TEXT_FALLBACK_LENGTH
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": refusal_text}]}
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.comparison is None
+    assert outcome.internal_reason == REASON_NO_JSON_OBJECT_FOUND
+
+
+def test_text_fallback_not_used_for_json_decode_failed(monkeypatch):
+    """A genuinely malformed JSON-shaped candidate is never eligible for
+    the text fallback — only REASON_NO_JSON_OBJECT_FOUND is."""
+    malformed = '{gapSummary: "x", recommendations: [}' + "あ" * 100
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": malformed}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.comparison is None
+    assert outcome.internal_reason == REASON_JSON_DECODE_FAILED
+
+
+def test_structured_json_preferred_over_text_fallback_when_json_present(monkeypatch):
+    """When the response actually contains a valid JSON object (even
+    alongside surrounding prose), the structured result is used — the
+    text fallback only ever kicks in when no JSON object exists at
+    all."""
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={
+            "content": [
+                {
+                    "type": "text",
+                    "text": "以下が比較結果です。\n\n" + _ai_comparison_json_text(),
+                }
+            ]
+        },
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == "ai_comparison"
+    assert outcome.comparison.textSummary is None
+
+
+def test_text_fallback_success_logs_info_not_warning_and_never_logs_raw_text(monkeypatch, caplog):
+    import logging
+
+    long_text = _long_natural_language_comparison()
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": long_text}]})
+
+    with caplog.at_level(logging.INFO):
+        generate_ai_gap_comparison(
+            brand_name="Acme", result_json=_result_json(), analysis_run_id="run-789"
+        )
+
+    assert "AI gap comparison used text fallback" in caplog.text
+    assert "run-789" in caplog.text
+    for record in caplog.records:
+        assert record.levelno < logging.WARNING
+    assert long_text not in caplog.text
 
 
 # --- success ----------------------------------------------------------------

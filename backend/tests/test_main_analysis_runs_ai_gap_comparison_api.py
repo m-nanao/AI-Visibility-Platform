@@ -185,6 +185,42 @@ def test_ai_comparison_history_token_mode_success(monkeypatch):
     assert body["webAiGapAiComparison"]["method"] == "ai_comparison"
 
 
+def test_ai_comparison_text_fallback_is_saved_and_returned_and_preserves_web_ai_gap(monkeypatch):
+    """fix/ai-gap-comparison-text-fallback: a text-fallback comparison
+    (method="ai_comparison_text_fallback", textSummary set) is persisted
+    and returned exactly like a normal structured one, and the existing
+    rule-based webAiGap is still left untouched."""
+    _enable_read_env(monkeypatch)
+    detail = _fake_detail()
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
+    fallback_comparison = _comparison(
+        method="ai_comparison_text_fallback",
+        matchedPoints=[],
+        webStrongAiWeak=[],
+        aiStrongWebWeak=[],
+        gapSummary="Claudeが構造化JSONではなく文章形式で比較結果を返しました。",
+        recommendations=["上記の文章形式の比較結果を確認してください。"],
+        textSummary="Web上では...と説明されていますが、AI回答では...",
+    )
+    _mock_successful_generation(monkeypatch, comparison=fallback_comparison)
+    saved = {}
+
+    def fake_update(run_id, *, result_json, meta_json):
+        saved["result_json"] = result_json
+        return True
+
+    monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["webAiGapAiComparison"]["method"] == "ai_comparison_text_fallback"
+    assert body["webAiGapAiComparison"]["textSummary"] == fallback_comparison.textSummary
+    assert saved["result_json"]["webAiGapAiComparison"]["method"] == "ai_comparison_text_fallback"
+    assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
+
+
 def test_ai_comparison_history_token_mode_not_found(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: None)

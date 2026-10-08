@@ -1,8 +1,8 @@
 # AIによるWeb/AI差分比較 設計メモ
 
-「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化した——詳細は「14」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした——詳細は「16」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-08（Claude出力のJSON parse堅牢化を反映）**
+**最終更新日: 2026-10-08（Claude出力の自然文fallback対応を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -225,6 +225,25 @@ AI比較に渡す入力候補を、既存の保存済みデータから組み立
 - **失敗時の挙動は変更なし**: 解釈に失敗した場合、`result_json`は一切書き換えない（既存の`webAiGap`・以前に生成済みの`webAiGapAiComparison`があればそのまま保持される）。
 - **変更していないもの**: Claude API接続設定・新しい環境変数の追加・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定・`error_response()`等の既存共通ヘルパーの変更——いずれも行っていない。
 - **テスト**: backend（`tests/test_ai_gap_comparison.py`に`_extract_output_text()`/`parse_ai_gap_comparison_json()`の新しい戻り値・理由コードの単体テスト、JSON修復の単体テスト、`caplog`を使った安全ログ内容の検証——APIキーがログに一切出ないことを含む、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`に`reason`フィールドがAPI応答に含まれること・secret/raw出力が応答に含まれないことのテスト）・frontend（`app/lib/analysis-history.test.ts`に`reason`フィールドが画面表示上無視されることのテスト、proxy routeテストに`reason`がそのまま転送されることのテスト）。
+
+## 16. ClaudeがJSONを返さない場合の自然文fallback（`fix/ai-gap-comparison-text-fallback`、2026-10-08）
+
+「15」の診断ログを本番で確認したところ、以下のようなログが出た。
+
+```
+WARNING:services.ai_gap_comparison:AI gap comparison failed: reason=no_json_object_found analysis_run_id=... model=claude-sonnet-4-5 raw_length=947 content_types=['text'] text_block_count=1
+```
+
+Claude API呼び出しは成功し、text型のcontentブロックも1件取得できており（`raw_length=947`で空でもない）、**それでも`{`〜`}`形のJSONオブジェクトが一切含まれていなかった**——つまりClaudeがJSONを試みず、自然文の比較結果だけを返していた。この場合、JSON抽出をさらに厳密化・寛容化しても解決しない（抽出対象のJSON自体が存在しないため）。そこで、この特定のケースに限り、返ってきた自然文を安全なfallback結果として保存・表示できるようにした。
+
+- **fallbackの適用条件**: `backend/services/ai_gap_comparison.py`の`_parse_comparison()`で、`parse_ai_gap_comparison_json()`が`REASON_NO_JSON_OBJECT_FOUND`を返した場合（**`REASON_JSON_DECODE_FAILED`、つまり何らかのJSON候補はあったが解釈に失敗したケースは対象外**——これは引き続き本来の解釈失敗として扱う）に限り、`_try_build_text_fallback()`でテキスト自体をfallback候補として評価する。(1) strip後の文字数が`MIN_TEXT_FALLBACK_LENGTH`（80文字）未満なら不採用、(2) `_looks_like_refusal()`でテキスト先頭80文字に「申し訳ありません」「できません」「I can't」等の拒否・謝罪フレーズが含まれる場合は不採用——いずれの場合も従来どおり解釈失敗（`REASON_NO_JSON_OBJECT_FOUND`）として扱う。両方をクリアした場合のみ、`method="ai_comparison_text_fallback"`の`WebAiGapAiComparison`を構築し、これは`_parse_comparison()`からは成功（`reason=None`）として返る。
+- **保存形式**: `backend/models.py`の`WebAiGapAiComparison`に新フィールド`textSummary: str | None`を追加し、`method`の型を`Literal["ai_comparison", "ai_comparison_text_fallback"]`に拡張した。fallback時は`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`は空配列、`gapSummary`は固定の説明文、`recommendations`は「上記の文章形式の比較結果を確認してください。」の1件、`textSummary`にClaudeの自然文（必要なら末尾`MAX_TEXT_FALLBACK_LENGTH`=4000文字で切り詰め、超過時は末尾に「…」を付与）を格納する。`caution`は通常どおり固定文言（`CAUTION_TEXT`）で上書きする。
+- **Claude呼び出しは1回のまま**: fallback構築は既存のAnthropicレスポンス（すでに受信済みの1回分）をそのまま使うだけで、JSON整形のための2回目のClaude呼び出しは行っていない（タスクの重要方針どおり）。
+- **prompt微調整**: `SYSTEM_PROMPT`の「厳守事項」に「JSON以外の文章形式では絶対に返さないこと。どうしても判断が難しい場合でも、必ず上記のJSON形式に収めて回答すること。」を1行追加した。JSON-only指示自体は維持し、大幅な変更はしていない。
+- **ログ**: fallbackが使われた場合は`logger.warning()`ではなく`logger.info()`で`analysis_run_id`・provider/model名・`raw_length`のみを記録する（Claude自然文全文はログに出さない）——失敗ではなく許容されたfallbackであることを表すため。
+- **frontend表示**: `app/lib/types.ts`・`analysis-result-schema.ts`・`analysis-history-schema.ts`の`WebAiGapAiComparison`型/schemaに`textSummary`（optional）を追加し、`method`を`"ai_comparison" | "ai_comparison_text_fallback"`の2値に拡張した。`WebAiGapAiComparisonSection.tsx`・`app/history/[id]/report/page.tsx`はいずれも`comparison.method === "ai_comparison_text_fallback"`の場合、見出しを「AIによる差分比較（文章形式）」に変え、補足文「AIが構造化形式ではなく文章形式で返した比較結果です。保存済みのWeb抜粋とAI観測結果をもとにした補助的な見立てです。」を表示し、本文は`textSummary`（なければ`gapSummary`）、改善ヒントは`recommendations`、最後に`caution`を表示する——通常の構造化`ai_comparison`表示（一致点/Web側が強い点/AI側が強い点/ズレの要約/改善ヒント）とは完全に分けて描画し、既存の表示ロジックは変更していない。
+- **変更していないもの**: Claude API呼び出し回数（1回のまま）・新しい環境変数・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定・既存の`webAiGap`——いずれも行っていない。失敗時（fallback不採用時も含む）に`result_json`を書き換えない既存方針も維持。
+- **テスト**: backend（`tests/test_ai_gap_comparison.py`に、十分な長さの自然文で`REASON_NO_JSON_OBJECT_FOUND`の場合にfallback成功すること・`method`/`textSummary`の内容・長すぎる場合の切り詰め・短すぎる場合は従来どおり失敗・拒否文っぽい場合は従来どおり失敗・JSONが見つかった場合は構造化結果が優先されること・`REASON_JSON_DECODE_FAILED`はfallback対象外であること・fallback成功時は`info`ログでraw全文が出ないことを検証、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`にfallback結果が保存され`webAiGap`を壊さないことのテスト）・frontend（`analysis-result-schema.test.ts`/`analysis-history-schema.test.ts`に`method="ai_comparison_text_fallback"`・`textSummary`のschemaテスト、新規`WebAiGapAiComparisonSection.test.ts`に文章形式表示用の見出し・補足文のコピーテスト）。
 
 ## 関連ドキュメント
 

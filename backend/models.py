@@ -605,15 +605,28 @@ class WebAiGapAiComparison(BaseModel):
     a successful services/ai_gap_comparison.py call (a failed attempt
     is never persisted — see that module), so `status` has no
     "unavailable" value here, unlike WebAiGapStatus above.
+
+    `method="ai_comparison_text_fallback"` (fix/ai-gap-comparison-
+    text-fallback) marks a result built from Claude's raw natural-
+    language output when no JSON object could be found in it at all
+    (REASON_NO_JSON_OBJECT_FOUND in services/ai_gap_comparison.py) —
+    the list fields are empty and `textSummary` carries the (possibly
+    truncated) natural-language text instead. This is still a single
+    Anthropic call's output, never a second request.
     """
 
     status: Literal["real"] = "real"
-    method: Literal["ai_comparison"] = "ai_comparison"
+    method: Literal["ai_comparison", "ai_comparison_text_fallback"] = "ai_comparison"
     matchedPoints: list[str] = []
     webStrongAiWeak: list[str] = []
     aiStrongWebWeak: list[str] = []
     gapSummary: str | None = None
     recommendations: list[str] = []
+    # Only set when method == "ai_comparison_text_fallback" — Claude's
+    # raw natural-language comparison text (possibly truncated, see
+    # services/ai_gap_comparison.py's MAX_TEXT_FALLBACK_LENGTH), shown
+    # as-is instead of the structured list fields above.
+    textSummary: str | None = None
     # Always the same fixed, safe-to-display reminder regardless of
     # what the model itself produced — see
     # services/ai_gap_comparison.py's CAUTION_TEXT, which overwrites

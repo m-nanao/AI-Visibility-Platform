@@ -447,12 +447,19 @@ export interface WebAiGapResult {
 // result from app/page.tsx, and never overwrites `webAiGap` above.
 export interface WebAiGapAiComparison {
   status: "real";
-  method: "ai_comparison";
+  // "ai_comparison_text_fallback" (fix/ai-gap-comparison-text-fallback)
+  // marks a result built from Claude's raw natural-language text when
+  // no JSON object could be found in it at all — the list fields are
+  // empty and `textSummary` carries the natural-language text instead
+  // of the structured fields below.
+  method: "ai_comparison" | "ai_comparison_text_fallback";
   matchedPoints: string[];
   webStrongAiWeak: string[];
   aiStrongWebWeak: string[];
   gapSummary?: string;
   recommendations: string[];
+  // Only set when method === "ai_comparison_text_fallback".
+  textSummary?: string;
   caution: string;
 }
 

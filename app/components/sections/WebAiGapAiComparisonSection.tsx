@@ -15,6 +15,15 @@ export const AI_COMPARISON_AI_STRONG_LABEL = "AI回答では強いがWeb上で�
 export const AI_COMPARISON_GAP_SUMMARY_LABEL = "ズレの要約";
 export const AI_COMPARISON_RECOMMENDATIONS_LABEL = "改善ヒント";
 
+// Shown instead of the structured labels above when
+// comparison.method === "ai_comparison_text_fallback" (fix/
+// ai-gap-comparison-text-fallback) — Claude returned natural-language
+// text with no JSON object in it at all, so there is no structured
+// matchedPoints/webStrongAiWeak/aiStrongWebWeak to show.
+export const AI_COMPARISON_TEXT_FALLBACK_HEADING = "AIによる差分比較（文章形式）";
+export const AI_COMPARISON_TEXT_FALLBACK_NOTE =
+  "AIが構造化形式ではなく文章形式で返した比較結果です。保存済みのWeb抜粋とAI観測結果をもとにした補助的な見立てです。";
+
 // Passed only by the history detail page (app/history/[id]/page.tsx) —
 // mirrors AIOverviewComparisonSection.tsx's GeminiRerunControlsState
 // pattern. The analysis result screen never passes this (no generate
@@ -90,7 +99,28 @@ export default function WebAiGapAiComparisonSection({
           </div>
         )}
 
-        {comparison && (
+        {comparison && comparison.method === "ai_comparison_text_fallback" && (
+          <>
+            <div>
+              <h4 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                {AI_COMPARISON_TEXT_FALLBACK_HEADING}
+              </h4>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                {AI_COMPARISON_TEXT_FALLBACK_NOTE}
+              </p>
+            </div>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+              {comparison.textSummary || comparison.gapSummary}
+            </p>
+            <ComparisonList
+              label={AI_COMPARISON_RECOMMENDATIONS_LABEL}
+              items={comparison.recommendations}
+            />
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">{comparison.caution}</p>
+          </>
+        )}
+
+        {comparison && comparison.method === "ai_comparison" && (
           <>
             <ComparisonList
               label={AI_COMPARISON_MATCHED_POINTS_LABEL}

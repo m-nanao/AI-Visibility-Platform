@@ -706,4 +706,53 @@ describe("parseWebAiGapAiComparisonUpdateResponse", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- method="ai_comparison_text_fallback" (fix/ai-gap-comparison-text-fallback) ---
+
+  it("accepts method=\"ai_comparison_text_fallback\" with a textSummary and empty list fields", () => {
+    const fallback = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        method: "ai_comparison_text_fallback",
+        matchedPoints: [],
+        webStrongAiWeak: [],
+        aiStrongWebWeak: [],
+        textSummary: "Claudeが返した自然文の比較結果...",
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(fallback);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.method).toBe("ai_comparison_text_fallback");
+      expect(result.data.webAiGapAiComparison.textSummary).toBe(
+        "Claudeが返した自然文の比較結果...",
+      );
+    }
+  });
+
+  it("accepts a response with no textSummary (normal ai_comparison, field absent)", () => {
+    const result = parseWebAiGapAiComparisonUpdateResponse(validAiGapComparisonResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.textSummary).toBeUndefined();
+    }
+  });
+
+  it("rejects a response with an unrecognized method value", () => {
+    const invalidMethod = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        method: "something_else",
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(invalidMethod);
+
+    expect(result.success).toBe(false);
+  });
 });

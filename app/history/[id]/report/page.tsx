@@ -18,6 +18,8 @@ import {
   AI_COMPARISON_GAP_SUMMARY_LABEL,
   AI_COMPARISON_MATCHED_POINTS_LABEL,
   AI_COMPARISON_RECOMMENDATIONS_LABEL,
+  AI_COMPARISON_TEXT_FALLBACK_HEADING,
+  AI_COMPARISON_TEXT_FALLBACK_NOTE,
   AI_COMPARISON_WEB_STRONG_LABEL,
 } from "../../../components/sections/WebAiGapAiComparisonSection";
 import { priorityStyles, sentimentStyles, trendStyles } from "../../../lib/badge-styles";
@@ -394,7 +396,39 @@ function ReportContent({
           生成ボタンは出さない（feature/manual-ai-gap-comparison「重要
           方針」）。未生成の場合はこのセクション自体を表示しない（上の
           webAiGapのみが表示される）。 */}
-      {result.webAiGapAiComparison && (
+      {result.webAiGapAiComparison &&
+        result.webAiGapAiComparison.method === "ai_comparison_text_fallback" && (
+          <section className="break-inside-avoid">
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
+              {AI_COMPARISON_TEXT_FALLBACK_HEADING}
+            </h2>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+              {AI_COMPARISON_TEXT_FALLBACK_NOTE}
+            </p>
+            <div className="mt-2 space-y-2">
+              <p className="whitespace-pre-wrap text-zinc-600 dark:text-zinc-300 print:text-black">
+                {result.webAiGapAiComparison.textSummary || result.webAiGapAiComparison.gapSummary}
+              </p>
+              {result.webAiGapAiComparison.recommendations.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    {AI_COMPARISON_RECOMMENDATIONS_LABEL}
+                  </p>
+                  <ul className="list-disc space-y-0.5 pl-5 text-zinc-600 dark:text-zinc-300 print:text-black">
+                    {result.webAiGapAiComparison.recommendations.map((recommendation) => (
+                      <li key={recommendation}>{recommendation}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
+                {result.webAiGapAiComparison.caution}
+              </p>
+            </div>
+          </section>
+        )}
+
+      {result.webAiGapAiComparison && result.webAiGapAiComparison.method === "ai_comparison" && (
         <section className="break-inside-avoid">
           <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
             {REPORT_SECTION_TITLES.webAiGapAiComparison}
