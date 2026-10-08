@@ -38,6 +38,19 @@ itself) — mirrors services/gemini_rerun.py's GeminiRerunOutcome
 pattern. The caller (main.py) must not write anything to the database
 when success is False, leaving both the existing `webAiGap` and any
 previously generated `webAiGapAiComparison` untouched.
+
+**JSON parsing is deliberately lenient (fix/ai-gap-comparison-json-parse).**
+In production, Claude's raw text output didn't always come back as a
+pure JSON object — markdown code fences, a leading sentence like
+「以下が比較結果です。」, or a trailing sentence after the JSON were
+observed, all of which made the original strict `json.loads()` call
+fail every time even though the Anthropic call itself succeeded. See
+parse_ai_gap_comparison_json() below for the extraction strategy (pure
+JSON -> fenced JSON -> brace-to-brace extraction) and
+_coerce_str_list() for turning a single string into a one-item list
+when the model returns a bare string instead of an array. Only a text
+with no JSON object extractable at all still fails — every other field
+is defaulted rather than causing the whole comparison to be discarded.
 """
 
 from __future__ import annotations
@@ -87,6 +100,18 @@ _INSUFFICIENT_INPUT_REASON = (
 )
 _CREDENTIALS_MISSING_REASON = "Anthropic API key is not configured."
 
+# Shown when parse_ai_gap_comparison_json() can't extract a JSON
+# object at all even after stripping a code fence and trying
+# brace-to-brace extraction — a genuine parse failure, distinct from
+# the (now defaulted, not failed) case of individual missing fields.
+# Reworded from the original "AI比較の出力を解釈できませんでした。" to
+# read more like an actionable, temporary failure rather than a
+# permanent incompatibility — the internal log line below still says
+# "parse_failed" for operators grepping logs.
+_PARSE_FAILED_REASON = (
+    "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。"
+)
+
 _PLATFORM_LABELS: dict[str, str] = {
     "chatgpt": "ChatGPT",
     "claude": "Claude",
@@ -101,8 +126,10 @@ SYSTEM_PROMPT = (
     "あなたの仕事は、Web上の説明とAI回答の間にある意味的なズレ(語句が一致しなくても"
     "伝えている内容・強調点が違う場合を含む)を比較することです。\n\n"
     "厳守事項:\n"
-    "- 出力は有効なJSONオブジェクトのみとし、JSON以外の文章・説明・コードフェンス"
-    "(```等)を一切含めないこと。\n"
+    "- 出力はJSONオブジェクトそのものだけにすること。\n"
+    "- JSONのみを返してください。Markdownコードフェンス(```等)、説明文、前置き、"
+    "後置きは一切出力しないでください。「以下が比較結果です」のような文も不要です。\n"
+    "- 出力の最初の文字は必ず { 、最後の文字は必ず } にすること。\n"
     "- AIの内部認識・学習内容を断定しないこと(「AIは必ず...と学習している」"
     "「AIの内部では...と認識している」のような表現は禁止)。\n"
     "- 「必ず改善する」「必ず変わる」のような保証表現を使わないこと。\n"
@@ -115,7 +142,15 @@ SYSTEM_PROMPT = (
     '- "aiStrongWebWeak": AI回答では強く出ているがWeb上では弱い、または出ていない点のリスト\n'
     '- "gapSummary": 上記を踏まえた1〜2文のズレの要約(文字列)\n'
     '- "recommendations": 改善ヒントのリスト(最大5件程度)\n\n'
-    "各リストが空になる場合は空配列 [] を返すこと。"
+    "各リストが空になる場合は空配列 [] を返すこと。\n\n"
+    "出力例(このJSON以外は一切出力しないこと):\n"
+    "{\n"
+    '  "matchedPoints": ["Web上・AI回答の両方でSEO支援会社として言及されている"],\n'
+    '  "webStrongAiWeak": ["Web上ではAI検索対策が強く出ているが、AI回答では弱い"],\n'
+    '  "aiStrongWebWeak": ["AI回答では一般的なブランディング会社として説明されやすい"],\n'
+    '  "gapSummary": "Web上とAI回答で説明の強調点が異なる傾向があります。",\n'
+    '  "recommendations": ["社名の近くに主要サービス名を一貫して記載する"]\n'
+    "}"
 )
 
 
@@ -138,18 +173,90 @@ class AiGapComparisonOutcome:
     unavailable: bool = False
 
 
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
 def _strip_code_fence(text: str) -> str:
     """Removes a leading/trailing ```json ... ``` or ``` ... ``` fence
     if present — defensive only; the system prompt explicitly forbids
-    this, but models don't always comply."""
+    this, but models don't always comply (observed in production, see
+    module docstring: パターンB/C)."""
     stripped = text.strip()
-    match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, re.DOTALL)
+    match = _CODE_FENCE_RE.match(stripped)
     if match:
         return match.group(1).strip()
     return stripped
 
 
+def _extract_braces(text: str) -> str | None:
+    """Extracts the substring from the first `{` to the last `}`
+    (inclusive) — a last-resort fallback for output with a leading
+    and/or trailing sentence around an otherwise well-formed JSON
+    object (observed in production, see module docstring: パターン
+    D/E, e.g. 「以下が比較結果です。」before the JSON, or a trailing
+    disclaimer sentence after it). Returns None when no `{`/`}` pair is
+    present at all."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return text[start : end + 1]
+
+
+def parse_ai_gap_comparison_json(raw_text: str) -> dict[str, Any] | None:
+    """Best-effort extraction of a JSON object from Claude's raw text
+    output. Tries, in order: (1) the stripped text as-is (pure JSON,
+    パターンA), (2) with a markdown code fence removed (パターンB/C),
+    (3) brace-to-brace extraction from the fence-stripped text, and
+    (4) brace-to-brace extraction from the original text — covering a
+    leading/trailing sentence that sits outside a code fence, inside
+    one, or with no fence at all (パターンD/E). Returns the parsed
+    dict from the first candidate that is valid JSON *and* a JSON
+    object (not a list/string/number), or None when none of the
+    candidates parse — the only case the caller treats as a genuine
+    failure.
+
+    Never logs or returns `raw_text` itself — only this function's own
+    boolean outcome is observable to callers, so a caller that wants to
+    log a failure must not pass the raw text through (see module
+    docstring's "token/API key/raw secretをlog/responseに出さない"
+    policy, which extends to the raw model output here since it may
+    echo back brand/Web content that shouldn't be logged verbatim).
+    """
+    fence_stripped = _strip_code_fence(raw_text)
+    candidates = [raw_text.strip(), fence_stripped]
+
+    braces_from_fence_stripped = _extract_braces(fence_stripped)
+    if braces_from_fence_stripped is not None:
+        candidates.append(braces_from_fence_stripped)
+
+    braces_from_raw = _extract_braces(raw_text)
+    if braces_from_raw is not None:
+        candidates.append(braces_from_raw)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    return None
+
+
 def _coerce_str_list(value: Any) -> list[str]:
+    """Normalizes a list-shaped field from the model's output into
+    `list[str]`, trimmed to MAX_ITEMS_PER_LIST. A bare string is
+    wrapped into a single-item list (observed in production: the model
+    sometimes returns e.g. `"recommendations": "a single sentence"`
+    instead of `["a single sentence"]`) rather than being discarded as
+    the wrong type. Missing/null/any other type defaults to `[]`."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()][
@@ -159,18 +266,20 @@ def _coerce_str_list(value: Any) -> list[str]:
 
 def _parse_comparison(text: str) -> WebAiGapAiComparison | None:
     """Parses Claude's raw text output into a WebAiGapAiComparison, or
-    None if the text isn't valid JSON / isn't a JSON object. Every
-    field is coerced defensively (wrong type -> empty/None) rather than
-    raising, since a malformed field in an otherwise-usable response
-    shouldn't throw the whole comparison away. `caution` is always
+    None only when parse_ai_gap_comparison_json() can't extract a JSON
+    object at all. Every field is defaulted rather than raising when
+    missing/malformed (gapSummary -> None, every list field -> `[]`
+    via _coerce_str_list) — a comparison with some fields missing is
+    still more useful than discarding it entirely. `caution` is always
     overwritten with the fixed CAUTION_TEXT regardless of what the
-    model produced (see module docstring)."""
-    try:
-        parsed = json.loads(_strip_code_fence(text))
-    except ValueError:
-        return None
-
-    if not isinstance(parsed, dict):
+    model produced (see module docstring); `status`/`method` keep their
+    WebAiGapAiComparison defaults ("real"/"ai_comparison") regardless
+    of what's in `parsed` — this endpoint only ever persists a
+    successful comparison, so there is no other value either field
+    could usefully hold here.
+    """
+    parsed = parse_ai_gap_comparison_json(text)
+    if parsed is None:
         return None
 
     gap_summary = parsed.get("gapSummary")
@@ -340,10 +449,15 @@ def generate_ai_gap_comparison(
 
     comparison = _parse_comparison(text)
     if comparison is None:
-        logger.warning("Failed to parse AI gap comparison output as JSON")
-        return AiGapComparisonOutcome(
-            success=False, reason="AI比較の出力を解釈できませんでした。"
+        # Never logs `text` itself — only its length, which is safe
+        # (never a secret, and not useful enough on its own to be
+        # worth withholding) and lets an operator distinguish "empty
+        # response" from "long response that still didn't parse".
+        logger.warning(
+            "Failed to parse AI gap comparison output as JSON (parse_failed, length=%d)",
+            len(text),
         )
+        return AiGapComparisonOutcome(success=False, reason=_PARSE_FAILED_REASON)
 
     return AiGapComparisonOutcome(
         success=True, reason="AI comparison succeeded.", comparison=comparison

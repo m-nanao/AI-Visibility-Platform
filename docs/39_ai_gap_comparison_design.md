@@ -1,8 +1,8 @@
 # AIによるWeb/AI差分比較 設計メモ
 
-「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化した——詳細は「14」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-07（第2段階の実装を反映）**
+**最終更新日: 2026-10-08（Claude出力のJSON parse堅牢化を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -199,6 +199,18 @@ AI比較に渡す入力候補を、既存の保存済みデータから組み立
 - **変更していないもの**: DB schema・migration、Supabase/Render/Vercel設定、重要フラグ更新API仕様、Gemini再実行API仕様、認証ロジックの方針、DataForSEO/OpenAI/Claude/Gemini providerの既存設定（`CLAUDE_PROVIDER_MODE`等）、STAGING_ACCESS_CODE/HISTORY_READ_TOKEN gate仕様、既存の簡易判定ロジック（`backend/services/web_ai_gap.py`）——いずれも設計どおり未変更。通常分析（`/analyze`）への自動組み込みも行っていない。
 - **対象外（今回も実装していない）**: 非同期ジョブ化、通常分析時の自動AI差分生成、provider切替UI、OpenAI版/Gemini版実装、ChatGPT/Claude/Gemini/AI Overview単体観測の再実行追加、メモ/タグ/カテゴリ機能。
 - **テスト**: backend（新規`tests/test_ai_gap_comparison.py`——サービス関数の単体テスト、新規`tests/test_main_analysis_runs_ai_gap_comparison_api.py`——エンドポイントのHTTPレベルテスト）・frontend（`app/lib/analysis-history.ts`/`analysis-history-schema.ts`それぞれの新規関数テスト、新規proxy routeテスト）に追加。
+
+## 14. Claude出力のJSON parse堅牢化（`fix/ai-gap-comparison-json-parse`、2026-10-08）
+
+第2段階リリース後、本番でAI差分比較を実行すると毎回「AI比較の出力を解釈できませんでした。」になる不具合が報告された。AI Overview比較内のClaude観測は正常に動作していたため、Claude APIキー・接続自体は問題なく、**AI差分比較専用のプロンプトに対するClaude出力が、backendが期待する純粋なJSON文字列として返っていなかった**（markdownコードフェンス、前置き文「以下が比較結果です。」、後置き文等が混ざっていたと推定）ことが原因と判断した。
+
+- **JSON抽出の堅牢化**: `backend/services/ai_gap_comparison.py`に新規`parse_ai_gap_comparison_json()`を追加した。(1) 生テキストをそのままJSONとして解釈、(2) markdownコードフェンス（` ```json `/` ``` `のいずれも）を取り除いてから解釈、(3) フェンス除去後のテキストから最初の`{`〜最後の`}`を抜き出して解釈、(4) 元の生テキストから同様に`{`〜`}`を抜き出して解釈——の4パターンを順に試し、最初にJSONオブジェクトとして解釈できたものを採用する。すべて失敗した場合のみ`None`を返し、これが唯一の「本当の解釈失敗」として扱われる。
+- **出力validationの緩和**: 従来は`matchedPoints`等が期待する型（配列）でなければ単に`[]`に落としていたが、**モデルが配列ではなく単一の文字列を返した場合（例: `"recommendations": "改善ヒント1件"`）もその1件からなる配列として受け入れる**よう`_coerce_str_list()`を拡張した。`gapSummary`/`recommendations`等の個々のフィールドが欠落していても、解釈失敗にはせず、`gapSummary`は`None`、リスト系フィールドは`[]`にdefault補完した上で比較結果自体は生成する——JSONオブジェクト自体が全く取り出せない場合のみ失敗として扱う。
+- **prompt強化**: `SYSTEM_PROMPT`に「出力の最初の文字は必ず`{`、最後の文字は必ず`}`にすること」という明示的な指示と、期待するJSON出力の具体例を追加した。既存の「JSON以外の文章・コードフェンスを含めない」制約は維持しつつ、より強く誤りを防ぐよう補強——ただし、それでも崩れる可能性は残るため、上記のparse helperが引き続き必須のフォールバックとして機能する。
+- **エラーメッセージの改善**: 解釈失敗時のユーザー向け文言を「AI比較の出力を解釈できませんでした。」から「AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。」に変更し、再試行を促す自然な文言にした。内部的なログは`parse_failed`という識別子付きで記録するが、Claudeの生出力（`text`）自体は一切ログに出さない——長さ（`len(text)`）のみを記録する。
+- **失敗時の挙動は変更なし**: 解釈に失敗した場合、`result_json`は一切書き換えない（既存の`webAiGap`・以前に生成済みの`webAiGapAiComparison`があればそのまま保持される）という既存の設計方針は維持している。
+- **変更していないもの**: Claude API接続設定（`CLAUDE_API_KEY`/`CLAUDE_MODEL`/`CLAUDE_MAX_OUTPUT_TOKENS`）・新しい環境変数の追加・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定——いずれも変更していない。
+- **テスト**: backend（`tests/test_ai_gap_comparison.py`に`parse_ai_gap_comparison_json()`単体テスト、および`generate_ai_gap_comparison()`を通した統合テスト——純粋JSON・`json`タグ付き/なしのコードフェンス・前置き文/後置き文付き/両方付き・フィールド欠落時のdefault補完・文字列→配列への正規化・JSON自体が存在しない場合の`parse_failed`・生出力がログに出ないことを確認）・frontend（新しいエラーメッセージがそのまま転送されることを`app/lib/analysis-history.test.ts`・proxy routeテストに追加）。
 
 ## 関連ドキュメント
 
