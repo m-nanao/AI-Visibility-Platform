@@ -9,7 +9,12 @@ call.
 import httpx
 
 from services import ai_gap_comparison
-from services.ai_gap_comparison import CAUTION_TEXT, MESSAGES_API_URL, generate_ai_gap_comparison
+from services.ai_gap_comparison import (
+    CAUTION_TEXT,
+    MESSAGES_API_URL,
+    generate_ai_gap_comparison,
+    parse_ai_gap_comparison_json,
+)
 from services.claude_settings import ClaudeCredentials
 
 
@@ -37,6 +42,62 @@ def _result_json(**overrides) -> dict:
     result_json = {"webAiGap": _real_web_ai_gap()}
     result_json.update(overrides)
     return result_json
+
+
+# --- parse_ai_gap_comparison_json() (fix/ai-gap-comparison-json-parse) ----
+#
+# Direct unit tests for the JSON-extraction helper itself, independent
+# of the Anthropic call/full generate_ai_gap_comparison() flow above —
+# see that function's own tests further down for how a parse failure
+# vs. success propagates into AiGapComparisonOutcome.
+
+_PURE_JSON = '{"gapSummary": "x", "recommendations": ["y"]}'
+_PARSED = {"gapSummary": "x", "recommendations": ["y"]}
+
+
+def test_parse_json_accepts_pure_json():
+    assert parse_ai_gap_comparison_json(_PURE_JSON) == _PARSED
+
+
+def test_parse_json_accepts_json_tagged_code_fence():
+    fenced = "```json\n" + _PURE_JSON + "\n```"
+    assert parse_ai_gap_comparison_json(fenced) == _PARSED
+
+
+def test_parse_json_accepts_untagged_code_fence():
+    fenced = "```\n" + _PURE_JSON + "\n```"
+    assert parse_ai_gap_comparison_json(fenced) == _PARSED
+
+
+def test_parse_json_accepts_leading_prose_before_json():
+    prefixed = "以下が比較結果です。\n\n" + _PURE_JSON
+    assert parse_ai_gap_comparison_json(prefixed) == _PARSED
+
+
+def test_parse_json_accepts_trailing_prose_after_json():
+    suffixed = _PURE_JSON + "\n\nこの比較は補助的な見立てです。"
+    assert parse_ai_gap_comparison_json(suffixed) == _PARSED
+
+
+def test_parse_json_accepts_prose_outside_a_code_fence():
+    messy = "以下が比較結果です。\n\n```json\n" + _PURE_JSON + "\n```\n\nご参考に。"
+    assert parse_ai_gap_comparison_json(messy) == _PARSED
+
+
+def test_parse_json_returns_none_for_text_with_no_json_object():
+    assert parse_ai_gap_comparison_json("申し訳ございませんが比較できません。") is None
+
+
+def test_parse_json_returns_none_for_empty_string():
+    assert parse_ai_gap_comparison_json("") is None
+
+
+def test_parse_json_returns_none_for_a_json_array_not_an_object():
+    assert parse_ai_gap_comparison_json('["a", "b"]') is None
+
+
+def test_parse_json_returns_none_for_unbalanced_braces():
+    assert parse_ai_gap_comparison_json("{not actually json") is None
 
 
 def _mock_credentials(monkeypatch, configured: bool = True):
@@ -236,6 +297,130 @@ def test_success_strips_markdown_code_fence_from_model_output(monkeypatch):
 
     assert outcome.success is True
     assert outcome.comparison.gapSummary == "WebとAIで説明が異なります。"
+
+
+def test_success_strips_code_fence_without_json_language_tag(monkeypatch):
+    """パターンC: ```json ではなく ``` だけのコードフェンス。"""
+    _mock_credentials(monkeypatch)
+    fenced = "```\n" + _ai_comparison_json_text() + "\n```"
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": fenced}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.gapSummary == "WebとAIで説明が異なります。"
+
+
+def test_success_extracts_json_with_leading_prose(monkeypatch):
+    """パターンD: 前置き文 + JSON。"""
+    _mock_credentials(monkeypatch)
+    prefixed = "以下が比較結果です。\n\n" + _ai_comparison_json_text()
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": prefixed}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.gapSummary == "WebとAIで説明が異なります。"
+
+
+def test_success_extracts_json_with_trailing_prose(monkeypatch):
+    """パターンE: JSON + 後置き文。"""
+    _mock_credentials(monkeypatch)
+    suffixed = _ai_comparison_json_text() + "\n\nこの比較は補助的な見立てです。"
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": suffixed}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.gapSummary == "WebとAIで説明が異なります。"
+
+
+def test_success_extracts_json_with_leading_and_trailing_prose_inside_fence(monkeypatch):
+    """前置き文・後置き文がコードフェンスの外にある、さらに崩れたケース。"""
+    _mock_credentials(monkeypatch)
+    messy = (
+        "以下が比較結果です。\n\n```json\n"
+        + _ai_comparison_json_text()
+        + "\n```\n\nご参考にしてください。"
+    )
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": messy}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.gapSummary == "WebとAIで説明が異なります。"
+
+
+def test_success_defaults_missing_gap_summary_and_recommendations(monkeypatch):
+    """必須扱いのフィールドが欠けていてもdefault補完され、失敗しない。"""
+    _mock_credentials(monkeypatch)
+    text = '{"matchedPoints": ["a"], "webStrongAiWeak": [], "aiStrongWebWeak": []}'
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.gapSummary is None
+    assert outcome.comparison.recommendations == []
+
+
+def test_success_coerces_a_bare_string_matched_points_into_a_list(monkeypatch):
+    _mock_credentials(monkeypatch)
+    text = (
+        '{"matchedPoints": "単一の一致点です", "webStrongAiWeak": [], "aiStrongWebWeak": [], '
+        '"gapSummary": "x", "recommendations": []}'
+    )
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.matchedPoints == ["単一の一致点です"]
+
+
+def test_success_coerces_a_bare_string_recommendations_into_a_list(monkeypatch):
+    _mock_credentials(monkeypatch)
+    text = (
+        '{"matchedPoints": [], "webStrongAiWeak": [], "aiStrongWebWeak": [], '
+        '"gapSummary": "x", "recommendations": "単一の改善ヒントです"}'
+    )
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.recommendations == ["単一の改善ヒントです"]
+
+
+def test_returns_parse_failed_reason_when_no_json_object_exists_at_all(monkeypatch):
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": "申し訳ございませんが比較できません。"}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.unavailable is False
+    assert outcome.reason == (
+        "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。"
+    )
+
+
+def test_parse_failure_never_logs_the_raw_model_output(monkeypatch, caplog):
+    _mock_credentials(monkeypatch)
+    secret_looking_text = "no json here, but sk-ant-shouldnotleak and brand secrets"
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": secret_looking_text}]}
+    )
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert secret_looking_text not in caplog.text
 
 
 def test_success_truncates_lists_to_max_five_items(monkeypatch):

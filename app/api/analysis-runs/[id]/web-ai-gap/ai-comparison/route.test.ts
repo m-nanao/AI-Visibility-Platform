@@ -176,6 +176,21 @@ describe("POST /api/analysis-runs/[id]/web-ai-gap/ai-comparison", () => {
     expect(body).toEqual({ error: "Anthropic API request failed with HTTP 500." });
   });
 
+  it("forwards a 502 parse-failure reason from the Python API as-is (fix/ai-gap-comparison-json-parse)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const parseFailedMessage =
+      "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: parseFailedMessage }), { status: 502 }),
+    );
+
+    const response = await POST(...makeRequest(RUN_ID));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body).toEqual({ error: parseFailedMessage });
+  });
+
   it("returns 502 with a generic message for an unexpected non-2xx status", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 500 }));

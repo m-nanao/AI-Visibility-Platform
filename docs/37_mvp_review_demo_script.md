@@ -150,6 +150,7 @@ Common Crawl補完: 公式ドメインから補完
 - 履歴一覧・履歴詳細に重要フラグ（★マーク）の切り替えを追加（DB設計案A=`analysis_runs.is_important`列、新規`PATCH /analysis-runs/{id}/important`は既存の削除/Gemini再実行エンドポイントと同じ権限判定を再利用。クリックで即時反映のoptimistic update、失敗時はrollback。`feature/history-important-flag`、2026-10-07。設計・実装状況は[38_history_marking_design.md](./38_history_marking_design.md)「11」、使い方は[17_usage_guide.md](./17_usage_guide.md)「30」参照）
 - 履歴一覧に「重要のみ表示」フィルタを追加（既存の検索・並び替えと同じfrontend側フィルタのみ、新しいbackend API・DB schema変更なし。重要のみ表示中に重要フラグをOFFにするとそのカードは一覧から消える。メモ・タグ機能は今回も未実装。`feature/history-important-filter`、2026-10-07。設計・実装状況は[38_history_marking_design.md](./38_history_marking_design.md)「12」、使い方は[17_usage_guide.md](./17_usage_guide.md)「30」参照）
 - 履歴詳細からAIによるWeb/AI差分比較を手動生成（「AIで差分を生成」ボタン、既存のClaude API設定を利用した1回のAnthropic呼び出し。保存済みのWeb抜粋・AI観測結果のみを入力とし、Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測は再実行しない。生成結果は既存の簡易判定`webAiGap`とは別フィールド`webAiGapAiComparison`に保存されるため、簡易判定は失敗時も残る。レポート画面には生成ボタンはなく、生成済みの場合のみ結果を表示。通常分析には組み込まない。DB schema変更・migrationなし。`feature/manual-ai-gap-comparison`、2026-10-07。設計・実装状況は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「13」、使い方は[17_usage_guide.md](./17_usage_guide.md)「31」参照）
+- 上記のAI差分比較が本番で毎回「AI比較の出力を解釈できませんでした。」になる不具合を修正（Claude自体は正常応答していたが、応答テキストにmarkdownコードフェンス・前置き文・後置き文が混ざることがあり、backend側のJSON解釈が厳格すぎて失敗していた。コードフェンス除去・文頭/文末の`{`〜`}`抽出・項目欠落時のdefault補完・文字列→配列への正規化を追加して解消。Claude API接続設定・新しい環境変数・通常分析への組み込みはいずれも変更なし。`fix/ai-gap-comparison-json-parse`、2026-10-08。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「14」参照）
 
 ### MVPではまだ限定的なこと
 
