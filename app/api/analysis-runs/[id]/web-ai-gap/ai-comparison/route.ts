@@ -19,6 +19,13 @@ import { getServerSupabaseAccessToken } from "../../../../../lib/supabase/server
  * the comparison was never even attempted (e.g. Anthropic API key not
  * configured, or the existing simple judgement isn't usable as input),
  * 502 means the Anthropic call was attempted and failed.
+ *
+ * The Python API's 502/503 bodies may also include a short internal
+ * `reason` code (e.g. "no_json_object_found", see
+ * services/ai_gap_comparison.py's REASON_* constants) for diagnostics —
+ * it is forwarded through as-is when present, but the UI
+ * (resolveAiGapComparisonOutcome() in app/lib/analysis-history.ts)
+ * intentionally ignores it and only ever displays `error`.
  */
 export async function POST(
   request: Request,
@@ -61,7 +68,9 @@ export async function POST(
       errorBody && typeof errorBody.error === "string"
         ? errorBody.error
         : "analysis history read API is not enabled";
-    return NextResponse.json({ error: message }, { status: 503 });
+    const reason =
+      errorBody && typeof errorBody.reason === "string" ? errorBody.reason : undefined;
+    return NextResponse.json({ error: message, ...(reason ? { reason } : {}) }, { status: 503 });
   }
 
   if (response.status === 403) {
@@ -88,7 +97,9 @@ export async function POST(
       errorBody && typeof errorBody.error === "string"
         ? errorBody.error
         : "AI差分比較の生成に失敗しました。";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const reason =
+      errorBody && typeof errorBody.reason === "string" ? errorBody.reason : undefined;
+    return NextResponse.json({ error: message, ...(reason ? { reason } : {}) }, { status: 502 });
   }
 
   if (!response.ok) {

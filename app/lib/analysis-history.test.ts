@@ -1132,6 +1132,23 @@ describe("resolveAiGapComparisonOutcome (feature/manual-ai-gap-comparison)", () 
     });
   });
 
+  it("ignores the backend's internal `reason` code and shows only the natural-language message (fix/ai-gap-comparison-diagnostics)", async () => {
+    const outcome = await resolveAiGapComparisonOutcome(
+      jsonDetailResponse(
+        {
+          error: "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。",
+          reason: "no_json_object_found",
+        },
+        502,
+      ),
+    );
+
+    expect(outcome).toEqual({
+      success: false,
+      message: "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。",
+    });
+  });
+
   it("falls back to a generic message when a 503/502 body has no usable error text", async () => {
     const outcome = await resolveAiGapComparisonOutcome(jsonDetailResponse({}, 503));
 

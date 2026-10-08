@@ -482,6 +482,7 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - 分析結果画面（分析直後のプレビュー）には、このボタンも表示も一切出ない——通常の分析実行にAI比較は組み込まれていない。
 - **本番で使うために必要なこと**: AI比較の生成には既存のClaude API設定（`CLAUDE_API_KEY`等、Claude観測機能と共通）が必要——未設定の場合は「AIで差分を生成」をクリックしてもエラーになる（新しい環境変数は追加していない）。
 - **2026-10-08に修正した不具合**: 本番で「AIで差分を生成」を押すと毎回「AI比較の出力を解釈できませんでした。」になる不具合があった（Claude自体は正常に応答していたが、応答テキストに前置き文・後置き文・markdownコードフェンスが混ざることがあり、backend側のJSON解釈が厳格すぎて失敗していた）。backend側のJSON抽出・項目の受け入れ方を緩くする修正（`fix/ai-gap-comparison-json-parse`）により解消済み——エラーメッセージも「AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。」に変更した。それでも失敗する場合は、時間をおいて再度試すか、簡易判定のみで確認する。
+- **2026-10-08、さらに診断を強化（`fix/ai-gap-comparison-diagnostics`）**: 上記の修正後も本番で失敗が続いたため、失敗段階（Claude応答のcontent抽出／JSON抽出／出力validation）を区別できる安全な診断ログを追加した（詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「15」参照）。画面に表示される文言・失敗時の挙動（簡易判定が残る、ボタンがすぐ再度押せる）は変わっていない。開発者がRenderログを見れば、Claude APIキー等のsecretやAI回答全文を含まない形で失敗理由（識別コード）を確認できるようになった。
 - **まだ実装していないもの**: provider切替（Claude固定のまま）、通常分析実行時の自動生成、非同期ジョブ化との統合——次の段階として設計docsに記録済み（[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「11」参照）。
 
 ## 関連ドキュメント

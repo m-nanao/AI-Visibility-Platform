@@ -191,6 +191,25 @@ describe("POST /api/analysis-runs/[id]/web-ai-gap/ai-comparison", () => {
     expect(body).toEqual({ error: parseFailedMessage });
   });
 
+  it("forwards the backend's internal `reason` code alongside the error message (fix/ai-gap-comparison-diagnostics)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。",
+          reason: "no_json_object_found",
+        }),
+        { status: 502 },
+      ),
+    );
+
+    const response = await POST(...makeRequest(RUN_ID));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body.reason).toBe("no_json_object_found");
+  });
+
   it("returns 502 with a generic message for an unexpected non-2xx status", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 500 }));
