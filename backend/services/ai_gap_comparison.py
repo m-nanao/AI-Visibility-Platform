@@ -39,18 +39,33 @@ pattern. The caller (main.py) must not write anything to the database
 when success is False, leaving both the existing `webAiGap` and any
 previously generated `webAiGapAiComparison` untouched.
 
-**JSON parsing is deliberately lenient (fix/ai-gap-comparison-json-parse).**
-In production, Claude's raw text output didn't always come back as a
-pure JSON object — markdown code fences, a leading sentence like
-「以下が比較結果です。」, or a trailing sentence after the JSON were
-observed, all of which made the original strict `json.loads()` call
-fail every time even though the Anthropic call itself succeeded. See
-parse_ai_gap_comparison_json() below for the extraction strategy (pure
-JSON -> fenced JSON -> brace-to-brace extraction) and
+**JSON parsing is deliberately lenient (fix/ai-gap-comparison-json-parse,
+fix/ai-gap-comparison-diagnostics).** In production, Claude's raw text
+output didn't always come back as a pure JSON object — markdown code
+fences, a leading sentence like「以下が比較結果です。」, or a trailing
+sentence after the JSON were observed, all of which made the original
+strict `json.loads()` call fail every time even though the Anthropic
+call itself succeeded. See parse_ai_gap_comparison_json() below for
+the extraction strategy (pure JSON -> fenced JSON -> brace-to-brace
+extraction -> light syntax repair on each candidate) and
 _coerce_str_list() for turning a single string into a one-item list
-when the model returns a bare string instead of an array. Only a text
-with no JSON object extractable at all still fails — every other field
-is defaulted rather than causing the whole comparison to be discarded.
+when the model returns a bare string instead of an array.
+
+Even after that fix, production still failed every time — which
+means the failure was happening *before* JSON parsing even got a
+chance to run (e.g. Claude's response not containing a usable text
+block at all, or an empty one) rather than in parsing itself. This
+module now tracks exactly *which* stage failed via a short, safe
+internal reason code (see the `_REASON_*` constants and
+`AiGapComparisonOutcome.internal_reason`) — logged with only safe,
+non-secret diagnostics (content-block type names, text length, block
+counts; never the API key, any token, or the raw Claude output/Web
+content itself) and exposed to the API caller as a `reason` field
+alongside the existing user-facing `error` message, so an operator can
+tell "no text block was present at all" apart from "found a text block
+but it was blank" apart from "found text but it had no JSON-looking
+substring" apart from "found something JSON-shaped but it didn't
+parse" without ever seeing a secret or the raw output.
 """
 
 from __future__ import annotations
@@ -58,7 +73,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -78,14 +93,34 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 REQUEST_TIMEOUT_SECONDS = 30.0
 
 # Caps how many items each list field can hold — matches
-# docs/39_ai_gap_comparison_design.md's "最大3〜5項目程度" instruction
-# to the model, enforced here again defensively in case the model
-# returns more.
+# docs/39_ai_gap_comparison_design.md's "最大5件程度" instruction to
+# the model, enforced here again defensively in case the model returns
+# more.
 MAX_ITEMS_PER_LIST = 5
 
 CAUTION_TEXT = (
     "AIによる比較であり、AIの内部認識を直接示すものではありません。"
 )
+
+# --- Safe, short internal reason codes (fix/ai-gap-comparison-diagnostics) -
+#
+# Never secrets, never the raw Claude output/Web content — just a
+# stage name identifying *where* generation stopped. Logged alongside
+# safe diagnostics (see _log_parse_diagnostics()) and exposed to the
+# API caller as a `reason` field (backend/main.py) distinct from the
+# existing user-facing `error` message, so an operator can distinguish
+# failure stages without ever seeing a secret or the raw output.
+REASON_WEB_AI_GAP_NOT_READY = "web_ai_gap_not_ready"
+REASON_INSUFFICIENT_INPUT = "insufficient_input"
+REASON_CREDENTIALS_MISSING = "credentials_missing"
+REASON_NETWORK_ERROR = "network_error"
+REASON_NON_200_STATUS = "non_200_status"
+REASON_NON_JSON_RESPONSE = "non_json_response"
+REASON_NO_TEXT_CONTENT = "no_text_content"
+REASON_EMPTY_MODEL_OUTPUT = "empty_model_output"
+REASON_NO_JSON_OBJECT_FOUND = "no_json_object_found"
+REASON_JSON_DECODE_FAILED = "json_decode_failed"
+REASON_VALIDATION_FAILED = "validation_failed"
 
 # Reasons shown to the caller when nothing was even attempted (no
 # Anthropic call made) — kept distinct from a call that was attempted
@@ -100,14 +135,14 @@ _INSUFFICIENT_INPUT_REASON = (
 )
 _CREDENTIALS_MISSING_REASON = "Anthropic API key is not configured."
 
-# Shown when parse_ai_gap_comparison_json() can't extract a JSON
-# object at all even after stripping a code fence and trying
-# brace-to-brace extraction — a genuine parse failure, distinct from
-# the (now defaulted, not failed) case of individual missing fields.
-# Reworded from the original "AI比較の出力を解釈できませんでした。" to
-# read more like an actionable, temporary failure rather than a
-# permanent incompatibility — the internal log line below still says
-# "parse_failed" for operators grepping logs.
+# Shown for every failure stage *after* the Anthropic call itself
+# succeeds (no readable text, no JSON object, decode failure,
+# validation failure) — reworded from the original "AI比較の出力を解釈
+# できませんでした。" to read like an actionable, temporary failure
+# rather than a permanent incompatibility. The underlying stage is
+# still distinguishable via `internal_reason`/the log line, which a
+# caller/operator can inspect without this user-facing text needing to
+# change.
 _PARSE_FAILED_REASON = (
     "AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。"
 )
@@ -125,11 +160,18 @@ SYSTEM_PROMPT = (
     "複数の生成AIがそのブランドについて答えた内容(抜粋)が渡されます。\n\n"
     "あなたの仕事は、Web上の説明とAI回答の間にある意味的なズレ(語句が一致しなくても"
     "伝えている内容・強調点が違う場合を含む)を比較することです。\n\n"
-    "厳守事項:\n"
-    "- 出力はJSONオブジェクトそのものだけにすること。\n"
-    "- JSONのみを返してください。Markdownコードフェンス(```等)、説明文、前置き、"
-    "後置きは一切出力しないでください。「以下が比較結果です」のような文も不要です。\n"
+    "厳守事項(最重要):\n"
+    "- 出力はJSONオブジェクト1つのみにすること。他には何も出力しないこと。\n"
     "- 出力の最初の文字は必ず { 、最後の文字は必ず } にすること。\n"
+    "- Markdown記法(コードフェンス```、見出し#、箇条書き-/*等)を一切使わないこと。\n"
+    "- JSON以外の説明文・前置き・後置き・箇条書き本文を一切出力しないこと。"
+    "「以下が比較結果です」のような文も不要です。\n"
+    "- 各キーの値は日本語の文字列、または日本語文字列の配列にすること。\n"
+    "- \"recommendations\"は必ず要素数1件以上の配列にすること(空配列にしないこと)。\n"
+    "- \"gapSummary\"は必ず文字列にすること(nullや省略は不可)。\n"
+    "- 入力だけでは判断が難しい場合でも、空のJSONではなく、"
+    "「入力が限られているため確定的な判断は難しいが...」のような、"
+    "控えめで補助的な見立てとして内容のあるJSONを返すこと。\n"
     "- AIの内部認識・学習内容を断定しないこと(「AIは必ず...と学習している」"
     "「AIの内部では...と認識している」のような表現は禁止)。\n"
     "- 「必ず改善する」「必ず変わる」のような保証表現を使わないこと。\n"
@@ -140,10 +182,11 @@ SYSTEM_PROMPT = (
     '- "matchedPoints": Web上の説明とAI回答の両方で一致している点のリスト\n'
     '- "webStrongAiWeak": Web上では強く出ているがAI回答では弱い、または出ていない点のリスト\n'
     '- "aiStrongWebWeak": AI回答では強く出ているがWeb上では弱い、または出ていない点のリスト\n'
-    '- "gapSummary": 上記を踏まえた1〜2文のズレの要約(文字列)\n'
-    '- "recommendations": 改善ヒントのリスト(最大5件程度)\n\n'
-    "各リストが空になる場合は空配列 [] を返すこと。\n\n"
-    "出力例(このJSON以外は一切出力しないこと):\n"
+    '- "gapSummary": 上記を踏まえた1〜2文のズレの要約(文字列、必須)\n'
+    '- "recommendations": 改善ヒントのリスト(1件以上、最大5件程度、必須)\n\n'
+    "matchedPoints/webStrongAiWeak/aiStrongWebWeakが空になる場合は空配列 [] を返すこと"
+    "(ただしgapSummary/recommendationsは空にしないこと)。\n\n"
+    "出力例(このJSON以外は一切出力しないこと。説明・コードフェンスは不要):\n"
     "{\n"
     '  "matchedPoints": ["Web上・AI回答の両方でSEO支援会社として言及されている"],\n'
     '  "webStrongAiWeak": ["Web上ではAI検索対策が強く出ているが、AI回答では弱い"],\n'
@@ -165,22 +208,44 @@ class AiGapComparisonOutcome:
     the latter to 502, mirroring how the rest of this history API
     already distinguishes "not configured" (503) from "the external
     call itself failed" (502, see POST /analysis-runs/{id}/rerun/gemini).
+
+    `reason` is always a short, user-safe-to-display sentence (never a
+    secret or raw model output). `internal_reason`, when set, is one of
+    the `REASON_*` constants above — a stable, safe machine-readable
+    code identifying exactly which stage failed, for backend/main.py to
+    optionally surface as a separate `reason` field in the API response
+    body (distinct from `error`) and for operators to grep logs by.
+    `internal_reason` is None only on success.
     """
 
     success: bool
     reason: str
     comparison: WebAiGapAiComparison | None = None
     unavailable: bool = False
+    internal_reason: str | None = None
 
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+# Trailing comma immediately before a closing `}`/`]` — a common minor
+# JSON syntax slip (e.g. `{"a": 1,}`) that json.loads() rejects outright
+# but is unambiguous to repair.
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+# Fullwidth/typographic quote characters a model sometimes substitutes
+# for ASCII `"`/`'` — invalid inside JSON string delimiters.
+_QUOTE_TRANSLATION = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"})
+
+# Leading/trailing invisible characters (BOM, zero-width space) that
+# can sneak in around an otherwise well-formed JSON object.
+_INVISIBLE_CHARS = "﻿​"
 
 
 def _strip_code_fence(text: str) -> str:
     """Removes a leading/trailing ```json ... ``` or ``` ... ``` fence
     if present — defensive only; the system prompt explicitly forbids
     this, but models don't always comply (observed in production, see
-    module docstring: パターンB/C)."""
+    module docstring)."""
     stripped = text.strip()
     match = _CODE_FENCE_RE.match(stripped)
     if match:
@@ -192,10 +257,9 @@ def _extract_braces(text: str) -> str | None:
     """Extracts the substring from the first `{` to the last `}`
     (inclusive) — a last-resort fallback for output with a leading
     and/or trailing sentence around an otherwise well-formed JSON
-    object (observed in production, see module docstring: パターン
-    D/E, e.g. 「以下が比較結果です。」before the JSON, or a trailing
-    disclaimer sentence after it). Returns None when no `{`/`}` pair is
-    present at all."""
+    object (observed in production, e.g.「以下が比較結果です。」before
+    the JSON, or a trailing disclaimer sentence after it). Returns None
+    when no `{`/`}` pair is present at all."""
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -203,48 +267,84 @@ def _extract_braces(text: str) -> str | None:
     return text[start : end + 1]
 
 
-def parse_ai_gap_comparison_json(raw_text: str) -> dict[str, Any] | None:
+def _repair_json_candidate(text: str) -> str:
+    """Applies a small set of unambiguous, non-speculative syntax
+    repairs to a JSON-shaped candidate string that failed to parse as-
+    is — never invents or guesses structure, only normalizes
+    characters that are never valid in strict JSON regardless of
+    intent: fullwidth quotes -> ASCII quotes, a trailing comma right
+    before a closing `}`/`]`, and leading/trailing invisible
+    characters (BOM/zero-width space). If the input still doesn't
+    parse after this, parse_ai_gap_comparison_json() reports a genuine
+    decode failure rather than attempting anything more aggressive."""
+    repaired = text.strip(_INVISIBLE_CHARS + " \t\r\n")
+    repaired = repaired.translate(_QUOTE_TRANSLATION)
+    repaired = _TRAILING_COMMA_RE.sub(r"\1", repaired)
+    return repaired
+
+
+def parse_ai_gap_comparison_json(raw_text: str) -> tuple[dict[str, Any] | None, str | None]:
     """Best-effort extraction of a JSON object from Claude's raw text
-    output. Tries, in order: (1) the stripped text as-is (pure JSON,
-    パターンA), (2) with a markdown code fence removed (パターンB/C),
-    (3) brace-to-brace extraction from the fence-stripped text, and
-    (4) brace-to-brace extraction from the original text — covering a
-    leading/trailing sentence that sits outside a code fence, inside
-    one, or with no fence at all (パターンD/E). Returns the parsed
-    dict from the first candidate that is valid JSON *and* a JSON
-    object (not a list/string/number), or None when none of the
-    candidates parse — the only case the caller treats as a genuine
-    failure.
+    output. Returns `(parsed_dict, None)` on success, or
+    `(None, reason)` on failure where `reason` is one of:
+
+    - REASON_NO_JSON_OBJECT_FOUND: no `{`...`}`-shaped substring exists
+      anywhere in the text at all (e.g. Claude returned pure natural
+      language with no JSON attempt) — nothing to even try repairing.
+    - REASON_JSON_DECODE_FAILED: a `{`...`}`-shaped substring (or the
+      text/fence-stripped text itself) exists, but neither it nor its
+      lightly-repaired form (see _repair_json_candidate()) parses as
+      valid JSON, or parses to something other than a JSON object
+      (e.g. a bare array/string/number).
+
+    Tries, in order, each of: the stripped text as-is (pure JSON), with
+    a markdown code fence removed, brace-to-brace extraction from the
+    fence-stripped text, and brace-to-brace extraction from the
+    original text — and for each candidate, both the candidate itself
+    and a lightly-repaired version of it (fullwidth quotes, trailing
+    commas, invisible characters). Returns the parsed dict from the
+    first candidate (repaired or not) that is valid JSON *and* a JSON
+    object.
 
     Never logs or returns `raw_text` itself — only this function's own
-    boolean outcome is observable to callers, so a caller that wants to
-    log a failure must not pass the raw text through (see module
-    docstring's "token/API key/raw secretをlog/responseに出さない"
-    policy, which extends to the raw model output here since it may
-    echo back brand/Web content that shouldn't be logged verbatim).
+    boolean outcome and reason code are observable to callers, so a
+    caller that wants to log a failure must not pass the raw text
+    through (see module docstring's secrets/raw-output policy, which
+    extends to the raw model output here since it may echo back
+    brand/Web content that shouldn't be logged verbatim).
     """
     fence_stripped = _strip_code_fence(raw_text)
-    candidates = [raw_text.strip(), fence_stripped]
-
     braces_from_fence_stripped = _extract_braces(fence_stripped)
+    braces_from_raw = _extract_braces(raw_text)
+
+    candidates = [raw_text.strip(), fence_stripped]
     if braces_from_fence_stripped is not None:
         candidates.append(braces_from_fence_stripped)
-
-    braces_from_raw = _extract_braces(raw_text)
     if braces_from_raw is not None:
         candidates.append(braces_from_raw)
+
+    has_json_shaped_candidate = (
+        braces_from_fence_stripped is not None or braces_from_raw is not None
+    )
 
     for candidate in candidates:
         if not candidate:
             continue
-        try:
-            parsed = json.loads(candidate)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
+        for attempt in (candidate, _repair_json_candidate(candidate)):
+            try:
+                parsed = json.loads(attempt)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed, None
+            # Decoded, but to something other than a JSON object (e.g.
+            # a bare array/string) — still counts as "found something
+            # JSON-shaped", just not a usable one.
+            has_json_shaped_candidate = True
 
-    return None
+    if has_json_shaped_candidate:
+        return None, REASON_JSON_DECODE_FAILED
+    return None, REASON_NO_JSON_OBJECT_FOUND
 
 
 def _coerce_str_list(value: Any) -> list[str]:
@@ -264,23 +364,29 @@ def _coerce_str_list(value: Any) -> list[str]:
     ]
 
 
-def _parse_comparison(text: str) -> WebAiGapAiComparison | None:
-    """Parses Claude's raw text output into a WebAiGapAiComparison, or
-    None only when parse_ai_gap_comparison_json() can't extract a JSON
-    object at all. Every field is defaulted rather than raising when
-    missing/malformed (gapSummary -> None, every list field -> `[]`
-    via _coerce_str_list) — a comparison with some fields missing is
-    still more useful than discarding it entirely. `caution` is always
+def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | None]:
+    """Parses Claude's raw text output into a WebAiGapAiComparison.
+    Returns `(comparison, None)` on success, or `(None, reason)` where
+    `reason` is whatever parse_ai_gap_comparison_json() reported
+    (REASON_NO_JSON_OBJECT_FOUND / REASON_JSON_DECODE_FAILED), or
+    REASON_VALIDATION_FAILED if a JSON object was found but
+    constructing the model from it still failed unexpectedly (should be
+    unreachable in practice since every field is coerced defensively
+    below, but guarded against rather than letting a stray
+    pydantic.ValidationError escape this module).
+
+    Every field is defaulted rather than raising when missing/malformed
+    (gapSummary -> None, every list field -> `[]` via
+    _coerce_str_list) — a comparison with some fields missing is still
+    more useful than discarding it entirely. `caution` is always
     overwritten with the fixed CAUTION_TEXT regardless of what the
     model produced (see module docstring); `status`/`method` keep their
     WebAiGapAiComparison defaults ("real"/"ai_comparison") regardless
-    of what's in `parsed` — this endpoint only ever persists a
-    successful comparison, so there is no other value either field
-    could usefully hold here.
+    of what's in `parsed`.
     """
-    parsed = parse_ai_gap_comparison_json(text)
+    parsed, reason = parse_ai_gap_comparison_json(text)
     if parsed is None:
-        return None
+        return None, reason
 
     gap_summary = parsed.get("gapSummary")
     if not isinstance(gap_summary, str) or not gap_summary.strip():
@@ -288,42 +394,94 @@ def _parse_comparison(text: str) -> WebAiGapAiComparison | None:
     else:
         gap_summary = gap_summary.strip()
 
-    return WebAiGapAiComparison(
-        matchedPoints=_coerce_str_list(parsed.get("matchedPoints")),
-        webStrongAiWeak=_coerce_str_list(parsed.get("webStrongAiWeak")),
-        aiStrongWebWeak=_coerce_str_list(parsed.get("aiStrongWebWeak")),
-        gapSummary=gap_summary,
-        recommendations=_coerce_str_list(parsed.get("recommendations")),
-        caution=CAUTION_TEXT,
-    )
+    try:
+        comparison = WebAiGapAiComparison(
+            matchedPoints=_coerce_str_list(parsed.get("matchedPoints")),
+            webStrongAiWeak=_coerce_str_list(parsed.get("webStrongAiWeak")),
+            aiStrongWebWeak=_coerce_str_list(parsed.get("aiStrongWebWeak")),
+            gapSummary=gap_summary,
+            recommendations=_coerce_str_list(parsed.get("recommendations")),
+            caution=CAUTION_TEXT,
+        )
+    except Exception:
+        logger.exception("Failed to construct WebAiGapAiComparison from a parsed JSON object")
+        return None, REASON_VALIDATION_FAILED
+
+    return comparison, None
 
 
-def _extract_output_text(payload: object) -> str | None:
-    """Same extraction logic as services/claude_client.py's
-    _extract_output_text() — duplicated locally (rather than imported)
-    since that function is private to that module and this module's
-    use case (structured JSON output, not a brand-observation summary)
-    is different enough to warrant its own small, independent copy."""
+@dataclass(frozen=True)
+class _ContentExtraction:
+    """Result of pulling readable text out of one Anthropic Messages
+    API response payload — see _extract_output_text(). Carries only
+    safe-to-log diagnostics (content-block type names, counts) never
+    the content itself, so a caller can log this directly without any
+    redaction step of its own."""
+
+    text: str | None
+    content_types: list[str] = field(default_factory=list)
+    text_block_count: int = 0
+    reason: str | None = None  # REASON_NO_TEXT_CONTENT / REASON_EMPTY_MODEL_OUTPUT, or None
+
+
+def _extract_output_text(payload: object) -> _ContentExtraction:
+    """Extracts readable text from Anthropic's Messages API response
+    envelope (`content` is a list of blocks, each with a `type`; only
+    `type == "text"` blocks carry a `text` field), while recording
+    enough shape information to diagnose a failure safely:
+    `content_types` (the `type` of every block, in order — e.g.
+    `["text"]`, `["tool_use"]`, `[]`) and `text_block_count` (how many
+    of those blocks were actually `type == "text"`, regardless of
+    whether their text was blank).
+
+    `reason` distinguishes two failure stages that were previously
+    indistinguishable (fix/ai-gap-comparison-diagnostics): payload
+    isn't a dict / `content` isn't a list / no block has
+    `type == "text"` at all -> REASON_NO_TEXT_CONTENT; at least one
+    text block exists but every one of them was blank/whitespace-only
+    -> REASON_EMPTY_MODEL_OUTPUT. `text` is None whenever `reason` is
+    set, and set (never blank) otherwise.
+    """
     if not isinstance(payload, dict):
-        return None
+        return _ContentExtraction(text=None, reason=REASON_NO_TEXT_CONTENT)
 
     content = payload.get("content")
     if not isinstance(content, list):
-        return None
+        return _ContentExtraction(text=None, reason=REASON_NO_TEXT_CONTENT)
 
+    content_types: list[str] = []
     parts: list[str] = []
+    text_block_count = 0
     for block in content:
         if not isinstance(block, dict):
+            content_types.append("<non-dict>")
             continue
-        if block.get("type") != "text":
+        block_type = block.get("type")
+        content_types.append(block_type if isinstance(block_type, str) else "<unknown>")
+        if block_type != "text":
             continue
+        text_block_count += 1
         text = block.get("text")
         if isinstance(text, str) and text.strip():
             parts.append(text.strip())
 
-    if not parts:
-        return None
-    return "\n\n".join(parts)
+    if text_block_count == 0:
+        return _ContentExtraction(
+            text=None, content_types=content_types, text_block_count=0, reason=REASON_NO_TEXT_CONTENT
+        )
+
+    combined = "\n\n".join(parts)
+    if not combined.strip():
+        return _ContentExtraction(
+            text=None,
+            content_types=content_types,
+            text_block_count=text_block_count,
+            reason=REASON_EMPTY_MODEL_OUTPUT,
+        )
+
+    return _ContentExtraction(
+        text=combined, content_types=content_types, text_block_count=text_block_count, reason=None
+    )
 
 
 def _build_user_prompt(
@@ -367,7 +525,7 @@ def _build_request_body(brand_name: str, result_json: dict[str, Any], model: str
 
 
 def generate_ai_gap_comparison(
-    *, brand_name: str, result_json: dict[str, Any]
+    *, brand_name: str, result_json: dict[str, Any], analysis_run_id: str | None = None
 ) -> AiGapComparisonOutcome:
     """Generates one AI-based Web/AI gap comparison from the already-
     saved `result_json["webAiGap"]` — see module docstring for exactly
@@ -379,11 +537,19 @@ def generate_ai_gap_comparison(
     that is actually attempted and then fails (network error, non-2xx,
     invalid JSON, or an unparseable comparison) returns
     `unavailable=False` (main.py returns 502).
+
+    `analysis_run_id` is optional and used only for log correlation
+    (never returned to the caller, never logged alongside anything
+    secret) — passing it lets an operator grep Render logs for exactly
+    which saved run a given failure/diagnostic line belongs to.
     """
     web_ai_gap = result_json.get("webAiGap")
     if not isinstance(web_ai_gap, dict) or web_ai_gap.get("status") != "real":
         return AiGapComparisonOutcome(
-            success=False, reason=_WEB_AI_GAP_NOT_READY_REASON, unavailable=True
+            success=False,
+            reason=_WEB_AI_GAP_NOT_READY_REASON,
+            unavailable=True,
+            internal_reason=REASON_WEB_AI_GAP_NOT_READY,
         )
 
     web_context = web_ai_gap.get("webContext") or {}
@@ -395,13 +561,19 @@ def generate_ai_gap_comparison(
     )
     if not isinstance(web_summary, str) or not web_summary.strip() or not has_ai_summary:
         return AiGapComparisonOutcome(
-            success=False, reason=_INSUFFICIENT_INPUT_REASON, unavailable=True
+            success=False,
+            reason=_INSUFFICIENT_INPUT_REASON,
+            unavailable=True,
+            internal_reason=REASON_INSUFFICIENT_INPUT,
         )
 
     credentials = get_claude_credentials()
     if credentials is None:
         return AiGapComparisonOutcome(
-            success=False, reason=_CREDENTIALS_MISSING_REASON, unavailable=True
+            success=False,
+            reason=_CREDENTIALS_MISSING_REASON,
+            unavailable=True,
+            internal_reason=REASON_CREDENTIALS_MISSING,
         )
 
     settings = get_claude_settings()
@@ -419,45 +591,84 @@ def generate_ai_gap_comparison(
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError:
-        logger.warning("Anthropic API request failed (network/timeout error)")
+        logger.warning(
+            "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s",
+            REASON_NETWORK_ERROR,
+            analysis_run_id,
+            settings.model,
+        )
         return AiGapComparisonOutcome(
             success=False,
             reason="Anthropic API request failed due to a network or timeout error.",
+            internal_reason=REASON_NETWORK_ERROR,
         )
 
     if response.status_code != 200:
-        logger.warning("Anthropic API returned HTTP %d", response.status_code)
+        logger.warning(
+            "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s http_status=%d",
+            REASON_NON_200_STATUS,
+            analysis_run_id,
+            settings.model,
+            response.status_code,
+        )
         return AiGapComparisonOutcome(
             success=False,
             reason=f"Anthropic API request failed with HTTP {response.status_code}.",
+            internal_reason=REASON_NON_200_STATUS,
         )
 
     try:
         payload = response.json()
     except ValueError:
-        logger.warning("Anthropic API returned a non-JSON response")
+        logger.warning(
+            "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s",
+            REASON_NON_JSON_RESPONSE,
+            analysis_run_id,
+            settings.model,
+        )
         return AiGapComparisonOutcome(
             success=False,
             reason="Anthropic API request failed: response was not valid JSON.",
+            internal_reason=REASON_NON_JSON_RESPONSE,
         )
 
-    text = _extract_output_text(payload)
-    if text is None:
+    extraction = _extract_output_text(payload)
+    if extraction.text is None:
+        # Safe diagnostics only: content-block type names and counts,
+        # never the block content itself — see _ContentExtraction's
+        # docstring and the module docstring's logging policy.
+        logger.warning(
+            "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s "
+            "content_types=%s text_block_count=%d",
+            extraction.reason,
+            analysis_run_id,
+            settings.model,
+            extraction.content_types,
+            extraction.text_block_count,
+        )
         return AiGapComparisonOutcome(
-            success=False, reason="Anthropic API returned no readable text."
+            success=False, reason=_PARSE_FAILED_REASON, internal_reason=extraction.reason
         )
 
-    comparison = _parse_comparison(text)
+    comparison, parse_reason = _parse_comparison(extraction.text)
     if comparison is None:
-        # Never logs `text` itself — only its length, which is safe
+        # Never logs the text itself — only its length, which is safe
         # (never a secret, and not useful enough on its own to be
-        # worth withholding) and lets an operator distinguish "empty
+        # worth withholding) and lets an operator distinguish "short
         # response" from "long response that still didn't parse".
         logger.warning(
-            "Failed to parse AI gap comparison output as JSON (parse_failed, length=%d)",
-            len(text),
+            "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s "
+            "raw_length=%d content_types=%s text_block_count=%d",
+            parse_reason,
+            analysis_run_id,
+            settings.model,
+            len(extraction.text),
+            extraction.content_types,
+            extraction.text_block_count,
         )
-        return AiGapComparisonOutcome(success=False, reason=_PARSE_FAILED_REASON)
+        return AiGapComparisonOutcome(
+            success=False, reason=_PARSE_FAILED_REASON, internal_reason=parse_reason
+        )
 
     return AiGapComparisonOutcome(
         success=True, reason="AI comparison succeeded.", comparison=comparison

@@ -1380,10 +1380,21 @@ def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
     outcome = generate_ai_gap_comparison(
         brand_name=detail["brand"]["name"],
         result_json=detail["result"],
+        analysis_run_id=analysis_run_id,
     )
     if not outcome.success:
         status_code = 503 if outcome.unavailable else 502
-        return error_response(outcome.reason, status_code=status_code)
+        # Adds a `reason` field (one of services/ai_gap_comparison.py's
+        # safe REASON_* codes) alongside the existing `error` message —
+        # never a secret or the raw Claude output, see that module's
+        # docstring — so a developer can tell failure stages apart from
+        # the HTTP response alone, without needing Render log access.
+        # error_response() itself is left untouched since it's shared
+        # by every other endpoint in this file.
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": outcome.reason, "reason": outcome.internal_reason},
+        )
 
     updated_result_json = dict(detail["result"])
     updated_result_json["webAiGapAiComparison"] = outcome.comparison.model_dump()

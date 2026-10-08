@@ -115,12 +115,14 @@ def _mock_successful_generation(monkeypatch, *, comparison: WebAiGapAiComparison
     return result
 
 
-def _mock_failed_generation(monkeypatch, *, reason: str = "boom", unavailable: bool = False):
+def _mock_failed_generation(
+    monkeypatch, *, reason: str = "boom", unavailable: bool = False, internal_reason: str | None = None
+):
     monkeypatch.setattr(
         main,
         "generate_ai_gap_comparison",
         lambda **kwargs: AiGapComparisonOutcome(
-            success=False, reason=reason, unavailable=unavailable
+            success=False, reason=reason, unavailable=unavailable, internal_reason=internal_reason
         ),
     )
 
@@ -235,7 +237,12 @@ def test_ai_comparison_saves_only_webAiGapAiComparison_and_does_not_overwrite_we
 def test_ai_comparison_failure_not_attempted_returns_503_and_does_not_write_to_db(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
-    _mock_failed_generation(monkeypatch, reason="Anthropic API key is not configured.", unavailable=True)
+    _mock_failed_generation(
+        monkeypatch,
+        reason="Anthropic API key is not configured.",
+        unavailable=True,
+        internal_reason="credentials_missing",
+    )
     update_calls = []
     monkeypatch.setattr(
         main,
@@ -246,14 +253,22 @@ def test_ai_comparison_failure_not_attempted_returns_503_and_does_not_write_to_d
     response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
 
     assert response.status_code == 503
-    assert response.json() == {"error": "Anthropic API key is not configured."}
+    assert response.json() == {
+        "error": "Anthropic API key is not configured.",
+        "reason": "credentials_missing",
+    }
     assert update_calls == []
 
 
 def test_ai_comparison_failure_attempted_returns_502_and_does_not_write_to_db(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
-    _mock_failed_generation(monkeypatch, reason="Anthropic API request failed with HTTP 500.", unavailable=False)
+    _mock_failed_generation(
+        monkeypatch,
+        reason="Anthropic API request failed with HTTP 500.",
+        unavailable=False,
+        internal_reason="non_200_status",
+    )
     update_calls = []
     monkeypatch.setattr(
         main,
@@ -264,7 +279,42 @@ def test_ai_comparison_failure_attempted_returns_502_and_does_not_write_to_db(mo
     response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
 
     assert response.status_code == 502
+    assert response.json() == {
+        "error": "Anthropic API request failed with HTTP 500.",
+        "reason": "non_200_status",
+    }
     assert update_calls == []
+
+
+def test_ai_comparison_failure_response_reason_is_none_when_not_set(monkeypatch):
+    """A failure outcome that doesn't set internal_reason (e.g. a
+    future/unexpected failure path) still returns a well-formed body
+    with reason: null, rather than omitting the key or erroring."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
+    _mock_failed_generation(monkeypatch, reason="boom", unavailable=False, internal_reason=None)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "boom", "reason": None}
+
+
+def test_ai_comparison_failure_response_never_includes_raw_model_output_or_secrets(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
+    _mock_failed_generation(
+        monkeypatch,
+        reason="AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。",
+        unavailable=False,
+        internal_reason="json_decode_failed",
+    )
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    text = response.text
+
+    assert "sk-ant-" not in text
+    assert "CLAUDE_API_KEY" not in text
 
 
 def test_ai_comparison_returns_503_when_repository_update_raises(monkeypatch):

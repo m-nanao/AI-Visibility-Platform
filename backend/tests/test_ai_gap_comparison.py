@@ -12,6 +12,11 @@ from services import ai_gap_comparison
 from services.ai_gap_comparison import (
     CAUTION_TEXT,
     MESSAGES_API_URL,
+    REASON_CREDENTIALS_MISSING,
+    REASON_EMPTY_MODEL_OUTPUT,
+    REASON_JSON_DECODE_FAILED,
+    REASON_NO_JSON_OBJECT_FOUND,
+    REASON_NO_TEXT_CONTENT,
     generate_ai_gap_comparison,
     parse_ai_gap_comparison_json,
 )
@@ -56,48 +61,90 @@ _PARSED = {"gapSummary": "x", "recommendations": ["y"]}
 
 
 def test_parse_json_accepts_pure_json():
-    assert parse_ai_gap_comparison_json(_PURE_JSON) == _PARSED
+    assert parse_ai_gap_comparison_json(_PURE_JSON) == (_PARSED, None)
 
 
 def test_parse_json_accepts_json_tagged_code_fence():
     fenced = "```json\n" + _PURE_JSON + "\n```"
-    assert parse_ai_gap_comparison_json(fenced) == _PARSED
+    assert parse_ai_gap_comparison_json(fenced) == (_PARSED, None)
 
 
 def test_parse_json_accepts_untagged_code_fence():
     fenced = "```\n" + _PURE_JSON + "\n```"
-    assert parse_ai_gap_comparison_json(fenced) == _PARSED
+    assert parse_ai_gap_comparison_json(fenced) == (_PARSED, None)
 
 
 def test_parse_json_accepts_leading_prose_before_json():
     prefixed = "以下が比較結果です。\n\n" + _PURE_JSON
-    assert parse_ai_gap_comparison_json(prefixed) == _PARSED
+    assert parse_ai_gap_comparison_json(prefixed) == (_PARSED, None)
 
 
 def test_parse_json_accepts_trailing_prose_after_json():
     suffixed = _PURE_JSON + "\n\nこの比較は補助的な見立てです。"
-    assert parse_ai_gap_comparison_json(suffixed) == _PARSED
+    assert parse_ai_gap_comparison_json(suffixed) == (_PARSED, None)
 
 
 def test_parse_json_accepts_prose_outside_a_code_fence():
     messy = "以下が比較結果です。\n\n```json\n" + _PURE_JSON + "\n```\n\nご参考に。"
-    assert parse_ai_gap_comparison_json(messy) == _PARSED
+    assert parse_ai_gap_comparison_json(messy) == (_PARSED, None)
 
 
-def test_parse_json_returns_none_for_text_with_no_json_object():
-    assert parse_ai_gap_comparison_json("申し訳ございませんが比較できません。") is None
+def test_parse_json_returns_none_and_no_json_object_found_for_text_with_no_json_object():
+    parsed, reason = parse_ai_gap_comparison_json("申し訳ございませんが比較できません。")
+    assert parsed is None
+    assert reason == REASON_NO_JSON_OBJECT_FOUND
 
 
-def test_parse_json_returns_none_for_empty_string():
-    assert parse_ai_gap_comparison_json("") is None
+def test_parse_json_returns_none_and_no_json_object_found_for_empty_string():
+    parsed, reason = parse_ai_gap_comparison_json("")
+    assert parsed is None
+    assert reason == REASON_NO_JSON_OBJECT_FOUND
 
 
-def test_parse_json_returns_none_for_a_json_array_not_an_object():
-    assert parse_ai_gap_comparison_json('["a", "b"]') is None
+def test_parse_json_returns_none_and_json_decode_failed_for_a_json_array_not_an_object():
+    parsed, reason = parse_ai_gap_comparison_json('["a", "b"]')
+    assert parsed is None
+    assert reason == REASON_JSON_DECODE_FAILED
 
 
-def test_parse_json_returns_none_for_unbalanced_braces():
-    assert parse_ai_gap_comparison_json("{not actually json") is None
+def test_parse_json_returns_none_and_no_json_object_found_for_unbalanced_braces_with_no_closing_brace():
+    """No `}` anywhere means _extract_braces() never finds a candidate
+    span at all — this is indistinguishable from "no JSON attempted"
+    rather than "attempted and malformed"."""
+    parsed, reason = parse_ai_gap_comparison_json("{not actually json")
+    assert parsed is None
+    assert reason == REASON_NO_JSON_OBJECT_FOUND
+
+
+def test_parse_json_returns_none_and_json_decode_failed_for_malformed_json_with_braces():
+    """A `{`...`}` span exists but is genuinely malformed (unquoted
+    key) — this is a decode failure, not "no JSON object found"."""
+    parsed, reason = parse_ai_gap_comparison_json('{gapSummary: "x", recommendations: [}')
+    assert parsed is None
+    assert reason == REASON_JSON_DECODE_FAILED
+
+
+# --- Light syntax repair (fix/ai-gap-comparison-diagnostics) --------------
+
+
+def test_parse_json_repairs_fullwidth_quotes():
+    fullwidth = '{“gapSummary”: “x”, “recommendations”: [“y”]}'
+    assert parse_ai_gap_comparison_json(fullwidth) == (_PARSED, None)
+
+
+def test_parse_json_repairs_trailing_comma_before_closing_brace():
+    trailing_comma = '{"gapSummary": "x", "recommendations": ["y"],}'
+    assert parse_ai_gap_comparison_json(trailing_comma) == (_PARSED, None)
+
+
+def test_parse_json_repairs_trailing_comma_inside_nested_array():
+    trailing_comma = '{"gapSummary": "x", "recommendations": ["y",]}'
+    assert parse_ai_gap_comparison_json(trailing_comma) == (_PARSED, None)
+
+
+def test_parse_json_repairs_leading_and_trailing_invisible_characters():
+    with_bom = "﻿" + _PURE_JSON + "​"
+    assert parse_ai_gap_comparison_json(with_bom) == (_PARSED, None)
 
 
 def _mock_credentials(monkeypatch, configured: bool = True):
@@ -181,6 +228,7 @@ def test_returns_unavailable_when_claude_api_key_is_not_configured(monkeypatch):
     assert outcome.success is False
     assert outcome.unavailable is True
     assert outcome.reason == "Anthropic API key is not configured."
+    assert outcome.internal_reason == REASON_CREDENTIALS_MISSING
 
 
 def test_never_calls_anthropic_when_input_is_insufficient(monkeypatch):
@@ -236,6 +284,38 @@ def test_returns_failure_when_no_text_block_in_response(monkeypatch):
 
     assert outcome.success is False
     assert outcome.unavailable is False
+    assert outcome.internal_reason == REASON_NO_TEXT_CONTENT
+
+
+def test_returns_no_text_content_when_only_non_text_content_blocks_are_present(monkeypatch):
+    """パターン: Anthropicがtext以外のcontent block(例: tool_use)だけを
+    返した場合も no_text_content として扱う。"""
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "tool_use", "id": "x", "input": {}}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.unavailable is False
+    assert outcome.internal_reason == REASON_NO_TEXT_CONTENT
+
+
+def test_returns_empty_model_output_when_text_block_is_blank(monkeypatch):
+    """text typeのcontent blockは存在するが、本文が空文字/空白のみの場合
+    は no_text_content ではなく empty_model_output として区別する。"""
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": "   "}]}
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.unavailable is False
+    assert outcome.internal_reason == REASON_EMPTY_MODEL_OUTPUT
 
 
 def test_returns_failure_when_model_output_is_not_valid_json(monkeypatch):
@@ -248,6 +328,7 @@ def test_returns_failure_when_model_output_is_not_valid_json(monkeypatch):
 
     assert outcome.success is False
     assert outcome.unavailable is False
+    assert outcome.internal_reason == REASON_NO_JSON_OBJECT_FOUND
 
 
 # --- success ----------------------------------------------------------------
@@ -478,3 +559,120 @@ def test_does_not_call_any_other_provider_or_fetch(monkeypatch):
     assert not hasattr(module, "fetch_url_texts")
     assert not hasattr(module, "build_chatgpt_observation")
     assert not hasattr(module, "build_gemini_observation")
+
+
+# --- _extract_output_text() (fix/ai-gap-comparison-diagnostics) -----------
+#
+# Direct unit tests for the content-extraction helper, independent of
+# the full generate_ai_gap_comparison() flow — isolates exactly what
+# diagnostics are captured (content_types/text_block_count) and which
+# of the two previously-indistinguishable failure stages
+# (no_text_content vs. empty_model_output) applies.
+
+
+def test_extract_output_text_joins_multiple_text_blocks():
+    extraction = ai_gap_comparison._extract_output_text(
+        {"content": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}]}
+    )
+
+    assert extraction.text == "first\n\nsecond"
+    assert extraction.content_types == ["text", "text"]
+    assert extraction.text_block_count == 2
+    assert extraction.reason is None
+
+
+def test_extract_output_text_no_text_content_when_payload_is_not_a_dict():
+    extraction = ai_gap_comparison._extract_output_text("not a dict")
+
+    assert extraction.text is None
+    assert extraction.reason == REASON_NO_TEXT_CONTENT
+
+
+def test_extract_output_text_no_text_content_when_content_is_missing():
+    extraction = ai_gap_comparison._extract_output_text({})
+
+    assert extraction.text is None
+    assert extraction.reason == REASON_NO_TEXT_CONTENT
+    assert extraction.content_types == []
+
+
+def test_extract_output_text_no_text_content_when_only_non_text_blocks_present():
+    extraction = ai_gap_comparison._extract_output_text(
+        {"content": [{"type": "tool_use", "id": "x"}]}
+    )
+
+    assert extraction.text is None
+    assert extraction.reason == REASON_NO_TEXT_CONTENT
+    assert extraction.content_types == ["tool_use"]
+    assert extraction.text_block_count == 0
+
+
+def test_extract_output_text_empty_model_output_when_text_block_is_blank():
+    extraction = ai_gap_comparison._extract_output_text(
+        {"content": [{"type": "text", "text": "   "}]}
+    )
+
+    assert extraction.text is None
+    assert extraction.reason == REASON_EMPTY_MODEL_OUTPUT
+    assert extraction.content_types == ["text"]
+    assert extraction.text_block_count == 1
+
+
+# --- Safe diagnostic logging (fix/ai-gap-comparison-diagnostics) ---------
+
+
+def test_parse_failure_logs_safe_diagnostics_including_content_types_and_length(monkeypatch, caplog):
+    import logging
+
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": "not json at all"}]}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json(), analysis_run_id="run-123")
+
+    assert "no_json_object_found" in caplog.text
+    assert "run-123" in caplog.text
+    assert "content_types=['text']" in caplog.text
+    assert "raw_length=15" in caplog.text
+
+
+def test_content_extraction_failure_logs_safe_diagnostics(monkeypatch, caplog):
+    import logging
+
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": []})
+
+    with caplog.at_level(logging.WARNING):
+        generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json(), analysis_run_id="run-456")
+
+    assert "no_text_content" in caplog.text
+    assert "run-456" in caplog.text
+
+
+def test_log_lines_never_include_the_api_key(monkeypatch, caplog):
+    import logging
+
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": "not json at all"}]}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert "sk-ant-secret" not in caplog.text
+
+
+# --- SYSTEM_PROMPT content (fix/ai-gap-comparison-diagnostics) -----------
+
+
+def test_system_prompt_forbids_markdown_and_prose_and_requires_json_only():
+    prompt = ai_gap_comparison.SYSTEM_PROMPT
+
+    assert "JSONオブジェクト1つのみ" in prompt
+    assert "Markdown" in prompt
+    assert "{" in prompt and "}" in prompt
+    assert "recommendations" in prompt
+    assert "1件以上" in prompt

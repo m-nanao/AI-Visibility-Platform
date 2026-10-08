@@ -212,6 +212,20 @@ AI比較に渡す入力候補を、既存の保存済みデータから組み立
 - **変更していないもの**: Claude API接続設定（`CLAUDE_API_KEY`/`CLAUDE_MODEL`/`CLAUDE_MAX_OUTPUT_TOKENS`）・新しい環境変数の追加・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定——いずれも変更していない。
 - **テスト**: backend（`tests/test_ai_gap_comparison.py`に`parse_ai_gap_comparison_json()`単体テスト、および`generate_ai_gap_comparison()`を通した統合テスト——純粋JSON・`json`タグ付き/なしのコードフェンス・前置き文/後置き文付き/両方付き・フィールド欠落時のdefault補完・文字列→配列への正規化・JSON自体が存在しない場合の`parse_failed`・生出力がログに出ないことを確認）・frontend（新しいエラーメッセージがそのまま転送されることを`app/lib/analysis-history.test.ts`・proxy routeテストに追加）。
 
+## 15. 失敗原因の診断強化とJSON生成の再安定化（`fix/ai-gap-comparison-diagnostics`、2026-10-08）
+
+「14」のJSON parse堅牢化後も、本番でAI差分比較を実行すると毎回失敗する状態が続いた。AI Overview比較内のClaude観測は正常に動作しているため、Claude APIキー・接続自体は問題ないことは既に確認済みであり、**失敗が「Claude応答のcontent抽出」「JSON抽出」「出力validation」のどの段階で起きているかを安全に特定できなかった**ことが調査のボトルネックになっていた。
+
+- **失敗段階の切り分け**: `backend/services/ai_gap_comparison.py`に、失敗を3段階（content抽出／JSON抽出／pydantic構築）それぞれの安全な識別コード（`REASON_NO_TEXT_CONTENT`/`REASON_EMPTY_MODEL_OUTPUT`/`REASON_NO_JSON_OBJECT_FOUND`/`REASON_JSON_DECODE_FAILED`/`REASON_VALIDATION_FAILED`等）を追加した。`_extract_output_text()`は戻り値を`str | None`から、テキスト・content типе一覧・textブロック数・失敗理由を持つ構造体（`_ContentExtraction`）に変更し、「text型のcontentブロックが一つも無い」場合と「text型ブロックはあるが空文字」の場合を区別できるようにした。`parse_ai_gap_comparison_json()`も戻り値を`dict | None`から`(dict | None, 理由コード | None)`のタプルに変更し、「JSON候補となりうる`{`〜`}`形の文字列すら見つからない」場合と「見つかったが`json.loads`が失敗する／dict以外の値になる」場合を区別する。
+- **安全な診断ログ**: `AiGapComparisonOutcome`に新フィールド`internal_reason`を追加し、失敗時は`logger.warning()`で理由コード・`analysis_run_id`・provider/model名・raw出力の**長さのみ**（`raw_length`）・content type一覧・textブロック数・JSON候補抽出の有無・HTTPステータス等を記録する。Claude APIキー・`Authorization`・`HISTORY_READ_TOKEN`・`DATABASE_URL`・Claude生出力全文・Web本文全文は一切ログに出さない（テストで保証、下記参照）。
+- **API応答にreasonを追加**: `backend/main.py`の`POST /analysis-runs/{id}/web-ai-gap/ai-comparison`は、失敗時のJSON応答に`error`（従来どおりの安全な自然文、画面表示用）に加えて`reason`（内部識別コード、secretやraw出力を含まない）を含めるようにした。ユーザー向け画面文言は変更していない（「AI比較の生成結果を読み取れませんでした。時間をおいて再度お試しください。」のまま）。`app/api/analysis-runs/[id]/web-ai-gap/ai-comparison/route.ts`はこの`reason`をそのまま転送するが、`app/lib/analysis-history.ts`の`resolveAiGapComparisonOutcome()`は`error`のみを読み、`reason`は無視する（画面表示は従来どおり自然文のみ）。
+- **prompt強化**: `SYSTEM_PROMPT`に「厳守事項」ブロックを追加し、JSONオブジェクトのみ・最初と最後の文字は`{`/`}`・Markdown禁止・箇条書きや説明文の混入禁止・`recommendations`は最低1件・`gapSummary`は必ず文字列・判断に迷う場合も空のJSONではなく安全にヘッジした実質的な回答を返す、という指示を明示した。
+- **軽微なJSON崩れの修復（best-effort）**: `_repair_json_candidate()`を追加し、全角引用符→半角への変換、閉じ括弧直前の余分なカンマの除去、先頭/末尾の不可視文字（BOM・ゼロ幅スペース）の除去のみを行う。構造を推測して補うような積極的な修復は行わず、これらの正規化を経ても`json.loads`に失敗する場合はそのまま解釈失敗（`REASON_JSON_DECODE_FAILED`）として扱う。
+- **自然文フォールバックは今回未実装**: タスクで検討された「JSONが取れない場合に自然文のまま保存・表示する」フォールバック（`method: "ai_comparison_text_fallback"`等）は、診断ログとprompt強化を優先する方針のため、本タスクでは実装していない。
+- **失敗時の挙動は変更なし**: 解釈に失敗した場合、`result_json`は一切書き換えない（既存の`webAiGap`・以前に生成済みの`webAiGapAiComparison`があればそのまま保持される）。
+- **変更していないもの**: Claude API接続設定・新しい環境変数の追加・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定・`error_response()`等の既存共通ヘルパーの変更——いずれも行っていない。
+- **テスト**: backend（`tests/test_ai_gap_comparison.py`に`_extract_output_text()`/`parse_ai_gap_comparison_json()`の新しい戻り値・理由コードの単体テスト、JSON修復の単体テスト、`caplog`を使った安全ログ内容の検証——APIキーがログに一切出ないことを含む、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`に`reason`フィールドがAPI応答に含まれること・secret/raw出力が応答に含まれないことのテスト）・frontend（`app/lib/analysis-history.test.ts`に`reason`フィールドが画面表示上無視されることのテスト、proxy routeテストに`reason`がそのまま転送されることのテスト）。
+
 ## 関連ドキュメント
 
 - [36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」— 現在の`webAiGap`簡易判定の設計・実装経緯。特に「18」の「将来案: 専用AI比較処理への置き換え設計（design only、未実装）」が本ドキュメントの出発点。
