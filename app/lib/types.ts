@@ -452,7 +452,14 @@ export interface WebAiGapAiComparison {
   // no JSON object could be found in it at all — the list fields are
   // empty and `textSummary` carries the natural-language text instead
   // of the structured fields below.
-  method: "ai_comparison" | "ai_comparison_text_fallback";
+  // "ai_comparison_json_like_fallback" (fix/ai-gap-comparison-json-
+  // like-fallback-display) marks a result built by best-effort partial
+  // extraction of known fields out of JSON-shaped-but-undecodable text
+  // (e.g. truncated mid-array) — the structured fields below are
+  // populated with whatever could be recovered (any field that
+  // couldn't be recovered defaults the same way a normal comparison's
+  // missing field would), and `textSummary` stays unset.
+  method: "ai_comparison" | "ai_comparison_text_fallback" | "ai_comparison_json_like_fallback";
   matchedPoints: string[];
   webStrongAiWeak: string[];
   aiStrongWebWeak: string[];

@@ -221,6 +221,46 @@ def test_ai_comparison_text_fallback_is_saved_and_returned_and_preserves_web_ai_
     assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
 
 
+def test_ai_comparison_json_like_fallback_is_saved_and_returned_and_preserves_web_ai_gap(
+    monkeypatch,
+):
+    """fix/ai-gap-comparison-json-like-fallback-display: a json-like-
+    fallback comparison (method="ai_comparison_json_like_fallback",
+    structured list fields populated, textSummary unset) is persisted
+    and returned exactly like a normal structured one, and the existing
+    rule-based webAiGap is still left untouched."""
+    _enable_read_env(monkeypatch)
+    detail = _fake_detail()
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
+    json_like_comparison = _comparison(
+        method="ai_comparison_json_like_fallback",
+        matchedPoints=["一致点A"],
+        webStrongAiWeak=["Web強みA"],
+        aiStrongWebWeak=["AI強みA"],
+        gapSummary="ズレの要約です。",
+        recommendations=[],
+        textSummary=None,
+    )
+    _mock_successful_generation(monkeypatch, comparison=json_like_comparison)
+    saved = {}
+
+    def fake_update(run_id, *, result_json, meta_json):
+        saved["result_json"] = result_json
+        return True
+
+    monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["webAiGapAiComparison"]["method"] == "ai_comparison_json_like_fallback"
+    assert body["webAiGapAiComparison"]["matchedPoints"] == ["一致点A"]
+    assert body["webAiGapAiComparison"]["textSummary"] is None
+    assert saved["result_json"]["webAiGapAiComparison"]["method"] == "ai_comparison_json_like_fallback"
+    assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
+
+
 def test_ai_comparison_history_token_mode_not_found(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: None)

@@ -755,4 +755,30 @@ describe("parseWebAiGapAiComparisonUpdateResponse", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- method="ai_comparison_json_like_fallback"
+  // (fix/ai-gap-comparison-json-like-fallback-display) ---
+
+  it('accepts method="ai_comparison_json_like_fallback" with populated list fields and no textSummary', () => {
+    const jsonLike = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        method: "ai_comparison_json_like_fallback",
+        matchedPoints: ["一致点A"],
+        webStrongAiWeak: ["Web強みA"],
+        aiStrongWebWeak: ["AI強みA"],
+        recommendations: [],
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(jsonLike);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.method).toBe("ai_comparison_json_like_fallback");
+      expect(result.data.webAiGapAiComparison.matchedPoints).toEqual(["一致点A"]);
+      expect(result.data.webAiGapAiComparison.textSummary).toBeUndefined();
+    }
+  });
 });

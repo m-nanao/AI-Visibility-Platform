@@ -650,4 +650,32 @@ describe("parseAnalysisResult", () => {
 
     expect(result.success).toBe(false);
   });
+
+  // --- webAiGapAiComparison, method="ai_comparison_json_like_fallback"
+  // (fix/ai-gap-comparison-json-like-fallback-display) ---
+
+  it('accepts webAiGapAiComparison with method="ai_comparison_json_like_fallback" and populated list fields', () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGapAiComparison: {
+        status: "real",
+        method: "ai_comparison_json_like_fallback",
+        matchedPoints: ["一致点A"],
+        webStrongAiWeak: ["Web強みA"],
+        aiStrongWebWeak: ["AI強みA"],
+        gapSummary: "ズレの要約です。",
+        recommendations: [],
+        caution: "AIによる比較であり、AIの内部認識を直接示すものではありません。",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison?.method).toBe("ai_comparison_json_like_fallback");
+      expect(result.data.webAiGapAiComparison?.matchedPoints).toEqual(["一致点A"]);
+      expect(result.data.webAiGapAiComparison?.textSummary).toBeUndefined();
+    }
+  });
 });
