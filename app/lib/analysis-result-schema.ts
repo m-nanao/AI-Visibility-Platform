@@ -240,7 +240,11 @@ const webAiGapResultSchema = z.object({
 // every freshly analyzed result and on older saved history.
 const webAiGapAiComparisonSchema = z.object({
   status: z.literal("real"),
-  method: z.enum(["ai_comparison", "ai_comparison_text_fallback"]),
+  method: z.enum([
+    "ai_comparison",
+    "ai_comparison_text_fallback",
+    "ai_comparison_json_like_fallback",
+  ]),
   matchedPoints: z.array(z.string()).default([]),
   webStrongAiWeak: z.array(z.string()).default([]),
   aiStrongWebWeak: z.array(z.string()).default([]),

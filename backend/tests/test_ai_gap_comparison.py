@@ -13,6 +13,7 @@ from services.ai_gap_comparison import (
     CAUTION_TEXT,
     MAX_TEXT_FALLBACK_LENGTH,
     MESSAGES_API_URL,
+    METHOD_JSON_LIKE_FALLBACK,
     METHOD_TEXT_FALLBACK,
     MIN_TEXT_FALLBACK_LENGTH,
     REASON_CREDENTIALS_MISSING,
@@ -476,11 +477,236 @@ def test_text_fallback_success_logs_info_not_warning_and_never_logs_raw_text(mon
             brand_name="Acme", result_json=_result_json(), analysis_run_id="run-789"
         )
 
-    assert "AI gap comparison used text fallback" in caplog.text
+    assert "AI gap comparison used fallback" in caplog.text
+    assert "method=ai_comparison_text_fallback" in caplog.text
     assert "run-789" in caplog.text
     for record in caplog.records:
         assert record.levelno < logging.WARNING
     assert long_text not in caplog.text
+
+
+# --- JSON-like partial-field extraction
+# (fix/ai-gap-comparison-json-like-fallback-display) ----------------------
+
+
+def _truncated_json_like_text(*, with_closing_fence: bool = False) -> str:
+    """Reproduces the production bug report verbatim in shape: a
+    ```json-fenced, structured-looking response that never closes (no
+    trailing `}` at all, so parse_ai_gap_comparison_json() reports
+    REASON_NO_JSON_OBJECT_FOUND) — but with every known field present
+    and well-formed up to the truncation point."""
+    body = (
+        '{\n'
+        '  "matchedPoints": [\n'
+        '    "SEO対策を提供する会社であることがWeb・AI回答の一部で一致している"\n'
+        '  ],\n'
+        '  "webStrongAiWeak": [\n'
+        '    "AI検索対策の強みがAI回答では弱い"\n'
+        '  ],\n'
+        '  "aiStrongWebWeak": [\n'
+        '    "AI回答では一般的なブランディング会社として説明されやすい"\n'
+        '  ],\n'
+        '  "gapSummary": "Web上とAI回答で説明の強調点が異なる傾向があります。"\n'
+    )
+    if with_closing_fence:
+        return "```json\n" + body + "}\n```"
+    return "```json\n" + body
+
+
+def test_json_like_fallback_extracts_matched_points_from_truncated_json(monkeypatch):
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _truncated_json_like_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == METHOD_JSON_LIKE_FALLBACK
+    assert outcome.comparison.matchedPoints == [
+        "SEO対策を提供する会社であることがWeb・AI回答の一部で一致している"
+    ]
+
+
+def test_json_like_fallback_extracts_web_strong_ai_weak(monkeypatch):
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _truncated_json_like_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.comparison.webStrongAiWeak == ["AI検索対策の強みがAI回答では弱い"]
+
+
+def test_json_like_fallback_extracts_ai_strong_web_weak(monkeypatch):
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _truncated_json_like_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.comparison.aiStrongWebWeak == ["AI回答では一般的なブランディング会社として説明されやすい"]
+
+
+def test_json_like_fallback_extracts_gap_summary(monkeypatch):
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _truncated_json_like_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.comparison.gapSummary == "Web上とAI回答で説明の強調点が異なる傾向があります。"
+
+
+def test_json_like_fallback_succeeds_with_recommendations_missing(monkeypatch):
+    """recommendations was truncated away entirely (never appeared) —
+    this must not block success; it simply defaults to []."""
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _truncated_json_like_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.recommendations == []
+
+
+def test_json_like_fallback_sets_no_text_summary(monkeypatch):
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _truncated_json_like_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.comparison.textSummary is None
+    assert outcome.comparison.caution == CAUTION_TEXT
+
+
+def test_json_like_fallback_also_applies_when_braces_are_closed_but_unparseable(monkeypatch):
+    """A structurally-closed-but-broken JSON blob (REASON_JSON_DECODE_FAILED,
+    not REASON_NO_JSON_OBJECT_FOUND — e.g. an unterminated string inside
+    one field) is equally eligible for json-like extraction of the
+    *other*, well-formed fields."""
+    broken_recommendations = (
+        '{\n'
+        '  "matchedPoints": ["一致点A"],\n'
+        '  "webStrongAiWeak": ["Web強みA"],\n'
+        '  "aiStrongWebWeak": ["AI強みA"],\n'
+        '  "gapSummary": "ズレの要約です。",\n'
+        '  "recommendations": ["unterminated\n'
+        '}'
+    )
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": broken_recommendations}]}
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == METHOD_JSON_LIKE_FALLBACK
+    assert outcome.comparison.gapSummary == "ズレの要約です。"
+    assert outcome.comparison.matchedPoints == ["一致点A"]
+    assert outcome.comparison.recommendations == []
+
+
+def test_full_valid_json_is_preferred_over_json_like_fallback(monkeypatch):
+    """When the response actually decodes as a JSON object, the normal
+    structured path is used even though the text is just as
+    "JSON-like" as the fallback cases above — fallback extraction is
+    only ever tried after a real decode attempt fails."""
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _ai_comparison_json_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == "ai_comparison"
+    assert outcome.comparison.textSummary is None
+
+
+def test_json_like_but_no_useful_fields_falls_back_to_plain_text(monkeypatch):
+    """Looks JSON-like (a leading, unmatched `{`) but none of the known
+    fields could actually be extracted — falls through to the plain
+    text fallback (REASON_NO_JSON_OBJECT_FOUND path only) rather than
+    becoming a genuine failure, as long as the remaining text is itself
+    long enough and not a refusal."""
+    unclosed_but_no_fields = "{" + "これはAIの比較に関する説明文章です。" * 5
+    assert len(unclosed_but_no_fields) >= MIN_TEXT_FALLBACK_LENGTH
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": unclosed_but_no_fields}]}
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == METHOD_TEXT_FALLBACK
+    assert not outcome.comparison.textSummary.startswith("{")
+
+
+def test_text_fallback_strips_a_complete_code_fence_from_the_displayed_text(monkeypatch):
+    fenced_natural_text = "```\n" + _long_natural_language_comparison() + "\n```"
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch, json_body={"content": [{"type": "text", "text": fenced_natural_text}]}
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == METHOD_TEXT_FALLBACK
+    assert "```" not in outcome.comparison.textSummary
+
+
+def test_json_decode_failed_without_useful_json_like_fields_is_still_a_genuine_failure(monkeypatch):
+    """Unlike REASON_NO_JSON_OBJECT_FOUND, a genuine JSON_DECODE_FAILED
+    that yields nothing useful from json-like extraction is never
+    handed to the plain text fallback — it stays a reportable failure,
+    unchanged from fix/ai-gap-comparison-text-fallback."""
+    malformed = '{gapSummary: "x", recommendations: [}' + "あ" * 100
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": malformed}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is False
+    assert outcome.comparison is None
+    assert outcome.internal_reason == REASON_JSON_DECODE_FAILED
+
+
+def test_json_like_fallback_success_logs_info_with_method_and_never_logs_raw_text(monkeypatch, caplog):
+    import logging
+
+    text = _truncated_json_like_text()
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    with caplog.at_level(logging.INFO):
+        generate_ai_gap_comparison(
+            brand_name="Acme", result_json=_result_json(), analysis_run_id="run-321"
+        )
+
+    assert "AI gap comparison used fallback" in caplog.text
+    assert "method=ai_comparison_json_like_fallback" in caplog.text
+    assert "run-321" in caplog.text
+    for record in caplog.records:
+        assert record.levelno < logging.WARNING
+    assert "SEO対策を提供する会社であることがWeb・AI回答の一部で一致している" not in caplog.text
 
 
 # --- success ----------------------------------------------------------------

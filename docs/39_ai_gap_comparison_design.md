@@ -1,8 +1,8 @@
 # AIによるWeb/AI差分比較 設計メモ
 
-「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした——詳細は「16」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした（「16」）。その後、実際の自然文fallback表示がJSON風のコードブロックのまま表示される（閉じていない/崩れたJSON風テキストがそのまま出る）ことが分かったため、`fix/ai-gap-comparison-json-like-fallback-display`で既知フィールドの部分抽出・整形表示を追加した——詳細は「17」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-08（Claude出力の自然文fallback対応を反映）**
+**最終更新日: 2026-10-09（JSON風text fallbackの整形表示対応を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -244,6 +244,33 @@ Claude API呼び出しは成功し、text型のcontentブロックも1件取得�
 - **frontend表示**: `app/lib/types.ts`・`analysis-result-schema.ts`・`analysis-history-schema.ts`の`WebAiGapAiComparison`型/schemaに`textSummary`（optional）を追加し、`method`を`"ai_comparison" | "ai_comparison_text_fallback"`の2値に拡張した。`WebAiGapAiComparisonSection.tsx`・`app/history/[id]/report/page.tsx`はいずれも`comparison.method === "ai_comparison_text_fallback"`の場合、見出しを「AIによる差分比較（文章形式）」に変え、補足文「AIが構造化形式ではなく文章形式で返した比較結果です。保存済みのWeb抜粋とAI観測結果をもとにした補助的な見立てです。」を表示し、本文は`textSummary`（なければ`gapSummary`）、改善ヒントは`recommendations`、最後に`caution`を表示する——通常の構造化`ai_comparison`表示（一致点/Web側が強い点/AI側が強い点/ズレの要約/改善ヒント）とは完全に分けて描画し、既存の表示ロジックは変更していない。
 - **変更していないもの**: Claude API呼び出し回数（1回のまま）・新しい環境変数・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定・既存の`webAiGap`——いずれも行っていない。失敗時（fallback不採用時も含む）に`result_json`を書き換えない既存方針も維持。
 - **テスト**: backend（`tests/test_ai_gap_comparison.py`に、十分な長さの自然文で`REASON_NO_JSON_OBJECT_FOUND`の場合にfallback成功すること・`method`/`textSummary`の内容・長すぎる場合の切り詰め・短すぎる場合は従来どおり失敗・拒否文っぽい場合は従来どおり失敗・JSONが見つかった場合は構造化結果が優先されること・`REASON_JSON_DECODE_FAILED`はfallback対象外であること・fallback成功時は`info`ログでraw全文が出ないことを検証、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`にfallback結果が保存され`webAiGap`を壊さないことのテスト）・frontend（`analysis-result-schema.test.ts`/`analysis-history-schema.test.ts`に`method="ai_comparison_text_fallback"`・`textSummary`のschemaテスト、新規`WebAiGapAiComparisonSection.test.ts`に文章形式表示用の見出し・補足文のコピーテスト）。
+
+## 17. JSON風text fallbackの整形表示（`fix/ai-gap-comparison-json-like-fallback-display`、2026-10-09）
+
+「16」のリリース後、本番でAI比較は表示されるようになったが、表示内容が以下のようにJSON風のコードブロックのまま出ることが分かった。
+
+```
+{
+  "matchedPoints": [
+    "SEO対策を提供する会社であることがWeb・AI回答の一部で一致している",
+    ...
+  ],
+  "webStrongAiWeak": [
+    ...
+```
+
+これはClaudeが構造化JSONを**試みたが完全には閉じられなかった**（途中で切れた/`recommendations`が欠けている等）ケースで、`parse_ai_gap_comparison_json()`は`REASON_NO_JSON_OBJECT_FOUND`（閉じ括弧が全く無い）または`REASON_JSON_DECODE_FAILED`（括弧はあるが解釈失敗）を返し、「16」のテキストfallbackがこの生テキストをそのまま「文章形式」として表示していた——内容自体は有用だが、ユーザー向け表示としてはコードブロックが見えてしまい不自然だった。
+
+- **JSON風判定**: `backend/services/ai_gap_comparison.py`に`_looks_json_like()`を追加した。テキストに`"matchedPoints"`/`"webStrongAiWeak"`/`"aiStrongWebWeak"`/`"gapSummary"`/`"recommendations"`のいずれかがクォート付きキーとして含まれる、またはテキスト先頭付近（コードフェンス除去後）に`{`がある場合にJSON風と判定する（意図的に単純な判定、過度な分類はしない）。
+- **既知フィールドの部分抽出**: JSON風と判定された場合、`json.loads`を再試行するのではなく、`_extract_json_like_array()`（`"<field>": [...]`形式から文字列配列を正規表現で抜き出す）・`_extract_json_like_gap_summary()`（`"gapSummary": "..."`形式から文字列を抜き出す）で、`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`/`gapSummary`/`recommendations`を個別に抽出する。各フィールドは独立して抽出を試みるため、ドキュメント全体としては不正なJSONでも、途中まで整形されたフィールドだけを安全に取り出せる。1つも有用なフィールド（`gapSummary`またはいずれかの非空配列）が取れない場合は`None`を返し、呼び出し元は従来のtext fallback（`REASON_NO_JSON_OBJECT_FOUND`のみ）または解釈失敗（`REASON_JSON_DECODE_FAILED`）にフォールバックする。
+- **優先順位**: `_parse_comparison()`は、通常の完全JSON解釈 → (REASON_NO_JSON_OBJECT_FOUND/REASON_JSON_DECODE_FAILEDいずれでも)JSON風部分抽出 → (REASON_NO_JSON_OBJECT_FOUNDのみ)プレーンテキストfallback、の順で試す。完全なJSONが解釈できた場合は従来どおり`method="ai_comparison"`が最優先される。
+- **保存形式**: `backend/models.py`の`WebAiGapAiComparison.method`に`"ai_comparison_json_like_fallback"`を追加した（`Literal["ai_comparison", "ai_comparison_text_fallback", "ai_comparison_json_like_fallback"]`）。このmethodでは抽出できた`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`/`gapSummary`/`recommendations`を通常の構造化結果と同じ形で格納し（抽出できなかったフィールドは通常の成功時と同じdefaultに倣い`[]`/`None`）、`textSummary`は設定しない。
+- **装飾除去**: `_strip_json_like_decorations()`を追加し、プレーンテキストfallback（`method="ai_comparison_text_fallback"`）として表示する前に、コードフェンス（`_strip_code_fence()`再利用）・先頭の不閉じ`{`・末尾の不閉じ`}`・一部のHTML entity（`&nbsp;`/`&amp;`）を除去する。過度な推測修復は行わない。
+- **frontend表示**: `method === "ai_comparison_json_like_fallback"`の場合、`WebAiGapAiComparisonSection.tsx`・`app/history/[id]/report/page.tsx`は「文章形式」ではなく、通常の構造化比較（一致点/Web側が強い点/AI側が強い点/ズレの要約/改善ヒント）と同じレイアウトで表示し、見出しのみ「AIによる差分比較（整形表示）」、補足文「AIの出力が一部不完全だったため、読み取れる範囲を整形して表示しています。」に差し替える。`recommendations`が空の場合は既存の`ComparisonList`コンポーネントがそのリストを自動的に非表示にする（「上記の文章形式の比較結果を確認してください。」のような固定文言は出さない）。`app/lib/types.ts`・`analysis-result-schema.ts`・`analysis-history-schema.ts`の`method`型/schemaを3値に拡張した。
+- **Claude呼び出しは1回のまま**: 部分抽出は既存のAnthropicレスポンス（すでに受信済みの1回分）に対する正規表現処理であり、2回目のClaude呼び出しは行っていない。
+- **ログ**: `method="ai_comparison_json_like_fallback"`も`method="ai_comparison_text_fallback"`と同じく`logger.info()`（`logger.warning()`ではない）で`method`・`analysis_run_id`・provider/model名・`raw_length`のみを記録する。Claude生テキスト全文はログに出さない。
+- **変更していないもの**: Claude API呼び出し回数（1回のまま）・新しい環境変数・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定・既存の`webAiGap`・完全JSON成功時の表示——いずれも行っていない。
+- **テスト**: backend（`tests/test_ai_gap_comparison.py`に、truncatedなJSON風テキストから`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`/`gapSummary`が個別に抽出できること・`recommendations`欠落でも成功すること・method値の確認・完全JSONが優先されること・`REASON_JSON_DECODE_FAILED`でも部分抽出が効くこと・有用フィールドが取れない場合はプレーンテキストfallbackまたは解釈失敗になること・プレーンテキストfallback時にコードフェンス/不閉じ括弧が除去されること・raw text全文がログに出ないことを検証、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`にjson-like-fallback結果が保存され`webAiGap`を壊さないことのテスト）・frontend（schemaに`method="ai_comparison_json_like_fallback"`の受理テスト、`WebAiGapAiComparisonSection.test.ts`に整形表示用の見出し・補足文のコピーテスト）。
 
 ## 関連ドキュメント
 

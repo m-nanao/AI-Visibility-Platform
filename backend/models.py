@@ -613,10 +613,21 @@ class WebAiGapAiComparison(BaseModel):
     the list fields are empty and `textSummary` carries the (possibly
     truncated) natural-language text instead. This is still a single
     Anthropic call's output, never a second request.
+
+    `method="ai_comparison_json_like_fallback"` (fix/ai-gap-comparison-
+    json-like-fallback-display) marks a result built by best-effort
+    regex extraction of known fields out of JSON-shaped-but-undecodable
+    text (e.g. truncated mid-array) — the list/gapSummary fields that
+    could be recovered are populated the same as a normal successful
+    comparison, `textSummary` stays unset, and any field that couldn't
+    be recovered defaults to empty/None exactly like a normal
+    comparison's missing field would.
     """
 
     status: Literal["real"] = "real"
-    method: Literal["ai_comparison", "ai_comparison_text_fallback"] = "ai_comparison"
+    method: Literal[
+        "ai_comparison", "ai_comparison_text_fallback", "ai_comparison_json_like_fallback"
+    ] = "ai_comparison"
     matchedPoints: list[str] = []
     webStrongAiWeak: list[str] = []
     aiStrongWebWeak: list[str] = []

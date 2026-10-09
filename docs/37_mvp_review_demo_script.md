@@ -153,6 +153,7 @@ Common Crawl補完: 公式ドメインから補完
 - 上記のAI差分比較が本番で毎回「AI比較の出力を解釈できませんでした。」になる不具合を修正（Claude自体は正常応答していたが、応答テキストにmarkdownコードフェンス・前置き文・後置き文が混ざることがあり、backend側のJSON解釈が厳格すぎて失敗していた。コードフェンス除去・文頭/文末の`{`〜`}`抽出・項目欠落時のdefault補完・文字列→配列への正規化を追加して解消。Claude API接続設定・新しい環境変数・通常分析への組み込みはいずれも変更なし。`fix/ai-gap-comparison-json-parse`、2026-10-08。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「14」参照）
 - 上記修正後も本番で失敗が続いたため、失敗段階（Claude応答のcontent抽出／JSON抽出／出力validation）を区別できる安全な診断ログを追加し、prompt制約も強化（Claude APIキーやAI回答全文はログ・API応答に一切出さない。ユーザー向け文言・失敗時の挙動は変更なし。`fix/ai-gap-comparison-diagnostics`、2026-10-08。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「15」参照）
 - 診断ログの結果、ClaudeがJSONを一切含まない自然文だけを返すケース（`reason=no_json_object_found`）が本番で確認されたため、十分な長さの自然文（拒否・謝罪文を除く）を「AIによる差分比較（文章形式）」として保存・表示する自然文fallbackを追加（Claude API呼び出しは引き続き1回のまま。通常分析への組み込みなし、簡易判定`webAiGap`は壊さない。`fix/ai-gap-comparison-text-fallback`、2026-10-08。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「16」参照）
+- 上記の自然文fallbackが実際には閉じていないJSON風のコードブロックのまま表示されるケースが見つかったため、既知フィールド（一致点/Web側が強い点/AI側が強い点/ズレの要約/改善ヒント）を個別に抽出できる場合は「AIによる差分比較（整形表示）」として通常の構造化比較と同じレイアウトで表示するよう変更（Claude API呼び出しは引き続き1回のまま。既知フィールドが1つも取れない場合は従来の文章形式表示または解釈失敗のまま。`fix/ai-gap-comparison-json-like-fallback-display`、2026-10-09。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「17」参照）
 
 ### MVPではまだ限定的なこと
 

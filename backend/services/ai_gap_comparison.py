@@ -83,6 +83,33 @@ a second Claude call to "fix" the output into JSON. The resulting
 WebAiGapAiComparison has `method="ai_comparison_text_fallback"` and
 `textSummary` set instead of the structured list fields, so the
 frontend can render it distinctly from a normal structured comparison.
+
+**JSON-like partial-field extraction
+(fix/ai-gap-comparison-json-like-fallback-display).** In production,
+the plain text fallback above started firing for a response that
+*was* attempting a structured JSON comparison (quoted
+`"matchedPoints"`/`"gapSummary"`/etc. keys, a leading `{`) but never
+decoded — e.g. truncated mid-array with no closing `}` at all
+(REASON_NO_JSON_OBJECT_FOUND) or with a malformed/unclosed tail
+(REASON_JSON_DECODE_FAILED). Showing that raw, brace-and-fence-laden
+text verbatim as "文章形式" reads as a bug, not a natural-language
+answer. So before falling back to the plain text display, this module
+now tries a best-effort, regex-based *partial* extraction of the known
+field names directly out of the undecodable text (see
+_try_build_json_like_fallback() below) — never a second JSON decode
+attempt, never guessing at missing structure, just pulling out
+`"field": [...]`/`"gapSummary": "..."` substrings that happen to be
+well-formed even though the document around them isn't. When at least
+one field yields real content, the result is stored as
+`method="ai_comparison_json_like_fallback"` and rendered with the same
+structured layout as a normal successful comparison (plus a short
+disclaimer that the output was partially unreadable) — `recommendations`
+is simply omitted from that layout when empty, the same way a normal
+successful comparison already handles an empty list. When nothing
+useful can be extracted this way, REASON_JSON_DECODE_FAILED is still
+reported as a genuine failure (unchanged from
+fix/ai-gap-comparison-text-fallback), while REASON_NO_JSON_OBJECT_FOUND
+falls through to the plain text fallback as before.
 """
 
 from __future__ import annotations
@@ -168,6 +195,31 @@ _REFUSAL_HEAD_PHRASES = (
     "できません",
 )
 _REFUSAL_HEAD_WINDOW = 80
+
+# --- JSON-like partial-field extraction
+# (fix/ai-gap-comparison-json-like-fallback-display) ---
+#
+# Tried, for both REASON_NO_JSON_OBJECT_FOUND and
+# REASON_JSON_DECODE_FAILED, before the plain text fallback above —
+# see module docstring. Never a second JSON decode attempt: plain
+# regexes over the raw text, pulling out only the exact known field
+# names this module's own SYSTEM_PROMPT asks for.
+METHOD_JSON_LIKE_FALLBACK = "ai_comparison_json_like_fallback"
+
+_JSON_LIKE_SIGNAL_KEYS = (
+    "matchedPoints",
+    "webStrongAiWeak",
+    "aiStrongWebWeak",
+    "gapSummary",
+    "recommendations",
+)
+
+_JSON_LIKE_ARRAY_FIELD_RE = {
+    key: re.compile(rf'"{key}"\s*:\s*\[(.*?)\]', re.DOTALL)
+    for key in ("matchedPoints", "webStrongAiWeak", "aiStrongWebWeak", "recommendations")
+}
+_JSON_LIKE_GAP_SUMMARY_RE = re.compile(r'"gapSummary"\s*:\s*"((?:[^"\\]|\\.)*)"', re.DOTALL)
+_JSON_LIKE_STRING_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 # --- Safe, short internal reason codes (fix/ai-gap-comparison-diagnostics) -
 #
@@ -481,6 +533,116 @@ def _try_build_text_fallback(text: str) -> WebAiGapAiComparison | None:
     return _build_text_fallback_comparison(text)
 
 
+def _strip_json_like_decorations(text: str) -> str:
+    """Cosmetic cleanup applied before showing JSON-shaped-but-
+    undecodable text as the plain text fallback's `textSummary` (see
+    module docstring's "JSON-like partial-field extraction" section) —
+    removes a markdown code fence if present (_strip_code_fence()), a
+    single unmatched leading `{` or trailing `}` left over from
+    truncated/malformed JSON (the exact case observed in production),
+    and normalizes a couple of literal HTML-entity whitespace variants.
+    Never attempts structural repair — if the result still doesn't look
+    like natural prose, it's shown as-is rather than guessed at
+    further."""
+    cleaned = _strip_code_fence(text).strip()
+    if cleaned.startswith("{"):
+        cleaned = cleaned[1:].lstrip()
+    if cleaned.endswith("}"):
+        cleaned = cleaned[:-1].rstrip()
+    cleaned = cleaned.replace("&nbsp;", " ").replace("&amp;", "&")
+    return cleaned.strip()
+
+
+def _looks_json_like(text: str) -> bool:
+    """Heuristic: does `text` look like Claude *attempted* a structured
+    JSON comparison, even though it didn't fully decode? True when any
+    of the known field names appears as a quoted JSON key, or `{`
+    appears within the first few characters of the (fence-stripped)
+    text. Deliberately simple, per the task's own guidance — not a
+    thorough JSON-shape classifier."""
+    if any(f'"{key}"' in text for key in _JSON_LIKE_SIGNAL_KEYS):
+        return True
+    return text.lstrip()[:20].startswith("{")
+
+
+def _unescape_json_like_string(value: str) -> str:
+    """Minimal, safe unescaping for a string pulled out of a JSON-like
+    fragment via regex rather than a real JSON decoder — only the
+    handful of escape sequences `json.loads` would itself turn back
+    into the same characters, nothing speculative."""
+    return value.replace('\\"', '"').replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")
+
+
+def _extract_json_like_array(text: str, field: str) -> list[str] | None:
+    """Best-effort extraction of a `"<field>": [...]` array of quoted
+    strings from JSON-shaped-but-undecodable text. Returns None when
+    the field isn't present in the text at all, as opposed to present
+    but empty (`[]`), which returns an empty list — so callers can
+    tell "field missing" apart from "field present with zero items"."""
+    match = _JSON_LIKE_ARRAY_FIELD_RE[field].search(text)
+    if match is None:
+        return None
+    items = [
+        _unescape_json_like_string(item_match.group(1)).strip()
+        for item_match in _JSON_LIKE_STRING_ITEM_RE.finditer(match.group(1))
+    ]
+    return [item for item in items if item][:MAX_ITEMS_PER_LIST]
+
+
+def _extract_json_like_gap_summary(text: str) -> str | None:
+    """Best-effort extraction of a `"gapSummary": "..."` string value
+    from JSON-shaped-but-undecodable text. Returns None when the field
+    isn't present, or is present but blank."""
+    match = _JSON_LIKE_GAP_SUMMARY_RE.search(text)
+    if match is None:
+        return None
+    value = _unescape_json_like_string(match.group(1)).strip()
+    return value or None
+
+
+def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
+    """Best-effort partial extraction of the known comparison fields
+    (matchedPoints/webStrongAiWeak/aiStrongWebWeak/gapSummary/
+    recommendations) directly from JSON-shaped-but-undecodable text —
+    see module docstring's "JSON-like partial-field extraction"
+    section. Tried for both REASON_NO_JSON_OBJECT_FOUND and
+    REASON_JSON_DECODE_FAILED, before anything else.
+
+    Returns None when `text` doesn't look JSON-like at all
+    (_looks_json_like()), or when none of the known fields yielded any
+    real content (an empty-but-present list still counts as "found" —
+    only a field that's entirely absent, or every found field being
+    empty/blank, means nothing useful was extracted). The caller then
+    falls through to the plain text fallback (REASON_NO_JSON_OBJECT_FOUND
+    only) or reports a genuine failure (REASON_JSON_DECODE_FAILED)."""
+    fence_stripped = _strip_code_fence(text)
+    if not _looks_json_like(fence_stripped):
+        return None
+
+    matched_points = _extract_json_like_array(fence_stripped, "matchedPoints")
+    web_strong = _extract_json_like_array(fence_stripped, "webStrongAiWeak")
+    ai_strong = _extract_json_like_array(fence_stripped, "aiStrongWebWeak")
+    recommendations = _extract_json_like_array(fence_stripped, "recommendations")
+    gap_summary = _extract_json_like_gap_summary(fence_stripped)
+
+    has_useful_content = bool(gap_summary) or any(
+        lst for lst in (matched_points, web_strong, ai_strong, recommendations) if lst
+    )
+    if not has_useful_content:
+        return None
+
+    return WebAiGapAiComparison(
+        method=METHOD_JSON_LIKE_FALLBACK,
+        matchedPoints=matched_points or [],
+        webStrongAiWeak=web_strong or [],
+        aiStrongWebWeak=ai_strong or [],
+        gapSummary=gap_summary,
+        recommendations=recommendations or [],
+        textSummary=None,
+        caution=CAUTION_TEXT,
+    )
+
+
 def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | None]:
     """Parses Claude's raw text output into a WebAiGapAiComparison.
     Returns `(comparison, None)` on success, or `(None, reason)` where
@@ -501,19 +663,35 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
     WebAiGapAiComparison defaults ("real"/"ai_comparison") regardless
     of what's in `parsed`.
 
-    When no JSON object is found at all (REASON_NO_JSON_OBJECT_FOUND),
-    tries the text fallback (see _try_build_text_fallback()) before
-    giving up — this still counts as success (`reason` is None) with
-    `comparison.method == METHOD_TEXT_FALLBACK`, letting the caller
-    distinguish a text-fallback success from a normal structured one
-    purely by inspecting `comparison.method`.
+    When no JSON object is found at all (REASON_NO_JSON_OBJECT_FOUND)
+    or a JSON-shaped candidate failed to decode (REASON_JSON_DECODE_FAILED),
+    first tries a best-effort partial-field extraction out of the raw
+    text (see _try_build_json_like_fallback()) — this takes priority
+    over the plain text fallback, since a JSON-shaped-but-undecodable
+    response (e.g. truncated mid-array) is better shown with whatever
+    structured fields could be recovered than as raw brace-laden prose.
+    If that yields nothing useful and the reason is specifically
+    REASON_NO_JSON_OBJECT_FOUND, falls through to the plain text
+    fallback (see _try_build_text_fallback()). Either fallback still
+    counts as success (`reason` is None); `comparison.method`
+    (METHOD_JSON_LIKE_FALLBACK / METHOD_TEXT_FALLBACK / the normal
+    "ai_comparison" default) tells the caller which path was taken.
+    REASON_JSON_DECODE_FAILED that yields no useful JSON-like fields
+    is still reported as a genuine failure, unchanged from
+    fix/ai-gap-comparison-text-fallback.
     """
     parsed, reason = parse_ai_gap_comparison_json(text)
     if parsed is None:
-        if reason == REASON_NO_JSON_OBJECT_FOUND:
-            fallback = _try_build_text_fallback(text.strip())
-            if fallback is not None:
-                return fallback, None
+        if reason in (REASON_NO_JSON_OBJECT_FOUND, REASON_JSON_DECODE_FAILED):
+            stripped = text.strip()
+            json_like = _try_build_json_like_fallback(stripped)
+            if json_like is not None:
+                return json_like, None
+            if reason == REASON_NO_JSON_OBJECT_FOUND:
+                cleaned = _strip_json_like_decorations(stripped)
+                fallback = _try_build_text_fallback(cleaned)
+                if fallback is not None:
+                    return fallback, None
         return None, reason
 
     gap_summary = parsed.get("gapSummary")
@@ -798,12 +976,13 @@ def generate_ai_gap_comparison(
             success=False, reason=_PARSE_FAILED_REASON, internal_reason=parse_reason
         )
 
-    if comparison.method == METHOD_TEXT_FALLBACK:
+    if comparison.method in (METHOD_TEXT_FALLBACK, METHOD_JSON_LIKE_FALLBACK):
         # Not a failure — logged at info level (never a warning) since
         # this is an accepted, safe fallback outcome, not a problem.
         # Only the length is logged, never the text itself.
         logger.info(
-            "AI gap comparison used text fallback: analysis_run_id=%s model=%s raw_length=%d",
+            "AI gap comparison used fallback: method=%s analysis_run_id=%s model=%s raw_length=%d",
+            comparison.method,
             analysis_run_id,
             settings.model,
             len(extraction.text),
