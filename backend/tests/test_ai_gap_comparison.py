@@ -934,10 +934,12 @@ def test_success_caps_action_recommendations_to_max(monkeypatch):
     assert MAX_ACTION_RECOMMENDATIONS == 3
 
 
-def test_success_discards_action_recommendation_missing_a_required_field(monkeypatch):
+def test_success_discards_action_recommendation_missing_a_truly_required_field(monkeypatch):
+    """title/issue/action/evidence は必須のまま——欠落時は破棄される
+    （fix/ai-gap-action-recommendations-missing）。"""
     _mock_credentials(monkeypatch)
     incomplete = _valid_action_item()
-    del incomplete["verification"]
+    del incomplete["evidence"]
     items = [incomplete, _valid_action_item(title="完全な施策")]
     text = _json_text_with_action_recommendations(items)
     _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
@@ -962,7 +964,45 @@ def test_success_discards_action_recommendation_with_blank_field(monkeypatch):
     assert outcome.comparison.actionRecommendations[0].title == "完全な施策2"
 
 
-def test_success_discards_action_recommendation_with_invalid_priority(monkeypatch):
+def test_success_defaults_missing_verification_instead_of_discarding(monkeypatch):
+    """fix/ai-gap-action-recommendations-missing: verificationの欠落は
+    もはや破棄理由ではなく、安全な既定文言になる——title/issue/action/
+    evidenceが揃っている限り採用される。"""
+    _mock_credentials(monkeypatch)
+    incomplete = _valid_action_item()
+    del incomplete["verification"]
+    items = [incomplete]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert len(outcome.comparison.actionRecommendations) == 1
+    assert outcome.comparison.actionRecommendations[0].verification == (
+        "施策実施後、同じ質問で改めてAI観測を行い、説明内容が変化したか確認する。"
+    )
+
+
+def test_success_defaults_missing_target_to_none_instead_of_discarding(monkeypatch):
+    """targetの欠落も破棄理由ではなく、Noneのまま（推測で補完しない）。"""
+    _mock_credentials(monkeypatch)
+    incomplete = _valid_action_item()
+    del incomplete["target"]
+    items = [incomplete]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert len(outcome.comparison.actionRecommendations) == 1
+    assert outcome.comparison.actionRecommendations[0].target is None
+
+
+def test_success_defaults_invalid_priority_to_medium_instead_of_discarding(monkeypatch):
+    """fix/ai-gap-action-recommendations-missing: 不正なpriority値は
+    もはや破棄理由ではなく、"medium"にフォールバックする。"""
     _mock_credentials(monkeypatch)
     items = [_valid_action_item(priority="urgent"), _valid_action_item(title="完全な施策3")]
     text = _json_text_with_action_recommendations(items)
@@ -971,8 +1011,9 @@ def test_success_discards_action_recommendation_with_invalid_priority(monkeypatc
     outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
 
     assert outcome.success is True
-    assert len(outcome.comparison.actionRecommendations) == 1
-    assert outcome.comparison.actionRecommendations[0].title == "完全な施策3"
+    assert len(outcome.comparison.actionRecommendations) == 2
+    assert outcome.comparison.actionRecommendations[0].priority == "medium"
+    assert outcome.comparison.actionRecommendations[1].title == "完全な施策3"
 
 
 def test_json_like_fallback_extracts_complete_action_recommendation_items(monkeypatch):
@@ -1029,6 +1070,58 @@ def test_action_recommendations_never_trigger_a_second_anthropic_call(monkeypatc
 
     assert outcome.success is True
     assert call_count["value"] == 1
+
+
+def test_logs_stop_reason_and_action_recommendation_diagnostics_on_success(monkeypatch, caplog):
+    """fix/ai-gap-action-recommendations-missing: 安全な診断ログに
+    stop_reason・max_tokens・key_found・raw/accepted件数が記録される
+    こと、提案本文は出ないこと。"""
+    import logging
+
+    _mock_credentials(monkeypatch)
+    text = _json_text_with_action_recommendations([_valid_action_item()])
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]},
+    )
+
+    with caplog.at_level(logging.INFO):
+        generate_ai_gap_comparison(
+            brand_name="Acme", result_json=_result_json(), analysis_run_id="run-action-diag"
+        )
+
+    assert "AI gap action recommendations diagnostics" in caplog.text
+    assert "stop_reason=end_turn" in caplog.text
+    assert "key_found=True" in caplog.text
+    assert "raw_item_count=1" in caplog.text
+    assert "accepted_count=1" in caplog.text
+    assert "run-action-diag" in caplog.text
+    assert "SEO対策の実績を会社概要に明記する" not in caplog.text
+
+
+def test_logs_max_tokens_stop_reason_when_action_recommendations_key_is_absent(monkeypatch, caplog):
+    """本番で疑われるケース（出力上限に余裕がなく、Claudeが
+    actionRecommendationsキー自体を書かずに応答を終える）を再現——
+    stop_reason="max_tokens"かつkey_found=Falseがログに残り、比較自体は
+    成功扱いのまま、actionRecommendationsはNoneになることを確認する。"""
+    import logging
+
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={
+            "stop_reason": "max_tokens",
+            "content": [{"type": "text", "text": _ai_comparison_json_text()}],
+        },
+    )
+
+    with caplog.at_level(logging.INFO):
+        outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.actionRecommendations is None
+    assert "stop_reason=max_tokens" in caplog.text
+    assert "key_found=False" in caplog.text
 
 
 def test_returns_parse_failed_reason_when_no_json_object_exists_at_all(monkeypatch):

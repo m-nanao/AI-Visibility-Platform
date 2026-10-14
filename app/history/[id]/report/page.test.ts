@@ -75,4 +75,16 @@ describe("ReportActionRecommendations", () => {
 
     expect(text).not.toContain("生成");
   });
+
+  it("omits the target line (never fabricates a page) when target is absent, but still shows every other field (fix/ai-gap-action-recommendations-missing)", () => {
+    const { target, ...withoutTarget } = sampleActionRecommendation();
+    void target;
+    const element = ReportActionRecommendations({ recommendations: [withoutTarget] });
+    const text = collectText(element).join(" ");
+
+    expect(text).not.toContain("対象箇所内容");
+    expect(text).toContain("施策タイトル");
+    expect(text).toContain("課題内容");
+    expect(text).toContain("確認方法内容");
+  });
 });

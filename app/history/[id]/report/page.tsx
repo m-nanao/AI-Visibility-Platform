@@ -135,9 +135,11 @@ export function ReportActionRecommendations({
             <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
               {AI_ACTION_RECOMMENDATIONS_ACTION_LABEL}: {item.action}
             </p>
-            <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
-              {AI_ACTION_RECOMMENDATIONS_TARGET_LABEL}: {item.target}
-            </p>
+            {item.target && (
+              <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+                {AI_ACTION_RECOMMENDATIONS_TARGET_LABEL}: {item.target}
+              </p>
+            )}
             <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
               {AI_ACTION_RECOMMENDATIONS_EVIDENCE_LABEL}: {item.evidence}
             </p>

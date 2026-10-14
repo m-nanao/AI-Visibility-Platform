@@ -306,6 +306,35 @@ def test_ai_comparison_action_recommendations_are_saved_and_returned(monkeypatch
     assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
 
 
+def test_ai_comparison_action_recommendation_with_null_target_round_trips(monkeypatch):
+    """fix/ai-gap-action-recommendations-missing: target(省略可能)が
+    Noneの項目でも、フィールド自体は失われずnullとしてAPI応答・保存先の
+    両方に残ること。"""
+    _enable_read_env(monkeypatch)
+    detail = _fake_detail()
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
+    comparison_with_actions = _comparison(
+        actionRecommendations=[
+            AiGapActionRecommendation(
+                title="SEO対策の実績を追記する",
+                issue="一般的なブランディング会社として説明される",
+                action="関連ページに実績を追記する",
+                evidence="Web上ではSEO対策が中心だが、AI回答では言及がない",
+            )
+        ],
+    )
+    _mock_successful_generation(monkeypatch, comparison=comparison_with_actions)
+    monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 200
+    action_recommendations = response.json()["webAiGapAiComparison"]["actionRecommendations"]
+    assert action_recommendations[0]["target"] is None
+    assert action_recommendations[0]["priority"] == "medium"
+    assert "AI観測を行い" in action_recommendations[0]["verification"]
+
+
 def test_ai_comparison_action_recommendations_absent_when_not_set(monkeypatch):
     """actionRecommendationsを指定しない通常の比較結果は、応答・保存先
     いずれもnullのまま——既存の互換性を壊さない。"""

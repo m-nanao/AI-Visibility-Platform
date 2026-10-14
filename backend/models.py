@@ -597,21 +597,31 @@ class AiGapActionRecommendation(BaseModel):
     docs/39_ai_gap_comparison_design.md. Unlike the rule-based
     `ImprovementSuggestion` above (fixed wording, always generated
     during `/analyze`), these come from the same single Anthropic call
-    as the rest of `WebAiGapAiComparison` — never a second request —
-    and are only ever persisted when every field below is present and
-    non-blank (see services/ai_gap_comparison.py's
-    `_coerce_action_recommendations()`); an incompletely-extracted
-    item (e.g. from output truncated mid-object) is dropped rather
-    than guessed at.
+    as the rest of `WebAiGapAiComparison` — never a second request.
+
+    `title`/`issue`/`action`/`evidence` are required and non-blank —
+    an item missing any of these is dropped entirely rather than
+    guessed at (see services/ai_gap_comparison.py's
+    `_coerce_action_recommendations()`, fix/ai-gap-action-
+    recommendations-missing). `target` (the suggested page/location)
+    is optional and left `None` rather than fabricated when the model
+    didn't name one — never invent an unconfirmed page. `priority`/
+    `verification` fall back to a safe, generic default
+    ("medium"/a standard "re-observe and check" instruction) when the
+    model omits them, since discarding an otherwise complete,
+    evidence-based recommendation over one missing non-critical field
+    was found to silently drop every recommendation in production
+    (likely due to limited output budget — see that module's
+    docstring).
     """
 
     title: str
     issue: str
     action: str
-    target: str
+    target: str | None = None
     evidence: str
-    priority: Priority
-    verification: str
+    priority: Priority = "medium"
+    verification: str = "施策実施後、同じ質問で改めてAI観測を行い、説明内容が変化したか確認する。"
 
 
 class WebAiGapAiComparison(BaseModel):

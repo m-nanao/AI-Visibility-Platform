@@ -846,7 +846,7 @@ describe("parseWebAiGapAiComparisonUpdateResponse", () => {
 
   it("rejects an actionRecommendations item missing a required field", () => {
     const missingField = validActionRecommendation();
-    delete (missingField as Record<string, unknown>).target;
+    delete (missingField as Record<string, unknown>).evidence;
     const invalid = {
       ...validAiGapComparisonResponse(),
       webAiGapAiComparison: {
@@ -858,6 +858,25 @@ describe("parseWebAiGapAiComparisonUpdateResponse", () => {
     const result = parseWebAiGapAiComparisonUpdateResponse(invalid);
 
     expect(result.success).toBe(false);
+  });
+
+  it("accepts an actionRecommendations item with no target (fix/ai-gap-action-recommendations-missing)", () => {
+    const noTarget = validActionRecommendation();
+    delete (noTarget as Record<string, unknown>).target;
+    const withActions = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        actionRecommendations: [noTarget],
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(withActions);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.actionRecommendations?.[0].target).toBeUndefined();
+    }
   });
 
   it("rejects an actionRecommendations item with an invalid priority value", () => {

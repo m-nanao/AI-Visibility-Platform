@@ -156,6 +156,7 @@ Common Crawl補完: 公式ドメインから補完
 - 上記の自然文fallbackが実際には閉じていないJSON風のコードブロックのまま表示されるケースが見つかったため、既知フィールド（一致点/Web側が強い点/AI側が強い点/ズレの要約/改善ヒント）を個別に抽出できる場合は通常の構造化比較と同じレイアウトで表示するよう変更（Claude API呼び出しは引き続き1回のまま。既知フィールドが1つも取れない場合は従来の文章形式表示または解釈失敗のまま。`fix/ai-gap-comparison-json-like-fallback-display`、2026-10-09。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「17」参照）
 - 上記の整形表示の見出し・補足文が依頼者向けには開発者向けの技術的な表現（「整形表示」「出力が一部不完全だったため」）に見えるという指摘を受け、見出しを通常の「AIによる差分比較」に統一し、補足文も自然な説明文に変更（内容・生成ロジックは変更なし。注意書き「AIによる比較であり、AIの内部認識を直接示すものではありません。」は維持。`polish/ai-gap-comparison-user-facing-copy`、2026-10-15。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「18」参照）
 - 従来のルールベース改善ヒントが定型的になりやすい課題を踏まえ、既存の「AIで差分を生成」が同じ1回のClaude呼び出しで具体的な改善施策（最大3件、課題・改善方法・対象箇所・判断根拠・確認方法・優先度付き）も生成するように拡張。根拠が十分ある場合のみ「AIによる改善提案」として別セクションに表示し、従来のルールベース改善ヒントはそのまま残す。Claude API呼び出しは引き続き1回のまま、出力途中終了時は完全に読み取れた施策だけを採用（`feature/ai-gap-action-recommendations`、2026-10-15。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「19」参照）
+- 上記の改善提案が本番で一度も表示されない不具合を調査・修正——対象ページ・優先度・確認方法の省略で提案全体を破棄していた検証が厳しすぎたことが判明し、課題・改善方法・判断根拠が揃っていれば採用されるよう緩和。出力指示の順序も早めて省略されにくくした。Claude API呼び出しは引き続き1回のまま、比較結果本体・DB schema/環境変数は変更なし（`fix/ai-gap-action-recommendations-missing`、2026-10-15。詳細は[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「20」参照）
 
 ### MVPではまだ限定的なこと
 

@@ -1,8 +1,8 @@
 # AIによるWeb/AI差分比較 設計メモ
 
-「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした（「16」）。その後、実際の自然文fallback表示がJSON風のコードブロックのまま表示される（閉じていない/崩れたJSON風テキストがそのまま出る）ことが分かったため、`fix/ai-gap-comparison-json-like-fallback-display`で既知フィールドの部分抽出・整形表示を追加した（「17」）。本番確認の結果、この整形表示自体は問題なく動作していたが、見出し「AIによる差分比較（整形表示）」・補足文「AIの出力が一部不完全だったため…」が依頼者向けには開発者向けの技術的な表現に見えるという指摘があり、`polish/ai-gap-comparison-user-facing-copy`で表示文言のみを依頼者向けの自然な表現に調整した（「18」）。既存のルールベース改善ヒントが定型的になりやすい課題を踏まえ、`feature/ai-gap-action-recommendations`で同じAI差分比較のClaude呼び出しに具体的な改善施策（`actionRecommendations`）の生成を追加した——詳細は「19」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした（「16」）。その後、実際の自然文fallback表示がJSON風のコードブロックのまま表示される（閉じていない/崩れたJSON風テキストがそのまま出る）ことが分かったため、`fix/ai-gap-comparison-json-like-fallback-display`で既知フィールドの部分抽出・整形表示を追加した（「17」）。本番確認の結果、この整形表示自体は問題なく動作していたが、見出し「AIによる差分比較（整形表示）」・補足文「AIの出力が一部不完全だったため…」が依頼者向けには開発者向けの技術的な表現に見えるという指摘があり、`polish/ai-gap-comparison-user-facing-copy`で表示文言のみを依頼者向けの自然な表現に調整した（「18」）。既存のルールベース改善ヒントが定型的になりやすい課題を踏まえ、`feature/ai-gap-action-recommendations`で同じAI差分比較のClaude呼び出しに具体的な改善施策（`actionRecommendations`）の生成を追加した（「19」）。その後、本番で「AIによる改善提案」が常に表示されない不具合が報告され、`fix/ai-gap-action-recommendations-missing`で原因を調査・修正した——詳細は「20」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-15（AI改善提案`actionRecommendations`の追加を反映）**
+**最終更新日: 2026-10-15（AI改善提案が表示されない不具合の調査・修正を反映）**
 
 ## 1. このドキュメントの目的
 
@@ -296,6 +296,29 @@ Claude API呼び出しは成功し、text型のcontentブロックも1件取得�
 - **保存・再生成**: 既存の「AIで差分を生成」「AI差分を再生成」（`backend/main.py`の`POST /analysis-runs/{id}/web-ai-gap/ai-comparison`）がそのまま`actionRecommendations`も含めて生成・保存する——新しいエンドポイントは追加していない。Anthropic呼び出し自体が失敗した場合（ネットワークエラー・非2xx・解釈失敗等）は、既存方針どおり`result_json`を一切書き換えないため、前回保存済みの比較・提案（あれば）がそのまま残る。
 - **変更していないもの**: Claude API呼び出し回数（1回のまま）・新しい外部API呼び出し・通常分析（`/analyze`）への組み込み・通常分析の既存改善提案（`ImprovementSuggestion`、`backend/services/improvement_suggestions.py`）・DB schema/migration・Supabase/Render/Vercel設定・既存の簡易判定`webAiGap`・Gemini再実行/重要フラグ/認証仕様——いずれも行っていない。
 - **テスト**: backend（`tests/test_ai_gap_comparison.py`に、有効な提案の抽出・最大3件への切り詰め・空配列の許容・必須フィールド欠落/空白時の破棄・不正な`priority`値の破棄・`actionRecommendations`キー自体が無い場合は`None`になること・json_like_fallback経路でも完全な項目だけ採用されること・text_fallback経路では`None`のままになること・2回目のAnthropic呼び出しが発生しないことを検証、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`に`actionRecommendations`がAPI応答・保存先の両方に正しく反映されること、未設定時は`null`のままであることのテスト）・frontend（`analysis-result-schema.test.ts`/`analysis-history-schema.test.ts`に`actionRecommendations`の受理・不正値の拒否・フィールド欠落時の後方互換テスト、`WebAiGapAiComparisonSection.test.ts`/新規`app/history/[id]/report/page.test.ts`に、DOMレンダリングライブラリが無いためコンポーネント関数を直接呼び出しReact要素木からテキストを収集する方式で、優先度・課題・改善方法・対象箇所・判断根拠・確認方法が表示されること、提案が無い場合は何も描画されないこと、レポート画面でも全文表示されることを検証）。
+
+## 20. AI改善提案が表示されない不具合の調査・修正（`fix/ai-gap-action-recommendations-missing`、2026-10-15）
+
+「19」のリリース後、本番確認でAI差分比較自体（matchedPoints等）は正常に生成・表示されるが、新規の「AIによる改善提案」が一度も表示されないことが分かった。**根拠ログが残っていない状態からの調査のため、原因はコード検査で確定できたものと、production未確認（Render logsでの実測が必要）のものを区別して報告する。**
+
+### 確定した原因（コード検査で特定）
+
+1. **validationが厳しすぎた**: 旧`_coerce_action_recommendations()`は、`title`/`issue`/`action`/`target`/`evidence`/`priority`/`verification`の7フィールドすべてが非空でなければ項目全体を破棄していた。しかし`target`（対象ページを断定できない場合がある）・`priority`・`verification`はClaudeが省略しがちなフィールドであり、根拠のある`title`/`issue`/`action`/`evidence`が揃っていても、これらのうち1つでも欠けると提案全体が失われていた。
+2. **出力キー順序**: `actionRecommendations`をSYSTEM_PROMPTの出力キー一覧・出力例の**最後**に置いていたため、出力量が多い場合に最も省略されやすい位置になっていた。
+
+### 未確認の要因（production logsでの実測が必要）
+
+- 本番の`CLAUDE_MAX_OUTPUT_TOKENS`は700（[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「8」記載、許容上限は1500）。`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`（各最大5件）＋`gapSummary`＋`recommendations`（最大5件）に加え、`actionRecommendations`最大3件×7フィールドを1回の応答に収めるには、この上限は窮屈である可能性が高いが、実際の`stop_reason`（`max_tokens`かどうか）は本番Render logsでの確認が必要——このタスクでは診断ログを追加したのみで、実測はできていない。
+
+### 修正内容
+
+- **必須フィールドを4つに縮小**: `_ACTION_RECOMMENDATION_REQUIRED_FIELDS`を`title`/`issue`/`action`/`evidence`のみに変更した。`backend/models.py`の`AiGapActionRecommendation`で`target: str | None = None`（根拠のない対象ページを捏造しないため、欠落時はNoneのまま）、`priority: Priority = "medium"`（欠落・不正値時は中間優先度にフォールバック）、`verification: str = "施策実施後、同じ質問で改めてAI観測を行い、説明内容が変化したか確認する。"`（欠落時は汎用的な確認手順にフォールバック、個別の根拠を捏造するものではない）とし、欠落時に安全な既定値を使うようにした。json_like_fallback経路（`_extract_json_like_action_recommendations()`で個別に`json.loads()`される各項目）も同じ`_coerce_action_recommendations()`を通るため、同様に緩和される。
+- **出力順序の調整**: SYSTEM_PROMPTの「出力するJSONのキー」一覧・出力例で、`actionRecommendations`を`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`の直後、`gapSummary`/`recommendations`より前に移動し、「出力量に余裕が少ない場合でも、actionRecommendationsを省略せず、他のリストの件数を減らして確保すること」という指示を追加した。各フィールドは「1文・40字程度以内」の簡潔な日本語にするよう指示を追加し、出力量そのものを抑えた。**既存の`CLAUDE_MAX_OUTPUT_TOKENS`等の出力上限設定は変更していない。**
+- **安全な診断ログ**: 新規`_ActionRecommendationDiagnostics`（`raw_item_count`/`accepted_count`/`discarded_not_dict`/`discarded_missing_required_field`）を追加し、`generate_ai_gap_comparison()`の成功時に毎回（method・提案の有無に関わらず）`logger.info()`で、Anthropicレスポンスの`stop_reason`・使用`max_tokens`・出力文字数・`actionRecommendations`キーの検出有無(`key_found`)・抽出候補件数・validation通過件数・破棄理由の件数を記録する。失敗時の既存ログにも`stop_reason`を追加した。**提案本文・Claude生出力全文・APIキーはいずれもログに出さない。**
+- **frontend**: `app/lib/types.ts`/`analysis-result-schema.ts`/`analysis-history-schema.ts`の`AiGapActionRecommendation.target`を`optional`に変更し、`WebAiGapAiComparisonSection.tsx`・`app/history/[id]/report/page.tsx`は`target`が無い場合、その行だけを表示しない（他のフィールドは通常どおり表示する）。
+- **変更していないもの**: Claude API呼び出し回数（1回のまま）・新しい外部API呼び出し・DB schema/migration・Supabase/Render/Vercel設定・実際の`.env`・通常分析への組み込み・Gemini再実行/重要フラグ/認証の仕様・既存の簡易判定`webAiGap`とAI差分比較本体のロジック——いずれも変更していない。
+- **テスト**: backend（`tests/test_ai_gap_comparison.py`に、title/issue/action/evidence欠落時のみ破棄されること・verification/target/priority欠落時は安全な既定値になること・不正priority値は"medium"にフォールバックすること・stop_reason/max_tokens/key_found等の診断ログ内容の検証・提案本文がログに出ないこと、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`にtarget=NoneがAPI応答・保存先の両方でnullとして残ること）・frontend（schemaでtarget省略を受理するテスト、コンポーネント/レポートでtarget行が省略されても他フィールドは表示されることのテスト）。
+- **本番での確認**: Claude Codeはproduction/devアクセスを持たないため、実際に「AI差分を再生成」を押して改善提案が表示されるようになったかどうかの確認は未実施。本番確認時は、Render logsの`AI gap action recommendations diagnostics`行で`stop_reason`・`key_found`・`accepted_count`を確認し、依然として`stop_reason=max_tokens`かつ`key_found=False`が多い場合は`CLAUDE_MAX_OUTPUT_TOKENS`を1500（許容上限）まで上げることを推奨候補として検討する——この環境変数自体の変更は本タスクでは行っていない。
 
 ## 関連ドキュメント
 
