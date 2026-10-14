@@ -233,6 +233,19 @@ const webAiGapResultSchema = z.object({
   note: z.string(),
 });
 
+// One item of webAiGapAiComparisonSchema's actionRecommendations below
+// — see backend/models.py's AiGapActionRecommendation
+// (feature/ai-gap-action-recommendations).
+const aiGapActionRecommendationSchema = z.object({
+  title: z.string(),
+  issue: z.string(),
+  action: z.string(),
+  target: z.string(),
+  evidence: z.string(),
+  priority: prioritySchema,
+  verification: z.string(),
+});
+
 // AI-generated (not rule-based) comparison — see
 // backend/services/ai_gap_comparison.py and
 // docs/39_ai_gap_comparison_design.md. Only ever present after a
@@ -254,6 +267,10 @@ const webAiGapAiComparisonSchema = z.object({
   // ai-gap-comparison-text-fallback) — see WebAiGapAiComparison in
   // app/lib/types.ts.
   textSummary: optionalFromPython(z.string()),
+  // Absent/null on older saved history and on the text-fallback
+  // method — see app/lib/types.ts's WebAiGapAiComparison
+  // (feature/ai-gap-action-recommendations).
+  actionRecommendations: optionalFromPython(z.array(aiGapActionRecommendationSchema)),
   caution: z.string(),
 });
 

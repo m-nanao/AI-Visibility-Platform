@@ -14,6 +14,13 @@ import {
   WEB_CONTEXT_LABEL,
 } from "../../../components/sections/WebAiGapSection";
 import {
+  AI_ACTION_RECOMMENDATIONS_ACTION_LABEL,
+  AI_ACTION_RECOMMENDATIONS_EVIDENCE_LABEL,
+  AI_ACTION_RECOMMENDATIONS_HEADING,
+  AI_ACTION_RECOMMENDATIONS_ISSUE_LABEL,
+  AI_ACTION_RECOMMENDATIONS_PRIORITY_LABEL,
+  AI_ACTION_RECOMMENDATIONS_TARGET_LABEL,
+  AI_ACTION_RECOMMENDATIONS_VERIFICATION_LABEL,
   AI_COMPARISON_AI_STRONG_LABEL,
   AI_COMPARISON_GAP_SUMMARY_LABEL,
   AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE,
@@ -68,7 +75,12 @@ import {
   getAiOverviewItemDetailDisplay,
   getCommonCrawlProviderDisplay,
 } from "../../../lib/meta-label";
-import type { AnalysisResult, WebAiGapPlatform } from "../../../lib/types";
+import type {
+  AiGapActionRecommendation,
+  AnalysisResult,
+  Priority,
+  WebAiGapPlatform,
+} from "../../../lib/types";
 
 // Display labels for WebAiGapAiContext.platform (see WebAiGapSection.tsx,
 // which uses the identical mapping for the analysis result/history
@@ -81,6 +93,63 @@ const WEB_AI_GAP_PLATFORM_LABELS: Record<WebAiGapPlatform, string> = {
   gemini: "Gemini",
   ai_overview: "AI Overview",
 };
+
+const REPORT_ACTION_PRIORITY_LABELS: Record<Priority, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+
+// Print-oriented rendering of WebAiGapAiComparison.actionRecommendations
+// (feature/ai-gap-action-recommendations) — shown in full (no
+// truncation, no generate button) alongside whichever
+// webAiGapAiComparison method section is present, same as every other
+// block on this page. Kept as its own local component here rather
+// than reusing WebAiGapAiComparisonSection.tsx's
+// ActionRecommendationsList, since this page already builds its own
+// print-styled plain layout independent of that card-based component.
+export function ReportActionRecommendations({
+  recommendations,
+}: {
+  recommendations?: AiGapActionRecommendation[];
+}) {
+  if (!recommendations || recommendations.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-2">
+      <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 print:text-black">
+        {AI_ACTION_RECOMMENDATIONS_HEADING}
+      </p>
+      <ul className="space-y-2">
+        {recommendations.map((item, index) => (
+          <li
+            key={`${index}-${item.title}`}
+            className="break-inside-avoid border border-zinc-200 p-2 print:border-black"
+          >
+            <p className="font-medium text-zinc-900 dark:text-zinc-50 print:text-black">
+              {item.title}（{AI_ACTION_RECOMMENDATIONS_PRIORITY_LABEL}:{" "}
+              {REPORT_ACTION_PRIORITY_LABELS[item.priority]}）
+            </p>
+            <p className="mt-1 text-zinc-600 dark:text-zinc-300 print:text-black">
+              {AI_ACTION_RECOMMENDATIONS_ISSUE_LABEL}: {item.issue}
+            </p>
+            <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+              {AI_ACTION_RECOMMENDATIONS_ACTION_LABEL}: {item.action}
+            </p>
+            <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+              {AI_ACTION_RECOMMENDATIONS_TARGET_LABEL}: {item.target}
+            </p>
+            <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+              {AI_ACTION_RECOMMENDATIONS_EVIDENCE_LABEL}: {item.evidence}
+            </p>
+            <p className="text-zinc-600 dark:text-zinc-300 print:text-black">
+              {AI_ACTION_RECOMMENDATIONS_VERIFICATION_LABEL}: {item.verification}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 // Print-oriented HTML report page (docs/26_report_output_design.md).
 // Fetches the same two endpoints as app/history/[id]/page.tsx (via the
@@ -422,6 +491,9 @@ function ReportContent({
                   </ul>
                 </div>
               )}
+              <ReportActionRecommendations
+                recommendations={result.webAiGapAiComparison.actionRecommendations}
+              />
               <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
                 {result.webAiGapAiComparison.caution}
               </p>
@@ -497,6 +569,9 @@ function ReportContent({
                   </ul>
                 </div>
               )}
+              <ReportActionRecommendations
+                recommendations={result.webAiGapAiComparison.actionRecommendations}
+              />
               <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
                 {result.webAiGapAiComparison.caution}
               </p>
@@ -568,6 +643,9 @@ function ReportContent({
                 </ul>
               </div>
             )}
+            <ReportActionRecommendations
+              recommendations={result.webAiGapAiComparison.actionRecommendations}
+            />
             <p className="text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
               {result.webAiGapAiComparison.caution}
             </p>

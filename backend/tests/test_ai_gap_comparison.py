@@ -6,11 +6,14 @@ tests/test_claude_client.py) so these tests never make a real network
 call.
 """
 
+import json
+
 import httpx
 
 from services import ai_gap_comparison
 from services.ai_gap_comparison import (
     CAUTION_TEXT,
+    MAX_ACTION_RECOMMENDATIONS,
     MAX_TEXT_FALLBACK_LENGTH,
     MESSAGES_API_URL,
     METHOD_JSON_LIKE_FALLBACK,
@@ -849,6 +852,183 @@ def test_success_coerces_a_bare_string_recommendations_into_a_list(monkeypatch):
 
     assert outcome.success is True
     assert outcome.comparison.recommendations == ["単一の改善ヒントです"]
+
+
+# --- actionRecommendations (feature/ai-gap-action-recommendations) -------
+
+
+def _valid_action_item(**overrides) -> dict:
+    item = {
+        "title": "SEO対策の実績を会社概要に明記する",
+        "issue": "AI回答では一般的なブランディング会社として説明される",
+        "action": "会社概要ページにSEO対策の実績を追記する",
+        "target": "会社概要ページ(候補)",
+        "evidence": "Web上ではSEO対策が中心だが、AI回答ではブランディングのみ言及",
+        "priority": "high",
+        "verification": "追記後、同じ質問でAI観測を再実行し説明内容を確認する",
+    }
+    item.update(overrides)
+    return item
+
+
+def _json_text_with_action_recommendations(items: list[dict]) -> str:
+    base = json.loads(_ai_comparison_json_text())
+    base["actionRecommendations"] = items
+    return json.dumps(base, ensure_ascii=False)
+
+
+def test_success_extracts_valid_action_recommendations(monkeypatch):
+    _mock_credentials(monkeypatch)
+    items = [_valid_action_item(), _valid_action_item(title="別の施策", priority="medium")]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.actionRecommendations is not None
+    assert len(outcome.comparison.actionRecommendations) == 2
+    first = outcome.comparison.actionRecommendations[0]
+    assert first.title == "SEO対策の実績を会社概要に明記する"
+    assert first.priority == "high"
+    assert first.verification == "追記後、同じ質問でAI観測を再実行し説明内容を確認する"
+    assert outcome.comparison.actionRecommendations[1].title == "別の施策"
+
+
+def test_success_action_recommendations_is_none_when_key_absent(monkeypatch):
+    """既存のplain JSON（actionRecommendationsキーなし）はNoneになる——
+    古い履歴・この機能を知らないプロンプト応答と同じ扱い。"""
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(
+        monkeypatch,
+        json_body={"content": [{"type": "text", "text": _ai_comparison_json_text()}]},
+    )
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.actionRecommendations is None
+
+
+def test_success_allows_empty_action_recommendations(monkeypatch):
+    _mock_credentials(monkeypatch)
+    text = _json_text_with_action_recommendations([])
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.actionRecommendations == []
+
+
+def test_success_caps_action_recommendations_to_max(monkeypatch):
+    _mock_credentials(monkeypatch)
+    items = [_valid_action_item(title=f"施策{i}") for i in range(5)]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert len(outcome.comparison.actionRecommendations) == MAX_ACTION_RECOMMENDATIONS
+    assert MAX_ACTION_RECOMMENDATIONS == 3
+
+
+def test_success_discards_action_recommendation_missing_a_required_field(monkeypatch):
+    _mock_credentials(monkeypatch)
+    incomplete = _valid_action_item()
+    del incomplete["verification"]
+    items = [incomplete, _valid_action_item(title="完全な施策")]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert len(outcome.comparison.actionRecommendations) == 1
+    assert outcome.comparison.actionRecommendations[0].title == "完全な施策"
+
+
+def test_success_discards_action_recommendation_with_blank_field(monkeypatch):
+    _mock_credentials(monkeypatch)
+    items = [_valid_action_item(evidence="   "), _valid_action_item(title="完全な施策2")]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert len(outcome.comparison.actionRecommendations) == 1
+    assert outcome.comparison.actionRecommendations[0].title == "完全な施策2"
+
+
+def test_success_discards_action_recommendation_with_invalid_priority(monkeypatch):
+    _mock_credentials(monkeypatch)
+    items = [_valid_action_item(priority="urgent"), _valid_action_item(title="完全な施策3")]
+    text = _json_text_with_action_recommendations(items)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert len(outcome.comparison.actionRecommendations) == 1
+    assert outcome.comparison.actionRecommendations[0].title == "完全な施策3"
+
+
+def test_json_like_fallback_extracts_complete_action_recommendation_items(monkeypatch):
+    """actionRecommendationsの1件目は完全だが、構造全体が途中で切れている
+    （recommendationsキー自体が閉じ括弧を欠く）ケース——json_like_fallback
+    経路でも完全な施策項目だけ採用されること。"""
+    _mock_credentials(monkeypatch)
+    text = (
+        '{"matchedPoints": ["一致点A"], "webStrongAiWeak": [], "aiStrongWebWeak": [], '
+        '"gapSummary": "ズレの要約です。", '
+        '"actionRecommendations": ['
+        + json.dumps(_valid_action_item(), ensure_ascii=False)
+        + ', {"title": "途中で切れた施策", "issue": "未完成'
+    )
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == METHOD_JSON_LIKE_FALLBACK
+    assert outcome.comparison.actionRecommendations is not None
+    assert len(outcome.comparison.actionRecommendations) == 1
+    assert outcome.comparison.actionRecommendations[0].title == "SEO対策の実績を会社概要に明記する"
+
+
+def test_text_fallback_leaves_action_recommendations_unset(monkeypatch):
+    """JSON構造が一切無い自然文fallbackでは、actionRecommendationsを
+    推測で補完しない——Noneのままになる。"""
+    long_text = _long_natural_language_comparison()
+    _mock_credentials(monkeypatch)
+    _mock_claude_response(monkeypatch, json_body={"content": [{"type": "text", "text": long_text}]})
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert outcome.comparison.method == METHOD_TEXT_FALLBACK
+    assert outcome.comparison.actionRecommendations is None
+
+
+def test_action_recommendations_never_trigger_a_second_anthropic_call(monkeypatch):
+    _mock_credentials(monkeypatch)
+    call_count = {"value": 0}
+
+    def fake_post(url, **kwargs):
+        call_count["value"] += 1
+        text = _json_text_with_action_recommendations([_valid_action_item()])
+        return httpx.Response(
+            200, json={"content": [{"type": "text", "text": text}]}, request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr(ai_gap_comparison.httpx, "post", fake_post)
+
+    outcome = generate_ai_gap_comparison(brand_name="Acme", result_json=_result_json())
+
+    assert outcome.success is True
+    assert call_count["value"] == 1
 
 
 def test_returns_parse_failed_reason_when_no_json_object_exists_at_all(monkeypatch):

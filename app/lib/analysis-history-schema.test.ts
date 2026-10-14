@@ -781,4 +781,96 @@ describe("parseWebAiGapAiComparisonUpdateResponse", () => {
       expect(result.data.webAiGapAiComparison.textSummary).toBeUndefined();
     }
   });
+
+  // --- webAiGapAiComparison.actionRecommendations
+  // (feature/ai-gap-action-recommendations) ---
+
+  function validActionRecommendation(overrides: Record<string, unknown> = {}) {
+    return {
+      title: "SEO対策の実績を会社概要に明記する",
+      issue: "AI回答では一般的なブランディング会社として説明される",
+      action: "会社概要ページにSEO対策の実績を追記する",
+      target: "会社概要ページ(候補)",
+      evidence: "Web上ではSEO対策が中心だが、AI回答ではブランディングのみ言及",
+      priority: "high",
+      verification: "追記後、同じ質問でAI観測を再実行し説明内容を確認する",
+      ...overrides,
+    };
+  }
+
+  it("accepts actionRecommendations with full items", () => {
+    const withActions = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        actionRecommendations: [validActionRecommendation()],
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(withActions);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const actionRecommendations = result.data.webAiGapAiComparison.actionRecommendations;
+      expect(actionRecommendations).toHaveLength(1);
+      expect(actionRecommendations?.[0].priority).toBe("high");
+      expect(actionRecommendations?.[0].evidence).toContain("Web上では");
+    }
+  });
+
+  it("accepts a response with no actionRecommendations field (older saved history)", () => {
+    const result = parseWebAiGapAiComparisonUpdateResponse(validAiGapComparisonResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.actionRecommendations).toBeUndefined();
+    }
+  });
+
+  it("accepts an empty actionRecommendations array", () => {
+    const withEmptyActions = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        actionRecommendations: [],
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(withEmptyActions);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.webAiGapAiComparison.actionRecommendations).toEqual([]);
+    }
+  });
+
+  it("rejects an actionRecommendations item missing a required field", () => {
+    const missingField = validActionRecommendation();
+    delete (missingField as Record<string, unknown>).target;
+    const invalid = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        actionRecommendations: [missingField],
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an actionRecommendations item with an invalid priority value", () => {
+    const invalid = {
+      ...validAiGapComparisonResponse(),
+      webAiGapAiComparison: {
+        ...validAiGapComparisonResponse().webAiGapAiComparison,
+        actionRecommendations: [validActionRecommendation({ priority: "urgent" })],
+      },
+    };
+
+    const result = parseWebAiGapAiComparisonUpdateResponse(invalid);
+
+    expect(result.success).toBe(false);
+  });
 });

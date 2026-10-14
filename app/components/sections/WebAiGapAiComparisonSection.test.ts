@@ -1,10 +1,54 @@
 import { describe, expect, it } from "vitest";
+import type { AiGapActionRecommendation } from "../../lib/types";
 import {
+  ActionRecommendationsList,
+  AI_ACTION_RECOMMENDATIONS_HEADING,
   AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE,
   AI_COMPARISON_SECTION_TITLE,
   AI_COMPARISON_TEXT_FALLBACK_HEADING,
   AI_COMPARISON_TEXT_FALLBACK_NOTE,
 } from "./WebAiGapAiComparisonSection";
+
+// No React component-rendering library (jsdom/RTL) in this project —
+// see the module-level comment below describing the existing
+// constant-testing pattern. ActionRecommendationsList has no hooks or
+// lifecycle, so it can be called directly as a plain function: the
+// result is a React element tree (plain objects), which this helper
+// walks to collect every string leaf — enough to assert what text
+// ends up in the output without needing a DOM.
+function collectText(node: unknown, out: string[] = []): string[] {
+  if (node === null || node === undefined || typeof node === "boolean") return out;
+  if (typeof node === "string" || typeof node === "number") {
+    out.push(String(node));
+    return out;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectText(child, out));
+    return out;
+  }
+  if (typeof node === "object" && node !== null && "props" in node) {
+    const props = (node as { props?: { children?: unknown } }).props;
+    if (props && "children" in props) {
+      collectText(props.children, out);
+    }
+  }
+  return out;
+}
+
+function sampleActionRecommendation(
+  overrides: Partial<AiGapActionRecommendation> = {},
+): AiGapActionRecommendation {
+  return {
+    title: "施策タイトル",
+    issue: "課題内容",
+    action: "改善方法内容",
+    target: "対象箇所内容",
+    evidence: "根拠内容",
+    priority: "high",
+    verification: "確認方法内容",
+    ...overrides,
+  };
+}
 
 // No React component-rendering library in this project (see
 // app/components/sections/WebAiGapSection.test.ts for the same
@@ -49,5 +93,49 @@ describe("WebAiGapAiComparisonSection json-like-fallback copy", () => {
   it("reads as an ordinary summary of what the comparison is based on", () => {
     expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).toContain("Web抜粋");
     expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).toContain("AI観測結果");
+  });
+});
+
+// AI action recommendations (feature/ai-gap-action-recommendations) —
+// a separate section from the rule-based ImprovementSuggestions shown
+// elsewhere, and from comparison.recommendations (plain one-line
+// hints). Rendered whenever comparison.actionRecommendations is a
+// non-empty array, regardless of method.
+describe("ActionRecommendationsList", () => {
+  it("renders nothing when there are no recommendations", () => {
+    expect(ActionRecommendationsList({ recommendations: [] })).toBeNull();
+    expect(ActionRecommendationsList({})).toBeNull();
+    expect(ActionRecommendationsList({ recommendations: undefined })).toBeNull();
+  });
+
+  it("renders the heading and every field (priority/issue/action/target/evidence/verification) when recommendations are present", () => {
+    const element = ActionRecommendationsList({
+      recommendations: [sampleActionRecommendation()],
+    });
+    const text = collectText(element).join(" ");
+
+    expect(text).toContain(AI_ACTION_RECOMMENDATIONS_HEADING);
+    expect(text).toContain("施策タイトル");
+    expect(text).toContain("課題内容");
+    expect(text).toContain("改善方法内容");
+    expect(text).toContain("対象箇所内容");
+    expect(text).toContain("根拠内容");
+    expect(text).toContain("確認方法内容");
+    expect(text).toContain("高"); // priority="high" の日本語表示
+  });
+
+  it("renders multiple recommendations, each with its own priority", () => {
+    const element = ActionRecommendationsList({
+      recommendations: [
+        sampleActionRecommendation({ title: "施策A", priority: "high" }),
+        sampleActionRecommendation({ title: "施策B", priority: "low" }),
+      ],
+    });
+    const text = collectText(element).join(" ");
+
+    expect(text).toContain("施策A");
+    expect(text).toContain("施策B");
+    expect(text).toContain("高");
+    expect(text).toContain("低");
   });
 });

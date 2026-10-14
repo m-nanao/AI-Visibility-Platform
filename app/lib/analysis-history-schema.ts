@@ -330,6 +330,19 @@ export function parseAnalysisRunImportantResponse(
  * loose record) since the history detail/report pages render it
  * directly, rather than passing it through parseAnalysisResult().
  */
+// One item of webAiGapAiComparisonSchema's actionRecommendations below
+// — see backend/models.py's AiGapActionRecommendation
+// (feature/ai-gap-action-recommendations).
+const aiGapActionRecommendationSchema = z.object({
+  title: z.string(),
+  issue: z.string(),
+  action: z.string(),
+  target: z.string(),
+  evidence: z.string(),
+  priority: z.enum(["high", "medium", "low"]),
+  verification: z.string(),
+});
+
 const webAiGapAiComparisonSchema = z.object({
   status: z.literal("real"),
   method: z.enum([
@@ -346,6 +359,10 @@ const webAiGapAiComparisonSchema = z.object({
   // ai-gap-comparison-text-fallback) — see WebAiGapAiComparison in
   // app/lib/types.ts.
   textSummary: optionalFromPython(z.string()),
+  // Absent/null on older saved history and on the text-fallback
+  // method — see app/lib/types.ts's WebAiGapAiComparison
+  // (feature/ai-gap-action-recommendations).
+  actionRecommendations: optionalFromPython(z.array(aiGapActionRecommendationSchema)),
   caution: z.string(),
 });
 
