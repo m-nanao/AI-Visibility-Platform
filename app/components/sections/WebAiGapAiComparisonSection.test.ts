@@ -138,4 +138,18 @@ describe("ActionRecommendationsList", () => {
     expect(text).toContain("高");
     expect(text).toContain("低");
   });
+
+  it("omits the target row (never fabricates a page) when target is absent, but still shows every other field (fix/ai-gap-action-recommendations-missing)", () => {
+    const { target, ...withoutTarget } = sampleActionRecommendation();
+    void target;
+    const element = ActionRecommendationsList({ recommendations: [withoutTarget] });
+    const text = collectText(element).join(" ");
+
+    expect(text).not.toContain("対象箇所内容");
+    expect(text).toContain("施策タイトル");
+    expect(text).toContain("課題内容");
+    expect(text).toContain("改善方法内容");
+    expect(text).toContain("根拠内容");
+    expect(text).toContain("確認方法内容");
+  });
 });

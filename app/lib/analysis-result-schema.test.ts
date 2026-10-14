@@ -811,6 +811,33 @@ describe("parseAnalysisResult", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts an actionRecommendations item with no target (fix/ai-gap-action-recommendations-missing)", () => {
+    const noTarget = validActionRecommendation();
+    delete (noTarget as Record<string, unknown>).target;
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      webAiGapAiComparison: {
+        status: "real",
+        method: "ai_comparison",
+        matchedPoints: ["matched"],
+        webStrongAiWeak: [],
+        aiStrongWebWeak: [],
+        recommendations: ["recommend"],
+        actionRecommendations: [noTarget],
+        caution: "AIによる比較であり、AIの内部認識を直接示すものではありません。",
+      },
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(
+        result.data.webAiGapAiComparison?.actionRecommendations?.[0].target,
+      ).toBeUndefined();
+    }
+  });
+
   it("rejects an actionRecommendations item with an invalid priority value", () => {
     const invalid = {
       ...buildDummyAnalysis("OpenAI"),

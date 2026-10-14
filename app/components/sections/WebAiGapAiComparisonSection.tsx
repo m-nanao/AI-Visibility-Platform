@@ -92,12 +92,14 @@ export function ActionRecommendationsList({
                 </dt>
                 <dd>{item.action}</dd>
               </div>
-              <div>
-                <dt className="font-medium text-zinc-500 dark:text-zinc-400">
-                  {AI_ACTION_RECOMMENDATIONS_TARGET_LABEL}
-                </dt>
-                <dd>{item.target}</dd>
-              </div>
+              {item.target && (
+                <div>
+                  <dt className="font-medium text-zinc-500 dark:text-zinc-400">
+                    {AI_ACTION_RECOMMENDATIONS_TARGET_LABEL}
+                  </dt>
+                  <dd>{item.target}</dd>
+                </div>
+              )}
               <div>
                 <dt className="font-medium text-zinc-500 dark:text-zinc-400">
                   {AI_ACTION_RECOMMENDATIONS_EVIDENCE_LABEL}

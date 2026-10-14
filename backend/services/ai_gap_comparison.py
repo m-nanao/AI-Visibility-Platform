@@ -119,18 +119,58 @@ can see in this comparison. This module now also asks Claude, in the
 same single request as the rest of the comparison, for up to
 MAX_ACTION_RECOMMENDATIONS concrete, evidence-based improvement
 actions (see SYSTEM_PROMPT's `actionRecommendations` key and
-AiGapActionRecommendation in models.py). An item is only ever
-persisted when every one of its fields is present and non-blank (see
-_coerce_action_recommendations()) — an item truncated mid-object is
-dropped, never guessed at. This is extracted from the exact same
-Anthropic response already received for the rest of the comparison —
-it never triggers a second Claude call, and it degrades the same way
-the rest of the comparison does: full JSON success extracts it
-normally, the json-like partial-field fallback also tries to recover
-whichever complete `{...}` items it can find (see
+AiGapActionRecommendation in models.py). This is extracted from the
+exact same Anthropic response already received for the rest of the
+comparison — it never triggers a second Claude call, and it degrades
+the same way the rest of the comparison does: full JSON success
+extracts it normally, the json-like partial-field fallback also tries
+to recover whichever complete `{...}` items it can find (see
 _extract_json_like_action_recommendations()), and the plain text
 fallback (no JSON structure at all) leaves it unset (`None`) since
 there is nothing JSON-shaped to extract from.
+
+**Diagnosed and fixed (fix/ai-gap-action-recommendations-missing):**
+in production the comparison itself (matchedPoints etc.) generated and
+displayed correctly, but `actionRecommendations` was always empty/
+absent — never shown. Two contributing factors were found by code
+inspection (not from production logs, which this module never
+captures raw output from — see below):
+
+1. `CLAUDE_MAX_OUTPUT_TOKENS` is documented as 700 in production
+   (docs/36_multi_ai_comparison_design.md "8", max allowed 1500 — see
+   services/claude_settings.py). Asking for up to 5 items each in
+   three list fields, a required gapSummary, up to 5 recommendations,
+   *and* up to 3 actionRecommendations (7 string fields each) in a
+   single response is a lot to fit in that budget — `actionRecommendations`
+   was listed *last* in the prompt's key order, so it was the most
+   likely field to be entirely omitted (still syntactically valid
+   JSON) once the model ran low on remaining output budget composing
+   everything before it. SYSTEM_PROMPT now lists/instructs it earlier
+   (right after the three list fields, before gapSummary/
+   recommendations) and asks for shorter per-field text, without
+   raising the output-token setting itself (see module's final
+   verification section / task report for the recommended value).
+2. The original `_coerce_action_recommendations()` discarded an entire
+   item if *any* of its 7 fields was missing/blank, including
+   `target`/`priority`/`verification` — fields a token-constrained
+   model is prone to shortening or omitting first while still writing
+   complete, well-evidenced `title`/`issue`/`action`/`evidence`. Only
+   `title`/`issue`/`action`/`evidence` are required now;
+   `target`/`priority`/`verification` fall back to a safe default
+   (see AiGapActionRecommendation in models.py) instead of discarding
+   an otherwise-complete, evidence-based recommendation.
+
+Safe diagnostics (`_ActionRecommendationDiagnostics`, logged via
+`logger.info()` on every successful generation, never a warning and
+never the raw text/recommendation bodies) now record the Anthropic
+response's `stop_reason`, the configured `max_tokens`, output length,
+whether the `actionRecommendations` key was present at all, how many
+raw items were found, how many were accepted, and why any were
+discarded — so if `actionRecommendations` goes missing again, an
+operator can tell from Render logs alone whether it's still a token-
+budget/truncation issue (`stop_reason="max_tokens"`, key absent) or a
+validation issue (key present, items discarded) without ever needing
+the raw Claude output.
 """
 
 from __future__ import annotations
@@ -174,19 +214,35 @@ CAUTION_TEXT = (
 # again defensively in case the model returns more.
 MAX_ACTION_RECOMMENDATIONS = 3
 
-# Every one of these fields must be present and a non-blank string for
-# an action-recommendation item to be accepted — see
-# _coerce_action_recommendations(). Kept in sync with
-# AiGapActionRecommendation's fields in models.py.
-_ACTION_RECOMMENDATION_STR_FIELDS = (
-    "title",
-    "issue",
-    "action",
-    "target",
-    "evidence",
-    "verification",
-)
+# Only these must be present and a non-blank string for an action-
+# recommendation item to be accepted at all — see
+# _coerce_action_recommendations() (fix/ai-gap-action-recommendations-
+# missing). target/priority/verification fall back to a safe default
+# (see AiGapActionRecommendation in models.py) rather than discarding
+# an otherwise-complete, evidence-based item over one missing
+# non-critical field.
+_ACTION_RECOMMENDATION_REQUIRED_FIELDS = ("title", "issue", "action", "evidence")
 _VALID_ACTION_PRIORITIES = {"high", "medium", "low"}
+_DEFAULT_ACTION_PRIORITY = "medium"
+_DEFAULT_ACTION_VERIFICATION = (
+    "施策実施後、同じ質問で改めてAI観測を行い、説明内容が変化したか確認する。"
+)
+
+
+@dataclass(frozen=True)
+class _ActionRecommendationDiagnostics:
+    """Safe-to-log counts describing one _coerce_action_recommendations()
+    call — never the recommendation text itself (fix/ai-gap-action-
+    recommendations-missing). `raw_item_count` is the length of the
+    model's `actionRecommendations` array as given (even past
+    MAX_ACTION_RECOMMENDATIONS); `accepted_count` is how many actually
+    became AiGapActionRecommendation items; the `discarded_*` counts
+    explain the gap between them."""
+
+    raw_item_count: int = 0
+    accepted_count: int = 0
+    discarded_not_dict: int = 0
+    discarded_missing_required_field: int = 0
 
 # --- Text fallback (fix/ai-gap-comparison-text-fallback) ---
 #
@@ -349,7 +405,8 @@ SYSTEM_PROMPT = (
     "あることを前提とした、控えめで仮定的な表現にすること。\n"
     "- 各リスト項目は最大5件程度までとし、簡潔な日本語の文にすること。\n\n"
     "さらに、観測されたズレをもとに\"actionRecommendations\"(具体的な改善施策)を"
-    "考えること。以下を守ること:\n"
+    "考えること。出力量を抑えるため、各フィールドは1文・40字程度以内の簡潔な"
+    "日本語にすること。以下を守ること:\n"
     "- 最大3件に絞ること(件数を優先するより、根拠が明確な施策を優先する)。\n"
     "- 各施策には、根拠となるWeb上の説明またはAI回答の要約(\"evidence\")を必ず付けること。\n"
     "- AI回答側で不足している内容と、Web側にすでに存在する内容を区別すること"
@@ -363,21 +420,23 @@ SYSTEM_PROMPT = (
     "- この施策を実行すれば必ずAI回答が改善するとは断定しないこと。\n"
     "- 根拠が乏しい、または入力情報だけでは具体的な施策を考えにくい場合は、"
     "件数を減らすか、空配列 [] にしてよい(無理に3件埋めないこと)。\n\n"
-    "出力するJSONのキー:\n"
+    "出力するJSONのキー(出力量に余裕が少ない場合でも、actionRecommendationsを"
+    "省略せず、他のリストの件数を減らして確保すること):\n"
     '- "matchedPoints": Web上の説明とAI回答の両方で一致している点のリスト\n'
     '- "webStrongAiWeak": Web上では強く出ているがAI回答では弱い、または出ていない点のリスト\n'
     '- "aiStrongWebWeak": AI回答では強く出ているがWeb上では弱い、または出ていない点のリスト\n'
-    '- "gapSummary": 上記を踏まえた1〜2文のズレの要約(文字列、必須)\n'
-    '- "recommendations": 改善ヒントのリスト(1件以上、最大5件程度、必須)\n'
     '- "actionRecommendations": 具体的な改善施策のリスト(最大3件、根拠が乏しい場合は'
     "空配列可)。各要素は次のキーを持つオブジェクトにすること:\n"
     '  - "title": 施策の短い見出し\n'
     '  - "issue": 観測された問題\n'
     '  - "action": 具体的な改善方法\n'
-    '  - "target": 推奨する改善対象ページ・箇所(断定できない場合は候補として記載)\n'
+    '  - "target": 推奨する改善対象ページ・箇所(断定できない場合は候補として記載。'
+    "分からない場合は省略してよい)\n"
     '  - "evidence": 根拠となるWeb上の説明・AI観測の要約\n'
-    '  - "priority": "high"・"medium"・"low"のいずれか\n'
-    '  - "verification": 再度AI観測を行って確認する方法\n\n'
+    '  - "priority": "high"・"medium"・"low"のいずれか(省略時は"medium"扱い)\n'
+    '  - "verification": 再度AI観測を行って確認する方法(省略してもよい)\n'
+    '- "gapSummary": 上記を踏まえた1〜2文のズレの要約(文字列、必須)\n'
+    '- "recommendations": 改善ヒントのリスト(1件以上、最大5件程度、必須)\n\n'
     "matchedPoints/webStrongAiWeak/aiStrongWebWeakが空になる場合は空配列 [] を返すこと"
     "(ただしgapSummary/recommendationsは空にしないこと。actionRecommendationsは"
     "根拠が乏しい場合のみ空配列でよい)。\n\n"
@@ -386,19 +445,19 @@ SYSTEM_PROMPT = (
     '  "matchedPoints": ["Web上・AI回答の両方でSEO支援会社として言及されている"],\n'
     '  "webStrongAiWeak": ["Web上ではAI検索対策が強く出ているが、AI回答では弱い"],\n'
     '  "aiStrongWebWeak": ["AI回答では一般的なブランディング会社として説明されやすい"],\n'
-    '  "gapSummary": "Web上とAI回答で説明の強調点が異なる傾向があります。",\n'
-    '  "recommendations": ["社名の近くに主要サービス名を一貫して記載する"],\n'
     '  "actionRecommendations": [\n'
     "    {\n"
     '      "title": "SEO対策の実績を会社概要に明記する",\n'
-    '      "issue": "AI回答では一般的なブランディング会社として説明される傾向がある",\n'
-    '      "action": "会社概要ページにSEO対策・AI検索対策の実績を具体的に追記する",\n'
+    '      "issue": "一般的なブランディング会社として説明される",\n'
+    '      "action": "会社概要にSEO対策の実績を追記する",\n'
     '      "target": "会社概要ページ(候補)",\n'
-    '      "evidence": "Web上ではSEO対策が中心だが、AI回答ではブランディングのみ言及",\n'
+    '      "evidence": "Web上ではSEO対策中心だが、AI回答ではブランディングのみ言及",\n'
     '      "priority": "high",\n'
-    '      "verification": "追記後、同じ質問でAI観測を再実行し説明内容を確認する"\n'
+    '      "verification": "追記後、同じ質問でAI観測を再実行し確認する"\n'
     "    }\n"
-    "  ]\n"
+    "  ],\n"
+    '  "gapSummary": "Web上とAI回答で説明の強調点が異なる傾向があります。",\n'
+    '  "recommendations": ["社名の近くに主要サービス名を一貫して記載する"]\n'
     "}"
 )
 
@@ -570,50 +629,85 @@ def _coerce_str_list(value: Any) -> list[str]:
     ]
 
 
-def _coerce_action_recommendations(raw_items: Any) -> list[AiGapActionRecommendation]:
+def _coerce_action_recommendations(
+    raw_items: Any,
+) -> tuple[list[AiGapActionRecommendation], _ActionRecommendationDiagnostics]:
     """Builds up to MAX_ACTION_RECOMMENDATIONS AiGapActionRecommendation
     items from the model's raw `actionRecommendations` value (or from
-    the json-like partial extraction below) — see module docstring's
-    "Action recommendations" section.
+    the json-like partial extraction below), plus safe diagnostics
+    describing what happened — see module docstring's "Action
+    recommendations" section and fix/ai-gap-action-recommendations-
+    missing's root-cause writeup.
 
-    Never guesses at a missing/blank field: an item is included only
-    when every one of _ACTION_RECOMMENDATION_STR_FIELDS is a non-blank
-    string and `priority` is one of "high"/"medium"/"low" (case/
-    whitespace-insensitive). Anything else about `raw_items` itself
-    (not a list, or containing non-dict entries) simply yields fewer
-    — never zero-vs-error ambiguity, since the caller already
-    distinguishes "field absent" from "field present" before calling
-    this (see _parse_comparison()/_try_build_json_like_fallback())."""
+    An item is included only when every one of
+    _ACTION_RECOMMENDATION_REQUIRED_FIELDS (title/issue/action/
+    evidence) is a non-blank string — this is the one thing never
+    guessed at. `target` (optional — never fabricated when absent),
+    `priority` (falls back to _DEFAULT_ACTION_PRIORITY when missing or
+    not one of "high"/"medium"/"low"), and `verification` (falls back
+    to _DEFAULT_ACTION_VERIFICATION when missing/blank) no longer
+    cause the whole item to be discarded — see AiGapActionRecommendation
+    in models.py for why.
+
+    `raw_items` not being a list, or containing non-dict entries,
+    simply yields fewer accepted items (counted in the returned
+    diagnostics) — never an exception. The caller already distinguishes
+    "field absent entirely" from "field present" before calling this
+    (see _parse_comparison()/_try_build_json_like_fallback())."""
     if not isinstance(raw_items, list):
-        return []
+        return [], _ActionRecommendationDiagnostics()
 
-    recommendations: list[AiGapActionRecommendation] = []
+    accepted: list[AiGapActionRecommendation] = []
+    discarded_not_dict = 0
+    discarded_missing_required_field = 0
+
     for item in raw_items:
-        if len(recommendations) >= MAX_ACTION_RECOMMENDATIONS:
+        if len(accepted) >= MAX_ACTION_RECOMMENDATIONS:
             break
         if not isinstance(item, dict):
+            discarded_not_dict += 1
             continue
         if any(
             not isinstance(item.get(field_name), str) or not item[field_name].strip()
-            for field_name in _ACTION_RECOMMENDATION_STR_FIELDS
+            for field_name in _ACTION_RECOMMENDATION_REQUIRED_FIELDS
         ):
+            discarded_missing_required_field += 1
             continue
+
+        target_raw = item.get("target")
+        target = target_raw.strip() if isinstance(target_raw, str) and target_raw.strip() else None
+
         priority_raw = item.get("priority")
         priority = priority_raw.strip().lower() if isinstance(priority_raw, str) else None
         if priority not in _VALID_ACTION_PRIORITIES:
-            continue
-        recommendations.append(
+            priority = _DEFAULT_ACTION_PRIORITY
+
+        verification_raw = item.get("verification")
+        verification = (
+            verification_raw.strip()
+            if isinstance(verification_raw, str) and verification_raw.strip()
+            else _DEFAULT_ACTION_VERIFICATION
+        )
+
+        accepted.append(
             AiGapActionRecommendation(
                 title=item["title"].strip(),
                 issue=item["issue"].strip(),
                 action=item["action"].strip(),
-                target=item["target"].strip(),
+                target=target,
                 evidence=item["evidence"].strip(),
                 priority=priority,
-                verification=item["verification"].strip(),
+                verification=verification,
             )
         )
-    return recommendations
+
+    diagnostics = _ActionRecommendationDiagnostics(
+        raw_item_count=len(raw_items),
+        accepted_count=len(accepted),
+        discarded_not_dict=discarded_not_dict,
+        discarded_missing_required_field=discarded_missing_required_field,
+    )
+    return accepted, diagnostics
 
 
 def _extract_balanced_objects(text: str) -> list[str]:
@@ -798,24 +892,32 @@ def _extract_json_like_gap_summary(text: str) -> str | None:
     return value or None
 
 
-def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
+def _try_build_json_like_fallback(
+    text: str,
+) -> tuple[WebAiGapAiComparison | None, _ActionRecommendationDiagnostics | None]:
     """Best-effort partial extraction of the known comparison fields
     (matchedPoints/webStrongAiWeak/aiStrongWebWeak/gapSummary/
-    recommendations) directly from JSON-shaped-but-undecodable text —
-    see module docstring's "JSON-like partial-field extraction"
-    section. Tried for both REASON_NO_JSON_OBJECT_FOUND and
-    REASON_JSON_DECODE_FAILED, before anything else.
+    recommendations/actionRecommendations) directly from JSON-shaped-
+    but-undecodable text — see module docstring's "JSON-like
+    partial-field extraction" section. Tried for both
+    REASON_NO_JSON_OBJECT_FOUND and REASON_JSON_DECODE_FAILED, before
+    anything else.
 
-    Returns None when `text` doesn't look JSON-like at all
+    Returns `(None, None)` when `text` doesn't look JSON-like at all
     (_looks_json_like()), or when none of the known fields yielded any
     real content (an empty-but-present list still counts as "found" —
     only a field that's entirely absent, or every found field being
     empty/blank, means nothing useful was extracted). The caller then
     falls through to the plain text fallback (REASON_NO_JSON_OBJECT_FOUND
-    only) or reports a genuine failure (REASON_JSON_DECODE_FAILED)."""
+    only) or reports a genuine failure (REASON_JSON_DECODE_FAILED).
+
+    The second return value is the action-recommendation diagnostics
+    (see _ActionRecommendationDiagnostics) when the
+    `actionRecommendations` key was found at all, for the caller to
+    log safely — `None` when the key wasn't present in `text`."""
     fence_stripped = _strip_code_fence(text)
     if not _looks_json_like(fence_stripped):
-        return None
+        return None, None
 
     matched_points = _extract_json_like_array(fence_stripped, "matchedPoints")
     web_strong = _extract_json_like_array(fence_stripped, "webStrongAiWeak")
@@ -823,9 +925,10 @@ def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
     recommendations = _extract_json_like_array(fence_stripped, "recommendations")
     gap_summary = _extract_json_like_gap_summary(fence_stripped)
     raw_action_items = _extract_json_like_action_recommendations(fence_stripped)
-    action_recommendations = (
-        _coerce_action_recommendations(raw_action_items) if raw_action_items is not None else None
-    )
+    if raw_action_items is not None:
+        action_recommendations, action_diag = _coerce_action_recommendations(raw_action_items)
+    else:
+        action_recommendations, action_diag = None, None
 
     has_useful_content = (
         bool(gap_summary)
@@ -833,9 +936,9 @@ def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
         or any(lst for lst in (matched_points, web_strong, ai_strong, recommendations) if lst)
     )
     if not has_useful_content:
-        return None
+        return None, action_diag
 
-    return WebAiGapAiComparison(
+    comparison = WebAiGapAiComparison(
         method=METHOD_JSON_LIKE_FALLBACK,
         matchedPoints=matched_points or [],
         webStrongAiWeak=web_strong or [],
@@ -846,18 +949,25 @@ def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
         textSummary=None,
         caution=CAUTION_TEXT,
     )
+    return comparison, action_diag
 
 
-def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | None]:
+def _parse_comparison(
+    text: str,
+) -> tuple[WebAiGapAiComparison | None, str | None, _ActionRecommendationDiagnostics | None]:
     """Parses Claude's raw text output into a WebAiGapAiComparison.
-    Returns `(comparison, None)` on success, or `(None, reason)` where
-    `reason` is whatever parse_ai_gap_comparison_json() reported
-    (REASON_NO_JSON_OBJECT_FOUND / REASON_JSON_DECODE_FAILED), or
-    REASON_VALIDATION_FAILED if a JSON object was found but
-    constructing the model from it still failed unexpectedly (should be
-    unreachable in practice since every field is coerced defensively
-    below, but guarded against rather than letting a stray
-    pydantic.ValidationError escape this module).
+    Returns `(comparison, None, action_diag)` on success, or
+    `(None, reason, action_diag)` where `reason` is whatever
+    parse_ai_gap_comparison_json() reported (REASON_NO_JSON_OBJECT_FOUND /
+    REASON_JSON_DECODE_FAILED), or REASON_VALIDATION_FAILED if a JSON
+    object was found but constructing the model from it still failed
+    unexpectedly (should be unreachable in practice since every field
+    is coerced defensively below, but guarded against rather than
+    letting a stray pydantic.ValidationError escape this module).
+    `action_diag` (see _ActionRecommendationDiagnostics) is `None`
+    whenever the `actionRecommendations` key was never found at all
+    (fix/ai-gap-action-recommendations-missing) — the caller logs it
+    safely regardless of overall success/failure.
 
     Every field is defaulted rather than raising when missing/malformed
     (gapSummary -> None, every list field -> `[]` via
@@ -895,15 +1005,16 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
     if parsed is None:
         if reason in (REASON_NO_JSON_OBJECT_FOUND, REASON_JSON_DECODE_FAILED):
             stripped = text.strip()
-            json_like = _try_build_json_like_fallback(stripped)
+            json_like, action_diag = _try_build_json_like_fallback(stripped)
             if json_like is not None:
-                return json_like, None
+                return json_like, None, action_diag
             if reason == REASON_NO_JSON_OBJECT_FOUND:
                 cleaned = _strip_json_like_decorations(stripped)
                 fallback = _try_build_text_fallback(cleaned)
                 if fallback is not None:
-                    return fallback, None
-        return None, reason
+                    return fallback, None, action_diag
+            return None, reason, action_diag
+        return None, reason, None
 
     gap_summary = parsed.get("gapSummary")
     if not isinstance(gap_summary, str) or not gap_summary.strip():
@@ -912,11 +1023,10 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
         gap_summary = gap_summary.strip()
 
     raw_action_recommendations = parsed.get("actionRecommendations")
-    action_recommendations = (
-        _coerce_action_recommendations(raw_action_recommendations)
-        if raw_action_recommendations is not None
-        else None
-    )
+    if raw_action_recommendations is not None:
+        action_recommendations, action_diag = _coerce_action_recommendations(raw_action_recommendations)
+    else:
+        action_recommendations, action_diag = None, None
 
     try:
         comparison = WebAiGapAiComparison(
@@ -930,9 +1040,9 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
         )
     except Exception:
         logger.exception("Failed to construct WebAiGapAiComparison from a parsed JSON object")
-        return None, REASON_VALIDATION_FAILED
+        return None, REASON_VALIDATION_FAILED, action_diag
 
-    return comparison, None
+    return comparison, None, action_diag
 
 
 @dataclass(frozen=True)
@@ -1157,6 +1267,15 @@ def generate_ai_gap_comparison(
             internal_reason=REASON_NON_JSON_RESPONSE,
         )
 
+    # Anthropic's own enum ("end_turn"/"max_tokens"/"stop_sequence"/...)
+    # — never a secret, safe to log alongside everything else here.
+    # Logged on every outcome from this point on (fix/ai-gap-action-
+    # recommendations-missing) so a truncated response
+    # (stop_reason="max_tokens") is distinguishable from one Claude
+    # completed normally without this module ever needing to log the
+    # raw output itself.
+    stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
+
     extraction = _extract_output_text(payload)
     if extraction.text is None:
         # Safe diagnostics only: content-block type names and counts,
@@ -1164,10 +1283,11 @@ def generate_ai_gap_comparison(
         # docstring and the module docstring's logging policy.
         logger.warning(
             "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s "
-            "content_types=%s text_block_count=%d",
+            "stop_reason=%s content_types=%s text_block_count=%d",
             extraction.reason,
             analysis_run_id,
             settings.model,
+            stop_reason,
             extraction.content_types,
             extraction.text_block_count,
         )
@@ -1175,21 +1295,28 @@ def generate_ai_gap_comparison(
             success=False, reason=_PARSE_FAILED_REASON, internal_reason=extraction.reason
         )
 
-    comparison, parse_reason = _parse_comparison(extraction.text)
+    comparison, parse_reason, action_diag = _parse_comparison(extraction.text)
     if comparison is None:
         # Never logs the text itself — only its length, which is safe
         # (never a secret, and not useful enough on its own to be
         # worth withholding) and lets an operator distinguish "short
         # response" from "long response that still didn't parse".
+        # action_diag may still be set here (actionRecommendations key
+        # was found but the overall document didn't parse/extract) —
+        # logged for the same reason.
         logger.warning(
             "AI gap comparison failed: reason=%s analysis_run_id=%s model=%s "
-            "raw_length=%d content_types=%s text_block_count=%d",
+            "stop_reason=%s max_tokens=%d raw_length=%d content_types=%s "
+            "text_block_count=%d action_recommendations_raw_item_count=%s",
             parse_reason,
             analysis_run_id,
             settings.model,
+            stop_reason,
+            settings.max_output_tokens,
             len(extraction.text),
             extraction.content_types,
             extraction.text_block_count,
+            action_diag.raw_item_count if action_diag else None,
         )
         return AiGapComparisonOutcome(
             success=False, reason=_PARSE_FAILED_REASON, internal_reason=parse_reason
@@ -1200,12 +1327,39 @@ def generate_ai_gap_comparison(
         # this is an accepted, safe fallback outcome, not a problem.
         # Only the length is logged, never the text itself.
         logger.info(
-            "AI gap comparison used fallback: method=%s analysis_run_id=%s model=%s raw_length=%d",
+            "AI gap comparison used fallback: method=%s analysis_run_id=%s model=%s "
+            "stop_reason=%s raw_length=%d",
             comparison.method,
             analysis_run_id,
             settings.model,
+            stop_reason,
             len(extraction.text),
         )
+
+    # Action-recommendations diagnostics (fix/ai-gap-action-
+    # recommendations-missing) — logged on every successful generation
+    # regardless of method or whether any recommendations ended up
+    # present, so a future regression is diagnosable from Render logs
+    # alone. Never the recommendation text itself, just counts/booleans
+    # plus the same stop_reason/max_tokens already logged above for
+    # fallback cases.
+    key_found = '"actionRecommendations"' in extraction.text
+    logger.info(
+        "AI gap action recommendations diagnostics: analysis_run_id=%s model=%s "
+        "stop_reason=%s max_tokens=%d raw_length=%d key_found=%s "
+        "raw_item_count=%s accepted_count=%s discarded_not_dict=%s "
+        "discarded_missing_required_field=%s",
+        analysis_run_id,
+        settings.model,
+        stop_reason,
+        settings.max_output_tokens,
+        len(extraction.text),
+        key_found,
+        action_diag.raw_item_count if action_diag else None,
+        action_diag.accepted_count if action_diag else None,
+        action_diag.discarded_not_dict if action_diag else None,
+        action_diag.discarded_missing_required_field if action_diag else None,
+    )
 
     return AiGapComparisonOutcome(
         success=True, reason="AI comparison succeeded.", comparison=comparison

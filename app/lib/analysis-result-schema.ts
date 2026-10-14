@@ -235,12 +235,15 @@ const webAiGapResultSchema = z.object({
 
 // One item of webAiGapAiComparisonSchema's actionRecommendations below
 // — see backend/models.py's AiGapActionRecommendation
-// (feature/ai-gap-action-recommendations).
+// (feature/ai-gap-action-recommendations). `target` is optional
+// (fix/ai-gap-action-recommendations-missing) — never fabricated when
+// Claude didn't name a page; `priority`/`verification` are always
+// present (backend applies a safe default when omitted).
 const aiGapActionRecommendationSchema = z.object({
   title: z.string(),
   issue: z.string(),
   action: z.string(),
-  target: z.string(),
+  target: optionalFromPython(z.string()),
   evidence: z.string(),
   priority: prioritySchema,
   verification: z.string(),

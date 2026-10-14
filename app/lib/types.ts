@@ -486,12 +486,17 @@ export interface WebAiGapAiComparison {
 }
 
 // One item of WebAiGapAiComparison.actionRecommendations above — see
-// backend/models.py's AiGapActionRecommendation.
+// backend/models.py's AiGapActionRecommendation. `target` is optional
+// (fix/ai-gap-action-recommendations-missing) — backend never
+// fabricates an unconfirmed page, so this is `undefined` whenever
+// Claude didn't name one. `priority`/`verification` are always
+// present (the backend applies a safe default when Claude omits
+// them), unlike `target`.
 export interface AiGapActionRecommendation {
   title: string;
   issue: string;
   action: string;
-  target: string;
+  target?: string;
   evidence: string;
   priority: Priority;
   verification: string;
