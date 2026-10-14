@@ -110,6 +110,27 @@ useful can be extracted this way, REASON_JSON_DECODE_FAILED is still
 reported as a genuine failure (unchanged from
 fix/ai-gap-comparison-text-fallback), while REASON_NO_JSON_OBJECT_FOUND
 falls through to the plain text fallback as before.
+
+**Action recommendations (feature/ai-gap-action-recommendations).**
+The rule-based improvement suggestions computed during every
+`/analyze` request (services/improvement_suggestions.py) are
+necessarily generic — they have no access to the semantic gap Claude
+can see in this comparison. This module now also asks Claude, in the
+same single request as the rest of the comparison, for up to
+MAX_ACTION_RECOMMENDATIONS concrete, evidence-based improvement
+actions (see SYSTEM_PROMPT's `actionRecommendations` key and
+AiGapActionRecommendation in models.py). An item is only ever
+persisted when every one of its fields is present and non-blank (see
+_coerce_action_recommendations()) — an item truncated mid-object is
+dropped, never guessed at. This is extracted from the exact same
+Anthropic response already received for the rest of the comparison —
+it never triggers a second Claude call, and it degrades the same way
+the rest of the comparison does: full JSON success extracts it
+normally, the json-like partial-field fallback also tries to recover
+whichever complete `{...}` items it can find (see
+_extract_json_like_action_recommendations()), and the plain text
+fallback (no JSON structure at all) leaves it unset (`None`) since
+there is nothing JSON-shaped to extract from.
 """
 
 from __future__ import annotations
@@ -122,7 +143,7 @@ from typing import Any
 
 import httpx
 
-from models import WebAiGapAiComparison
+from models import AiGapActionRecommendation, WebAiGapAiComparison
 from services.claude_settings import get_claude_credentials, get_claude_settings
 
 logger = logging.getLogger(__name__)
@@ -145,6 +166,27 @@ MAX_ITEMS_PER_LIST = 5
 CAUTION_TEXT = (
     "AIによる比較であり、AIの内部認識を直接示すものではありません。"
 )
+
+# --- Action recommendations (feature/ai-gap-action-recommendations) ---
+#
+# Caps how many AiGapActionRecommendation items are kept — matches the
+# SYSTEM_PROMPT's "3件以内" instruction to the model, enforced here
+# again defensively in case the model returns more.
+MAX_ACTION_RECOMMENDATIONS = 3
+
+# Every one of these fields must be present and a non-blank string for
+# an action-recommendation item to be accepted — see
+# _coerce_action_recommendations(). Kept in sync with
+# AiGapActionRecommendation's fields in models.py.
+_ACTION_RECOMMENDATION_STR_FIELDS = (
+    "title",
+    "issue",
+    "action",
+    "target",
+    "evidence",
+    "verification",
+)
+_VALID_ACTION_PRIORITIES = {"high", "medium", "low"}
 
 # --- Text fallback (fix/ai-gap-comparison-text-fallback) ---
 #
@@ -220,6 +262,13 @@ _JSON_LIKE_ARRAY_FIELD_RE = {
 }
 _JSON_LIKE_GAP_SUMMARY_RE = re.compile(r'"gapSummary"\s*:\s*"((?:[^"\\]|\\.)*)"', re.DOTALL)
 _JSON_LIKE_STRING_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+# actionRecommendations items are themselves small JSON objects, not
+# plain strings — a flat `\[(.*?)\]` regex can't safely pull them out
+# (a `}`/`{` inside one item's string values would confuse a naive
+# non-greedy match), so this locates just the key, and
+# _extract_balanced_objects() below walks forward from there instead.
+_ACTION_RECOMMENDATIONS_KEY_RE = re.compile(r'"actionRecommendations"\s*:\s*\[')
 
 # --- Safe, short internal reason codes (fix/ai-gap-comparison-diagnostics) -
 #
@@ -299,21 +348,57 @@ SYSTEM_PROMPT = (
     "- あくまで「Web上の説明」と「AIの回答(単発観測)」という2つのテキストの比較で"
     "あることを前提とした、控えめで仮定的な表現にすること。\n"
     "- 各リスト項目は最大5件程度までとし、簡潔な日本語の文にすること。\n\n"
+    "さらに、観測されたズレをもとに\"actionRecommendations\"(具体的な改善施策)を"
+    "考えること。以下を守ること:\n"
+    "- 最大3件に絞ること(件数を優先するより、根拠が明確な施策を優先する)。\n"
+    "- 各施策には、根拠となるWeb上の説明またはAI回答の要約(\"evidence\")を必ず付けること。\n"
+    "- AI回答側で不足している内容と、Web側にすでに存在する内容を区別すること"
+    "(AIがすでに正しく説明している内容は改善対象にしないこと)。\n"
+    "- 誤認や中核事業の説明不足など、重要度の高い問題を優先すること"
+    "(\"priority\"で区別する)。\n"
+    "- どのページを修正すべきか断定できない場合は、候補として提示すること"
+    "(断定しすぎないこと)。取得していないページの内容を推測しないこと。\n"
+    "- 「社名の近くに主要サービス名を記載する」のような同一パターンの提案を"
+    "繰り返さないこと。各施策は具体的に区別できる内容にすること。\n"
+    "- この施策を実行すれば必ずAI回答が改善するとは断定しないこと。\n"
+    "- 根拠が乏しい、または入力情報だけでは具体的な施策を考えにくい場合は、"
+    "件数を減らすか、空配列 [] にしてよい(無理に3件埋めないこと)。\n\n"
     "出力するJSONのキー:\n"
     '- "matchedPoints": Web上の説明とAI回答の両方で一致している点のリスト\n'
     '- "webStrongAiWeak": Web上では強く出ているがAI回答では弱い、または出ていない点のリスト\n'
     '- "aiStrongWebWeak": AI回答では強く出ているがWeb上では弱い、または出ていない点のリスト\n'
     '- "gapSummary": 上記を踏まえた1〜2文のズレの要約(文字列、必須)\n'
-    '- "recommendations": 改善ヒントのリスト(1件以上、最大5件程度、必須)\n\n'
+    '- "recommendations": 改善ヒントのリスト(1件以上、最大5件程度、必須)\n'
+    '- "actionRecommendations": 具体的な改善施策のリスト(最大3件、根拠が乏しい場合は'
+    "空配列可)。各要素は次のキーを持つオブジェクトにすること:\n"
+    '  - "title": 施策の短い見出し\n'
+    '  - "issue": 観測された問題\n'
+    '  - "action": 具体的な改善方法\n'
+    '  - "target": 推奨する改善対象ページ・箇所(断定できない場合は候補として記載)\n'
+    '  - "evidence": 根拠となるWeb上の説明・AI観測の要約\n'
+    '  - "priority": "high"・"medium"・"low"のいずれか\n'
+    '  - "verification": 再度AI観測を行って確認する方法\n\n'
     "matchedPoints/webStrongAiWeak/aiStrongWebWeakが空になる場合は空配列 [] を返すこと"
-    "(ただしgapSummary/recommendationsは空にしないこと)。\n\n"
+    "(ただしgapSummary/recommendationsは空にしないこと。actionRecommendationsは"
+    "根拠が乏しい場合のみ空配列でよい)。\n\n"
     "出力例(このJSON以外は一切出力しないこと。説明・コードフェンスは不要):\n"
     "{\n"
     '  "matchedPoints": ["Web上・AI回答の両方でSEO支援会社として言及されている"],\n'
     '  "webStrongAiWeak": ["Web上ではAI検索対策が強く出ているが、AI回答では弱い"],\n'
     '  "aiStrongWebWeak": ["AI回答では一般的なブランディング会社として説明されやすい"],\n'
     '  "gapSummary": "Web上とAI回答で説明の強調点が異なる傾向があります。",\n'
-    '  "recommendations": ["社名の近くに主要サービス名を一貫して記載する"]\n'
+    '  "recommendations": ["社名の近くに主要サービス名を一貫して記載する"],\n'
+    '  "actionRecommendations": [\n'
+    "    {\n"
+    '      "title": "SEO対策の実績を会社概要に明記する",\n'
+    '      "issue": "AI回答では一般的なブランディング会社として説明される傾向がある",\n'
+    '      "action": "会社概要ページにSEO対策・AI検索対策の実績を具体的に追記する",\n'
+    '      "target": "会社概要ページ(候補)",\n'
+    '      "evidence": "Web上ではSEO対策が中心だが、AI回答ではブランディングのみ言及",\n'
+    '      "priority": "high",\n'
+    '      "verification": "追記後、同じ質問でAI観測を再実行し説明内容を確認する"\n'
+    "    }\n"
+    "  ]\n"
     "}"
 )
 
@@ -485,6 +570,119 @@ def _coerce_str_list(value: Any) -> list[str]:
     ]
 
 
+def _coerce_action_recommendations(raw_items: Any) -> list[AiGapActionRecommendation]:
+    """Builds up to MAX_ACTION_RECOMMENDATIONS AiGapActionRecommendation
+    items from the model's raw `actionRecommendations` value (or from
+    the json-like partial extraction below) — see module docstring's
+    "Action recommendations" section.
+
+    Never guesses at a missing/blank field: an item is included only
+    when every one of _ACTION_RECOMMENDATION_STR_FIELDS is a non-blank
+    string and `priority` is one of "high"/"medium"/"low" (case/
+    whitespace-insensitive). Anything else about `raw_items` itself
+    (not a list, or containing non-dict entries) simply yields fewer
+    — never zero-vs-error ambiguity, since the caller already
+    distinguishes "field absent" from "field present" before calling
+    this (see _parse_comparison()/_try_build_json_like_fallback())."""
+    if not isinstance(raw_items, list):
+        return []
+
+    recommendations: list[AiGapActionRecommendation] = []
+    for item in raw_items:
+        if len(recommendations) >= MAX_ACTION_RECOMMENDATIONS:
+            break
+        if not isinstance(item, dict):
+            continue
+        if any(
+            not isinstance(item.get(field_name), str) or not item[field_name].strip()
+            for field_name in _ACTION_RECOMMENDATION_STR_FIELDS
+        ):
+            continue
+        priority_raw = item.get("priority")
+        priority = priority_raw.strip().lower() if isinstance(priority_raw, str) else None
+        if priority not in _VALID_ACTION_PRIORITIES:
+            continue
+        recommendations.append(
+            AiGapActionRecommendation(
+                title=item["title"].strip(),
+                issue=item["issue"].strip(),
+                action=item["action"].strip(),
+                target=item["target"].strip(),
+                evidence=item["evidence"].strip(),
+                priority=priority,
+                verification=item["verification"].strip(),
+            )
+        )
+    return recommendations
+
+
+def _extract_balanced_objects(text: str) -> list[str]:
+    """Extracts top-level `{...}` object substrings from `text`,
+    tracking brace depth and (simply) quoted-string state so a `{`/`}`
+    character inside a string value doesn't confuse the count. Stops
+    at the first `]` encountered at depth 0 (the enclosing array's own
+    close) or at the end of `text` — a trailing object truncated
+    mid-way through (unbalanced braces at the end of input) is simply
+    never appended, which is the desired behavior: an incomplete
+    object is dropped, never guessed at."""
+    objects: list[str] = []
+    depth = 0
+    start: int | None = None
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    objects.append(text[start : i + 1])
+                    start = None
+        elif ch == "]" and depth == 0:
+            break
+    return objects
+
+
+def _extract_json_like_action_recommendations(text: str) -> list[dict[str, Any]] | None:
+    """Best-effort extraction of `actionRecommendations` items from
+    JSON-shaped-but-undecodable text — see module docstring's "Action
+    recommendations" section. Returns None when the key isn't present
+    in `text` at all (distinct from "present but every item failed to
+    parse", which returns `[]`). Each `{...}` object found by
+    _extract_balanced_objects() is parsed with `json.loads()`
+    individually — a genuine decode (not a guess), just scoped to one
+    small, self-contained fragment rather than the whole undecodable
+    document; an item that itself fails to parse (e.g. the one actually
+    truncated mid-object) is simply skipped."""
+    match = _ACTION_RECOMMENDATIONS_KEY_RE.search(text)
+    if match is None:
+        return None
+
+    parsed_items: list[dict[str, Any]] = []
+    for obj_text in _extract_balanced_objects(text[match.end() :]):
+        try:
+            parsed = json.loads(obj_text)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            parsed_items.append(parsed)
+    return parsed_items
+
+
 def _looks_like_refusal(text: str) -> bool:
     """Simple, intentionally non-exhaustive check for an outright
     refusal/apology at the *start* of Claude's response (e.g. "申し訳
@@ -624,9 +822,15 @@ def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
     ai_strong = _extract_json_like_array(fence_stripped, "aiStrongWebWeak")
     recommendations = _extract_json_like_array(fence_stripped, "recommendations")
     gap_summary = _extract_json_like_gap_summary(fence_stripped)
+    raw_action_items = _extract_json_like_action_recommendations(fence_stripped)
+    action_recommendations = (
+        _coerce_action_recommendations(raw_action_items) if raw_action_items is not None else None
+    )
 
-    has_useful_content = bool(gap_summary) or any(
-        lst for lst in (matched_points, web_strong, ai_strong, recommendations) if lst
+    has_useful_content = (
+        bool(gap_summary)
+        or bool(action_recommendations)
+        or any(lst for lst in (matched_points, web_strong, ai_strong, recommendations) if lst)
     )
     if not has_useful_content:
         return None
@@ -638,6 +842,7 @@ def _try_build_json_like_fallback(text: str) -> WebAiGapAiComparison | None:
         aiStrongWebWeak=ai_strong or [],
         gapSummary=gap_summary,
         recommendations=recommendations or [],
+        actionRecommendations=action_recommendations,
         textSummary=None,
         caution=CAUTION_TEXT,
     )
@@ -679,6 +884,12 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
     REASON_JSON_DECODE_FAILED that yields no useful JSON-like fields
     is still reported as a genuine failure, unchanged from
     fix/ai-gap-comparison-text-fallback.
+
+    `actionRecommendations` (feature/ai-gap-action-recommendations) is
+    coerced via _coerce_action_recommendations() when the key is
+    present in the parsed JSON (possibly to `[]`, if every item failed
+    validation), or left `None` when the key is absent entirely — see
+    module docstring's "Action recommendations" section.
     """
     parsed, reason = parse_ai_gap_comparison_json(text)
     if parsed is None:
@@ -700,6 +911,13 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
     else:
         gap_summary = gap_summary.strip()
 
+    raw_action_recommendations = parsed.get("actionRecommendations")
+    action_recommendations = (
+        _coerce_action_recommendations(raw_action_recommendations)
+        if raw_action_recommendations is not None
+        else None
+    )
+
     try:
         comparison = WebAiGapAiComparison(
             matchedPoints=_coerce_str_list(parsed.get("matchedPoints")),
@@ -707,6 +925,7 @@ def _parse_comparison(text: str) -> tuple[WebAiGapAiComparison | None, str | Non
             aiStrongWebWeak=_coerce_str_list(parsed.get("aiStrongWebWeak")),
             gapSummary=gap_summary,
             recommendations=_coerce_str_list(parsed.get("recommendations")),
+            actionRecommendations=action_recommendations,
             caution=CAUTION_TEXT,
         )
     except Exception:

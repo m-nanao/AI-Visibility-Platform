@@ -467,7 +467,34 @@ export interface WebAiGapAiComparison {
   recommendations: string[];
   // Only set when method === "ai_comparison_text_fallback".
   textSummary?: string;
+  // Concrete, evidence-based improvement actions derived from this
+  // same AI comparison call (feature/ai-gap-action-recommendations,
+  // never a second Anthropic request) — see
+  // backend/services/ai_gap_comparison.py's
+  // _coerce_action_recommendations() (≤3 items). Distinct from the
+  // rule-based `ImprovementSuggestion`s always shown in the analysis
+  // result (short, fixed-wording hints with no evidence/priority/
+  // verification) and from the plain `recommendations: string[]`
+  // above. `undefined` on older saved history that predates this
+  // field, or when Claude's output had no JSON structure to extract
+  // one from at all (the text-fallback case) — treat the same as
+  // "nothing to show", not an error. An empty array (as opposed to
+  // `undefined`) means Claude explicitly found no well-evidenced
+  // recommendation to make.
+  actionRecommendations?: AiGapActionRecommendation[];
   caution: string;
+}
+
+// One item of WebAiGapAiComparison.actionRecommendations above — see
+// backend/models.py's AiGapActionRecommendation.
+export interface AiGapActionRecommendation {
+  title: string;
+  issue: string;
+  action: string;
+  target: string;
+  evidence: string;
+  priority: Priority;
+  verification: string;
 }
 
 export interface AnalysisResult {

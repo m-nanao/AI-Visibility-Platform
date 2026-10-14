@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 import main
 from main import HISTORY_READ_TOKEN_HEADER, app
-from models import WebAiGapAiComparison
+from models import AiGapActionRecommendation, WebAiGapAiComparison
 from services.ai_gap_comparison import AiGapComparisonOutcome
 from services.analysis_history_repository import AnalysisHistoryReadError
 from services.jwt_auth import AuthenticatedUser
@@ -259,6 +259,66 @@ def test_ai_comparison_json_like_fallback_is_saved_and_returned_and_preserves_we
     assert body["webAiGapAiComparison"]["textSummary"] is None
     assert saved["result_json"]["webAiGapAiComparison"]["method"] == "ai_comparison_json_like_fallback"
     assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
+
+
+def test_ai_comparison_action_recommendations_are_saved_and_returned(monkeypatch):
+    """feature/ai-gap-action-recommendations: actionRecommendations
+    persist and round-trip through the API exactly like the rest of
+    webAiGapAiComparison, and the existing rule-based webAiGap stays
+    untouched."""
+    _enable_read_env(monkeypatch)
+    detail = _fake_detail()
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
+    comparison_with_actions = _comparison(
+        actionRecommendations=[
+            AiGapActionRecommendation(
+                title="SEO対策の実績を会社概要に明記する",
+                issue="AI回答では一般的なブランディング会社として説明される",
+                action="会社概要ページにSEO対策の実績を追記する",
+                target="会社概要ページ(候補)",
+                evidence="Web上ではSEO対策が中心だが、AI回答ではブランディングのみ言及",
+                priority="high",
+                verification="追記後、同じ質問でAI観測を再実行し説明内容を確認する",
+            )
+        ],
+    )
+    _mock_successful_generation(monkeypatch, comparison=comparison_with_actions)
+    saved = {}
+
+    def fake_update(run_id, *, result_json, meta_json):
+        saved["result_json"] = result_json
+        return True
+
+    monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    action_recommendations = body["webAiGapAiComparison"]["actionRecommendations"]
+    assert len(action_recommendations) == 1
+    assert action_recommendations[0]["priority"] == "high"
+    assert action_recommendations[0]["verification"] == "追記後、同じ質問でAI観測を再実行し説明内容を確認する"
+    assert (
+        saved["result_json"]["webAiGapAiComparison"]["actionRecommendations"][0]["title"]
+        == "SEO対策の実績を会社概要に明記する"
+    )
+    assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
+
+
+def test_ai_comparison_action_recommendations_absent_when_not_set(monkeypatch):
+    """actionRecommendationsを指定しない通常の比較結果は、応答・保存先
+    いずれもnullのまま——既存の互換性を壊さない。"""
+    _enable_read_env(monkeypatch)
+    detail = _fake_detail()
+    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
+    _mock_successful_generation(monkeypatch)
+    monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["webAiGapAiComparison"]["actionRecommendations"] is None
 
 
 def test_ai_comparison_history_token_mode_not_found(monkeypatch):

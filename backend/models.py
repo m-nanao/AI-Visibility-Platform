@@ -590,6 +590,30 @@ class WebAiGapResult(BaseModel):
     note: str
 
 
+class AiGapActionRecommendation(BaseModel):
+    """One concrete, evidence-based improvement action derived from an
+    AI-based Web/AI gap comparison — see
+    services/ai_gap_comparison.py's generation/extraction logic and
+    docs/39_ai_gap_comparison_design.md. Unlike the rule-based
+    `ImprovementSuggestion` above (fixed wording, always generated
+    during `/analyze`), these come from the same single Anthropic call
+    as the rest of `WebAiGapAiComparison` — never a second request —
+    and are only ever persisted when every field below is present and
+    non-blank (see services/ai_gap_comparison.py's
+    `_coerce_action_recommendations()`); an incompletely-extracted
+    item (e.g. from output truncated mid-object) is dropped rather
+    than guessed at.
+    """
+
+    title: str
+    issue: str
+    action: str
+    target: str
+    evidence: str
+    priority: Priority
+    verification: str
+
+
 class WebAiGapAiComparison(BaseModel):
     """AI-generated (not rule-based) comparison of the same Web excerpt
     vs. AI observation summaries used by WebAiGapResult above — see
@@ -622,6 +646,14 @@ class WebAiGapAiComparison(BaseModel):
     comparison, `textSummary` stays unset, and any field that couldn't
     be recovered defaults to empty/None exactly like a normal
     comparison's missing field would.
+
+    `actionRecommendations` (feature/ai-gap-action-recommendations,
+    optional, ≤3 items) carries concrete, evidence-based improvement
+    actions derived from this same comparison — distinct from the
+    rule-based `ImprovementSuggestion`s always generated during
+    `/analyze`, and from the plain `recommendations: list[str]` above
+    (short one-line hints with no evidence/priority/verification).
+    See `AiGapActionRecommendation` above.
     """
 
     status: Literal["real"] = "real"
@@ -638,6 +670,19 @@ class WebAiGapAiComparison(BaseModel):
     # services/ai_gap_comparison.py's MAX_TEXT_FALLBACK_LENGTH), shown
     # as-is instead of the structured list fields above.
     textSummary: str | None = None
+    # AI-generated, evidence-based improvement actions derived from
+    # this same comparison call (never a second Anthropic request) —
+    # see services/ai_gap_comparison.py's
+    # _coerce_action_recommendations() (≤3 items,
+    # MAX_ACTION_RECOMMENDATIONS). `None` on older saved history that
+    # predates this field, or when Claude's output has no JSON
+    # structure to extract one from at all (the plain text fallback) —
+    # the frontend must treat both the same as "nothing to show", not
+    # an error. An empty list (as opposed to `None`) means a
+    # recommendations array was present in the model's output but
+    # explicitly empty, or every item in it failed validation —
+    # distinct from the field never having been attempted.
+    actionRecommendations: list[AiGapActionRecommendation] | None = None
     # Always the same fixed, safe-to-display reminder regardless of
     # what the model itself produced — see
     # services/ai_gap_comparison.py's CAUTION_TEXT, which overwrites
