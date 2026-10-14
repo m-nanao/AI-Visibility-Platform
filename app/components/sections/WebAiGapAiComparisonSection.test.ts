@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING,
   AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE,
   AI_COMPARISON_SECTION_TITLE,
   AI_COMPARISON_TEXT_FALLBACK_HEADING,
@@ -28,23 +27,27 @@ describe("WebAiGapAiComparisonSection text-fallback copy", () => {
   });
 });
 
-// json-like-fallback copy (fix/ai-gap-comparison-json-like-fallback-display)
-// — rendered with the same structured layout as a normal successful
-// comparison, so (unlike the text-fallback heading above) this one
-// must NOT claim to be "文章形式" (natural-language/unstructured) —
-// it discloses partial unreadability instead.
+// json-like-fallback copy (fix/ai-gap-comparison-json-like-fallback-
+// display, polish/ai-gap-comparison-user-facing-copy) — rendered with
+// the same section heading and structured layout as a normal
+// successful comparison (there is no separate heading constant for
+// this method any more — see WebAiGapAiComparisonSection.tsx, which
+// reuses AI_COMPARISON_SECTION_TITLE/REPORT_SECTION_TITLES.webAiGapAiComparison
+// for it), so this only has a short supplementary note left to check.
+// Worded to read like an ordinary summary for 依頼者, not a technical
+// disclaimer about incomplete/malformed output.
 describe("WebAiGapAiComparisonSection json-like-fallback copy", () => {
-  it("uses a distinct heading for the json-like-fallback display, separate from both other headings", () => {
-    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING).not.toBe(AI_COMPARISON_SECTION_TITLE);
-    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING).not.toBe(AI_COMPARISON_TEXT_FALLBACK_HEADING);
+  it("does not read as a technical disclaimer about incomplete or malformed AI output", () => {
+    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).not.toContain("不完全");
+    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).not.toContain("整形表示");
   });
 
   it("does not describe the json-like-fallback display as unstructured natural-language text", () => {
-    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING).not.toContain("文章形式");
     expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).not.toContain("文章形式");
   });
 
-  it("discloses that the AI output was partially unreadable", () => {
-    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).toContain("不完全");
+  it("reads as an ordinary summary of what the comparison is based on", () => {
+    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).toContain("Web抜粋");
+    expect(AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE).toContain("AI観測結果");
   });
 });

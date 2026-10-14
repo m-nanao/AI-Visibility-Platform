@@ -1,8 +1,8 @@
 # AIによるWeb/AI差分比較 設計メモ
 
-「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした（「16」）。その後、実際の自然文fallback表示がJSON風のコードブロックのまま表示される（閉じていない/崩れたJSON風テキストがそのまま出る）ことが分かったため、`fix/ai-gap-comparison-json-like-fallback-display`で既知フィールドの部分抽出・整形表示を追加した——詳細は「17」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
+「Web上の説明とAI回答のズレ」ブロック（`webAiGap`、[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「16」〜「19」参照）の意味的な精度を上げるため、取得済みのWeb抜粋とAI観測結果をAIに比較させる方式についてまとめるドキュメントである。`docs/ai-gap-comparison-design`（設計のみ、実装なし）に続き、`feature/manual-ai-gap-comparison`で**第2段階（履歴詳細からの手動生成、DB案C）を実際に実装した**——詳細は「13. 第2段階の実装状況」参照。その後、本番でClaude出力が純粋JSONで返らずparse失敗する不具合が見つかり、`fix/ai-gap-comparison-json-parse`でJSON抽出・validationを堅牢化し（「14」）、さらに失敗原因の診断ログを追加した（`fix/ai-gap-comparison-diagnostics`、「15」）。本番での再確認の結果、ClaudeがJSONを一切含まない自然文のみを返すケース（`no_json_object_found`）が確認されたため、`fix/ai-gap-comparison-text-fallback`で自然文を安全なfallback結果として保存・表示できるようにした（「16」）。その後、実際の自然文fallback表示がJSON風のコードブロックのまま表示される（閉じていない/崩れたJSON風テキストがそのまま出る）ことが分かったため、`fix/ai-gap-comparison-json-like-fallback-display`で既知フィールドの部分抽出・整形表示を追加した（「17」）。本番確認の結果、この整形表示自体は問題なく動作していたが、見出し「AIによる差分比較（整形表示）」・補足文「AIの出力が一部不完全だったため…」が依頼者向けには開発者向けの技術的な表現に見えるという指摘があり、`polish/ai-gap-comparison-user-facing-copy`で表示文言のみを依頼者向けの自然な表現に調整した——詳細は「18」参照。非同期ジョブ化との統合（第4段階）は引き続き未実装。docs全体の読む順番は[00_index.md](./00_index.md)を参照。
 
-**最終更新日: 2026-10-09（JSON風text fallbackの整形表示対応を反映）**
+**最終更新日: 2026-10-15（AI差分比較の表示文言を依頼者向けに調整）**
 
 ## 1. このドキュメントの目的
 
@@ -271,6 +271,17 @@ Claude API呼び出しは成功し、text型のcontentブロックも1件取得�
 - **ログ**: `method="ai_comparison_json_like_fallback"`も`method="ai_comparison_text_fallback"`と同じく`logger.info()`（`logger.warning()`ではない）で`method`・`analysis_run_id`・provider/model名・`raw_length`のみを記録する。Claude生テキスト全文はログに出さない。
 - **変更していないもの**: Claude API呼び出し回数（1回のまま）・新しい環境変数・通常分析（`/analyze`）への組み込み・Web fetch/Common Crawl/DataForSEO/ChatGPT観測/Claude観測/Gemini観測の再実行・DB schema/migration・Supabase/Render/Vercel設定・既存の`webAiGap`・完全JSON成功時の表示——いずれも行っていない。
 - **テスト**: backend（`tests/test_ai_gap_comparison.py`に、truncatedなJSON風テキストから`matchedPoints`/`webStrongAiWeak`/`aiStrongWebWeak`/`gapSummary`が個別に抽出できること・`recommendations`欠落でも成功すること・method値の確認・完全JSONが優先されること・`REASON_JSON_DECODE_FAILED`でも部分抽出が効くこと・有用フィールドが取れない場合はプレーンテキストfallbackまたは解釈失敗になること・プレーンテキストfallback時にコードフェンス/不閉じ括弧が除去されること・raw text全文がログに出ないことを検証、`tests/test_main_analysis_runs_ai_gap_comparison_api.py`にjson-like-fallback結果が保存され`webAiGap`を壊さないことのテスト）・frontend（schemaに`method="ai_comparison_json_like_fallback"`の受理テスト、`WebAiGapAiComparisonSection.test.ts`に整形表示用の見出し・補足文のコピーテスト）。
+
+## 18. AI差分比較の表示文言を依頼者向けに調整（`polish/ai-gap-comparison-user-facing-copy`、2026-10-15）
+
+「17」の整形表示（`method="ai_comparison_json_like_fallback"`）は本番で正しく動作していた（構造化表示・`recommendations`空時の非表示・簡易判定`webAiGap`の保持・レポート画面への反映、いずれも確認済み）が、見出し「AIによる差分比較（整形表示）」・補足文「AIの出力が一部不完全だったため、読み取れる範囲を整形して表示しています。」という文言が、依頼者に見せる画面としては開発者向け・技術的に見える（「不完全」「整形」という語が不安を与えかねない）という指摘を受けた。実際の比較結果の内容・生成ロジックには問題がないため、**表示文言のみ**を依頼者向けの自然な表現に調整した。
+
+- **見出しの統一**: `method="ai_comparison_json_like_fallback"`専用の見出し（旧: 「AIによる差分比較（整形表示）」）を廃止し、履歴詳細では`Card`の既存タイトル`AI_COMPARISON_SECTION_TITLE`（「AIによる差分比較」）のみを表示するようにした（内部的に専用の見出しdivを描画しなくなった）。レポート画面も同様に、通常の構造化成功時と同じ見出し`REPORT_SECTION_TITLES.webAiGapAiComparison`を使うようにした——履歴詳細・レポート画面のいずれも、`method`が`"ai_comparison"`か`"ai_comparison_json_like_fallback"`かで見出しの見え方が変わらなくなった。
+- **補足文の変更**: `AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE`を「AIの出力が一部不完全だったため、読み取れる範囲を整形して表示しています。」から「保存済みのWeb抜粋とAI観測結果をもとに、AIが比較した内容を整理して表示しています。」に変更した——「不完全」「整形」のような内部実装を想起させる語を避け、既存の`AI_COMPARISON_SECTION_DESCRIPTION`（「保存済みのWeb抜粋とAI観測結果をもとに、意味的な差分をAIが比較した補助的な見立てです。」）と語調を揃えた、ごく普通の説明文にした。
+- **text fallbackの文言は維持**: `method="ai_comparison_text_fallback"`の見出し「AIによる差分比較（文章形式）」・補足文は変更していない——こちらは「構造化表示とは異なる文章形式の結果である」という区別自体に意味があり、依頼者にとっても「この表示だけ形式が違う」ことが分かる方が自然と判断し、タスクの推奨どおり維持した。
+- **注意書きは維持**: `comparison.caution`（固定文言「AIによる比較であり、AIの内部認識を直接示すものではありません。」）はいずれのmethodでも変更せず、全ての表示パターンで最後に表示される。
+- **変更していないもの**: AI差分比較の生成ロジック（`backend/services/ai_gap_comparison.py`）・Claude API呼び出し回数（1回のまま）・`method`値そのもの・`webAiGap`/`webAiGapAiComparison`の保存形式・DB schema/migration・通常分析（`/analyze`）への組み込み——いずれも変更していない。backendは今回のタスクでは一切変更していない。
+- **テスト**: frontend（`WebAiGapAiComparisonSection.test.ts`を更新——新しい補足文が「不完全」「整形表示」「文章形式」を含まないこと、既存の見出し定数の重複チェックを廃止）。backendの既存テストは変更なしで全て通過することを確認。
 
 ## 関連ドキュメント
 

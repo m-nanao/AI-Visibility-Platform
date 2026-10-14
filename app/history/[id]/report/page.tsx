@@ -16,7 +16,6 @@ import {
 import {
   AI_COMPARISON_AI_STRONG_LABEL,
   AI_COMPARISON_GAP_SUMMARY_LABEL,
-  AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING,
   AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE,
   AI_COMPARISON_MATCHED_POINTS_LABEL,
   AI_COMPARISON_RECOMMENDATIONS_LABEL,
@@ -434,7 +433,7 @@ function ReportContent({
         result.webAiGapAiComparison.method === "ai_comparison_json_like_fallback" && (
           <section className="break-inside-avoid">
             <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 print:text-black">
-              {AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING}
+              {REPORT_SECTION_TITLES.webAiGapAiComparison}
             </h2>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 print:text-black">
               {AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE}
