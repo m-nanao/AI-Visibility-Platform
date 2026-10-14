@@ -24,17 +24,18 @@ export const AI_COMPARISON_TEXT_FALLBACK_HEADING = "AIによる差分比較（�
 export const AI_COMPARISON_TEXT_FALLBACK_NOTE =
   "AIが構造化形式ではなく文章形式で返した比較結果です。保存済みのWeb抜粋とAI観測結果をもとにした補助的な見立てです。";
 
-// Shown instead of the two constants above when
-// comparison.method === "ai_comparison_json_like_fallback" (fix/
-// ai-gap-comparison-json-like-fallback-display) — Claude attempted a
-// structured JSON comparison but it didn't fully decode (e.g.
-// truncated mid-array); the known fields that could be recovered are
-// shown with the same structured layout as a normal successful
-// comparison (see the "ai_comparison" branch below), just with this
-// short disclaimer in place of the text-fallback heading/note.
-export const AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING = "AIによる差分比較（整形表示）";
+// Shown for comparison.method === "ai_comparison_json_like_fallback"
+// (fix/ai-gap-comparison-json-like-fallback-display) — Claude
+// attempted a structured JSON comparison but it didn't fully decode
+// (e.g. truncated mid-array); the known fields that could be
+// recovered are shown with the same structured layout and the same
+// section heading as a normal successful comparison (see the
+// "ai_comparison" branch below) — deliberately worded to read like an
+// ordinary summary rather than a technical disclaimer, since this is
+// shown to 依頼者 (polish/ai-gap-comparison-user-facing-copy) — see
+// AI_COMPARISON_SECTION_DESCRIPTION above for the same tone.
 export const AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE =
-  "AIの出力が一部不完全だったため、読み取れる範囲を整形して表示しています。";
+  "保存済みのWeb抜粋とAI観測結果をもとに、AIが比較した内容を整理して表示しています。";
 
 // Passed only by the history detail page (app/history/[id]/page.tsx) —
 // mirrors AIOverviewComparisonSection.tsx's GeminiRerunControlsState
@@ -134,14 +135,9 @@ export default function WebAiGapAiComparisonSection({
 
         {comparison && comparison.method === "ai_comparison_json_like_fallback" && (
           <>
-            <div>
-              <h4 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
-                {AI_COMPARISON_JSON_LIKE_FALLBACK_HEADING}
-              </h4>
-              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                {AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE}
-              </p>
-            </div>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              {AI_COMPARISON_JSON_LIKE_FALLBACK_NOTE}
+            </p>
             <ComparisonList
               label={AI_COMPARISON_MATCHED_POINTS_LABEL}
               items={comparison.matchedPoints}
