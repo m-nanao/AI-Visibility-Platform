@@ -184,7 +184,7 @@
 - **Next（次のステップ、優先順）**:
   - 本番/devで「AI差分を再生成」を実際に押し、AI改善提案が表示されるようになったかを確認し、Renderログの診断情報（`stop_reason`/`key_found`/採用件数）も合わせて確認する——依然`stop_reason=max_tokens`が多く見られる場合は`CLAUDE_MAX_OUTPUT_TOKENS`を1500（許容上限）まで引き上げることを検討（`fix/ai-gap-action-recommendations-missing`はClaude Codeがproduction/devアクセスを持たないため本番確認が未実施）
   - [37_mvp_review_demo_script.md](./37_mvp_review_demo_script.md)を使った依頼者への実際のMVPレビュー実施
-  - 完全な非同期分析ジョブ化の検討（`analysisRunId`の事前発行・分析中ステータス保存・ポーリングを含む。全ON時のタイムアウト・fallback問題の根本対応——`improve/history-centered-analysis-flow`で導線・文言のみ整理済み、[17_usage_guide.md](./17_usage_guide.md)「27」参照）
+  - 完全な非同期分析ジョブ化の検討（`analysisRunId`の事前発行・分析中ステータス保存・ポーリングを含む。全ON時のタイムアウト・fallback問題の根本対応——`improve/history-centered-analysis-flow`で導線・文言のみ整理済み、[17_usage_guide.md](./17_usage_guide.md)「27」参照）。**`design/async-analysis-jobs`（2026-10-15）で現状調査・設計（実装なし）を実施済み——[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)参照。既存`analysis_runs.status`のCHECK制約が`queued`/`running`を予約済みであることを踏まえ、新規jobテーブル追加ではなく既存テーブルの転用＋PostgreSQLベースのポーリングworker（Redis等の新規有料サービス非依存）を推奨方式として整理し、Phase 1〜4の段階的実装計画・二重課金対策・Render障害復旧設計・未解決事項（認証要否、Vercel実行時間上限未確認等）をまとめた。レビュー待ちで実装はまだ行っていない。**
   - 履歴詳細から同じ条件で再分析するボタンの追加検討（今回のナビゲーション改善では対象外）
   - RLS policy本番適用判断
   - 複数organization / project運用整理
