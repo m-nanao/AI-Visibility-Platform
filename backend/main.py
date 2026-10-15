@@ -128,6 +128,8 @@ from models import (
     DocumentsSource,
     GeminiProviderInfo,
     GeminiRerunResponse,
+    MeProjectItem,
+    MeProjectsResponse,
     SectionStatus,
     UrlFetchResult,
     WebAiGapAiComparisonResponse,
@@ -1573,6 +1575,71 @@ def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
         analysisRunId=analysis_run_id,
         webAiGapAiComparison=outcome.comparison,
     )
+
+
+# --- GET /me/projects — see docs/40_async_analysis_jobs_design.md
+# "Phase 3". A minimal, read-only, JWT-only endpoint (no
+# HISTORY_READ_TOKEN fallback, mirroring the job endpoints below) so
+# the frontend can learn which project(s) the current user may pass
+# as POST /analysis-jobs' required `projectId` — nothing else in this
+# API ever told a caller that. Deliberately NOT gated by
+# ANALYSIS_JOBS_ENABLED: this is a general "list my accessible
+# projects" lookup, not part of the job feature itself, and reveals
+# nothing beyond project ids the caller already has access to.
+
+ME_PROJECTS_AUTH_REQUIRED_MESSAGE = "authentication required"
+ME_PROJECTS_INVALID_TOKEN_MESSAGE = "invalid or expired authentication token"
+ME_PROJECTS_JWT_NOT_CONFIGURED_MESSAGE = "JWT verification is not configured"
+ME_PROJECTS_FAILED_MESSAGE = "failed to list accessible projects"
+
+
+def _resolve_jwt_only_auth(request: Request) -> AuthenticatedUser | JSONResponse:
+    """Verifies a Supabase Auth JWT with no HISTORY_READ_TOKEN
+    fallback of any kind — shared by GET /me/projects. Structurally
+    identical to _resolve_job_auth() below minus the
+    ANALYSIS_JOBS_ENABLED gate (this endpoint isn't part of that
+    feature)."""
+    auth_settings = load_auth_settings()
+    if not is_jwt_verification_configured(auth_settings):
+        return error_response(ME_PROJECTS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
+    try:
+        token = extract_bearer_token(authorization_header)
+        authenticated_user = verify_supabase_jwt(token, auth_settings)
+    except JWTAuthError as exc:
+        if exc.reason in _JWT_UNAVAILABLE_REASONS:
+            return error_response(ME_PROJECTS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+        if exc.reason in {"missing_header", "invalid_header"}:
+            return error_response(ME_PROJECTS_AUTH_REQUIRED_MESSAGE, status_code=401)
+        return error_response(ME_PROJECTS_INVALID_TOKEN_MESSAGE, status_code=401)
+
+    return authenticated_user
+
+
+@app.get("/me/projects", response_model=MeProjectsResponse)
+def get_my_projects(request: Request):
+    """Returns the ids of every project the caller (identified by
+    their verified JWT) belongs to — reuses
+    services.project_access.get_accessible_project_ids() verbatim, the
+    exact same helper the JWT-mode history read APIs already use to
+    scope what a caller may see. Never returns another user's
+    projects. An empty list is a valid, successful response (the user
+    belongs to no project yet) — callers must handle 0 results rather
+    than treating it as an error."""
+    auth_result = _resolve_jwt_only_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+    authenticated_user = auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            project_ids = get_accessible_project_ids(conn, authenticated_user.user_id)
+    except Exception:
+        logger.exception("Failed to list accessible projects for /me/projects")
+        return error_response(ME_PROJECTS_FAILED_MESSAGE, status_code=503)
+
+    return MeProjectsResponse(projects=[MeProjectItem(id=project_id) for project_id in project_ids])
 
 
 # --- Async analysis jobs, Phase 1 only (POST /analysis-jobs, GET

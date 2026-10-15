@@ -1126,3 +1126,23 @@ class AnalysisJobResultResponse(BaseModel):
     errorMessage: str | None = None
     result: dict | None = None
     meta: dict | None = None
+
+
+# --- GET /me/projects — see docs/40_async_analysis_jobs_design.md
+# "Phase 3". A minimal, read-only lookup so the frontend can learn
+# which project(s) the current JWT-authenticated user may create a
+# job under (POST /analysis-jobs requires an explicit `projectId` —
+# see AnalysisJobCreateRequest above — and nothing else in this API
+# previously told a caller which project id(s) they're even allowed to
+# use). Returns only the ids of projects
+# services.project_access.get_accessible_project_ids() already says
+# this user belongs to — never any other user's or any other
+# project's data.
+
+
+class MeProjectItem(BaseModel):
+    id: str
+
+
+class MeProjectsResponse(BaseModel):
+    projects: list[MeProjectItem]

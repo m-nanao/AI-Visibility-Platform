@@ -557,6 +557,7 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 - 2026-10-16: レビュー指摘を反映し、project単位advisory lockのみではuser単位queued件数上限が同一user・異なるproject間の同時POSTで競合しうる不具合を修正（project/user双方のadvisory lockを固定順序で取得、20.2章参照）。開発用ローカルPostgreSQLでintegration testを実行し、修正前は実際に上限超過が発生すること・修正後は発生しないことを確認（20.5章参照）。
 - 2026-10-16: `feature/async-analysis-jobs-phase2`でPhase 2（worker・実行管理）を実装（21章参照）。既存`/analyze`ロジックを`run_analysis_pipeline()`として抽出・再利用し、migration 006案（lease系4カラム）・claim/complete/fail_expired repository関数・FastAPI lifespan起動のworker・`ANALYSIS_JOBS_WORKER_ENABLED`flagを追加。実PostgreSQLでの並行claim・原子的complete・stale worker拒否・lease失効時のfailed遷移を確認。本番未適用・workerは本番で未有効化・レビュー待ち。
 - 2026-10-16: レビュー指摘を反映し、(1)`complete_analysis_job()`にlease期限チェック（`lease_expires_at > now()`）を追加——sweeper実行前のlease期限切れギャップでの誤った完了保存を防止、(2)heartbeat機構（`extend_analysis_job_lease()`＋`process_one_job()`内の並行heartbeatループ）を追加——長時間分析がleaseより先に失効しないようにした、(3)`asyncio.to_thread()`のキャンセルが裏のスレッドを止めない制約を明示し、`stop_worker()`の3状態（正常終了/強制キャンセル/プロセス消滅）を整理した（22章参照）。実PostgreSQLで修正前の再現（lease期限切れ・sweeper未実行での保存成立）と修正後の拒否、heartbeatによる生存確認、heartbeatとsweeperの競合を確認。migration追加なし・本番未適用・レビュー待ち。
+- 2026-10-16: `feature/async-analysis-jobs-phase3`でPhase 3（frontend: 非同期分析UI・ポーリング・状態復元）を実装（23章参照）。調査中に判明した「frontendがprojectIdを知る手段がない」というブロッカーをユーザーに確認し、最小限の読み取り専用API`GET /me/projects`を新設（既存project_access関数を再利用、DB schema変更なし）。`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`flag・idempotency key管理（sessionStorage）・`/analysis/jobs/[id]`画面・visibility-aware pollingを実装。本番Vercel設定変更・flag有効化はいずれも行っていない・レビュー待ち。
 
 ---
 
@@ -737,4 +738,86 @@ Renderのシャットダウン猶予時間に依存した処理（「猶予時�
 
 ---
 
-以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`の有効化・Phase 3(frontend)/Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 23. Phase 3 実装状況（2026-10-16、`feature/async-analysis-jobs-phase3`）
+
+本章はPhase 3（frontend: 非同期分析UI・ポーリング・状態復元）の実装結果を記録する。**本番Vercel環境変数は変更していない。`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`は未設定（デフォルトfalse）のまま——このflagがfalseの間、既存の同期`POST /analyze`フロー（`app/page.tsx`の既存コードパス）は一切変更の影響を受けない。**
+
+### 23.1 実装前の調査で発見した追加のブロッカーとその解決
+
+調査の結果、Phase 1設計時点では想定されていなかった欠落が1つ見つかった——`POST /analysis-jobs`が必須とする`projectId`を、frontend側がどうやって知るかの手段が一切存在しなかった（project一覧を返すbackend APIが存在しなかった）。ユーザーに確認し、**最小限の読み取り専用backend API `GET /me/projects`を新設する**方針で承認を得たうえで実装した。
+
+- `backend/main.py`に`GET /me/projects`を追加（`backend/models.py`に`MeProjectItem`/`MeProjectsResponse`を追加）。既存のSupabase Auth JWTを必須とし（`HISTORY_READ_TOKEN`フォールバックなし）、既存の`services.project_access.get_accessible_project_ids()`をそのまま再利用してログインユーザーが所属するprojectのidのみを返す。DB schema・migration・RLSの変更はなし。`ANALYSIS_JOBS_ENABLED`とは独立したエンドポイント（project一覧取得自体はjob機能の一部ではないため）。
+- `DEFAULT_PROJECT_ID`等の新規環境変数は追加していない。
+- 認証・権限テスト10件を追加（`backend/tests/test_main_me_projects_api.py`）: 未認証401、無効/期限切れJWT401、JWT未設定503、HISTORY_READ_TOKENでの迂回不可、正常時のproject一覧返却、0件時の正常応答、認証済みユーザー自身のidのみが使われること（他ユーザーのproject漏洩防止）、lookup失敗時503。
+
+### 23.2 分析開始・ジョブ受付フロー
+
+- `app/page.tsx`: `NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS=true`のときのみ、送信ハンドラが`handleAsyncAnalyze()`に分岐する。false時は既存の`handleAnalyze()`本体（同期`POST /api/analyze`呼び出し）に一切変更なくそのまま到達する。
+- マウント時に`GET /api/me/projects`を呼び、0件なら分析開始不可を案内、1件なら自動選択、2件以上なら`<select>`で選択させる（`AsyncProjectNotice`コンポーネント）。
+- 送信時: `prepareAnalysisJobCreateRequestBody()`で入力内容からリクエストボディを構築し、idempotencyKeyを解決して`POST /api/analysis-jobs`を呼ぶ。202 Acceptedで`analysisRunId`を受け取ったら`/analysis/jobs/{id}`へ遷移する。
+
+### 23.3 Next.js API proxy（新規3本＋`/me/projects`）
+
+`app/api/analysis-jobs/route.ts`（POST）・`app/api/analysis-jobs/[id]/route.ts`（GET）・`app/api/analysis-jobs/[id]/result/route.ts`（GET）・`app/api/me/projects/route.ts`（GET）を、既存の`app/api/analysis-runs/*`プロキシと同じ規約で追加した。
+
+- 既存の`getServerSupabaseAccessToken()`（`app/lib/supabase/server.ts`）をそのまま再利用し、Cookie由来のSupabase access tokenを`Authorization: Bearer`としてbackendへ転送する。
+- **`X-History-Read-Token`は一切送信しない**——Phase 1設計どおり、これらのエンドポイントはJWT必須でHISTORY_READ_TOKENによる迂回経路を持たないため、送る意味がない（既存の`/api/analysis-runs*`との明確な違い）。
+- APIキー・Secretsはいずれもブラウザへ公開していない（`PYTHON_ANALYSIS_API_URL`はサーバー側env、`NEXT_PUBLIC_*`はflagのみ）。
+- backendから返る400/401/403/404/409/429/503はそのまま転送し、通信失敗・invalid JSON・schema不一致は502/503として扱う。**いずれの経路でも架空の分析結果を生成しない**（`POST /api/analyze`のdummy fallbackとは異なり、`POST /api/analysis-jobs`にはそもそもfallback機構がない）。
+- 他project/他ユーザーの情報漏洩防止はbackend側（project membership確認・existence-leak回避）にすでに実装済みのものをそのまま利用し、proxy層では何も追加の権限判定を行わない（意図的——権限判定をfrontendに重複させない）。
+
+### 23.4 idempotency keyの保持・再送方式
+
+`app/lib/analysis-jobs.ts`の`resolveIdempotencyKeyForJobSubmission()`が担う。
+
+- `sessionStorage`に「直前の送信操作のidempotencyKeyと、その時の入力内容のハッシュ」を保存する。
+- 同じ入力で再送（通信切断後の再送、リロード後の再送を含む）→保存済みキーを再利用。
+- 入力内容またはprojectIdが変わった場合→新しいキーを生成（「ユーザーが明示的に新しい分析を開始する」場合に相当）。
+- `POST /api/analysis-jobs`の結果が確定的な結論（受理/400/403/409/429/404）に達した場合のみ、保存済みレコードを明示的にクリアする（`clearPendingJobSubmission()`、`isDefinitiveCreateAnalysisJobOutcome()`で判定）。ネットワーク障害・予期しないエラー（`kind: "error"`）の場合はクリアしない——次の再送が同じキーを使えるようにするため。
+- `sessionStorage`が使えない環境（プライベートブラウジング等）でも例外を投げず、単に毎回新しいキーを生成する安全側の挙動にフォールバックする。
+
+### 23.5 分析中画面・Polling・状態復元
+
+`app/analysis/jobs/[id]/page.tsx`。
+
+- `queued`/`running`/`completed`/`partial`/`failed`それぞれに対応する表示を実装。架空の進捗％や完了予定時刻は一切表示しない——backendがそれらの情報を返さないため。
+- Pollingは`setTimeout`チェーン1本のみ（`setInterval`は使わない）で、`app/lib/analysis-job-polling.ts`の純粋関数（`shouldContinuePollingForJobStatus`/`shouldStopPollingForStatusCode`/`computeNextPollDelayMs`）が実際の継続・停止・待機時間を決定する。
+- 初期間隔5秒、通信失敗時は指数バックオフ（最大60秒）。
+- `document.visibilityState`を見て、タブが非表示の間は一切fetchしない。`visibilitychange`で可視化された瞬間に即座に再取得する。
+- 401/403/404で即座にポーリングを停止し、適切な案内を表示する。
+- 多重pollingは発生しない（`setTimeout`チェーンは常に高々1本、effectのクリーンアップで確実に停止する）。
+- このページ自体はURLの`analysisRunId`だけを頼りに毎回サーバーから状態を取得し直す設計で、ブラウザ側の状態を唯一の情報源にはしていない——リロード・再読み込み後の復元は「状態を保持する」のではなく「常にサーバーから取り直す」ことで実現している。
+
+### 23.6 認証とprojectアクセス制御
+
+frontend側では独自の権限判定を一切行わず、既存のJWT転送＋backend側の既存権限判定（`can_user_access_project()`/`can_user_access_analysis_run()`）にすべて委ねている。認証セッション切れ（401）時は「再度ログインしてください」という案内を表示し、ポーリングを停止する。403（他project/存在しないジョブ）は「権限がありません」の案内を表示する——既存のhistory detail APIと同じ、存在の有無を漏らさない設計を継承している。
+
+### 23.7 完了結果・履歴への連携
+
+- `completed`/`partial`のときのみ`GET /api/analysis-jobs/{id}/result`を1回だけ呼び、既存の`AnalysisResult` Zodスキーマ（`app/lib/analysis-result-schema.ts`）で検証してから表示する。
+- 検証に失敗した場合（空のplaceholder `result_json={}`を含む）は「incompatible」として扱い、**成功表示にはしない**。
+- 既存の`AnalysisDashboard`コンポーネントをそのまま再利用して結果を表示する。
+- `analysisRunId`があれば、既存の履歴詳細（`/history/[id]`）への導線を表示する——そこからAI差分比較・AI改善提案・レポート表示など既存の全機能にアクセスできる（このページ自体はそれらの機能を複製しない）。
+- 失敗時（`failed`）は、resultを取得しようとせず、ジョブのstatusレスポンスに含まれる`errorMessage`をそのまま安全な説明として表示する。
+
+### 23.8 既存履歴APIへの変更
+
+**行っていない。** `GET /analysis-runs`一覧からqueued/running/failedジョブへ戻る導線（task「8」が「検討する」とした部分）は、既存履歴APIのレスポンス形・DB schemaの変更を伴わずには実装できない範囲が大きいと判断し、Phase 3の本実装では見送った——未解決事項として23.10章に記録する。
+
+### 23.9 テスト結果
+
+- frontend: `app/lib/analysis-jobs.test.ts`（idempotency管理・各種view-state resolver・feature flag）、`app/lib/analysis-job-polling.test.ts`（polling決定ロジック）、4本のproxy route test（`app/api/me/projects/route.test.ts`等）を新規追加。**React componentのレンダリングテストはこのプロジェクトに既存の仕組みがなく（jsdom/@testing-library/react等の依存がなく、既存の`app/history/[id]/page.tsx`等も同様に未テスト）、本タスクでも同じ方針を維持した**——表示ロジック・判定ロジックはすべて`app/lib/*.ts`の純粋関数に抽出してテストし、`.tsx`コンポーネントは薄い配線としてビルド（`npm run build`の型チェック）とコードレビューのみで確認している。
+- frontend全体: `npm run lint`（エラーなし）、`npm run test`（801 passed、既存693件+新規108件）、`npm run build`（成功、`/analysis/jobs/[id]`・新規APIルートすべて正しく認識）。
+- backend: `pytest` 1355 passed, 18 skipped（既存1345件+新規10件、スキップは実PostgreSQL integration testで想定通り）。既存`/analyze`・履歴・AI差分比較関連テストはすべて無変更のまま成功——既存機能への影響なしを確認。
+- 外部有料APIは一切呼び出していない。
+
+### 23.10 既知の制約・未解決事項
+
+- 履歴一覧（`/history`）からqueued/running/failedジョブへ戻る導線は未実装（23.8章）。
+- project選択UIは`project_id`の生の文字列（UUID）をそのまま選択肢として表示している——project名を表示する手段が現状ないため。複数project運用が本格化する場合、project名を返すAPIの追加が必要になる可能性がある。
+- `GET /me/projects`はPhase 1同様、project作成・project内ロール分けの仕組みを持たない前提のまま（既存のアクセス制御モデルを踏襲）。
+- 本タスクで追加した新規backend APIを含め、`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の3つのflagはいずれも本番で未設定のまま——Phase 3完了後も一般ユーザーへの影響はない。
+
+---
+
+以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
