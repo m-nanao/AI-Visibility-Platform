@@ -996,10 +996,19 @@ def create_queued_analysis_run(
 
     Idempotency (docs/40 "10"): looks up any existing row with the
     same (project_id, created_by_user_id, idempotency_key) *before*
-    inserting anything, inside one transaction guarded by a
-    transaction-scoped Postgres advisory lock keyed on `project_id`
-    (`pg_advisory_xact_lock`) — this serializes concurrent create
-    attempts for the same project, so two simultaneous requests can
+    inserting anything, inside one transaction guarded by two
+    transaction-scoped Postgres advisory locks — one keyed on
+    `project_id`, one keyed on `created_by_user_id`, each in its own
+    hash namespace via `hashtextextended(id, seed)` (seed 0 for the
+    project lock, 1 for the user lock) so a project id and a user id
+    can never collide into the same lock key. Both are always acquired
+    in the same fixed order (project, then user) by every call to this
+    function, which is what rules out a deadlock between two
+    transactions each waiting on a lock the other already holds — see
+    the inline comment at the lock-acquisition site for the full
+    reasoning. This serializes concurrent create attempts for the same
+    project *and* concurrent create attempts by the same user (even
+    across *different* projects), so two simultaneous requests can
     never both pass the lookup-then-insert check for the same key (a
     plain SELECT-then-INSERT in application code alone would race
     under concurrency — see docs/40 "10.1"/"11.1"). If a matching row
@@ -1016,15 +1025,14 @@ def create_queued_analysis_run(
     counts this *project's* and this *user's* currently-'queued' jobs
     and raises AnalysisJobLimitExceededError if either would meet or
     exceed its limit (main.py -> 429). Both counts are taken inside the
-    same locked transaction, so a burst of concurrent distinct-key
-    requests for the same project can't all slip past the
-    project-scoped check at once. The user-scoped check is not fully
-    race-proof against concurrent requests from the *same* user across
-    *different* projects (those take different advisory locks) — a
-    known MVP gap, see docs/40 "18".
+    same doubly-locked transaction, so neither check can be slipped
+    past by a burst of concurrent requests — not a burst for the same
+    project (the project lock), and not a burst from the same user
+    spread across different projects (the user lock, which the
+    project-only lock from before this fix could not protect against).
 
     A psycopg UniqueViolation on the final INSERT (defense in depth —
-    the advisory lock above is the primary safeguard; this is the
+    the advisory locks above are the primary safeguard; this is the
     last-resort DB-level guarantee, see docs/40 "10") is resolved by
     _resolve_job_after_unique_violation() exactly like the pre-insert
     existing-row branch above.
@@ -1050,11 +1058,41 @@ def create_queued_analysis_run(
         with psycopg.connect(database_url, connect_timeout=5) as conn:
             with conn.cursor() as cur:
                 # Serializes concurrent create attempts for this
-                # project (see docstring above) — released automatically
-                # on commit/rollback since this is the `_xact_` variant.
+                # project *and* this user (see docstring above) —
+                # released automatically on commit/rollback since this
+                # is the `_xact_` variant. Two separate locks, not one
+                # combined key, because the two queued-count checks
+                # below have different scopes (project-wide vs.
+                # user-wide) and a lock only serializes callers who
+                # pass the exact same key — a single project-keyed
+                # lock cannot also protect the user-wide count against
+                # two different projects being hit concurrently by the
+                # same user.
+                #
+                # `hashtextextended(id, seed)` is used for both so a
+                # project id and a user id that happen to produce the
+                # same raw hash can never collide into the same lock
+                # key — `seed` (the second argument) gives each
+                # namespace ("0" for project, "1" for user) its own
+                # otherwise-identical hash space, exactly the way this
+                # module already keys on a single namespace for the
+                # project-only lock before this change.
+                #
+                # Always acquired in this fixed order (project, then
+                # user) by every caller, with no code path anywhere in
+                # this module acquiring them in the reverse order —
+                # that fixed global ordering is what rules out a
+                # deadlock between two transactions each waiting on a
+                # lock the other already holds (the classic circular-
+                # wait precondition for deadlock can't arise when
+                # every transaction takes locks in the same order).
                 cur.execute(
                     "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
                     (project_id,),
+                )
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 1))",
+                    (created_by_user_id,),
                 )
 
                 existing = _fetch_existing_job_by_idempotency_key(

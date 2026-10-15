@@ -554,6 +554,7 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 - 2026-10-15: 初版作成（調査・設計のみ）。
 - 2026-10-16: レビュー指摘を反映した改訂。Phase 1の範囲見直し、必要データの確定、idempotency設計の確定（failedへの同一キー再送の扱いを修正）、worker排他制御・原子性の確定、worker実装方法の新設、認証必須化、状態・履歴表示の確定、Phase 1〜4の再整理。
 - 2026-10-16: `feature/async-analysis-jobs-phase1`でPhase 1を実装（20章参照）。本番未適用・レビュー待ち。
+- 2026-10-16: レビュー指摘を反映し、project単位advisory lockのみではuser単位queued件数上限が同一user・異なるproject間の同時POSTで競合しうる不具合を修正（project/user双方のadvisory lockを固定順序で取得、20.2章参照）。開発用ローカルPostgreSQLでintegration testを実行し、修正前は実際に上限超過が発生すること・修正後は発生しないことを確認（20.5章参照）。
 
 ---
 
@@ -568,26 +569,34 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 - `backend/services/analysis_jobs_settings.py`（新規）: `ANALYSIS_JOBS_ENABLED`（デフォルトfalse）、`ANALYSIS_JOBS_MAX_QUEUED_PER_PROJECT`/`ANALYSIS_JOBS_MAX_QUEUED_PER_USER`（8.3章のMVP上限、デフォルト5/3）。
 - `backend/main.py`に`POST /analysis-jobs`・`GET /analysis-jobs/{id}`・`GET /analysis-jobs/{id}/result`を追加（`_resolve_job_auth()`、JWT必須）。
 - `backend/models.py`に`AnalysisJobCreateRequest`/`AnalysisJobAcceptedResponse`/`AnalysisJobStatusResponse`/`AnalysisJobResultResponse`を追加。
-- テスト: `tests/test_analysis_jobs_repository.py`（モックDB、query logicの検証）、`tests/test_main_analysis_jobs_api.py`（API層の認証・認可・バリデーション・状態コード）、`tests/test_analysis_jobs_settings.py`、`tests/test_analysis_jobs_repository_integration.py`（**実PostgreSQL必須、本タスクを実装した環境にはpsql/docker/psycopgドライバのいずれも存在せず未実行**——advisory lock + unique indexによる同時実行安全性の最終的な証明はこのファイルの実行に委ねられる。モックテストのみでは並行性の安全性は証明できない）。
+- テスト: `tests/test_analysis_jobs_repository.py`（モックDB、query logicの検証）、`tests/test_main_analysis_jobs_api.py`（API層の認証・認可・バリデーション・状態コード）、`tests/test_analysis_jobs_settings.py`、`tests/test_analysis_jobs_repository_integration.py`（実PostgreSQL必須——20.5章参照、本改訂で実行済み）。
 
 ### 20.2 設計書（6章・7章）からの実装時の変更点
 
 - **7.2章で許容していた`GET /analysis-jobs/{id}`への`HISTORY_READ_TOKEN`アクセスは実装しなかった。** 3本のエンドポイントすべてJWT必須・フォールバックなしに統一した——内部トークンの読み取り範囲を新たに設計判断するより、Phase 1の時点では単純で安全な「JWTのみ」に絞る方が、認可バグのリスクを減らせると判断した。将来、内部/運用ツールからの状態確認が必要になった場合は、別タスクでスコープを定義して追加する。
 - 6.2章では「Phase 1は`created_by_user_id`/`idempotency_key`の2カラムのみ」としていた方針どおり実装した（lease系4カラムはPhase 2へ持ち越し、本migrationには含めていない）。
 - 8.3章の同時実行数上限は、具体的な数値（project 5件・user 3件、いずれもデフォルト）を実装時に仮決定した。**これは製品判断ではなく、Phase 1のjobが`queued`のまま溜まり続けることを防ぐための実装上の仮値**であり、環境変数で上書き可能（18章の未解決事項として変更なし、本番投入前に改めて確認が必要）。
+- **初回実装のadvisory lockはproject_idのみをキーにしていたため、同一userが異なるprojectへ同時に投入した場合、user単位のqueued件数上限が競合して超過できるバグがあった。** レビューで指摘を受け、project用（namespace 0）・user用（namespace 1）の2つの`pg_advisory_xact_lock`を常に同じ順序（project→user）で取得する方式に修正した（11.1章参照）。固定順序での取得によりデッドロックは発生しない。実Postgresでの修正確認は20.5章参照。
 
 ### 20.3 Phase 2への引き継ぎ事項
 
 - lease系4カラム（`locked_by`/`locked_at`/`lease_expires_at`/`attempt_count`）のmigration追加。
 - 実際のworker実装（既存`/analyze`ロジックの関数分離含む、12章参照）。
-- `tests/test_analysis_jobs_repository_integration.py`を実PostgreSQL環境で実行し、advisory lock + unique indexの並行性安全性を実証すること（Phase 2着手前に必須）。
 - 8.3章の上限値の製品判断確定。
 
 ### 20.4 本番反映前に必要な手作業（Phase 1範囲）
 
 1. `backend/migrations/005_async_analysis_jobs_phase1.sql`を検証DB → 本番Supabaseへ適用（本タスクでは実施していない、既存の002/004適用runbookと同様の手順を踏む）。
-2. `tests/test_analysis_jobs_repository_integration.py`を実PostgreSQL環境で実行し、結果を記録する。
-3. Render本番環境変数は変更しない（`ANALYSIS_JOBS_ENABLED`は追加後もfalseのまま——Phase 3でfrontendが揃うまで有効化しない）。
+2. Render本番環境変数は変更しない（`ANALYSIS_JOBS_ENABLED`は追加後もfalseのまま——Phase 3でfrontendが揃うまで有効化しない）。
+
+### 20.5 PostgreSQL integration testの実行結果（2026-10-16）
+
+当初の実装では実PostgreSQL/docker/psycopgドライバのいずれも環境になく`tests/test_analysis_jobs_repository_integration.py`は未実行だったが、本改訂でHomebrewにより**開発用ローカル・一時PostgreSQL**（`brew install postgresql@16`、`localhost:5544`の`analysis_jobs_test`データベース）を用意し、実行した。**本番Supabaseへの接続・変更は一切行っていない**。テスト用DBはテスト完了後に`dropdb`・サーバー停止済み。
+
+- 既存3件＋新規4件、計7件すべて成功（同一idempotencyKeyの同時POST8並列→job1件のみ、異なるkeyの同時POST5並列→5件、同一key異なる入力での409競合、**同一user・異なるproject10並列でのuser上限競合（新規）**、**同一project・異なるuser10並列でのproject上限競合（新規）**、**上限超過時のtransaction rollback確認（新規）**、**migration 005の実ファイルを既存履歴行を含むスキーマへ適用して後方互換性を確認（新規）**）。
+- 20.2章のuser単位ロック修正の検証として、修正前のコード（project_idのみのロック）に対して「同一user・異なるproject10並列」テストを実行したところ**10件中10件が成功してしまい（意図した上限3件を超過）**、修正後は意図通り3件のみ成功・7件が`AnalysisJobLimitExceededError(scope="user")`になることを確認した——このテストが実際にバグを検出できることを確認済み。
+- 5回の再実行でいずれも結果は安定しており、フレーキーな挙動は確認されなかった。
+- 実行手順は`tests/test_analysis_jobs_repository_integration.py`冒頭のdocstringに記録済み（再現可能）。
 
 ---
 

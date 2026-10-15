@@ -84,7 +84,14 @@ class _FakeCursor:
         q = self._last_query
 
         if "pg_advisory_xact_lock" in q:
-            self.db.advisory_lock_calls.append(self._last_params[0])
+            # The lock namespace (0 for project, 1 for user) is baked
+            # into the query text itself (hashtextextended(%s, 0) /
+            # hashtextextended(%s, 1)), not passed as a bind
+            # parameter — recover it from the query string so tests
+            # can assert both which id was locked and in which
+            # namespace.
+            seed = 0 if "hashtextextended(%s, 0)" in q else 1
+            self.db.advisory_lock_calls.append((seed, self._last_params[0]))
             self._pending_result = (None,)
             return
 
@@ -342,10 +349,16 @@ def test_create_queued_analysis_run_creates_new_job(jobs_db):
     assert jobs_db.results[result.analysis_run_id]["result_json"] == {}
 
 
-def test_create_queued_analysis_run_acquires_advisory_lock_before_insert(jobs_db):
+def test_create_queued_analysis_run_acquires_advisory_locks_before_insert(jobs_db):
+    """Both the project-scoped and user-scoped advisory locks must be
+    acquired, in that fixed order, before anything is read/written —
+    see docs/40_async_analysis_jobs_design.md "11.1"/"18" and the
+    deadlock-avoidance reasoning in create_queued_analysis_run()'s
+    docstring (a fixed global acquisition order rules out circular
+    wait)."""
     repo.create_queued_analysis_run(**BASE_KWARGS)
 
-    assert jobs_db.advisory_lock_calls == ["project-1"]
+    assert jobs_db.advisory_lock_calls == [(0, "project-1"), (1, "user-1")]
 
 
 def test_create_queued_analysis_run_is_idempotent_for_same_input(jobs_db):

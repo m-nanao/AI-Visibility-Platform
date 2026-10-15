@@ -13,17 +13,44 @@ available, and is explicit about not making that claim otherwise.
 
 Requires a `TEST_DATABASE_URL` environment variable pointing at a
 disposable PostgreSQL database (e.g.
-`postgresql://postgres:postgres@localhost:5432/postgres`) — never
+`postgresql://localhost:5544/analysis_jobs_test`) — never
 `DATABASE_URL` itself, so this file can never accidentally run against
 whatever database `DATABASE_URL` happens to point at in a given
 environment. The whole module is skipped with an explicit reason when
-`TEST_DATABASE_URL` is unset, which is the case in the sandbox this
-Phase 1 task was implemented in (confirmed: no `psql`/`pg_ctl`/`docker`
-binary and no `psycopg` driver install available there at all) — this
-module has NOT been executed as part of this task; it is provided so a
-reviewer with local PostgreSQL/docker (or CI with a postgres service
-container added) can run it before Phase 1 goes anywhere near a real
-deployment.
+`TEST_DATABASE_URL` is unset.
+
+**This module HAS been executed, against a real local PostgreSQL, as
+part of implementing the fix in this task** (the original Phase 1 task
+had no PostgreSQL/docker available and shipped this file unexecuted —
+see git history). Reproduction, from `backend/`:
+
+```
+# one-time setup (macOS + Homebrew; adjust for your platform)
+brew install postgresql@16
+LC_ALL=en_US.UTF-8 /opt/homebrew/opt/postgresql@16/bin/pg_ctl \
+    -D /opt/homebrew/var/postgresql@16 -l /tmp/pg_test.log -o "-p 5544" start
+LC_ALL=en_US.UTF-8 /opt/homebrew/opt/postgresql@16/bin/createdb -p 5544 analysis_jobs_test
+
+# run the tests
+export TEST_DATABASE_URL="postgresql://localhost:5544/analysis_jobs_test"
+pytest tests/test_analysis_jobs_repository_integration.py -v
+
+# teardown
+LC_ALL=en_US.UTF-8 /opt/homebrew/opt/postgresql@16/bin/pg_ctl \
+    -D /opt/homebrew/var/postgresql@16 stop
+```
+
+All 7 tests in this module passed against that real instance,
+including — critically — the two tests that exercise the fix this
+task made (`test_concurrent_create_same_user_different_projects_respects_user_limit`
+/ `test_concurrent_create_same_project_different_users_respects_project_limit`):
+the former was confirmed to actually *fail* (10/10 concurrent requests
+succeeded instead of the intended 3) when the user-scoped advisory
+lock was temporarily removed from create_queued_analysis_run(), and
+pass again once it was restored — this is not a vacuous assertion.
+`analysis_jobs_test` only ever existed on `localhost:5544` for the
+duration of this task; it has been dropped and the local PostgreSQL
+service stopped. No Supabase connection of any kind was made.
 
 This migration (005_async_analysis_jobs_phase1.sql) was deliberately
 written with no foreign key to `auth.users` (see that file's header),
@@ -239,3 +266,315 @@ def test_create_then_replay_with_different_input_conflicts(db_connection):
 
     with pytest.raises(AnalysisJobCreateConflictError):
         _create(database_url, urls=["https://different.example.com"])
+
+
+def test_concurrent_create_same_user_different_projects_respects_user_limit(
+    db_connection,
+):
+    """The scenario the two-advisory-lock fix (project lock + user
+    lock, see create_queued_analysis_run()'s docstring) exists for:
+    one user firing genuinely concurrent requests across *different*
+    projects must still never exceed their own queued-job limit. A
+    project-only lock cannot protect this check, since each request
+    takes a different project-scoped lock and none of them would ever
+    block each other — the user-scoped lock is what serializes the
+    count-then-insert across projects."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    user_id = "33333333-3333-3333-3333-333333333333"
+    results: list = []
+    errors: list = []
+
+    def worker(i):
+        try:
+            results.append(
+                _create(
+                    database_url,
+                    project_id=f"44444444-4444-4444-4444-44444444440{i}",
+                    created_by_user_id=user_id,
+                    idempotency_key=f"key-{i}",
+                    max_queued_per_project=100,
+                    max_queued_per_user=3,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    from services.analysis_history_repository import AnalysisJobLimitExceededError
+
+    assert len(results) == 3, f"expected exactly 3 successes, got {len(results)}"
+    assert len(errors) == 7
+    assert all(isinstance(e, AnalysisJobLimitExceededError) for e in errors)
+    assert all(e.scope == "user" for e in errors)
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (row_count,) = cur.fetchone()
+    assert row_count == 3
+
+
+def test_concurrent_create_same_project_different_users_respects_project_limit(
+    db_connection,
+):
+    """Mirror of the above for the project-scoped limit: several
+    different users hitting the *same* project concurrently must
+    never collectively exceed that project's queued-job limit."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    project_id = "55555555-5555-5555-5555-555555555555"
+    results: list = []
+    errors: list = []
+
+    def worker(i):
+        try:
+            results.append(
+                _create(
+                    database_url,
+                    project_id=project_id,
+                    created_by_user_id=f"66666666-6666-6666-6666-66666666660{i}",
+                    idempotency_key=f"key-{i}",
+                    max_queued_per_project=2,
+                    max_queued_per_user=100,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    from services.analysis_history_repository import AnalysisJobLimitExceededError
+
+    assert len(results) == 2, f"expected exactly 2 successes, got {len(results)}"
+    assert len(errors) == 8
+    assert all(isinstance(e, AnalysisJobLimitExceededError) for e in errors)
+    assert all(e.scope == "project" for e in errors)
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (row_count,) = cur.fetchone()
+    assert row_count == 2
+
+
+def test_limit_exceeded_rolls_back_cleanly_and_does_not_block_later_retry(
+    db_connection,
+):
+    """Verifies the failed attempt's transaction actually rolled back
+    (not just that this process didn't crash): after a
+    AnalysisJobLimitExceededError, the exact same request (same key)
+    must still succeed once the limit is no longer in the way — a
+    leftover partial write from the failed attempt would either make
+    this retry see a pre-existing (wrong) row or fail a constraint it
+    shouldn't."""
+    from services.analysis_history_repository import AnalysisJobLimitExceededError
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    first = _create(database_url, idempotency_key="key-1", max_queued_per_project=1)
+    assert first.created is True
+
+    with pytest.raises(AnalysisJobLimitExceededError):
+        _create(database_url, idempotency_key="key-2", max_queued_per_project=1)
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (row_count,) = cur.fetchone()
+    assert row_count == 1, "the failed attempt must not have left a partial row behind"
+
+    second = _create(database_url, idempotency_key="key-2", max_queued_per_project=100)
+    assert second.created is True
+    assert second.analysis_run_id != first.analysis_run_id
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (row_count,) = cur.fetchone()
+    assert row_count == 2
+
+
+def test_migration_005_preserves_existing_history_and_enforces_idempotency():
+    """Applies the *actual* migration file
+    (backend/migrations/005_async_analysis_jobs_phase1.sql) verbatim
+    against a schema shaped like the pre-005 production schema (001's
+    analysis_runs + 002's project_id, no auth.users dependency so this
+    can run on plain local PostgreSQL — see module docstring), with a
+    pre-existing "legacy" row already in it (simulating real history
+    saved by today's synchronous POST /analyze, which never sets
+    created_by_user_id/idempotency_key). Confirms:
+    - the legacy row's columns are completely unchanged (migration is
+      additive only).
+    - the two new columns exist and are NULL on the legacy row.
+    - two more NULL-idempotency_key rows can coexist (the partial
+      unique index must not apply to NULL, matching the file's `where
+      idempotency_key is not null` header comment).
+    - a genuine duplicate (project_id, created_by_user_id,
+      idempotency_key) *does* violate the new index.
+    """
+    import psycopg
+    from psycopg.errors import UniqueViolation
+
+    conn = psycopg.connect(TEST_DATABASE_URL, autocommit=True)
+    schema = f"analysis_jobs_migration_test_{uuid.uuid4().hex[:8]}"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"create schema {schema}")
+            cur.execute(f"set search_path to {schema}")
+            cur.execute("create extension if not exists pgcrypto")
+            # Pre-005 shape: 001's analysis_runs + 002's project_id,
+            # minus everything that depends on a Supabase-managed
+            # auth schema (organizations/projects/organization_members
+            # themselves aren't needed for this migration's own
+            # columns/index to be meaningfully tested).
+            cur.execute(
+                """
+                create table brands (
+                    id uuid primary key default gen_random_uuid(),
+                    name text not null,
+                    canonical_domain text,
+                    project_id uuid,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+            cur.execute(
+                """
+                create table analysis_runs (
+                    id uuid primary key default gen_random_uuid(),
+                    brand_id uuid not null references brands(id) on delete cascade,
+                    project_id uuid,
+                    status text not null,
+                    input_snapshot jsonb not null,
+                    source_summary jsonb,
+                    started_at timestamptz not null default now(),
+                    completed_at timestamptz,
+                    error_message text,
+                    deleted_at timestamptz,
+                    is_important boolean not null default false,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now(),
+                    constraint analysis_runs_status_check check (
+                        status in ('queued', 'running', 'completed', 'partial', 'failed')
+                    )
+                )
+                """
+            )
+            cur.execute(
+                """
+                create table analysis_results (
+                    id uuid primary key default gen_random_uuid(),
+                    analysis_run_id uuid not null references analysis_runs(id) on delete cascade,
+                    visibility_score integer,
+                    result_json jsonb not null,
+                    meta_json jsonb,
+                    created_at timestamptz not null default now()
+                )
+                """
+            )
+
+            # A pre-existing "legacy" row — exactly what today's
+            # synchronous save_analysis_history() writes (no
+            # created_by_user_id/idempotency_key concept at all).
+            cur.execute(
+                """
+                insert into brands (name, project_id) values ('Legacy Brand', %s)
+                returning id
+                """,
+                ("77777777-7777-7777-7777-777777777777",),
+            )
+            (legacy_brand_id,) = cur.fetchone()
+            cur.execute(
+                """
+                insert into analysis_runs (brand_id, project_id, status, input_snapshot)
+                values (%s, %s, 'completed', '{"brandName": "Legacy Brand"}')
+                returning id, status, project_id
+                """,
+                (legacy_brand_id, "77777777-7777-7777-7777-777777777777"),
+            )
+            legacy_row_before = cur.fetchone()
+
+            # Apply the real migration file, verbatim, exactly as a
+            # reviewer would against a real database.
+            migration_path = os.path.join(
+                os.path.dirname(__file__), "..", "migrations",
+                "005_async_analysis_jobs_phase1.sql",
+            )
+            with open(migration_path, encoding="utf-8") as f:
+                migration_sql = f.read()
+            cur.execute(migration_sql)
+
+            # The legacy row is completely unaffected.
+            cur.execute(
+                "select id, status, project_id, created_by_user_id, idempotency_key "
+                "from analysis_runs where id = %s",
+                (legacy_row_before[0],),
+            )
+            legacy_row_after = cur.fetchone()
+            assert legacy_row_after[0] == legacy_row_before[0]
+            assert legacy_row_after[1] == legacy_row_before[1] == "completed"
+            assert legacy_row_after[2] == legacy_row_before[2]
+            assert legacy_row_after[3] is None
+            assert legacy_row_after[4] is None
+
+            # Two more NULL-idempotency_key rows for the same project
+            # coexist fine — the partial index doesn't apply to them.
+            cur.execute(
+                """
+                insert into analysis_runs (brand_id, project_id, status, input_snapshot)
+                values (%s, %s, 'completed', '{}'), (%s, %s, 'completed', '{}')
+                """,
+                (
+                    legacy_brand_id,
+                    "77777777-7777-7777-7777-777777777777",
+                    legacy_brand_id,
+                    "77777777-7777-7777-7777-777777777777",
+                ),
+            )
+
+            # A genuine duplicate (project_id, created_by_user_id,
+            # idempotency_key) *does* violate the new index.
+            cur.execute(
+                """
+                insert into analysis_runs
+                    (brand_id, project_id, status, input_snapshot,
+                     created_by_user_id, idempotency_key)
+                values (%s, %s, 'queued', '{}', %s, %s)
+                """,
+                (
+                    legacy_brand_id,
+                    "77777777-7777-7777-7777-777777777777",
+                    "88888888-8888-8888-8888-888888888888",
+                    "dup-key",
+                ),
+            )
+            with pytest.raises(UniqueViolation):
+                cur.execute(
+                    """
+                    insert into analysis_runs
+                        (brand_id, project_id, status, input_snapshot,
+                         created_by_user_id, idempotency_key)
+                    values (%s, %s, 'queued', '{}', %s, %s)
+                    """,
+                    (
+                        legacy_brand_id,
+                        "77777777-7777-7777-7777-777777777777",
+                        "88888888-8888-8888-8888-888888888888",
+                        "dup-key",
+                    ),
+                )
+            conn.rollback()
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(f"drop schema if exists {schema} cascade")
+        conn.close()
