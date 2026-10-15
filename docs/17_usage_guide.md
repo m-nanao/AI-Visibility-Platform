@@ -507,6 +507,7 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - workerは既存のRender Web Serviceと同じプロセス内で動作し、新しいサービス・インフラは追加していない。
 - frontend・既存`POST /analyze`のレスポンス形・履歴保存動作はいずれも無変更。
 - 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「21. Phase 2 実装状況」を参照。
+- **2026-10-16、レビューで見つかった2つの不具合を修正**（同branch、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「22」参照）。(1)分析完了保存時にlease（worker所有権の期限）の有効性チェックが漏れていたため、ごく短い時間帯（lease失効直後〜次回の自動整理が走るまでの間）に限り、本来失効しているはずの古いworkerの結果が保存されてしまう可能性があった——修正済み。(2)全provider有効時など分析が長くかかる場合、workerの処理中にleaseが更新されず、正常に動作中のジョブが誤って「失敗」扱いにされる可能性があった——分析実行中に一定間隔でleaseを更新する仕組み（heartbeat）を追加して解消した。**いずれもbackend内部の安全性修正であり、通常の利用・デモでの見え方は変わらない**（`ANALYSIS_JOBS_WORKER_ENABLED`は引き続き未設定）。**Render無料プランでプロセス自体が停止した場合はheartbeatも止まるため、処理中だったジョブの復旧はそのプロセスが次に起動するまで遅れる**——これは非同期ジョブ化全体の既知の制約であり、今回の修正でも変わらない。
 
 ## 関連ドキュメント
 

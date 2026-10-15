@@ -644,6 +644,18 @@ def _fail_expired(database_url):
         _restore_load_db_settings(original)
 
 
+def _extend(database_url, analysis_run_id, *, worker_id, lease_seconds=180):
+    from services.analysis_history_repository import extend_analysis_job_lease
+
+    original = _patched_load_db_settings(database_url)
+    try:
+        return extend_analysis_job_lease(
+            analysis_run_id, worker_id=worker_id, lease_seconds=lease_seconds
+        )
+    finally:
+        _restore_load_db_settings(original)
+
+
 def test_concurrent_claim_by_many_workers_each_gets_a_distinct_job(db_connection):
     """The scenario claim_next_queued_analysis_run()'s `for update
     skip locked` exists for: with several queued jobs and several
@@ -979,3 +991,227 @@ def test_migration_006_preserves_phase1_jobs_and_adds_lease_columns():
         with conn.cursor() as cur:
             cur.execute(f"drop schema if exists {schema} cascade")
         conn.close()
+
+
+# --- lease-check-on-complete / heartbeat (Problems 1 & 2) --------------------
+# These tests exist because a review found two real gaps in the first
+# Phase 2 cut: (1) complete_analysis_job()'s original condition
+# (locked_by + status='running') did not check whether the lease had
+# already expired, so a completion could land in the gap between the
+# lease actually expiring and fail_expired_running_analysis_runs()'s
+# next sweep; (2) nothing extended a job's lease while it was still
+# genuinely running, so any analysis slower than the lease
+# (lease_seconds, default 180s) would be reaped out from under its own
+# worker. Both are fixed by adding `lease_expires_at > now()` to
+# complete_analysis_job()'s condition and by extend_analysis_job_lease()
+# (the heartbeat) — see docs/40_async_analysis_jobs_design.md "21".
+
+
+def test_complete_rejected_when_lease_expired_but_sweeper_has_not_run_yet(db_connection):
+    """The exact gap Problem 1 closes: the lease has already passed
+    (by wall-clock time), but fail_expired_running_analysis_runs()
+    has deliberately NOT been called yet (simulating the real-world
+    gap between a lease expiring and the next sweep cycle actually
+    running) — the owning worker's own completion write must still be
+    rejected, not merely a *different* worker's."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    time.sleep(1.2)  # the 1-second lease has now passed — sweeper NOT called
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "running"  # still 'running' — nothing has swept it yet
+
+    ok = _complete(
+        database_url,
+        created.analysis_run_id,
+        worker_id="worker-a",
+        status="completed",
+        result_json={"brandName": "should never be saved — lease already expired"},
+        meta_json=None,
+        error_message=None,
+    )
+
+    assert ok is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select ar.status, res.result_json from {schema}.analysis_runs ar "
+            f"join {schema}.analysis_results res on res.analysis_run_id = ar.id "
+            f"where ar.id = %s",
+            (created.analysis_run_id,),
+        )
+        status, result_json = cur.fetchone()
+    assert status == "running"  # untouched (not even flipped to 'failed' by this call)
+    assert result_json == {}  # the stale result was never written
+
+
+def test_heartbeat_keeps_a_long_running_job_alive_past_its_original_lease(db_connection):
+    """Problem 2's fix, proven for real: a job claimed with a short
+    lease, kept alive purely by repeated extend_analysis_job_lease()
+    calls (simulating a heartbeat ticking throughout a long analysis),
+    survives well past when its *original* lease would have expired —
+    the sweeper must not reap it, and completion must still succeed
+    afterward."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    # Three heartbeat ticks, each re-extending by 1s, spanning well
+    # past the original 1-second lease.
+    for _ in range(3):
+        time.sleep(0.4)
+        extended = _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=1)
+        assert extended is True
+
+    # Total elapsed time (~1.2s) already exceeds the original 1-second
+    # lease — if heartbeating weren't working, this job would already
+    # be failed.
+    _fail_expired(database_url)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "running"  # still alive — the heartbeat kept extending it
+
+    ok = _complete(
+        database_url,
+        claimed.analysis_run_id,
+        worker_id="worker-a",
+        status="completed",
+        result_json={"brandName": "Acme"},
+        meta_json=None,
+        error_message=None,
+    )
+    assert ok is True
+
+
+def test_heartbeat_cannot_extend_a_lease_already_reaped_by_the_sweeper(db_connection):
+    """The other direction of the same race: once the sweeper has
+    already failed a job, a heartbeat that was still in flight for it
+    (e.g. a worker that hadn't yet noticed its pipeline call returned,
+    or a heartbeat tick that lost a race with the sweeper) must not be
+    able to revive it."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    time.sleep(1.2)
+    expired_ids = _fail_expired(database_url)
+    assert expired_ids == [created.analysis_run_id]
+
+    extended = _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=180)
+
+    assert extended is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "failed"  # still failed — the heartbeat did not resurrect it
+
+
+def test_heartbeat_and_sweeper_race_near_the_lease_boundary(db_connection):
+    """A genuine concurrency race at the exact moment a lease crosses
+    its expiry: one real thread repeatedly tries to extend the lease
+    (as a heartbeat would) while another repeatedly calls the sweeper,
+    both running concurrently right around the boundary. Whichever
+    wins, the final state must be *consistent* — never both "extended"
+    and "failed" at once, and never a state that would let the worker
+    believe it still owns a job the sweeper has already reaped."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    extend_results: list[bool] = []
+    sweep_results: list[list[str]] = []
+    stop = threading.Event()
+
+    def heartbeat_worker():
+        while not stop.is_set():
+            extend_results.append(
+                _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=1)
+            )
+            time.sleep(0.05)
+
+    def sweeper_worker():
+        while not stop.is_set():
+            sweep_results.append(_fail_expired(database_url))
+            time.sleep(0.05)
+
+    threads = [
+        threading.Thread(target=heartbeat_worker),
+        threading.Thread(target=sweeper_worker),
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(1.5)  # let the race run across the ~1s lease boundary
+    stop.set()
+    for t in threads:
+        t.join()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status, lease_expires_at from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        status, lease_expires_at = cur.fetchone()
+
+    # Consistency check: if the job ended up 'failed', no extend call
+    # after that point may have reported success, and vice versa — a
+    # heartbeat and the sweeper must never disagree about ownership at
+    # the same instant.
+    if status == "failed":
+        # Once failed, the row must never again be extendable.
+        assert _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=1) is False
+    else:
+        assert status == "running"
+        assert lease_expires_at is not None
+
+    # The sweeper never left the job in an invalid intermediate state
+    # (e.g. 'queued') regardless of how the race resolved.
+    assert status in ("running", "failed")
+
+
+def test_extend_rejects_wrong_worker_id_for_real(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="the-real-owner", lease_seconds=180)
+
+    extended = _extend(database_url, claimed.analysis_run_id, worker_id="an-impostor", lease_seconds=180)
+
+    assert extended is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select locked_by from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (locked_by,) = cur.fetchone()
+    assert locked_by == "the-real-owner"  # ownership untouched by the impostor's attempt

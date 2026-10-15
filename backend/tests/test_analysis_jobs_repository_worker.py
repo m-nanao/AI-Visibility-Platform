@@ -115,10 +115,34 @@ class _FakeCursor:
         if q.startswith("update analysis_runs set status = %s"):
             status, error_message, analysis_run_id, worker_id = params
             run = self.db.runs.get(analysis_run_id)
-            if run is not None and run["status"] == "running" and run["locked_by"] == worker_id:
+            now = datetime.now(timezone.utc)
+            if (
+                run is not None
+                and run["status"] == "running"
+                and run["locked_by"] == worker_id
+                and run["lease_expires_at"] is not None
+                and run["lease_expires_at"] > now
+            ):
                 run["status"] = status
-                run["completed_at"] = datetime.now(timezone.utc)
+                run["completed_at"] = now
                 run["error_message"] = error_message
+                self._pending_one = (analysis_run_id,)
+            else:
+                self._pending_one = None
+            return
+
+        if q.startswith("update analysis_runs set lease_expires_at = "):
+            lease_seconds, analysis_run_id, worker_id = params
+            run = self.db.runs.get(analysis_run_id)
+            now = datetime.now(timezone.utc)
+            if (
+                run is not None
+                and run["status"] == "running"
+                and run["locked_by"] == worker_id
+                and run["lease_expires_at"] is not None
+                and run["lease_expires_at"] > now
+            ):
+                run["lease_expires_at"] = now + timedelta(seconds=lease_seconds)
                 self._pending_one = (analysis_run_id,)
             else:
                 self._pending_one = None
@@ -358,6 +382,105 @@ def test_complete_does_not_save_result_when_update_matches_no_row(worker_db):
     )
 
     assert worker_db.results[run_id]["result_json"] == {}
+
+
+def test_complete_rejects_when_lease_already_expired_even_with_correct_owner(worker_db):
+    """Problem 1 fix: locked_by + status='running' alone is not
+    enough — a lease that has *already* expired but hasn't been swept
+    to 'failed' yet by fail_expired_running_analysis_runs() (which
+    runs on its own schedule, not synchronously with every write)
+    must still reject a completion write from the very worker that
+    owned it."""
+    run_id = worker_db.add_running_run(
+        worker_id="w1", lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+
+    ok = repo.complete_analysis_job(
+        run_id,
+        worker_id="w1",
+        status="completed",
+        result_json={"should": "never appear — lease already expired"},
+        meta_json=None,
+        error_message=None,
+    )
+
+    assert ok is False
+    assert worker_db.runs[run_id]["status"] == "running"  # untouched — sweeper hasn't run yet
+    assert worker_db.results[run_id]["result_json"] == {}
+
+
+# --- extend_analysis_job_lease() (heartbeat) ---------------------------------
+
+
+def test_extend_succeeds_for_valid_lease(worker_db):
+    run_id = worker_db.add_running_run(
+        worker_id="w1", lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=30)
+    )
+
+    extended = repo.extend_analysis_job_lease(run_id, worker_id="w1", lease_seconds=180)
+
+    assert extended is True
+    assert worker_db.runs[run_id]["lease_expires_at"] > datetime.now(timezone.utc) + timedelta(
+        seconds=170
+    )
+
+
+def test_extend_rejects_wrong_worker_id(worker_db):
+    run_id = worker_db.add_running_run(
+        worker_id="the-real-owner", lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=30)
+    )
+    original_lease = worker_db.runs[run_id]["lease_expires_at"]
+
+    extended = repo.extend_analysis_job_lease(run_id, worker_id="an-impostor", lease_seconds=180)
+
+    assert extended is False
+    assert worker_db.runs[run_id]["lease_expires_at"] == original_lease  # untouched
+
+
+def test_extend_does_not_revive_an_already_expired_lease(worker_db):
+    """Explicit regression guard: a heartbeat must never resurrect a
+    lease that has already passed, even if the owning worker_id still
+    matches and the row is still technically 'running' (sweeper
+    hasn't gotten to it yet) — see docs/40 "11.4"'s "no automatic
+    revival" rule, which applies to the heartbeat exactly as much as
+    it applies to fail_expired_running_analysis_runs() itself."""
+    run_id = worker_db.add_running_run(
+        worker_id="w1", lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+    original_lease = worker_db.runs[run_id]["lease_expires_at"]
+
+    extended = repo.extend_analysis_job_lease(run_id, worker_id="w1", lease_seconds=180)
+
+    assert extended is False
+    assert worker_db.runs[run_id]["lease_expires_at"] == original_lease
+
+
+def test_extend_rejects_job_that_already_left_running_state(worker_db):
+    run_id = worker_db.add_running_run(
+        worker_id="w1", lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+    repo.fail_expired_running_analysis_runs()
+    assert worker_db.runs[run_id]["status"] == "failed"
+
+    extended = repo.extend_analysis_job_lease(run_id, worker_id="w1", lease_seconds=180)
+
+    assert extended is False
+
+
+def test_extend_does_not_affect_other_jobs_leases(worker_db):
+    """A heartbeat for one job must never touch any other job's
+    lease, including another job owned by the *same* worker_id."""
+    run_a = worker_db.add_running_run(
+        worker_id="w1", lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=30)
+    )
+    run_b = worker_db.add_running_run(
+        worker_id="w1", lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=30)
+    )
+    original_b_lease = worker_db.runs[run_b]["lease_expires_at"]
+
+    repo.extend_analysis_job_lease(run_a, worker_id="w1", lease_seconds=180)
+
+    assert worker_db.runs[run_b]["lease_expires_at"] == original_b_lease
 
 
 # --- fail_expired_running_analysis_runs() ------------------------------------

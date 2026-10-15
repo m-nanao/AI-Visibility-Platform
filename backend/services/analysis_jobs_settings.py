@@ -40,14 +40,18 @@ DEFAULT_ANALYSIS_JOBS_WORKER_ENABLED = False
 # real limit is decided.
 DEFAULT_MAX_QUEUED_PER_PROJECT = 5
 DEFAULT_MAX_QUEUED_PER_USER = 3
-# Worker tuning defaults (docs/40 "11.3"/"12.6") — also not a final
-# product decision, just a reasonable MVP starting point. The lease
-# must comfortably exceed the pipeline's worst-case wall-clock time
-# (docs/40 "1.3": ~100s with every provider ON) with margin for a
+# Worker tuning defaults (docs/40 "11.3"/"12.6"/"21") — also not a
+# final product decision, just a reasonable MVP starting point. The
+# lease must comfortably exceed the pipeline's worst-case wall-clock
+# time (docs/40 "1.3": ~100s with every provider ON) with margin for a
 # slow Render Free cold instance; the poll interval trades
-# responsiveness against DB load.
+# responsiveness against DB load. The heartbeat interval must be
+# comfortably shorter than the lease — a worker genuinely still
+# running a job extends the lease well before it would otherwise
+# expire — see services/analysis_job_worker.py's heartbeat loop.
 DEFAULT_LEASE_SECONDS = 180
 DEFAULT_POLL_INTERVAL_SECONDS = 5
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,7 @@ class AnalysisJobsSettings:
     max_queued_per_user: int
     lease_seconds: int
     poll_interval_seconds: int
+    heartbeat_interval_seconds: int
 
 
 def _resolve_bool_env(name: str) -> bool:
@@ -82,11 +87,12 @@ def _resolve_positive_int_env(name: str, default: int) -> int:
 def load_analysis_jobs_settings() -> AnalysisJobsSettings:
     """Reads ANALYSIS_JOBS_ENABLED/ANALYSIS_JOBS_WORKER_ENABLED/
     ANALYSIS_JOBS_MAX_QUEUED_PER_PROJECT/ANALYSIS_JOBS_MAX_QUEUED_PER_USER/
-    ANALYSIS_JOBS_LEASE_SECONDS/ANALYSIS_JOBS_POLL_INTERVAL_SECONDS env
-    vars fresh on every call (mirrors load_db_settings() and friends
-    elsewhere in this codebase). Both `enabled` and `worker_enabled`
-    default to False — neither the job endpoints nor the worker are
-    ever reachable/started unless explicitly turned on.
+    ANALYSIS_JOBS_LEASE_SECONDS/ANALYSIS_JOBS_POLL_INTERVAL_SECONDS/
+    ANALYSIS_JOBS_HEARTBEAT_INTERVAL_SECONDS env vars fresh on every
+    call (mirrors load_db_settings() and friends elsewhere in this
+    codebase). Both `enabled` and `worker_enabled` default to False —
+    neither the job endpoints nor the worker are ever reachable/started
+    unless explicitly turned on.
     """
     return AnalysisJobsSettings(
         enabled=_resolve_bool_env("ANALYSIS_JOBS_ENABLED"),
@@ -102,5 +108,8 @@ def load_analysis_jobs_settings() -> AnalysisJobsSettings:
         ),
         poll_interval_seconds=_resolve_positive_int_env(
             "ANALYSIS_JOBS_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS
+        ),
+        heartbeat_interval_seconds=_resolve_positive_int_env(
+            "ANALYSIS_JOBS_HEARTBEAT_INTERVAL_SECONDS", DEFAULT_HEARTBEAT_INTERVAL_SECONDS
         ),
     )

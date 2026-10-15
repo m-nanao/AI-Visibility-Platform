@@ -22,6 +22,7 @@ already exercises elsewhere in this test suite.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -336,10 +337,160 @@ def test_process_one_job_runs_real_pipeline_without_calling_any_provider(monkeyp
     assert complete_calls[0]["result_json"]["brandName"] == "Acme"
 
 
+# --- heartbeat ---------------------------------------------------------------
+
+
+def _slow_fake_pipeline(sleep_seconds, **kwargs):
+    """A fake run_analysis_pipeline() that actually blocks (real
+    time.sleep(), executed in a real thread via asyncio.to_thread() —
+    exactly like the real pipeline) long enough for the heartbeat loop
+    to get at least one scheduling opportunity to fire."""
+    import main
+
+    time.sleep(sleep_seconds)
+
+    class _FakeResult:
+        def model_dump(self):
+            return {}
+
+        meta = type("Meta", (), {"model_dump": lambda self: {}})()
+
+    return main.AnalysisPipelineOutcome(
+        result=_FakeResult(), cooccurrence_status="real", source_summary={}
+    )
+
+
+def test_heartbeat_extends_lease_while_pipeline_is_still_running(monkeypatch):
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        input_snapshot={"brandName": "Acme"},
+        attempt_count=1,
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: _slow_fake_pipeline(0.3))
+
+    extend_calls = []
+
+    def fake_extend(analysis_run_id, **kwargs):
+        extend_calls.append((analysis_run_id, kwargs))
+        return True
+
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", fake_extend)
+    monkeypatch.setattr(worker, "complete_analysis_job", lambda analysis_run_id, **kwargs: True)
+
+    result = _run(worker.process_one_job("worker-1", 180, heartbeat_interval_seconds=0.05))
+
+    assert result is True
+    assert len(extend_calls) >= 1
+    assert extend_calls[0][0] == claimed.analysis_run_id
+    assert extend_calls[0][1]["worker_id"] == "worker-1"
+    assert extend_calls[0][1]["lease_seconds"] == 180
+
+
+def test_heartbeat_stops_sending_updates_after_job_completes(monkeypatch):
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        input_snapshot={"brandName": "Acme"},
+        attempt_count=1,
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: _slow_fake_pipeline(0.1))
+
+    extend_calls = []
+    monkeypatch.setattr(
+        worker,
+        "extend_analysis_job_lease",
+        lambda analysis_run_id, **kwargs: extend_calls.append(1) or True,
+    )
+    monkeypatch.setattr(worker, "complete_analysis_job", lambda analysis_run_id, **kwargs: True)
+
+    async def go():
+        await worker.process_one_job("worker-1", 180, heartbeat_interval_seconds=0.03)
+        count_right_after = len(extend_calls)
+        await asyncio.sleep(0.15)  # well past several more would-be heartbeat ticks
+        return count_right_after, len(extend_calls)
+
+    count_right_after, count_later = _run(go())
+
+    assert count_later == count_right_after  # no further heartbeats after the job finished
+
+
+def test_process_one_job_skips_completion_write_when_heartbeat_detects_lease_lost(monkeypatch):
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        input_snapshot={"brandName": "Acme"},
+        attempt_count=1,
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: _slow_fake_pipeline(0.3))
+    # The very first heartbeat tick reports the lease is already gone.
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: False)
+
+    complete_calls = []
+    monkeypatch.setattr(
+        worker,
+        "complete_analysis_job",
+        lambda analysis_run_id, **kwargs: complete_calls.append(kwargs) or True,
+    )
+
+    result = _run(worker.process_one_job("worker-1", 180, heartbeat_interval_seconds=0.05))
+
+    assert result is True
+    assert complete_calls == []  # never attempted — skipped once lease loss was detected
+
+
+def test_heartbeat_transient_db_error_does_not_mark_lease_lost(monkeypatch):
+    """A single transient AnalysisHistoryReadError while extending must
+    not be treated the same as a genuine lease loss — it's retried at
+    the next heartbeat tick, not escalated immediately (docs/40's "DB
+    障害時に無制限の更新リトライをしない" constraint is about not
+    retrying in a tight loop, not about giving up on the very first
+    hiccup)."""
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        input_snapshot={"brandName": "Acme"},
+        attempt_count=1,
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: _slow_fake_pipeline(0.2))
+
+    def flaky_extend(analysis_run_id, **kwargs):
+        raise AnalysisHistoryReadError("transient failure")
+
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", flaky_extend)
+
+    complete_calls = []
+    monkeypatch.setattr(
+        worker,
+        "complete_analysis_job",
+        lambda analysis_run_id, **kwargs: complete_calls.append(kwargs) or True,
+    )
+
+    result = _run(worker.process_one_job("worker-1", 180, heartbeat_interval_seconds=0.03))
+
+    assert result is True
+    # The completion write was still attempted normally — a transient
+    # heartbeat error alone never counts as "lease lost".
+    assert len(complete_calls) == 1
+    assert complete_calls[0]["status"] == "completed"
+
+
 # --- run_worker_loop() -------------------------------------------------------
 
 
-def _fake_settings(poll_interval_seconds=60, lease_seconds=180):
+def _fake_settings(poll_interval_seconds=60, lease_seconds=180, heartbeat_interval_seconds=30):
     return type(
         "S",
         (),
@@ -347,6 +498,7 @@ def _fake_settings(poll_interval_seconds=60, lease_seconds=180):
             "worker_enabled": True,
             "lease_seconds": lease_seconds,
             "poll_interval_seconds": poll_interval_seconds,
+            "heartbeat_interval_seconds": heartbeat_interval_seconds,
         },
     )()
 
@@ -494,6 +646,33 @@ def test_stop_worker_cancels_task_that_ignores_stop_event(monkeypatch):
         assert task.cancelled() or task.done()
 
     _run(go())
+
+
+def test_stop_worker_logs_warning_when_in_flight_job_does_not_stop_in_time(monkeypatch, caplog):
+    """Explicit regression guard for the honesty requirement in
+    stop_worker()'s docstring: when the grace period elapses, this
+    must be logged as a warning (not silently swallowed) — the thread
+    behind an in-flight to_thread() pipeline call keeps running
+    regardless of what this function does next, and an operator
+    reading logs needs to know that happened."""
+    monkeypatch.setattr(worker, "SHUTDOWN_GRACE_SECONDS", 0.05)
+
+    async def go():
+        stop_event = asyncio.Event()
+
+        async def stubborn_loop():
+            while True:
+                await asyncio.sleep(10)
+
+        task = asyncio.create_task(stubborn_loop())
+        handle = worker.WorkerHandle(task=task, stop_event=stop_event)
+
+        with caplog.at_level("WARNING", logger="services.analysis_job_worker"):
+            await worker.stop_worker(handle)
+
+    _run(go())
+
+    assert any("did not stop within" in record.message for record in caplog.records)
 
 
 def test_generate_worker_id_produces_distinct_ids():

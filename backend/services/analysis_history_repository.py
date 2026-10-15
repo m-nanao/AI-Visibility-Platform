@@ -1375,6 +1375,69 @@ def claim_next_queued_analysis_run(
     )
 
 
+def extend_analysis_job_lease(
+    analysis_run_id: str, *, worker_id: str, lease_seconds: int
+) -> bool:
+    """Heartbeat: extends a claimed job's `lease_expires_at` while its
+    owning worker is still actively running it — see
+    docs/40_async_analysis_jobs_design.md "11.3"/"21" (heartbeat). A
+    long-running job (e.g. every provider ON, ~100s worst case) must
+    not be allowed to outlive its original lease and get reaped by
+    fail_expired_running_analysis_runs() while the worker that claimed
+    it is still genuinely working on it.
+
+    Conditioned on `locked_by = worker_id and status = 'running' and
+    lease_expires_at > now()` — the exact same three-part check
+    complete_analysis_job() uses, for the exact same reason: this must
+    never extend a lease that isn't this worker's, isn't 'running'
+    anymore, or has *already* expired (even by a moment, even if the
+    sweeper hasn't run yet) — a heartbeat is not a resurrection
+    mechanism, see docs/40 "11.4"'s "no automatic revival of an
+    expired lease" rule, which applies here just as much as it does to
+    fail_expired_running_analysis_runs() itself.
+
+    Returns True when the lease was extended, False when any of the
+    three conditions failed — the caller (services/analysis_job_worker.py's
+    heartbeat loop) must treat False as "I no longer own this job":
+    stop heartbeating, and do not start any further work (including
+    any further external API call this job's remaining pipeline
+    execution might otherwise still make — see that module's
+    docstring for the hard limit on how much control is actually
+    possible here, since the pipeline call itself cannot be
+    interrupted mid-flight).
+
+    Raises AnalysisHistoryReadError on any connection/query failure —
+    callers should treat a *raised* exception here differently from a
+    *returned* False: a raised exception means "I don't know whether I
+    still own the lease" (a transient DB problem), not "I definitely
+    lost it".
+    """
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set lease_expires_at = now() + make_interval(secs => %s)
+                    where id = %s
+                      and locked_by = %s
+                      and status = 'running'
+                      and lease_expires_at > now()
+                    returning id
+                    """,
+                    (lease_seconds, analysis_run_id, worker_id),
+                )
+                extended = cur.fetchone() is not None
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to extend analysis job lease")
+        raise AnalysisHistoryReadError("failed to extend analysis job lease") from exc
+
+    return extended
+
+
 def complete_analysis_job(
     analysis_run_id: str,
     *,
@@ -1398,12 +1461,19 @@ def complete_analysis_job(
     "11.6".
 
     The `analysis_runs` update is conditioned on
-    `locked_by = worker_id and status = 'running'` — see docs/40
-    "11.5": if this worker's lease already expired and
-    fail_expired_running_analysis_runs() already transitioned the row
-    to 'failed' (by a different poll cycle, possibly on a different
-    worker instance), this UPDATE matches zero rows, and this function
-    returns False **without writing anything** — including the
+    `locked_by = worker_id and status = 'running' and lease_expires_at
+    > now()` — see docs/40 "11.5". The third condition
+    (`lease_expires_at > now()`) is deliberately checked here *in
+    addition to* `status = 'running'`, not instead of it: a lease that
+    has expired but hasn't been swept to 'failed' yet by
+    fail_expired_running_analysis_runs() (the sweeper runs on its own
+    schedule, not synchronously with every write) would otherwise
+    still read as "status = running" and let a stale completion slip
+    through the gap between the lease actually expiring and the
+    sweeper noticing. Either condition failing — this worker no
+    longer owns the row, or its lease has (even very recently) expired
+    — means this UPDATE matches zero rows, and this function returns
+    False **without writing anything** — including the
     `analysis_results` update, which only runs when the
     `analysis_runs` update actually matched a row. Callers (the
     worker) must treat a False return as "my result arrived too late
@@ -1426,6 +1496,7 @@ def complete_analysis_job(
                     where id = %s
                       and locked_by = %s
                       and status = 'running'
+                      and lease_expires_at > now()
                     returning id
                     """,
                     (status, error_message, analysis_run_id, worker_id),

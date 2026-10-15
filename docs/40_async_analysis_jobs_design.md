@@ -556,6 +556,7 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 - 2026-10-16: `feature/async-analysis-jobs-phase1`でPhase 1を実装（20章参照）。本番未適用・レビュー待ち。
 - 2026-10-16: レビュー指摘を反映し、project単位advisory lockのみではuser単位queued件数上限が同一user・異なるproject間の同時POSTで競合しうる不具合を修正（project/user双方のadvisory lockを固定順序で取得、20.2章参照）。開発用ローカルPostgreSQLでintegration testを実行し、修正前は実際に上限超過が発生すること・修正後は発生しないことを確認（20.5章参照）。
 - 2026-10-16: `feature/async-analysis-jobs-phase2`でPhase 2（worker・実行管理）を実装（21章参照）。既存`/analyze`ロジックを`run_analysis_pipeline()`として抽出・再利用し、migration 006案（lease系4カラム）・claim/complete/fail_expired repository関数・FastAPI lifespan起動のworker・`ANALYSIS_JOBS_WORKER_ENABLED`flagを追加。実PostgreSQLでの並行claim・原子的complete・stale worker拒否・lease失効時のfailed遷移を確認。本番未適用・workerは本番で未有効化・レビュー待ち。
+- 2026-10-16: レビュー指摘を反映し、(1)`complete_analysis_job()`にlease期限チェック（`lease_expires_at > now()`）を追加——sweeper実行前のlease期限切れギャップでの誤った完了保存を防止、(2)heartbeat機構（`extend_analysis_job_lease()`＋`process_one_job()`内の並行heartbeatループ）を追加——長時間分析がleaseより先に失効しないようにした、(3)`asyncio.to_thread()`のキャンセルが裏のスレッドを止めない制約を明示し、`stop_worker()`の3状態（正常終了/強制キャンセル/プロセス消滅）を整理した（22章参照）。実PostgreSQLで修正前の再現（lease期限切れ・sweeper未実行での保存成立）と修正後の拒否、heartbeatによる生存確認、heartbeatとsweeperの競合を確認。migration追加なし・本番未適用・レビュー待ち。
 
 ---
 
@@ -675,4 +676,65 @@ Phase 1と同じ手順（Homebrewで`postgresql@16`をローカルにインス�
 
 ---
 
-以上が調査・設計・Phase 1・Phase 2実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`の有効化・Phase 3(frontend)/Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 22. Phase 2 レビュー修正: lease期限チェック・heartbeat・停止安全性（2026-10-16、同branch）
+
+本章は21章実装後のレビューで確認された3つの問題と、その修正内容を記録する。**migrationは追加していない（既存のmigration 006のカラムをそのまま使う）。**
+
+### 22.1 問題1の修正: 完了時のlease期限チェック
+
+`complete_analysis_job()`の更新条件が`locked_by一致 AND status='running'`のみで、lease期限切れからsweeper実行までの間に完了保存が成立してしまう可能性があった。条件に`AND lease_expires_at > now()`を追加し、leaseが（sweeperがまだ処理していなくても）実際に期限切れであれば保存を拒否するようにした。
+
+実PostgreSQLでの検証: 修正前のコードに戻して「lease 1秒→1.2秒待機（sweeperは呼ばない）→同じworkerが完了保存を試みる」テストを実行したところ、**保存が成立してしまうことを確認**。修正後は同じシナリオで保存が拒否されることを確認した（`tests/test_analysis_jobs_repository_integration.py::test_complete_rejected_when_lease_expired_but_sweeper_has_not_run_yet`）。
+
+### 22.2 問題2の修正: Heartbeatによるlease延長
+
+新規repository関数`extend_analysis_job_lease(analysis_run_id, *, worker_id, lease_seconds)`を追加。条件は`complete_analysis_job()`と同じ3点（`locked_by`一致・`status='running'`・`lease_expires_at > now()`）——heartbeatもfail_expiredと同じ「期限切れ後の無条件復活は禁止」ルールに従う。
+
+`services/analysis_job_worker.py`の`process_one_job()`に、パイプライン実行（`asyncio.to_thread()`）と並行して動く`_run_heartbeat_loop()`を追加した。
+
+- heartbeat間隔はデフォルト30秒（`ANALYSIS_JOBS_HEARTBEAT_INTERVAL_SECONDS`、lease 180秒に対して十分短い）。
+- 他workerのジョブ・他jobのleaseには一切触れない（`worker_id`＋`analysis_run_id`を指定した条件付きUPDATEのため）。
+- DB障害時は次のheartbeat間隔まで待って再試行するのみで、タイトループでの無制限リトライはしない。
+- パイプライン終了後（成功・失敗問わず）は必ずheartbeatを停止する（`finally`節で確実に停止イベントをセット）。
+- heartbeatが「lease喪失」を検知した場合、`complete_analysis_job()`の呼び出し自体を省略する（最終的な安全性は`complete_analysis_job()`自身のDB側条件が担保するが、不要なDB往復を避け、ログも明確にする）。
+
+実PostgreSQLでの検証: 短いlease（1秒）に対し、実際に0.4秒間隔でheartbeatを3回送り続け、元のlease期限（1秒）を優に超えた後もsweeperがジョブを失敗させず、最終的な完了保存にも成功することを確認した（`test_heartbeat_keeps_a_long_running_job_alive_past_its_original_lease`）。heartbeatとsweeperが同時に走る競合状態（実スレッドによる約1.5秒間の並行実行）でも、最終状態が`running`/`failed`いずれかの一貫した状態になることを確認した（`test_heartbeat_and_sweeper_race_near_the_lease_boundary`）。
+
+### 22.3 lease喪失時の挙動
+
+heartbeatが`extend_analysis_job_lease()`からFalseを受け取った場合:
+
+- それ以降のheartbeatを停止する。
+- 完了結果の保存（`complete_analysis_job()`の呼び出し）を省略する。
+- **実行中の同期パイプライン呼び出し自体は停止できない**（次項22.4参照）——このため、lease喪失が検知された後も、すでに開始されている外部API呼び出しは完了まで走り続ける可能性がある。これは本タスクで「可能な範囲」として明示的に受け入れる制約であり、新しい分析ジョブを自動で作成する・ジョブを自動で再投入することは行わない。
+
+### 22.4 `asyncio.to_thread()`キャンセルの制約（明示）
+
+Pythonのスレッドは安全に強制終了できない。`asyncio.to_thread()`で実行中の同期処理（分析パイプライン）は、呼び出し元の`await`をキャンセルしても、バックグラウンドのスレッド自体は止まらず、関数が自然に終了するまで動作を続ける。これは本タスクで新たに作った制約ではなく、Pythonそのものの制約であり、**ドキュメント上で明示する以外の対処はしていない**（`services/analysis_job_worker.py`のモジュールdocstring「Hard constraint」節、および`stop_worker()`のdocstringに詳細を記載）。
+
+この制約のため、「停止要求後に次の有料provider呼び出しを開始しないよう防ぐ」ことができるのは**ワーカーループが次のジョブをclaimしない**という粒度のみであり、**単一ジョブの実行中に複数回ある外部API呼び出しの間で止める**ことはできない（分析パイプライン自体が1回の関数呼び出しであり、途中に中断ポイントを持たないため）。
+
+### 22.5 シャットダウン安全性（状態遷移の整理）
+
+`stop_worker()`のdocstringに、3つの終了状態を明示した。
+
+1. **正常終了**: `stop_event`で新規claimを止め、実行中のタスクが猶予時間内（デフォルト5秒）に自然終了すれば何もせずreturn。
+2. **猶予時間超過後の強制キャンセル**: タスクの`await`をキャンセルするが、裏のスレッドは止まらない（22.4章）。警告ログを出力し、「スレッドはバックグラウンドで動き続ける可能性がある」ことを明記する。
+3. **プロセス消滅**: `stop_worker()`自体が呼ばれずにプロセスが落ちるケース（Render OOM・ホスト障害等）。この場合は何もできず、`locked_by`/`lease_expires_at`はそのまま残り、次に誰かがpollingを再開した時点でsweeperが回収する。
+
+Renderのシャットダウン猶予時間に依存した処理（「猶予時間内に必ず終わる」という前提）は置いていない——`SHUTDOWN_GRACE_SECONDS`はこの関数自体がどれだけブロックするかを制限するだけの値であり、ジョブの完了を保証するものではないことをdocstringに明記した。
+
+### 22.6 Tests
+
+- backend unit tests（`tests/test_analysis_job_worker.py`に追加）: heartbeatによるlease延長・停止後の更新なし・lease喪失検知時のcompletion省略・DB一時エラーでのlease喪失誤判定なし・stop_worker()の警告ログ出力。`tests/test_analysis_jobs_repository_worker.py`に追加: `extend_analysis_job_lease()`の正常系・他worker拒否・期限切れ後の復活禁止・他ジョブへの影響なし、`complete_analysis_job()`の期限切れ拒否（モックDB版）。
+- PostgreSQL integration tests（`tests/test_analysis_jobs_repository_integration.py`に追加、実PostgreSQLで実行・結果は22.1/22.2章に記載）: lease期限切れ後sweeper実行前のcomplete拒否、heartbeatによる長時間ジョブの生存、heartbeatとsweeperの競合、heartbeatの他worker拒否。既存の複数worker排他制御テスト（21章）は本修正後も影響を受けないことを再確認済み。
+
+### 22.7 既知の運用リスク（変更なし・改めて明記）
+
+- **Render Freeプロセスが停止すると、heartbeatも同時に停止する。** heartbeatはあくまで「同一プロセス内の非同期タスク」であり、プロセス自体がスリープ・再起動で消えれば動作しない。処理中のジョブは（他のheartbeatも届かないため）lease期限切れの対象になり、次にいずれかのworkerプロセスが起動してsweeperが走った時点でようやく`failed`に遷移する——**この遅延は17章・21.7章の既存の制約と同じ性質であり、本修正によって解消されるものではない**。
+- 外部有料API呼び出し成功後・結果保存前にheartbeatも含めてすべてが停止した場合の二重課金は、本修正後も完全には防げない（21.4章の限界は変更なし。lease期限チェックの追加は「誤って古い結果を保存してしまう」バグを防ぐものであり、「外部API呼び出し自体の重複」を防ぐものではない）。
+- heartbeat間隔（デフォルト30秒）・lease秒数（デフォルト180秒）はMVP仮値のまま。
+
+---
+
+以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`の有効化・Phase 3(frontend)/Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
