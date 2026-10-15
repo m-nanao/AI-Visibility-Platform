@@ -499,6 +499,15 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - frontendの変更は一切ない。`app/page.tsx`の分析開始ボタンは引き続き`POST /analyze`を呼ぶ（Phase 3で切り替える予定、まだ着手していない）。
 - 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「15. 段階的実装計画」のPhase 1、および同ドキュメントの改訂履歴を参照。
 
+## 33. 非同期分析ジョブAPIのPhase 2について（2026-10-16追記、backendのみ・ユーザー向け機能ではない）
+
+`feature/async-analysis-jobs-phase2`で、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)のPhase 2（queuedジョブを実際に実行するworker）をbackendに追加した。**通常の利用・デモでは何も変わらない**——`ANALYSIS_JOBS_WORKER_ENABLED`が未設定（デフォルトfalse）のため、workerは起動せず、`ANALYSIS_JOBS_ENABLED`も引き続きfalseのためPhase 1のジョブAPI自体にも到達できない。分析開始は引き続き既存の`POST /analyze`のみで行う。
+
+- 既存`POST /analyze`の処理ロジックをそのまま再利用する形でworkerを実装した——AI分析の計算内容・判定ロジックは一切変更していない。
+- workerは既存のRender Web Serviceと同じプロセス内で動作し、新しいサービス・インフラは追加していない。
+- frontend・既存`POST /analyze`のレスポンス形・履歴保存動作はいずれも無変更。
+- 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「21. Phase 2 実装状況」を参照。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)

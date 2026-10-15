@@ -555,6 +555,7 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 - 2026-10-16: レビュー指摘を反映した改訂。Phase 1の範囲見直し、必要データの確定、idempotency設計の確定（failedへの同一キー再送の扱いを修正）、worker排他制御・原子性の確定、worker実装方法の新設、認証必須化、状態・履歴表示の確定、Phase 1〜4の再整理。
 - 2026-10-16: `feature/async-analysis-jobs-phase1`でPhase 1を実装（20章参照）。本番未適用・レビュー待ち。
 - 2026-10-16: レビュー指摘を反映し、project単位advisory lockのみではuser単位queued件数上限が同一user・異なるproject間の同時POSTで競合しうる不具合を修正（project/user双方のadvisory lockを固定順序で取得、20.2章参照）。開発用ローカルPostgreSQLでintegration testを実行し、修正前は実際に上限超過が発生すること・修正後は発生しないことを確認（20.5章参照）。
+- 2026-10-16: `feature/async-analysis-jobs-phase2`でPhase 2（worker・実行管理）を実装（21章参照）。既存`/analyze`ロジックを`run_analysis_pipeline()`として抽出・再利用し、migration 006案（lease系4カラム）・claim/complete/fail_expired repository関数・FastAPI lifespan起動のworker・`ANALYSIS_JOBS_WORKER_ENABLED`flagを追加。実PostgreSQLでの並行claim・原子的complete・stale worker拒否・lease失効時のfailed遷移を確認。本番未適用・workerは本番で未有効化・レビュー待ち。
 
 ---
 
@@ -600,4 +601,78 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 
 ---
 
-以上が調査・設計・Phase 1実装内容である。**本番DBへのmigration適用・本番`ANALYSIS_JOBS_ENABLED`の有効化・Phase 2(worker)/Phase 3(frontend)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 21. Phase 2 実装状況（2026-10-16、`feature/async-analysis-jobs-phase2`）
+
+本章はPhase 2（worker・実行管理）の実装結果を記録する。**migration 006は本番Supabaseに未適用、`ANALYSIS_JOBS_WORKER_ENABLED`は本番で未設定（false）のまま。既存`POST /analyze`の外部仕様（リクエスト/レスポンス形・履歴保存動作）は無変更。**
+
+### 21.1 実装したもの
+
+- migration案 `backend/migrations/006_async_analysis_jobs_phase2.sql`（`analysis_runs.locked_by`/`locked_at`/`lease_expires_at`/`attempt_count`列＋2本のpartial index）。6.2章で示した「Phase 1とPhase 2で分割する」方針どおり、005の後に適用する前提。新しいstatus値は不要（既存のCHECK制約がqueued/running/completed/partial/failedをすべて既に許容）。
+- `backend/main.py`: 既存`POST /analyze`の処理本体（Common Crawl〜webAiGap〜meta組み立て）を`run_analysis_pipeline()`として抽出し、`analyze()`はその呼び出し＋既存のbrandName検証・`save_analysis_history()`呼び出しのみを残した。ロジック自体は一切変更していない（コピー＆パラメータ名の付け替えのみ）。入力検証（`_validate_documents()`/urls空・too many）は`AnalysisPipelineInputError`を投げる形に変更し、`analyze()`側でcatchして従来と同じ`error_response()`を返す——/analyzeの外部挙動は完全に同一。
+- `backend/services/analysis_history_repository.py`に`claim_next_queued_analysis_run()`/`complete_analysis_job()`/`fail_expired_running_analysis_runs()`を追加。
+- `backend/services/analysis_job_worker.py`（新規）: `process_one_job()`（claim→パイプライン実行→complete、全てblocking呼び出しは`asyncio.to_thread()`経由）、`run_worker_loop()`（ポーリングループ）、`start_worker()`/`stop_worker()`。
+- `backend/services/analysis_jobs_settings.py`に`ANALYSIS_JOBS_WORKER_ENABLED`（デフォルトfalse）、`ANALYSIS_JOBS_LEASE_SECONDS`（デフォルト180）、`ANALYSIS_JOBS_POLL_INTERVAL_SECONDS`（デフォルト5）を追加。
+- `backend/main.py`にFastAPI `lifespan`を追加し、アプリ起動時に`start_worker()`、終了時に`stop_worker()`を呼ぶ。`services.analysis_job_worker`はlifespan関数内でのみimportし（モジュールトップレベルではimportしない）、`main`と`analysis_job_worker`間の循環importを回避している。
+- テスト: `tests/test_analysis_job_worker.py`（workerループ・process_one_jobのモックテスト）、`tests/test_analysis_jobs_repository_worker.py`（claim/complete/fail_expiredのモックDBテスト）、`tests/test_main_analysis_job_worker_lifespan.py`（lifespanが実際にstart/stop_workerを呼ぶことの確認）、`tests/test_analysis_jobs_repository_integration.py`への追加（実PostgreSQLでの並行claim・原子的complete・stale worker拒否・lease失効時の安全な遷移・migration 006適用確認）。
+
+### 21.2 Worker実行方式（既存Render Web Service内）
+
+- FastAPI `lifespan`でアプリと同じプロセス内に1本のasyncioタスクとして起動する。新規サービス・新規インフラは追加していない。
+- 分析パイプライン自体（`run_analysis_pipeline()`）は既存のChatGPT/Claude/Gemini/DataForSEO/Common Crawlクライアントがいずれも同期（blocking）実装であるため、`asyncio.to_thread()`でスレッドに委譲して実行する——これを怠るとイベントループ全体が最悪100秒前後ブロックされ、他のリクエスト（`GET /analysis-jobs/{id}`含む）が止まる重大な問題になる（12.2章で事前に指摘済みの設計上の注意点）。repository関数（claim/complete/fail_expired）も同様に`asyncio.to_thread()`経由で呼ぶ。
+- 同時実行数はMVPでは1（1プロセス内で順に1件ずつ処理）。`uvicorn --workers`を増やした場合やRenderインスタンスが複数になった場合でも、claimの排他制御はDB側（`for update skip locked`＋条件付きUPDATE）で保証されるため、正しさは崩れない（12.3章参照、本番は現状`--workers`指定なしの単一プロセス）。
+- worker起動失敗の診断: 無効時は起動ログに明記、ループ内の個別エラーはログに記録してループを継続、ループ自体が予期せず終了した場合はCRITICALレベルでログ出力する。
+- Render Freeのスリープ・再起動により処理が中断される可能性は維持される（常時稼働は保証しない、17章の既存の「保証できない事項」と同じ）。
+
+### 21.3 排他制御とlease管理
+
+- claim: `UPDATE ... WHERE id = (SELECT id FROM analysis_runs WHERE status='queued' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING ...` で、1件のqueued行をqueued→runningへ原子的に遷移させる。複数worker・複数プロセスが同時にpollしても同じ行を二重に取得しない（実PostgreSQLでの並行テストで確認済み、21.6章）。
+- lease: `locked_by`（worker識別子）・`locked_at`（claim時刻）・`lease_expires_at`（`locked_at + lease_seconds`、デフォルト180秒）を設定。
+- 完了時（`complete_analysis_job()`）: `WHERE id = ... AND locked_by = ... AND status = 'running'`の条件付きUPDATEで、今も自分がowner かつ まだrunningであることを確認してからのみ書き込む。`analysis_runs`のstatus更新と`analysis_results`の結果保存は同一トランザクション内で行い、原子性を保証する。
+- lease切れの扱い: `fail_expired_running_analysis_runs()`が`status='running' AND lease_expires_at < now()`の行を直接`failed`へ遷移させる。**`queued`へは戻さない**——外部有料API呼び出し後にworkerが停止した可能性を否定できないため、自動フル再実行は行わない（9.3節・11.4章の既定方針どおり）。
+- 古いworkerによる上書き防止: lease切れ後に別サイクルが`failed`へ遷移させた行に対し、元のworkerが（自分のleaseが切れたことを知らずに）完了書き込みを試みても、条件付きUPDATEが0件更新となり、何も書き込まれない（実PostgreSQLでの競合テストで確認済み、21.6章）。
+
+### 21.4 中断・再起動時の復旧方針
+
+- Render再起動・デプロイ・スリープでworkerプロセスが消えても、状態はすべてDBにある。中断されたジョブは次に（同じプロセスでも別プロセスでも）誰かのポーリングサイクルが走った時点で、lease切れ検知により`failed`に遷移する。
+- 「安全なfailedへの遷移を基本とする」という方針どおり、途中停止ジョブを`running`や`queued`へ戻す自動復旧は実装していない——ユーザーが新しいidempotencyKeyで明示的に再実行する必要がある（Phase 1のidempotency設計と整合）。
+- 外部APIの二重課金防止として、以下を実装・確認済み: 失敗ジョブの自動フル再実行なし、lease切れによる無条件再実行なし、再起動時の無制限リトライなし（ループが単に次のqueuedジョブを拾うだけで、失敗済みジョブを対象にしない）、同一ジョブの複数worker同時実行なし（DB排他制御）。
+- **引き続き明示する限界**: 外部有料API呼び出し成功後、結果保存（`complete_analysis_job()`）前にworkerが停止した場合、その呼び出しが実際に成功していたかどうかは本バックエンドから判別できない。この場合ユーザーが再実行すれば該当プロバイダへの呼び出しが再度発生し、**二重課金を完全には防げない**。これはPhase 1設計時から認識している既知の限界であり、Phase 2の実装によっても解消されていない。
+
+### 21.5 既存`/analyze`との共通処理・互換性
+
+- `run_analysis_pipeline()`は`/analyze`の処理ロジックをそのまま抽出した関数で、AI分析ロジック自体は一切変更していない。既存の`/analyze`関連テスト（本タスク実施前からある全テスト）が無変更のまま全件成功することで、外部仕様（レスポンス形・履歴保存動作）が変わっていないことを確認した。
+- workerは既存jobへ結果を保存するのみで、新しい`analysis_runs`行を作らない——`complete_analysis_job()`はUPDATEのみでINSERTを行わない（モック・実DB両方のテストで確認済み）。
+- `analysisRunId`はPhase 1の`create_queued_analysis_run()`が発行した値（＝`analysis_run_id`）のまま維持される。
+- Phase 1で保存した`input_snapshot`（brandName/documents/urls/4種のprovider mode/commonCrawlDomain）をそのまま`run_analysis_pipeline()`の引数として復元する——Web Fetch/Common Crawl/DataForSEOの挙動・条件は変更していない。
+
+### 21.6 PostgreSQL integration testの実行結果
+
+Phase 1と同じ手順（Homebrewで`postgresql@16`をローカルにインストールし、`localhost:5544`の`analysis_jobs_test`という開発用・一時データベースを使用、本番Supabaseへの接続は一切なし）で、worker関連のシナリオを追加・実行した。
+
+- 複数worker（6スレッド）による同時claimで、6件のqueuedジョブがそれぞれ別のworkerに一意に割り当てられること（二重取得なし）を確認。
+- workerよりジョブ数が少ない場合、余ったworkerは何も取得しないことを確認。
+- `complete_analysis_job()`がstatus更新と結果保存を1トランザクションで原子的に行い、新しい行を作らないことを確認。
+- leaseを1秒に設定し実際に期限切れさせたうえで、`fail_expired_running_analysis_runs()`による`failed`遷移→その後の（本来のowner自身による）遅延した完了書き込みが拒否され、`failed`状態・既存のplaceholder結果が保持されることを確認（古いworkerによる上書き防止の実証）。
+- lease切れジョブが`queued`に戻らないことを確認。
+- migration 006の実ファイルを、Phase 1のqueuedジョブ＋従来の同期履行を含むスキーマへ適用し、既存データが保持されること・新規列がnull/0で初期化されること・2本の新規indexが作られること・再適用が冪等であることを確認。
+- 既存のPhase 1 integration test（7件）と合わせて計13件すべて成功、3回再実行して安定（フレーキーなし）。
+- 実行手順は各テストファイルのdocstring・コメントに記録済み（再現可能）。テスト用DBは実行後に`dropdb`・サーバー停止済み。
+
+### 21.7 既知の制約
+
+- Render Freeのスリープ・再起動中は誰もpollingしないため、中断ジョブの`failed`遷移が遅延する（次にいずれかのプロセスが起動されるまで）——17章の既存の制約と同じ。
+- 外部有料API呼び出し成功後・結果保存前にworkerが停止した場合の二重課金は完全には防げない（21.4章）。
+- lease秒数（180秒）・poll間隔（5秒）はMVP仮値であり、本番投入前に実測のうえ見直す必要がある。
+- `uvicorn --workers`を複数にする場合のDB接続数増加は12.3章で指摘済みの留意事項のまま（現状は単一プロセスのため影響なし）。
+- グレースフルシャットダウン（実行中ジョブの完了を待つ）は実装していない——`stop_worker()`は5秒だけ待ってからタスクをキャンセルする。中断されたジョブはlease切れにより`failed`になる。
+
+### 21.8 Phase 3への引き継ぎ事項
+
+- frontendのジョブ受付UI・polling・結果取得・履歴統合（13章・15章Phase 3）。
+- `ANALYSIS_JOBS_ENABLED`の本番有効化判断（現時点ではworker実装が整っただけで、frontendがない限り一般ユーザーには公開しない）。
+- 8.3章の同時実行数上限・21.7章のlease/poll間隔の具体値の製品判断確定。
+- 既存履歴一覧（`GET /analysis-runs`）でのqueued/running表示対応（13.1章、Phase 3の範囲）。
+
+---
+
+以上が調査・設計・Phase 1・Phase 2実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`の有効化・Phase 3(frontend)/Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**

@@ -1280,3 +1280,214 @@ def get_analysis_job_result(analysis_run_id: str) -> dict[str, Any] | None:
         "result": result_json if is_finished_with_result else None,
         "meta": meta_json if is_finished_with_result else None,
     }
+
+
+# --- Async analysis jobs, Phase 2 worker (services/analysis_job_worker.py)
+# — see docs/40_async_analysis_jobs_design.md "11"/"12". Three new
+# functions: claim_next_queued_analysis_run() (queued -> running,
+# exclusive), complete_analysis_job() (running -> completed/partial/
+# failed, exclusive, atomic with the result write), and
+# fail_expired_running_analysis_runs() (the lease-expiry sweep). None
+# of these are called by anything in Phase 1 — they are reachable
+# only via the worker, which is itself off unless
+# ANALYSIS_JOBS_WORKER_ENABLED=true (services/analysis_jobs_settings.py).
+
+
+@dataclass(frozen=True)
+class ClaimedAnalysisJob:
+    """Returned by claim_next_queued_analysis_run() when a job was
+    actually claimed. `input_snapshot` is exactly what
+    create_queued_analysis_run() stored at job-creation time (docs/40
+    "5"/"6.1") — the worker rebuilds its call to
+    main.run_analysis_pipeline() entirely from this dict, never from
+    anything else."""
+
+    analysis_run_id: str
+    input_snapshot: dict[str, Any]
+    attempt_count: int
+
+
+def claim_next_queued_analysis_run(
+    *, worker_id: str, lease_seconds: int
+) -> ClaimedAnalysisJob | None:
+    """Atomically claims the oldest 'queued' analysis_runs row for
+    `worker_id`, transitioning it to 'running' — see
+    docs/40_async_analysis_jobs_design.md "11.1". Returns None when
+    there is no queued row to claim (not an error).
+
+    Uses `for update skip locked` inside the id-selecting subquery so
+    multiple worker processes/tasks polling concurrently (see docs/40
+    "12.3": uvicorn with `--workers` > 1, or more than one Render
+    instance) never block on each other and never claim the same row
+    — each claim attempt either gets a distinct unlocked 'queued' row
+    or finds none available and returns None, with no contention
+    between concurrent callers beyond normal row-level locking.
+
+    Sets `locked_by = worker_id`, `locked_at = now()`,
+    `lease_expires_at = now() + lease_seconds`, and increments
+    `attempt_count`. `started_at` (meaning "became queued", set at
+    creation time by create_queued_analysis_run()) is deliberately
+    left untouched — see docs/40 "13.5" for why `locked_at` is a
+    separate column rather than redefining `started_at`.
+
+    Raises AnalysisHistoryReadError on any connection/query failure
+    (mirrors every other function in this module).
+    """
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set status = 'running',
+                        locked_by = %s,
+                        locked_at = now(),
+                        lease_expires_at = now() + make_interval(secs => %s),
+                        attempt_count = attempt_count + 1
+                    where id = (
+                        select id
+                        from analysis_runs
+                        where status = 'queued'
+                        order by created_at asc
+                        limit 1
+                        for update skip locked
+                    )
+                    returning id, input_snapshot, attempt_count
+                    """,
+                    (worker_id, lease_seconds),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to claim next queued analysis job")
+        raise AnalysisHistoryReadError("failed to claim analysis job") from exc
+
+    if row is None:
+        return None
+
+    analysis_run_id, input_snapshot, attempt_count = row
+    return ClaimedAnalysisJob(
+        analysis_run_id=str(analysis_run_id),
+        input_snapshot=input_snapshot,
+        attempt_count=attempt_count,
+    )
+
+
+def complete_analysis_job(
+    analysis_run_id: str,
+    *,
+    worker_id: str,
+    status: str,
+    result_json: dict[str, Any] | None,
+    meta_json: dict[str, Any] | None,
+    error_message: str | None,
+) -> bool:
+    """Atomically finalizes a claimed job — backs
+    services/analysis_job_worker.py's completion step. `status` must
+    be 'completed', 'partial', or 'failed'.
+
+    The `analysis_runs` status/completed_at/error_message update and
+    the `analysis_results` result_json/meta_json update (when
+    `result_json` is not None — a 'failed' job passes `result_json=
+    None` and this function leaves the existing placeholder
+    `result_json='{}'` untouched, since there is nothing real to
+    write) happen in the **same transaction**, so a crash between the
+    two can never leave one updated and not the other — see docs/40
+    "11.6".
+
+    The `analysis_runs` update is conditioned on
+    `locked_by = worker_id and status = 'running'` — see docs/40
+    "11.5": if this worker's lease already expired and
+    fail_expired_running_analysis_runs() already transitioned the row
+    to 'failed' (by a different poll cycle, possibly on a different
+    worker instance), this UPDATE matches zero rows, and this function
+    returns False **without writing anything** — including the
+    `analysis_results` update, which only runs when the
+    `analysis_runs` update actually matched a row. Callers (the
+    worker) must treat a False return as "my result arrived too late
+    to matter" and log a warning rather than retrying or raising — see
+    services/analysis_job_worker.py.
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    """
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set status = %s,
+                        completed_at = now(),
+                        error_message = %s
+                    where id = %s
+                      and locked_by = %s
+                      and status = 'running'
+                    returning id
+                    """,
+                    (status, error_message, analysis_run_id, worker_id),
+                )
+                updated = cur.fetchone() is not None
+
+                if updated and result_json is not None:
+                    cur.execute(
+                        """
+                        update analysis_results
+                        set result_json = %s, meta_json = %s
+                        where analysis_run_id = %s
+                        """,
+                        (Jsonb(result_json), _maybe_jsonb(meta_json), analysis_run_id),
+                    )
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to complete analysis job")
+        raise AnalysisHistoryReadError("failed to complete analysis job") from exc
+
+    return updated
+
+
+def fail_expired_running_analysis_runs() -> list[str]:
+    """Sweeps every 'running' row whose `lease_expires_at` has already
+    passed and transitions it directly to 'failed' — **never** back to
+    'queued' (see docs/40_async_analysis_jobs_design.md "11.4": this
+    backend cannot know whether an external paid API call already
+    happened before the owning worker disappeared, so a lease expiry
+    is always a terminal failure, never an automatic retry). Returns
+    the ids of every row this call transitioned (for logging); an
+    empty list means nothing was expired, not an error.
+
+    Called at the start of every poll cycle by
+    services/analysis_job_worker.py, before attempting to claim a new
+    job — this is also what makes an abandoned job (a crashed worker,
+    a Render restart/sleep mid-job) eventually resolve to 'failed' once
+    *any* process's poll cycle runs again, even one that didn't own
+    the lease.
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    """
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set status = 'failed',
+                        completed_at = now(),
+                        error_message = 'worker lease expired (possible partial execution, not auto-retried)'
+                    where status = 'running'
+                      and lease_expires_at < now()
+                    returning id
+                    """
+                )
+                expired_ids = [str(row[0]) for row in cur.fetchall()]
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to sweep expired analysis job leases")
+        raise AnalysisHistoryReadError("failed to sweep expired analysis jobs") from exc
+
+    return expired_ids

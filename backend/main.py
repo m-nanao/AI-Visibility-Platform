@@ -86,6 +86,7 @@ POST body.
 import hmac
 import logging
 from collections import Counter
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -216,7 +217,42 @@ logger = logging.getLogger(__name__)
 # here would let arbitrary websites call this API straight from a
 # user's browser, which is unnecessary exposure for no functional
 # benefit. See docs/09_deployment.md for the deployment topology.
-app = FastAPI(title="LLMO Analysis API")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Starts/stops Phase 2's background analysis-job worker alongside
+    this app's own lifecycle — see
+    docs/40_async_analysis_jobs_design.md "12.1". `services.analysis_job_worker`
+    is imported here, lazily (inside this function, not at this
+    module's top level), specifically so that module's own
+    `from main import run_analysis_pipeline` (needed to execute a
+    claimed job — see services/analysis_job_worker.py's
+    process_one_job()) can safely resolve: by the time a FastAPI
+    lifespan actually *runs* (app startup), this module has already
+    fully finished loading, unlike at this file's own import time —
+    this ordering is what avoids a circular import between this module
+    and the worker module.
+
+    Gated end-to-end by ANALYSIS_JOBS_WORKER_ENABLED (default False,
+    see services/analysis_jobs_settings.py) — when off,
+    start_worker() creates no task and nothing in this process ever
+    calls claim_next_queued_analysis_run()/complete_analysis_job()/
+    fail_expired_running_analysis_runs(), so deploying this code with
+    the flag off is indistinguishable (to this process's behavior, and
+    to the database) from not having it at all — even against a
+    database that hasn't had migration 006 applied yet.
+    """
+    from services.analysis_job_worker import start_worker, stop_worker
+
+    worker_handle = start_worker()
+    try:
+        yield
+    finally:
+        await stop_worker(worker_handle)
+
+
+app = FastAPI(title="LLMO Analysis API", lifespan=lifespan)
 
 
 def error_response(message: str, status_code: int = 400) -> JSONResponse:
@@ -416,24 +452,82 @@ def _build_common_crawl_documents(
     )
 
 
-@app.post("/analyze", response_model=AnalysisResult)
-def analyze(payload: AnalyzeRequest):
-    brand_name = (payload.brandName or "").strip()
+class AnalysisPipelineInputError(Exception):
+    """Raised by run_analysis_pipeline() for the same input problems
+    POST /analyze has always rejected with a 400 (documents too
+    many/long, urls empty/too many) — main.py's analyze() catches this
+    and returns error_response(str(exc)), the exact same message as
+    before this extraction. Phase 2's worker catches it too and marks
+    the job 'failed' with this message instead, since there is no
+    HTTP request left to reject by the time a queued job actually
+    runs (this should essentially never fire there in practice, since
+    POST /analysis-jobs already validates the same constraints at job
+    creation time — see
+    services.analysis_history_repository.create_queued_analysis_run()
+    — but a stale/malformed input_snapshot is defended against anyway
+    rather than trusted blindly)."""
 
-    if not brand_name:
-        return error_response("brandName is required")
 
-    if len(brand_name) > MAX_BRAND_NAME_LENGTH:
-        return error_response(
-            f"brandName must be {MAX_BRAND_NAME_LENGTH} characters or fewer"
-        )
+@dataclass(frozen=True)
+class AnalysisPipelineOutcome:
+    """Returned by run_analysis_pipeline() — the full analysis result
+    plus the two pieces of information its callers need beyond the
+    result itself: `cooccurrence_status` (used to decide
+    "partial"/"completed" when saving to analysis_runs.status) and
+    `source_summary` (saved as analysis_runs.source_summary)."""
 
-    # Minimal diagnostic logging around each stage of /analyze — added
-    # to narrow down where a Render free-tier request was dying (past
-    # url fetch, but before any "POST /analyze ... 200/500" completion
-    # log ever appeared). Counts/timings only; never document text.
-    logger.info("analyze start brandName=%r", brand_name)
+    result: AnalysisResult
+    cooccurrence_status: SectionStatus
+    source_summary: dict[str, int]
 
+
+def run_analysis_pipeline(
+    *,
+    brand_name: str,
+    documents: list[str] | None,
+    urls: list[str] | None,
+    common_crawl_mode: str | None,
+    common_crawl_domain: str | None,
+    ai_overview_mode_override: str | None,
+    chatgpt_mode_override: str | None,
+    claude_mode_override: str | None,
+    gemini_mode_override: str | None,
+) -> AnalysisPipelineOutcome:
+    """The actual analysis pipeline — Common Crawl / cooccurrence /
+    chunking / context analysis / brand summary / AI Overview /
+    improvement suggestions / ChatGPT / Claude / Gemini / webAiGap /
+    meta assembly — extracted out of POST /analyze (see
+    docs/40_async_analysis_jobs_design.md "15. Phase 2") so Phase 2's
+    worker (services/analysis_job_worker.py) can run the *exact same*
+    logic for a queued job, not a reimplementation of it. AI analysis
+    logic itself is unchanged by this extraction — every line below is
+    moved verbatim out of the old /analyze handler, not rewritten.
+
+    Still validates `documents`/`urls` exactly as POST /analyze always
+    has (`_validate_documents()`, empty-urls, MAX_URLS) — identical to
+    before this extraction, just raising AnalysisPipelineInputError
+    instead of directly building a 400 response (this function has no
+    HTTP request to respond to). `brand_name` itself is NOT
+    re-validated here (MAX_BRAND_NAME_LENGTH/non-empty) — that check
+    stays solely in analyze() above its call site, since it's about
+    the caller's own `brand_name` argument rather than something this
+    function derives; the worker validates it the same way before
+    calling this. POST /analysis-jobs already validates the
+    documents/urls constraints once at job-creation time too (see
+    services.analysis_history_repository.create_queued_analysis_run())
+    — this function's validation is a second, defensive check against
+    a stale/malformed `input_snapshot` by the time a worker actually
+    runs the job, not the primary place either constraint is enforced.
+
+    Never performs any DB read/write and never raises for an AI
+    provider failure (every provider call already reports its own
+    failure via a status/reason, exactly as before this extraction) —
+    besides AnalysisPipelineInputError, the only way this function
+    raises is a genuinely unexpected bug, which callers should treat
+    as a hard failure (main.py lets it propagate as an unhandled error
+    for /analyze exactly as before this extraction; the worker catches
+    it and marks the job 'failed').
+    """
     url_fetch_results: list[UrlFetchResult] | None = None
     documents_source: DocumentsSource
     # Document[] actually processed (see docs/11_architecture_v1.md "4.
@@ -449,26 +543,25 @@ def analyze(payload: AnalyzeRequest):
     cooccurrence_status: SectionStatus = "real"
 
     # Priority: documents > urls > development sample.
-    if payload.documents is not None:
-        documents = payload.documents
+    if documents is not None:
         validation_error = _validate_documents(documents)
         if validation_error:
-            return error_response(validation_error)
+            raise AnalysisPipelineInputError(validation_error)
         documents_source = "user_provided"
         documents_list = _documents_from_strings(documents)
 
-    elif payload.urls is not None:
-        if len(payload.urls) == 0:
+    elif urls is not None:
+        if len(urls) == 0:
             # Unlike documents:[], an empty urls list has no reasonable
             # interpretation as "fetch zero pages on purpose" — it's
             # far more likely to be a caller mistake, so this is a 400
             # rather than a silently-empty analysis.
-            return error_response("urls must not be empty")
+            raise AnalysisPipelineInputError("urls must not be empty")
 
-        if len(payload.urls) > MAX_URLS:
-            return error_response(f"urls must contain {MAX_URLS} or fewer entries")
+        if len(urls) > MAX_URLS:
+            raise AnalysisPipelineInputError(f"urls must contain {MAX_URLS} or fewer entries")
 
-        fetch_results = fetch_url_texts(payload.urls)
+        fetch_results = fetch_url_texts(urls)
         url_fetch_results = [
             UrlFetchResult(url=r.url, success=r.success, error=r.error)
             for r in fetch_results
@@ -532,9 +625,9 @@ def analyze(payload: AnalyzeRequest):
     # failure never raises and never changes documents_source/
     # cooccurrence_status — it's only reflected in
     # meta.commonCrawlProvider.
-    common_crawl_mode: CommonCrawlProviderMode = payload.commonCrawlMode or "off"
+    common_crawl_mode = common_crawl_mode or "off"
     common_crawl_documents, common_crawl_provider = _build_common_crawl_documents(
-        common_crawl_mode, payload.commonCrawlDomain, payload.urls
+        common_crawl_mode, common_crawl_domain, urls
     )
     if common_crawl_documents:
         documents_list = [*documents_list, *common_crawl_documents]
@@ -600,13 +693,13 @@ def analyze(payload: AnalyzeRequest):
     # on which provider/environment runs. Computed before improvements
     # below so build_improvement_suggestions() can look at
     # ownDomainReferenced/referenceSummary for a lightweight suggestion.
-    ai_overview_mode = resolve_ai_overview_mode(payload.aiOverviewMode)
+    ai_overview_mode = resolve_ai_overview_mode(ai_overview_mode_override)
     (
         result.aiOverviewComparison,
         ai_overview_status,
         ai_overview_reason,
         ai_overview_environment,
-    ) = build_ai_overview_comparison(brand_name, ai_overview_mode, payload.urls)
+    ) = build_ai_overview_comparison(brand_name, ai_overview_mode, urls)
     logger.info(
         "ai overview comparison complete: mode=%s status=%s",
         ai_overview_mode,
@@ -662,7 +755,7 @@ def analyze(payload: AnalyzeRequest):
         chatgpt_reason = "ChatGPT observation is disabled while aiOverviewMode is mock."
         chatgpt_environment = "off"
     else:
-        chatgpt_mode = resolve_chatgpt_mode(payload.chatgptMode)
+        chatgpt_mode = resolve_chatgpt_mode(chatgpt_mode_override)
         (
             chatgpt_item,
             chatgpt_status,
@@ -685,7 +778,7 @@ def analyze(payload: AnalyzeRequest):
     # ChatGPT above, the mock aiOverviewComparison fixture has no
     # "Claude" card to collide with (see services/claude_provider.py's
     # module docstring).
-    claude_mode = resolve_claude_mode(payload.claudeMode)
+    claude_mode = resolve_claude_mode(claude_mode_override)
     (
         claude_item,
         claude_status,
@@ -703,7 +796,7 @@ def analyze(payload: AnalyzeRequest):
     # Gemini observation (see services/gemini_provider.py): same design
     # as Claude above — independent, optional, single Google API call,
     # not skipped in mock mode (no "Gemini" mock card to collide with).
-    gemini_mode = resolve_gemini_mode(payload.geminiMode)
+    gemini_mode = resolve_gemini_mode(gemini_mode_override)
     (
         gemini_item,
         gemini_status,
@@ -771,6 +864,51 @@ def analyze(payload: AnalyzeRequest):
         commonCrawlProvider=common_crawl_provider,
     )
 
+    source_summary = dict(Counter(document.sourceType for document in documents_list))
+
+    return AnalysisPipelineOutcome(
+        result=result,
+        cooccurrence_status=cooccurrence_status,
+        source_summary=source_summary,
+    )
+
+
+@app.post("/analyze", response_model=AnalysisResult)
+def analyze(payload: AnalyzeRequest):
+    brand_name = (payload.brandName or "").strip()
+
+    if not brand_name:
+        return error_response("brandName is required")
+
+    if len(brand_name) > MAX_BRAND_NAME_LENGTH:
+        return error_response(
+            f"brandName must be {MAX_BRAND_NAME_LENGTH} characters or fewer"
+        )
+
+    # Minimal diagnostic logging around each stage of /analyze — added
+    # to narrow down where a Render free-tier request was dying (past
+    # url fetch, but before any "POST /analyze ... 200/500" completion
+    # log ever appeared). Counts/timings only; never document text.
+    logger.info("analyze start brandName=%r", brand_name)
+
+    try:
+        outcome = run_analysis_pipeline(
+            brand_name=brand_name,
+            documents=payload.documents,
+            urls=payload.urls,
+            common_crawl_mode=payload.commonCrawlMode,
+            common_crawl_domain=payload.commonCrawlDomain,
+            ai_overview_mode_override=payload.aiOverviewMode,
+            chatgpt_mode_override=payload.chatgptMode,
+            claude_mode_override=payload.claudeMode,
+            gemini_mode_override=payload.geminiMode,
+        )
+    except AnalysisPipelineInputError as exc:
+        return error_response(str(exc))
+
+    result = outcome.result
+    cooccurrence_status = outcome.cooccurrence_status
+
     # Best-effort DB save (see services/analysis_history_repository.py,
     # docs/19_minimum_db_migration_design.md). Entirely optional and
     # non-blocking: skipped outright when DB_SAVE_ENABLED/DATABASE_URL
@@ -796,7 +934,7 @@ def analyze(payload: AnalyzeRequest):
                 "claudeMode": payload.claudeMode,
                 "geminiMode": payload.geminiMode,
             },
-            source_summary=dict(Counter(document.sourceType for document in documents_list)),
+            source_summary=outcome.source_summary,
             result_json=result.model_dump(),
             visibility_score=result.summary.visibilityScore,
             meta_json=result.meta.model_dump(),
