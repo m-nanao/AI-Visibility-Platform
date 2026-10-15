@@ -24,6 +24,7 @@ import {
 import {
   CREATE_JOB_GENERIC_ERROR_MESSAGE,
   ME_PROJECTS_NONE_MESSAGE,
+  UNKNOWN_USER_SCOPE,
   buildAnalysisJobPath,
   clearPendingJobSubmission,
   isAsyncAnalysisEnabled,
@@ -35,6 +36,7 @@ import {
 import type { MeProjectsOutcome } from "./lib/analysis-jobs";
 import { getSectionStatusSummary } from "./lib/meta-label";
 import { STAGING_BANNER_TEXT } from "./lib/staging-banner";
+import { useSupabaseSession } from "./lib/supabase/useSupabaseSession";
 import type {
   AiOverviewProviderMode,
   AnalysisResult,
@@ -54,6 +56,17 @@ export default function Home() {
   // resolution/job creation is simply never reached — the component
   // behaves exactly as it did before this flag existed.
   const asyncAnalysisEnabled = isAsyncAnalysisEnabled();
+  // Only consulted for its email (used to scope the idempotency key
+  // below so one signed-in user's pending-submission record is never
+  // reused by a different signed-in user sharing the same browser tab
+  // — see app/lib/analysis-jobs.ts's resolveIdempotencyKeyForJobSubmission()).
+  // This page has no auth *gate* of its own (unlike /history/*, see
+  // AuthGuard) — a signed-out visitor still sees this hook resolve to
+  // "signed-out" and simply falls back to UNKNOWN_USER_SCOPE; the
+  // actual authentication requirement is enforced by the backend via
+  // GET /api/me/projects / POST /api/analysis-jobs regardless.
+  const sessionState = useSupabaseSession();
+  const userScope = sessionState.status === "signed-in" ? sessionState.email ?? UNKNOWN_USER_SCOPE : UNKNOWN_USER_SCOPE;
 
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -120,6 +133,7 @@ export default function Home() {
     setFallbackMessage(null);
 
     const body = prepareAnalysisJobCreateRequestBody(
+      userScope,
       selectedProjectId,
       brandName,
       urls,

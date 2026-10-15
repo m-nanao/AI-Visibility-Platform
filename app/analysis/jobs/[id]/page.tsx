@@ -23,17 +23,12 @@ import {
   LONG_WAIT_THRESHOLD_MS,
   isTerminalJobStatus,
   resolveAnalysisJobResultOutcome,
-  resolveAnalysisJobStatusOutcome,
 } from "../../../lib/analysis-jobs";
 import type {
   AnalysisJobResultViewState,
   AnalysisJobStatusViewState,
 } from "../../../lib/analysis-jobs";
-import {
-  computeNextPollDelayMs,
-  shouldContinuePollingForJobStatus,
-  shouldStopPollingForStatusCode,
-} from "../../../lib/analysis-job-polling";
+import { createAnalysisJobPollController } from "../../../lib/analysis-job-poll-controller";
 
 /**
  * The async-job analysis status/result screen —
@@ -62,85 +57,42 @@ export default function AnalysisJobPage() {
   // callback without re-registering that timer on every poll tick.
   const latestStatusRef = useRef<string | undefined>(undefined);
 
-  // Status polling: a single setTimeout chain (never setInterval, and
-  // never more than one chain running at once) that stops as soon as
-  // a terminal status (completed/partial/failed) is reached, or the
-  // backend returns 401/403/404 — see
-  // app/lib/analysis-job-polling.ts's shouldStopPollingForStatusCode()/
-  // shouldContinuePollingForJobStatus(). Visibility-aware: while the
-  // tab is hidden, no fetch is made at all (no wasted requests); a
-  // `visibilitychange` listener triggers an immediate re-poll as soon
-  // as the tab becomes visible again, replacing whatever was still
-  // scheduled.
+  // Status polling: delegated to createAnalysisJobPollController()
+  // (app/lib/analysis-job-poll-controller.ts), which owns every
+  // concurrency decision — never more than one status fetch in
+  // flight, a `visibilitychange` while a fetch is already running
+  // never starts a second one, a stale response can never overwrite a
+  // newer one, no state update after unmount, and polling stops for
+  // good after a terminal status (completed/partial/failed) or a
+  // 401/403/404 — see that module's docstring for the full list. This
+  // component only wires the controller's dependencies to the real
+  // fetch/document/window and forwards the outcome into `view`.
   useEffect(() => {
     if (!id) return;
 
-    let cancelled = false;
-    let stopped = false;
-    let consecutiveFailures = 0;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    function scheduleNext() {
-      if (cancelled || stopped) return;
-      if (timeoutId) clearTimeout(timeoutId);
-      timeoutId = setTimeout(poll, computeNextPollDelayMs(consecutiveFailures));
-    }
-
-    async function poll() {
-      if (cancelled || stopped) return;
-      if (document.visibilityState === "hidden") {
-        // Nothing scheduled here on purpose — the visibilitychange
-        // listener below is what resumes polling once the tab is
-        // visible again, so no timer needs to keep ticking in the
-        // background while hidden.
-        return;
-      }
-
-      const response = await fetch(`/api/analysis-jobs/${encodeURIComponent(id)}`).catch(
-        () => null,
-      );
-      if (cancelled || stopped) return;
-
-      if (!response) {
-        consecutiveFailures += 1;
-        scheduleNext();
-        return;
-      }
-
-      consecutiveFailures = 0;
-      const outcome = await resolveAnalysisJobStatusOutcome(response);
-      if (cancelled || stopped) return;
-
-      setView(outcome);
-      if (outcome.kind === "status") {
-        latestStatusRef.current = outcome.job.status;
-      }
-
-      if (shouldStopPollingForStatusCode(response.status)) {
-        stopped = true;
-        return;
-      }
-      if (outcome.kind === "status" && !shouldContinuePollingForJobStatus(outcome.job.status)) {
-        stopped = true;
-        return;
-      }
-
-      scheduleNext();
-    }
+    const controller = createAnalysisJobPollController({
+      fetchStatus: (signal) =>
+        fetch(`/api/analysis-jobs/${encodeURIComponent(id)}`, { signal }).catch(() => null),
+      onOutcome: (outcome) => {
+        setView(outcome);
+        if (outcome.kind === "status") {
+          latestStatusRef.current = outcome.job.status;
+        }
+      },
+      isVisible: () => document.visibilityState === "visible",
+      setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    });
 
     function handleVisibilityChange() {
-      if (document.visibilityState === "visible" && !cancelled && !stopped) {
-        if (timeoutId) clearTimeout(timeoutId);
-        poll();
-      }
+      controller.handleVisibilityChange(document.visibilityState === "visible");
     }
 
-    poll();
+    controller.start();
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
+      controller.stop();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [id]);

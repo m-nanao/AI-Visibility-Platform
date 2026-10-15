@@ -111,39 +111,74 @@ describe("resolveIdempotencyKeyForJobSubmission", () => {
     vi.unstubAllGlobals();
   });
 
+  const USER_A = "user-a@example.com";
+  const USER_B = "user-b@example.com";
   const content = { brandName: "Acme", urls: ["https://example.com"] };
 
   it("generates a key when no prior submission is stored", () => {
-    const key = resolveIdempotencyKeyForJobSubmission("project-1", content, () => "key-1");
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
     expect(key).toBe("key-1");
   });
 
-  it("reuses the stored key for a retry of the exact same input", () => {
-    const first = resolveIdempotencyKeyForJobSubmission("project-1", content, () => "key-1");
-    const second = resolveIdempotencyKeyForJobSubmission("project-1", content, () => "key-2");
+  it("reuses the stored key for a retry of the exact same input (same user, same project, communication failure)", () => {
+    const first = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
+    const second = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-2");
 
     expect(first).toBe("key-1");
     expect(second).toBe("key-1"); // reused, not "key-2"
   });
 
-  it("generates a new key when the input content differs", () => {
-    resolveIdempotencyKeyForJobSubmission("project-1", content, () => "key-1");
+  it("reuses the stored key after a simulated reload (a fresh call with the same stored window)", () => {
+    // sessionStorage genuinely survives a same-tab reload in a real
+    // browser; makeFakeWindow()'s store persisting across calls
+    // within this test is the correct abstraction for that.
+    resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-2");
+    expect(key).toBe("key-1");
+  });
+
+  it("generates a new key when the brand name/content differs", () => {
+    resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
     const differentContent = { brandName: "Different Brand", urls: [] };
-    const key = resolveIdempotencyKeyForJobSubmission("project-1", differentContent, () => "key-2");
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", differentContent, () => "key-2");
+
+    expect(key).toBe("key-2");
+  });
+
+  it("generates a new key when the urls/documents differ", () => {
+    resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
+    const differentUrls = { brandName: "Acme", urls: ["https://different.example.com"] };
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", differentUrls, () => "key-2");
+
+    expect(key).toBe("key-2");
+  });
+
+  it("generates a new key when a provider mode differs", () => {
+    const withMode = { brandName: "Acme", urls: ["https://example.com"], chatgptMode: "off" as const };
+    resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", withMode, () => "key-1");
+    const differentMode = { ...withMode, chatgptMode: "openai" as const };
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", differentMode, () => "key-2");
 
     expect(key).toBe("key-2");
   });
 
   it("generates a new key when the projectId differs, even with identical content", () => {
-    resolveIdempotencyKeyForJobSubmission("project-1", content, () => "key-1");
-    const key = resolveIdempotencyKeyForJobSubmission("project-2", content, () => "key-2");
+    resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-2", content, () => "key-2");
+
+    expect(key).toBe("key-2");
+  });
+
+  it("generates a new key when a different user submits identical project/content (never reuses another user's key)", () => {
+    resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
+    const key = resolveIdempotencyKeyForJobSubmission(USER_B, "project-1", content, () => "key-2");
 
     expect(key).toBe("key-2");
   });
 
   it("falls back to generating a fresh key when window/sessionStorage is unavailable", () => {
     vi.unstubAllGlobals(); // no window at all
-    const key = resolveIdempotencyKeyForJobSubmission("project-1", content, () => "key-1");
+    const key = resolveIdempotencyKeyForJobSubmission(USER_A, "project-1", content, () => "key-1");
     expect(key).toBe("key-1");
   });
 });
@@ -154,6 +189,7 @@ describe("clearPendingJobSubmission", () => {
     vi.stubGlobal("window", fakeWindow);
 
     resolveIdempotencyKeyForJobSubmission(
+      "user-a@example.com",
       "project-1",
       { brandName: "Acme" },
       () => "key-1",
@@ -169,6 +205,32 @@ describe("clearPendingJobSubmission", () => {
 
   it("does not throw when there is no window", () => {
     expect(() => clearPendingJobSubmission()).not.toThrow();
+  });
+
+  it("prevents a cleared key from being reused by a subsequent identical submission (202-accepted case)", () => {
+    const fakeWindow = makeFakeWindow();
+    vi.stubGlobal("window", fakeWindow);
+
+    const content = { brandName: "Acme", urls: ["https://example.com"] };
+    const first = resolveIdempotencyKeyForJobSubmission(
+      "user-a@example.com",
+      "project-1",
+      content,
+      () => "key-1",
+    );
+    clearPendingJobSubmission(); // simulates main.tsx after an "accepted" outcome
+
+    const second = resolveIdempotencyKeyForJobSubmission(
+      "user-a@example.com",
+      "project-1",
+      content,
+      () => "key-2",
+    );
+
+    expect(first).toBe("key-1");
+    expect(second).toBe("key-2"); // a fresh explicit submission, not a reuse
+
+    vi.unstubAllGlobals();
   });
 });
 

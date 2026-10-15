@@ -107,12 +107,20 @@ const PENDING_JOB_SUBMISSION_STORAGE_KEY = "async-analysis-pending-job-submissio
 
 type PendingJobSubmissionRecord = { idempotencyKey: string; inputHash: string };
 
-function hashJobSubmissionInput(projectId: string, content: AnalyzeRequestBody): string {
+function hashJobSubmissionInput(
+  userScope: string,
+  projectId: string,
+  content: AnalyzeRequestBody,
+): string {
   // `content` is always built by buildAnalyzeRequestBody() with a
   // fixed key order, so JSON.stringify is a stable, deterministic
   // serialization here — no need for a real hash function for this
-  // comparison-only purpose.
-  return JSON.stringify({ projectId, content });
+  // comparison-only purpose. `userScope` (see
+  // resolveIdempotencyKeyForJobSubmission()'s docstring) is included
+  // so a stored key is never reused across two different signed-in
+  // users sharing the same browser tab, even if their projectId/
+  // content happen to be identical.
+  return JSON.stringify({ userScope, projectId, content });
 }
 
 function readPendingJobSubmission(): PendingJobSubmissionRecord | null {
@@ -167,17 +175,30 @@ export function generateIdempotencyKey(): string {
 
 /**
  * Resolves the idempotency key to use for a "start analysis"
- * submission with the given `projectId`/`content` — reusing a
- * previously stored key if (and only if) it was generated for the
- * exact same input, otherwise generating and persisting a new one.
- * See the module-level comment above for the full reasoning.
+ * submission with the given `userScope`/`projectId`/`content` —
+ * reusing a previously stored key if (and only if) it was generated
+ * for the exact same input, otherwise generating and persisting a new
+ * one. See the module-level comment above for the full reasoning.
+ *
+ * `userScope` identifies *who* is submitting (the signed-in user's
+ * email — see app/page.tsx's call site, which reads it from
+ * useSupabaseSession()) — included specifically so a stored key from
+ * one signed-in user is never reused for a different signed-in user
+ * who happens to submit identical projectId/content in the same
+ * browser tab (e.g. a shared machine where one person logs out and
+ * another logs in without closing the tab). A caller with no
+ * resolvable identity (not signed in, or Supabase unconfigured) must
+ * still pass *some* stable string — app/page.tsx uses a fixed
+ * sentinel in that case — never an empty string, which would
+ * otherwise collide with a different caller's equally-empty scope.
  */
 export function resolveIdempotencyKeyForJobSubmission(
+  userScope: string,
   projectId: string,
   content: AnalyzeRequestBody,
   generateKey: () => string = generateIdempotencyKey,
 ): string {
-  const inputHash = hashJobSubmissionInput(projectId, content);
+  const inputHash = hashJobSubmissionInput(userScope, projectId, content);
   const existing = readPendingJobSubmission();
   if (existing && existing.inputHash === inputHash) {
     return existing.idempotencyKey;
@@ -245,18 +266,27 @@ export function buildAnalysisJobCreateRequestBody(
   return { ...content, projectId, idempotencyKey };
 }
 
+/** Fallback scope passed to resolveIdempotencyKeyForJobSubmission()
+ * when no signed-in user identity is resolvable (should not normally
+ * be reached — POST /api/analysis-jobs requires a session — but kept
+ * explicit rather than passing an empty string, which could otherwise
+ * collide with another equally-unresolved caller). */
+export const UNKNOWN_USER_SCOPE = "unknown-user";
+
 /**
  * Convenience wrapper for the real submission call site
  * (app/page.tsx): builds the analysis-input content, resolves the
  * idempotency key for it (reusing a stored one for a retry of the
- * exact same input, see resolveIdempotencyKeyForJobSubmission()
- * above), and returns the full POST /api/analysis-jobs body in one
- * call. Kept separate from buildAnalysisJobCreateRequestBody() above
- * (which takes an explicit `idempotencyKey`) so that function stays
- * trivially testable with an injected key, while this one owns the
- * actual key-resolution side effect (reading/writing sessionStorage).
+ * exact same input by the exact same user, see
+ * resolveIdempotencyKeyForJobSubmission() above), and returns the
+ * full POST /api/analysis-jobs body in one call. Kept separate from
+ * buildAnalysisJobCreateRequestBody() above (which takes an explicit
+ * `idempotencyKey`) so that function stays trivially testable with an
+ * injected key, while this one owns the actual key-resolution side
+ * effect (reading/writing sessionStorage).
  */
 export function prepareAnalysisJobCreateRequestBody(
+  userScope: string,
   projectId: string,
   brandName: string,
   urls: string[],
@@ -277,7 +307,7 @@ export function prepareAnalysisJobCreateRequestBody(
     claudeMode,
     geminiMode,
   );
-  const idempotencyKey = resolveIdempotencyKeyForJobSubmission(projectId, content);
+  const idempotencyKey = resolveIdempotencyKeyForJobSubmission(userScope, projectId, content);
   return { ...content, projectId, idempotencyKey };
 }
 
