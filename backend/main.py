@@ -103,6 +103,10 @@ from models import (
     MAX_TOTAL_DOCUMENTS_LENGTH,
     MAX_URLS,
     AIOverviewProviderInfo,
+    AnalysisJobAcceptedResponse,
+    AnalysisJobCreateRequest,
+    AnalysisJobResultResponse,
+    AnalysisJobStatusResponse,
     AnalysisMeta,
     AnalysisResult,
     AnalysisRunBrand,
@@ -131,6 +135,11 @@ from services.ai_overview_provider import build_ai_overview_comparison, resolve_
 from services.analysis_history_comparison import build_comparison_response
 from services.analysis_history_repository import (
     AnalysisHistoryReadError,
+    AnalysisJobCreateConflictError,
+    AnalysisJobLimitExceededError,
+    create_queued_analysis_run,
+    get_analysis_job_result,
+    get_analysis_job_status,
     get_analysis_run as repository_get_analysis_run,
     get_connection as open_history_db_connection,
     get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
@@ -142,9 +151,20 @@ from services.analysis_history_repository import (
 )
 from services.ai_gap_comparison import generate_ai_gap_comparison
 from services.gemini_rerun import rerun_gemini_for_analysis_run
-from services.auth_settings import load_auth_settings
-from services.jwt_auth import JWTAuthError, extract_bearer_token, verify_supabase_jwt
-from services.project_access import can_user_access_analysis_run, get_accessible_project_ids
+from services.analysis_jobs_settings import load_analysis_jobs_settings
+from services.auth_settings import is_jwt_verification_configured, load_auth_settings
+from services.jwt_auth import (
+    AuthenticatedUser,
+    JWTAuthError,
+    extract_bearer_token,
+    verify_supabase_jwt,
+)
+from services.project_access import (
+    ProjectAccessError,
+    can_user_access_analysis_run,
+    can_user_access_project,
+    get_accessible_project_ids,
+)
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.claude_provider import build_claude_observation, resolve_claude_mode
@@ -1414,4 +1434,266 @@ def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
     return WebAiGapAiComparisonResponse(
         analysisRunId=analysis_run_id,
         webAiGapAiComparison=outcome.comparison,
+    )
+
+
+# --- Async analysis jobs, Phase 1 only (POST /analysis-jobs, GET
+# /analysis-jobs/{id}, GET /analysis-jobs/{id}/result) — see
+# docs/40_async_analysis_jobs_design.md. Entirely separate from
+# POST /analyze above: no request/response field of /analyze is
+# touched by anything below, and /analyze itself is unchanged.
+#
+# Phase 1 only ever creates a 'queued' row and returns it — there is no
+# worker yet (that is Phase 2), so a job created today sits in
+# 'queued' forever. Gated end-to-end by ANALYSIS_JOBS_ENABLED (see
+# services/analysis_jobs_settings.py), which defaults to False and
+# must stay False in production until Phase 2/3 ship (docs/40 "15").
+#
+# Authentication is Supabase Auth JWT only (see _resolve_job_auth()
+# below) — unlike _resolve_history_access() above, there is no
+# HISTORY_READ_TOKEN fallback for any of these three endpoints, and no
+# dependency on READ_HISTORY_ENABLED (an unrelated flag for the
+# existing history list/detail APIs).
+
+ANALYSIS_JOBS_NOT_ENABLED_MESSAGE = "analysis jobs API is not enabled"
+ANALYSIS_JOBS_AUTH_REQUIRED_MESSAGE = "authentication required"
+ANALYSIS_JOBS_INVALID_TOKEN_MESSAGE = "invalid or expired authentication token"
+ANALYSIS_JOBS_JWT_NOT_CONFIGURED_MESSAGE = "analysis jobs JWT verification is not configured"
+ANALYSIS_JOBS_ACCESS_DENIED_MESSAGE = "analysis job access denied"
+ANALYSIS_JOBS_FAILED_MESSAGE = "failed to process analysis job request"
+ANALYSIS_JOBS_NOT_FOUND_MESSAGE = "analysis job not found"
+ANALYSIS_JOBS_NOT_READY_MESSAGE = "analysis job is not finished yet"
+ANALYSIS_JOBS_CONFLICT_MESSAGE = (
+    "an analysis job with this idempotency key already exists with different input"
+)
+ANALYSIS_JOBS_LIMIT_MESSAGE = "too many queued analysis jobs"
+
+
+def _resolve_job_auth(request: Request) -> AuthenticatedUser | JSONResponse:
+    """Authenticates a caller for POST/GET /analysis-jobs* — see
+    docs/40_async_analysis_jobs_design.md "8.1". Returns the
+    AuthenticatedUser on success, or a JSONResponse to return
+    immediately otherwise:
+
+    - ANALYSIS_JOBS_ENABLED is not set -> 404 (the endpoint behaves as
+      though it doesn't exist at all — docs/40 "7.1" — rather than
+      revealing that a disabled feature exists via a more specific
+      error).
+    - JWT verification itself isn't configured (AUTH_JWT_ENABLED=false
+      or SUPABASE_JWKS_URL unset), or this server can't reach its JWKS
+      endpoint right now -> 503.
+    - Authorization header missing/malformed, or the token fails
+      verification for any other reason (expired, bad signature,
+      wrong issuer/audience, no subject) -> 401.
+
+    Reuses the same `_JWT_UNAVAILABLE_REASONS` classification as
+    _resolve_history_access() above, since the underlying JWT
+    verification call (services/jwt_auth.verify_supabase_jwt()) is the
+    same function and raises the same JWTAuthError.reason values.
+    """
+    jobs_settings = load_analysis_jobs_settings()
+    if not jobs_settings.enabled:
+        return error_response(ANALYSIS_JOBS_NOT_ENABLED_MESSAGE, status_code=404)
+
+    auth_settings = load_auth_settings()
+    if not is_jwt_verification_configured(auth_settings):
+        return error_response(ANALYSIS_JOBS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
+    try:
+        token = extract_bearer_token(authorization_header)
+        authenticated_user = verify_supabase_jwt(token, auth_settings)
+    except JWTAuthError as exc:
+        if exc.reason in _JWT_UNAVAILABLE_REASONS:
+            return error_response(ANALYSIS_JOBS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+        if exc.reason in {"missing_header", "invalid_header"}:
+            return error_response(ANALYSIS_JOBS_AUTH_REQUIRED_MESSAGE, status_code=401)
+        return error_response(ANALYSIS_JOBS_INVALID_TOKEN_MESSAGE, status_code=401)
+
+    return authenticated_user
+
+
+@app.post("/analysis-jobs", response_model=AnalysisJobAcceptedResponse, status_code=202)
+def create_analysis_job(payload: AnalysisJobCreateRequest, request: Request):
+    """Phase 1 of docs/40_async_analysis_jobs_design.md — accepts a
+    job and persists it as a 'queued' analysis_runs row (see
+    services.analysis_history_repository.create_queued_analysis_run()),
+    but never executes any analysis. No AI/external-provider call of
+    any kind happens on this path.
+
+    Validates the same brandName/documents/urls shape POST /analyze
+    already enforces (MAX_BRAND_NAME_LENGTH/_validate_documents()/
+    MAX_URLS), plus the two fields unique to a job: `projectId` (the
+    caller must be a member of the organization owning it, checked via
+    services.project_access.can_user_access_project() — the same
+    membership check the existing read APIs use, reused here as the
+    stand-in for "may create" since this project has no finer-grained
+    per-action permission model yet) and `idempotencyKey` (required,
+    see docs/40 "10").
+    """
+    auth_result = _resolve_job_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+    authenticated_user = auth_result
+
+    project_id = (payload.projectId or "").strip()
+    if not project_id:
+        return error_response("projectId is required")
+
+    idempotency_key = (payload.idempotencyKey or "").strip()
+    if not idempotency_key:
+        return error_response("idempotencyKey is required")
+
+    brand_name = (payload.brandName or "").strip()
+    if not brand_name:
+        return error_response("brandName is required")
+    if len(brand_name) > MAX_BRAND_NAME_LENGTH:
+        return error_response(
+            f"brandName must be {MAX_BRAND_NAME_LENGTH} characters or fewer"
+        )
+
+    if payload.documents is not None:
+        validation_error = _validate_documents(payload.documents)
+        if validation_error:
+            return error_response(validation_error)
+    elif payload.urls is not None:
+        if len(payload.urls) == 0:
+            return error_response("urls must not be empty")
+        if len(payload.urls) > MAX_URLS:
+            return error_response(f"urls must contain {MAX_URLS} or fewer entries")
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_project(conn, authenticated_user.user_id, project_id)
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check project access for analysis job creation")
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if not allowed:
+        return error_response(ANALYSIS_JOBS_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    jobs_settings = load_analysis_jobs_settings()
+
+    try:
+        result = create_queued_analysis_run(
+            project_id=project_id,
+            created_by_user_id=authenticated_user.user_id,
+            idempotency_key=idempotency_key,
+            brand_name=brand_name,
+            documents=payload.documents,
+            urls=payload.urls,
+            common_crawl_mode=payload.commonCrawlMode,
+            common_crawl_domain=payload.commonCrawlDomain,
+            ai_overview_mode=payload.aiOverviewMode,
+            chatgpt_mode=payload.chatgptMode,
+            claude_mode=payload.claudeMode,
+            gemini_mode=payload.geminiMode,
+            max_queued_per_project=jobs_settings.max_queued_per_project,
+            max_queued_per_user=jobs_settings.max_queued_per_user,
+        )
+    except AnalysisJobCreateConflictError:
+        return error_response(ANALYSIS_JOBS_CONFLICT_MESSAGE, status_code=409)
+    except AnalysisJobLimitExceededError:
+        return error_response(ANALYSIS_JOBS_LIMIT_MESSAGE, status_code=429)
+    except AnalysisHistoryReadError:
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    return AnalysisJobAcceptedResponse(
+        analysisRunId=result.analysis_run_id, status=result.status
+    )
+
+
+@app.get("/analysis-jobs/{analysis_run_id}", response_model=AnalysisJobStatusResponse)
+def get_analysis_job(analysis_run_id: str, request: Request):
+    """GET /analysis-jobs/{id} — see docs/40_async_analysis_jobs_design.md
+    "7.2". Uses the same JWT-mode authorization pattern as the existing
+    GET /analysis-runs/{id}: access is checked against
+    `analysis_run_id` itself (via can_user_access_analysis_run()) before
+    anything else is fetched, so a nonexistent id and an inaccessible
+    id are indistinguishable (both 403) — same existence-leak avoidance
+    as the existing history detail endpoint."""
+    auth_result = _resolve_job_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+    authenticated_user = auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_analysis_run(
+                conn, authenticated_user.user_id, analysis_run_id
+            )
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check analysis run access for analysis job status")
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if not allowed:
+        return error_response(ANALYSIS_JOBS_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        job = get_analysis_job_status(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if job is None:
+        return error_response(ANALYSIS_JOBS_NOT_FOUND_MESSAGE, status_code=404)
+
+    return AnalysisJobStatusResponse(
+        analysisRunId=job["id"],
+        status=job["status"],
+        startedAt=job["startedAt"],
+        completedAt=job["completedAt"],
+        errorMessage=job["errorMessage"],
+    )
+
+
+@app.get(
+    "/analysis-jobs/{analysis_run_id}/result", response_model=AnalysisJobResultResponse
+)
+def get_analysis_job_result_endpoint(analysis_run_id: str, request: Request):
+    """GET /analysis-jobs/{id}/result — see
+    docs/40_async_analysis_jobs_design.md "13.2". `queued`/`running`
+    jobs return 409 (no result-shaped body exists yet, and the
+    placeholder result_json='{}' Phase 1 writes at creation time is
+    never returned as if it were a real result — see
+    services.analysis_history_repository.get_analysis_job_result()).
+    `completed`/`partial`/`failed` all return 200 with this endpoint's
+    normal response model; a `failed` job has `result`/`meta` both
+    None and `errorMessage` set instead."""
+    auth_result = _resolve_job_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+    authenticated_user = auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_analysis_run(
+                conn, authenticated_user.user_id, analysis_run_id
+            )
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check analysis run access for analysis job result")
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if not allowed:
+        return error_response(ANALYSIS_JOBS_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        job = get_analysis_job_result(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if job is None:
+        return error_response(ANALYSIS_JOBS_NOT_FOUND_MESSAGE, status_code=404)
+
+    if job["status"] in ("queued", "running"):
+        return JSONResponse(
+            status_code=409,
+            content={"error": ANALYSIS_JOBS_NOT_READY_MESSAGE, "status": job["status"]},
+        )
+
+    return AnalysisJobResultResponse(
+        analysisRunId=job["id"],
+        status=job["status"],
+        errorMessage=job["errorMessage"],
+        result=job["result"],
+        meta=job["meta"],
     )

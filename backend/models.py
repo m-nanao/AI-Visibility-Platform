@@ -1050,3 +1050,79 @@ class AnalysisRunComparisonResponse(BaseModel):
     previous: AnalysisRunComparisonRunSummary | None
     diff: AnalysisRunComparisonDiff | None
     warnings: list[str]
+
+
+# --- Async analysis jobs, Phase 1 only (POST /analysis-jobs, GET
+# /analysis-jobs/{id}, GET /analysis-jobs/{id}/result) — see
+# docs/40_async_analysis_jobs_design.md. Phase 1 only ever creates rows
+# with status="queued"; no worker exists yet to advance them, so these
+# models' other status values ("running"/"completed"/"partial"/
+# "failed") are defined now for forward compatibility with Phase 2 but
+# are never produced by this phase's own code paths.
+
+
+class AnalysisJobCreateRequest(BaseModel):
+    """POST /analysis-jobs body. Mirrors AnalyzeRequest's analysis
+    input fields exactly (brandName/documents/urls/four provider
+    modes/commonCrawlDomain) plus two fields AnalyzeRequest has no
+    concept of: `projectId` (which project this job belongs to — every
+    job is authorized against this, see
+    docs/40_async_analysis_jobs_design.md "8.1") and `idempotencyKey`
+    (the client-generated key for this one "start analysis" operation,
+    see docs/40 "10.1"). Both are required — unlike AnalyzeRequest's
+    unauthenticated POST /analyze, a job always has a known caller and
+    a known idempotency scope.
+    """
+
+    projectId: str
+    idempotencyKey: str
+    brandName: str | None = None
+    documents: list[str] | None = None
+    urls: list[str] | None = None
+    aiOverviewMode: AiOverviewProviderMode | None = None
+    chatgptMode: ChatGptProviderMode | None = None
+    claudeMode: ClaudeProviderMode | None = None
+    geminiMode: GeminiProviderMode | None = None
+    commonCrawlMode: CommonCrawlProviderMode | None = None
+    commonCrawlDomain: str | None = None
+
+
+class AnalysisJobAcceptedResponse(BaseModel):
+    """202 Accepted body for a newly created (or idempotently reused)
+    job. `status` can be any job status, not only "queued" — an
+    idempotency-key replay of an already-finished job (Phase 2+) still
+    returns 202 with that job's current status rather than re-running
+    anything, see docs/40_async_analysis_jobs_design.md "10.2"."""
+
+    analysisRunId: str
+    status: str
+
+
+class AnalysisJobStatusResponse(BaseModel):
+    """GET /analysis-jobs/{id}. Deliberately excludes result_json/
+    meta_json — mirrors list_analysis_runs()'s existing "never includes
+    result_json" discipline (services/analysis_history_repository.py)."""
+
+    analysisRunId: str
+    status: str
+    startedAt: str | None
+    completedAt: str | None
+    errorMessage: str | None
+
+
+class AnalysisJobResultResponse(BaseModel):
+    """GET /analysis-jobs/{id}/result, for a job whose status is
+    "completed"/"partial"/"failed" — see
+    docs/40_async_analysis_jobs_design.md "13.2". `result`/`meta` are
+    only ever populated for "completed"/"partial"; a "failed" job
+    always has both None (there is nothing to show) with
+    `errorMessage` set instead. A "queued"/"running" job never reaches
+    this model at all — main.py returns a plain error_response() 409
+    for those instead, since there is no result-shaped body to return
+    yet."""
+
+    analysisRunId: str
+    status: str
+    errorMessage: str | None = None
+    result: dict | None = None
+    meta: dict | None = None

@@ -68,6 +68,12 @@ except ImportError:  # pragma: no cover - exercised when the optional driver isn
     psycopg = None
     Jsonb = None
 
+# Used by create_queued_analysis_run()'s defense-in-depth path (see its
+# docstring) — guarded the same way as psycopg/Jsonb above so this
+# module still imports cleanly when the optional driver isn't
+# installed.
+UniqueViolation = psycopg.errors.UniqueViolation if psycopg is not None else None
+
 DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 
@@ -810,3 +816,467 @@ def update_analysis_result(
         raise AnalysisHistoryReadError("failed to update analysis result") from exc
 
     return updated
+
+
+# --- Async analysis jobs, Phase 1 only (POST /analysis-jobs, GET
+# /analysis-jobs/{id}, GET /analysis-jobs/{id}/result) — see
+# docs/40_async_analysis_jobs_design.md. Phase 1 adds exactly one new
+# write path (create_queued_analysis_run()) and two new read paths
+# (get_analysis_job_status()/get_analysis_job_result()); no worker
+# exists yet, so nothing here ever transitions a row away from
+# 'queued' — that is Phase 2's job (docs/40 "15").
+
+
+@dataclass(frozen=True)
+class AnalysisJobCreateResult:
+    """Returned by create_queued_analysis_run() on success. `created`
+    distinguishes "this call inserted a brand-new queued row" (True)
+    from "an existing job with the same (project_id,
+    created_by_user_id, idempotency_key) was returned instead because
+    its stored input matched" (False — see docs/40
+    "10.2"). `status` is always "queued" when created=True; when
+    created=False it mirrors whatever status the existing job already
+    has (any value is possible once Phase 2 ships a worker, though
+    Phase 1 itself never writes anything other than "queued")."""
+
+    analysis_run_id: str
+    status: str
+    created: bool
+
+
+class AnalysisJobCreateConflictError(Exception):
+    """Raised by create_queued_analysis_run() when the same
+    (project_id, created_by_user_id, idempotency_key) already has a job
+    whose stored input does not match this call's input — see
+    docs/40_async_analysis_jobs_design.md "10.2". main.py turns this
+    into a 409. Carries the existing job's id for diagnostics, even
+    though main.py's 409 body doesn't currently expose it."""
+
+    def __init__(self, existing_analysis_run_id: str):
+        super().__init__("idempotency key reused with a different request body")
+        self.existing_analysis_run_id = existing_analysis_run_id
+
+
+class AnalysisJobLimitExceededError(Exception):
+    """Raised by create_queued_analysis_run() when creating a new job
+    would meet or exceed the project- or user-scoped queued-job limit
+    — see docs/40_async_analysis_jobs_design.md "8.3". main.py turns
+    this into a 429. `scope` is "project" or "user"."""
+
+    def __init__(self, scope: str, limit: int):
+        super().__init__(f"{scope} queued job limit ({limit}) reached")
+        self.scope = scope
+        self.limit = limit
+
+
+def _canonicalize_job_input(
+    *,
+    brand_name: str,
+    documents: list[str] | None,
+    urls: list[str] | None,
+    common_crawl_mode: str | None,
+    common_crawl_domain: str | None,
+    ai_overview_mode: str | None,
+    chatgpt_mode: str | None,
+    claude_mode: str | None,
+    gemini_mode: str | None,
+) -> dict[str, Any]:
+    """Normalizes one job-creation request's analysis-input fields
+    into the exact shape stored in `analysis_runs.input_snapshot` and
+    compared against on an idempotency-key replay (docs/40
+    "10.1"/"10.2"). Deliberately does *not* reorder/dedupe `documents`
+    or `urls` — a caller sending the same key with a different element
+    order is treated as a genuinely different request (see docs/40
+    task's "入力差分を意図せず無視しないこと") rather than silently
+    normalized away. `brandName` is trimmed (matching main.py's
+    existing `/analyze` handling of the same field);
+    `commonCrawlDomain` is trimmed and treated as absent when blank,
+    matching how an empty string and an omitted field already mean the
+    same thing to services/common_crawl_index.py.
+    """
+    return {
+        "brandName": brand_name.strip(),
+        "documents": documents,
+        "urls": urls,
+        "commonCrawlMode": common_crawl_mode,
+        "commonCrawlDomain": (common_crawl_domain.strip() or None)
+        if common_crawl_domain
+        else None,
+        "aiOverviewMode": ai_overview_mode,
+        "chatgptMode": chatgpt_mode,
+        "claudeMode": claude_mode,
+        "geminiMode": gemini_mode,
+    }
+
+
+def _fetch_existing_job_by_idempotency_key(
+    cur, *, project_id: str, created_by_user_id: str, idempotency_key: str
+):
+    cur.execute(
+        """
+        select id, status, input_snapshot
+        from analysis_runs
+        where project_id = %s
+          and created_by_user_id = %s
+          and idempotency_key = %s
+        limit 1
+        """,
+        (project_id, created_by_user_id, idempotency_key),
+    )
+    return cur.fetchone()
+
+
+def _resolve_job_after_unique_violation(
+    database_url: str,
+    *,
+    project_id: str,
+    created_by_user_id: str,
+    idempotency_key: str,
+    canonical_input: dict[str, Any],
+) -> AnalysisJobCreateResult:
+    """Defense-in-depth path for create_queued_analysis_run() — see its
+    docstring. The transaction that hit the UniqueViolation is already
+    aborted, so this re-queries on a brand-new connection."""
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                existing = _fetch_existing_job_by_idempotency_key(
+                    cur,
+                    project_id=project_id,
+                    created_by_user_id=created_by_user_id,
+                    idempotency_key=idempotency_key,
+                )
+    except Exception as exc:
+        logger.exception(
+            "Failed to resolve analysis job after unique constraint conflict"
+        )
+        raise AnalysisHistoryReadError("failed to create analysis job") from exc
+
+    if existing is None:
+        # The row that caused the UniqueViolation should exist by
+        # definition — if it doesn't, something else is wrong (e.g. it
+        # was deleted in between), so this surfaces as a generic
+        # failure rather than silently creating a duplicate.
+        raise AnalysisHistoryReadError("failed to create analysis job")
+
+    existing_id, existing_status, existing_snapshot = existing
+    if existing_snapshot != canonical_input:
+        raise AnalysisJobCreateConflictError(str(existing_id))
+
+    return AnalysisJobCreateResult(
+        analysis_run_id=str(existing_id), status=existing_status, created=False
+    )
+
+
+def create_queued_analysis_run(
+    *,
+    project_id: str,
+    created_by_user_id: str,
+    idempotency_key: str,
+    brand_name: str,
+    documents: list[str] | None,
+    urls: list[str] | None,
+    common_crawl_mode: str | None,
+    common_crawl_domain: str | None,
+    ai_overview_mode: str | None,
+    chatgpt_mode: str | None,
+    claude_mode: str | None,
+    gemini_mode: str | None,
+    max_queued_per_project: int,
+    max_queued_per_user: int,
+) -> AnalysisJobCreateResult:
+    """Creates one queued analysis job (Phase 1 of
+    docs/40_async_analysis_jobs_design.md "15") — inserts a placeholder
+    `analysis_runs` row (status='queued') and a placeholder
+    `analysis_results` row (result_json='{}', satisfying its NOT NULL
+    constraint — see docs/40 "6.1"), and returns the new
+    analysis_run_id immediately. No analysis is ever executed by this
+    function, or by anything else Phase 1 adds — there is no worker
+    yet (docs/40 "4").
+
+    Idempotency (docs/40 "10"): looks up any existing row with the
+    same (project_id, created_by_user_id, idempotency_key) *before*
+    inserting anything, inside one transaction guarded by two
+    transaction-scoped Postgres advisory locks — one keyed on
+    `project_id`, one keyed on `created_by_user_id`, each in its own
+    hash namespace via `hashtextextended(id, seed)` (seed 0 for the
+    project lock, 1 for the user lock) so a project id and a user id
+    can never collide into the same lock key. Both are always acquired
+    in the same fixed order (project, then user) by every call to this
+    function, which is what rules out a deadlock between two
+    transactions each waiting on a lock the other already holds — see
+    the inline comment at the lock-acquisition site for the full
+    reasoning. This serializes concurrent create attempts for the same
+    project *and* concurrent create attempts by the same user (even
+    across *different* projects), so two simultaneous requests can
+    never both pass the lookup-then-insert check for the same key (a
+    plain SELECT-then-INSERT in application code alone would race
+    under concurrency — see docs/40 "10.1"/"11.1"). If a matching row
+    already exists:
+    - same canonicalized input -> returns that job's existing
+      id/status with created=False (no new row, no limit check — a
+      retry of an already-accepted operation must never be rejected by
+      the very limits meant to stop *new* operations).
+    - different canonicalized input -> raises
+      AnalysisJobCreateConflictError (main.py -> 409).
+
+    Queued-job limits (docs/40 "8.3"): only checked when actually about
+    to insert a new row (never on an idempotent replay, see above) —
+    counts this *project's* and this *user's* currently-'queued' jobs
+    and raises AnalysisJobLimitExceededError if either would meet or
+    exceed its limit (main.py -> 429). Both counts are taken inside the
+    same doubly-locked transaction, so neither check can be slipped
+    past by a burst of concurrent requests — not a burst for the same
+    project (the project lock), and not a burst from the same user
+    spread across different projects (the user lock, which the
+    project-only lock from before this fix could not protect against).
+
+    A psycopg UniqueViolation on the final INSERT (defense in depth —
+    the advisory locks above are the primary safeguard; this is the
+    last-resort DB-level guarantee, see docs/40 "10") is resolved by
+    _resolve_job_after_unique_violation() exactly like the pre-insert
+    existing-row branch above.
+
+    Raises AnalysisHistoryReadError on any other connection/query
+    failure (mirrors every other function in this module).
+    """
+    database_url = _require_connectable()
+
+    canonical_input = _canonicalize_job_input(
+        brand_name=brand_name,
+        documents=documents,
+        urls=urls,
+        common_crawl_mode=common_crawl_mode,
+        common_crawl_domain=common_crawl_domain,
+        ai_overview_mode=ai_overview_mode,
+        chatgpt_mode=chatgpt_mode,
+        claude_mode=claude_mode,
+        gemini_mode=gemini_mode,
+    )
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                # Serializes concurrent create attempts for this
+                # project *and* this user (see docstring above) —
+                # released automatically on commit/rollback since this
+                # is the `_xact_` variant. Two separate locks, not one
+                # combined key, because the two queued-count checks
+                # below have different scopes (project-wide vs.
+                # user-wide) and a lock only serializes callers who
+                # pass the exact same key — a single project-keyed
+                # lock cannot also protect the user-wide count against
+                # two different projects being hit concurrently by the
+                # same user.
+                #
+                # `hashtextextended(id, seed)` is used for both so a
+                # project id and a user id that happen to produce the
+                # same raw hash can never collide into the same lock
+                # key — `seed` (the second argument) gives each
+                # namespace ("0" for project, "1" for user) its own
+                # otherwise-identical hash space, exactly the way this
+                # module already keys on a single namespace for the
+                # project-only lock before this change.
+                #
+                # Always acquired in this fixed order (project, then
+                # user) by every caller, with no code path anywhere in
+                # this module acquiring them in the reverse order —
+                # that fixed global ordering is what rules out a
+                # deadlock between two transactions each waiting on a
+                # lock the other already holds (the classic circular-
+                # wait precondition for deadlock can't arise when
+                # every transaction takes locks in the same order).
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (project_id,),
+                )
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 1))",
+                    (created_by_user_id,),
+                )
+
+                existing = _fetch_existing_job_by_idempotency_key(
+                    cur,
+                    project_id=project_id,
+                    created_by_user_id=created_by_user_id,
+                    idempotency_key=idempotency_key,
+                )
+                if existing is not None:
+                    existing_id, existing_status, existing_snapshot = existing
+                    if existing_snapshot != canonical_input:
+                        raise AnalysisJobCreateConflictError(str(existing_id))
+                    return AnalysisJobCreateResult(
+                        analysis_run_id=str(existing_id),
+                        status=existing_status,
+                        created=False,
+                    )
+
+                cur.execute(
+                    "select count(*) from analysis_runs where project_id = %s and status = 'queued'",
+                    (project_id,),
+                )
+                if cur.fetchone()[0] >= max_queued_per_project:
+                    raise AnalysisJobLimitExceededError(
+                        "project", max_queued_per_project
+                    )
+
+                cur.execute(
+                    "select count(*) from analysis_runs where created_by_user_id = %s and status = 'queued'",
+                    (created_by_user_id,),
+                )
+                if cur.fetchone()[0] >= max_queued_per_user:
+                    raise AnalysisJobLimitExceededError("user", max_queued_per_user)
+
+                cur.execute(
+                    "select id from brands where name = %s and project_id = %s order by created_at desc limit 1",
+                    (canonical_input["brandName"], project_id),
+                )
+                brand_row = cur.fetchone()
+                if brand_row is not None:
+                    brand_id = brand_row[0]
+                else:
+                    cur.execute(
+                        "insert into brands (name, project_id) values (%s, %s) returning id",
+                        (canonical_input["brandName"], project_id),
+                    )
+                    brand_id = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    insert into analysis_runs
+                        (brand_id, project_id, status, input_snapshot,
+                         created_by_user_id, idempotency_key)
+                    values (%s, %s, 'queued', %s, %s, %s)
+                    returning id
+                    """,
+                    (
+                        brand_id,
+                        project_id,
+                        Jsonb(canonical_input),
+                        created_by_user_id,
+                        idempotency_key,
+                    ),
+                )
+                analysis_run_id = cur.fetchone()[0]
+
+                cur.execute(
+                    "insert into analysis_results (analysis_run_id, result_json) values (%s, %s)",
+                    (analysis_run_id, Jsonb({})),
+                )
+            conn.commit()
+    except (AnalysisJobCreateConflictError, AnalysisJobLimitExceededError):
+        raise
+    except Exception as exc:
+        if UniqueViolation is not None and isinstance(exc, UniqueViolation):
+            return _resolve_job_after_unique_violation(
+                database_url,
+                project_id=project_id,
+                created_by_user_id=created_by_user_id,
+                idempotency_key=idempotency_key,
+                canonical_input=canonical_input,
+            )
+        logger.exception("Failed to create queued analysis job")
+        raise AnalysisHistoryReadError("failed to create analysis job") from exc
+
+    return AnalysisJobCreateResult(
+        analysis_run_id=str(analysis_run_id), status="queued", created=True
+    )
+
+
+def get_analysis_job_status(analysis_run_id: str) -> dict[str, Any] | None:
+    """Returns one job's lightweight status — backs GET
+    /analysis-jobs/{id} (docs/40_async_analysis_jobs_design.md "7.2").
+    Deliberately excludes result_json/meta_json, mirroring
+    list_analysis_runs()'s existing "never includes result_json"
+    discipline. Returns None when `analysis_run_id` doesn't exist, is
+    malformed, or is soft-deleted — mirrors get_analysis_run()'s
+    "soft-deleted is not found" handling (main.py turns this into a
+    404).
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    database_url = _require_connectable()
+
+    query = """
+        select status, started_at, completed_at, error_message
+        from analysis_runs
+        where id = %s and deleted_at is null
+    """
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (analysis_run_id,))
+                row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to get analysis job status from DB")
+        raise AnalysisHistoryReadError("failed to query analysis job") from exc
+
+    if row is None:
+        return None
+
+    return {
+        "id": analysis_run_id,
+        "status": row[0],
+        "startedAt": row[1].isoformat() if row[1] is not None else None,
+        "completedAt": row[2].isoformat() if row[2] is not None else None,
+        "errorMessage": row[3],
+    }
+
+
+def get_analysis_job_result(analysis_run_id: str) -> dict[str, Any] | None:
+    """Returns one job's status plus result_json/meta_json *only* when
+    status is 'completed'/'partial' — backs GET
+    /analysis-jobs/{id}/result (docs/40_async_analysis_jobs_design.md
+    "13.2"). For every other status (including the placeholder
+    result_json='{}' Phase 1 writes at job creation — docs/40 "6.1"),
+    `result`/`meta` are both None; callers must never surface that
+    placeholder as if it were a real analysis result. Returns None
+    when `analysis_run_id` doesn't exist, is malformed, or is
+    soft-deleted (main.py turns this into a 404).
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    database_url = _require_connectable()
+
+    query = """
+        select ar.status, ar.error_message, res.result_json, res.meta_json
+        from analysis_runs ar
+        left join analysis_results res on res.analysis_run_id = ar.id
+        where ar.id = %s and ar.deleted_at is null
+        order by res.created_at desc
+        limit 1
+    """
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (analysis_run_id,))
+                row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to get analysis job result from DB")
+        raise AnalysisHistoryReadError("failed to query analysis job result") from exc
+
+    if row is None:
+        return None
+
+    status, error_message, result_json, meta_json = row
+    is_finished_with_result = status in ("completed", "partial")
+
+    return {
+        "id": analysis_run_id,
+        "status": status,
+        "errorMessage": error_message,
+        "result": result_json if is_finished_with_result else None,
+        "meta": meta_json if is_finished_with_result else None,
+    }
