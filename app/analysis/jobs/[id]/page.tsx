@@ -1,0 +1,307 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import AppHeader from "../../../components/AppHeader";
+import AnalysisDashboard from "../../../components/AnalysisDashboard";
+import { buildHistoryDetailPath } from "../../../lib/analysis-history";
+import {
+  JOB_STATUS_BACK_TO_INPUT_TEXT,
+  JOB_STATUS_COMPLETED_HEADING,
+  JOB_STATUS_FAILED_BODY,
+  JOB_STATUS_FAILED_HEADING,
+  JOB_STATUS_LONG_WAIT_MESSAGE,
+  JOB_STATUS_PARTIAL_BODY,
+  JOB_STATUS_PARTIAL_HEADING,
+  JOB_STATUS_QUEUED_BODY,
+  JOB_STATUS_QUEUED_HEADING,
+  JOB_STATUS_RESULT_LINK_TEXT,
+  JOB_STATUS_RUNNING_BODY,
+  JOB_STATUS_RUNNING_HEADING,
+  JOB_STATUS_WORKER_CAVEAT,
+  LONG_WAIT_THRESHOLD_MS,
+  isTerminalJobStatus,
+  resolveAnalysisJobResultOutcome,
+} from "../../../lib/analysis-jobs";
+import type {
+  AnalysisJobResultViewState,
+  AnalysisJobStatusViewState,
+} from "../../../lib/analysis-jobs";
+import { createAnalysisJobPollController } from "../../../lib/analysis-job-poll-controller";
+
+/**
+ * The async-job analysis status/result screen —
+ * docs/40_async_analysis_jobs_design.md "15. Phase 3". Reached from
+ * app/page.tsx (when NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS=true) right
+ * after POST /api/analysis-jobs returns 202, and also directly via
+ * its own URL (reload, bookmark, a link from history) — the
+ * `analysisRunId` in the URL is the only state this page depends on;
+ * everything else is re-fetched from the backend on every load (see
+ * the polling effect below), never assumed to still be true from a
+ * previous visit.
+ *
+ * All display logic (status text, which outcomes stop polling, how
+ * to interpret a fetch Response) lives in app/lib/analysis-jobs.ts /
+ * app/lib/analysis-job-polling.ts as plain, unit-tested functions —
+ * this component is deliberately thin wiring around them (same
+ * convention as app/history/[id]/page.tsx).
+ */
+export default function AnalysisJobPage() {
+  const params = useParams<{ id: string }>();
+  const id = params?.id;
+  const [view, setView] = useState<AnalysisJobStatusViewState>({ kind: "loading" });
+  const [resultView, setResultView] = useState<AnalysisJobResultViewState>({ kind: "loading" });
+  const [showLongWait, setShowLongWait] = useState(false);
+  // Keeps the latest status reachable from the long-wait timer's
+  // callback without re-registering that timer on every poll tick.
+  const latestStatusRef = useRef<string | undefined>(undefined);
+
+  // Status polling: delegated to createAnalysisJobPollController()
+  // (app/lib/analysis-job-poll-controller.ts), which owns every
+  // concurrency decision — never more than one status fetch in
+  // flight, a `visibilitychange` while a fetch is already running
+  // never starts a second one, a stale response can never overwrite a
+  // newer one, no state update after unmount, and polling stops for
+  // good after a terminal status (completed/partial/failed) or a
+  // 401/403/404 — see that module's docstring for the full list. This
+  // component only wires the controller's dependencies to the real
+  // fetch/document/window and forwards the outcome into `view`.
+  useEffect(() => {
+    if (!id) return;
+
+    const controller = createAnalysisJobPollController({
+      fetchStatus: (signal) =>
+        fetch(`/api/analysis-jobs/${encodeURIComponent(id)}`, { signal }).catch(() => null),
+      onOutcome: (outcome) => {
+        setView(outcome);
+        if (outcome.kind === "status") {
+          latestStatusRef.current = outcome.job.status;
+        }
+      },
+      isVisible: () => document.visibilityState === "visible",
+      setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    });
+
+    function handleVisibilityChange() {
+      controller.handleVisibilityChange(document.visibilityState === "visible");
+    }
+
+    controller.start();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      controller.stop();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [id]);
+
+  // Fetches the saved result exactly once, only after the job has
+  // actually reached "completed"/"partial" — never polled, and never
+  // attempted for "queued"/"running"/"failed" (a failed job has no
+  // result to fetch; its errorMessage already comes from the status
+  // response above).
+  useEffect(() => {
+    if (!id) return;
+    if (view.kind !== "status") return;
+    if (view.job.status !== "completed" && view.job.status !== "partial") return;
+
+    let cancelled = false;
+
+    async function loadResult() {
+      const response = await fetch(
+        `/api/analysis-jobs/${encodeURIComponent(id)}/result`,
+      ).catch(() => null);
+      if (cancelled) return;
+      const outcome = await resolveAnalysisJobResultOutcome(response);
+      if (cancelled) return;
+      setResultView(outcome);
+    }
+
+    loadResult();
+    return () => {
+      cancelled = true;
+    };
+    // Re-runs only when the job transitions into a status that
+    // warrants fetching the result — not on every poll tick, since
+    // `view` changing from "running" to "running" again (same status,
+    // different object identity) would otherwise re-fetch needlessly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, view.kind === "status" ? view.job.status : undefined]);
+
+  // An honest "this is taking a while" notice — never a fabricated
+  // progress percentage or ETA, since the backend provides neither
+  // (docs/40 Phase 3 task's "5. 分析中画面"). Cleared automatically
+  // once a terminal status is reached (the effect above stops
+  // updating `view` at that point, so this timer firing afterward is
+  // harmless, but suppressed anyway via the `stopped`-equivalent
+  // check on latestStatusRef below for a cleaner UI).
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      const status = latestStatusRef.current;
+      if (!status || !isTerminalJobStatus(status)) {
+        setShowLongWait(true);
+      }
+    }, LONG_WAIT_THRESHOLD_MS);
+    return () => clearTimeout(timeoutId);
+  }, []);
+
+  return (
+    <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
+      <AppHeader />
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        {view.kind === "loading" && (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            分析の状態を確認しています...
+          </p>
+        )}
+
+        {(view.kind === "unauthorized" ||
+          view.kind === "forbidden" ||
+          view.kind === "notFound" ||
+          view.kind === "error") && (
+          <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+            <p>{view.message}</p>
+            <div className="mt-3">
+              <Link
+                href="/"
+                className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+              >
+                {JOB_STATUS_BACK_TO_INPUT_TEXT}
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {view.kind === "status" && (
+          <JobStatusBody
+            status={view.job.status}
+            errorMessage={view.job.errorMessage}
+            showLongWait={showLongWait}
+            resultView={resultView}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function JobStatusBody({
+  status,
+  errorMessage,
+  showLongWait,
+  resultView,
+}: {
+  status: string;
+  errorMessage?: string;
+  showLongWait: boolean;
+  resultView: AnalysisJobResultViewState;
+}) {
+  if (status === "queued" || status === "running") {
+    return (
+      <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h1 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+          {status === "queued" ? JOB_STATUS_QUEUED_HEADING : JOB_STATUS_RUNNING_HEADING}
+        </h1>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+          {status === "queued" ? JOB_STATUS_QUEUED_BODY : JOB_STATUS_RUNNING_BODY}
+        </p>
+        {showLongWait && (
+          <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            {JOB_STATUS_LONG_WAIT_MESSAGE}
+          </p>
+        )}
+        <p className="mt-3 text-xs text-zinc-400 dark:text-zinc-500">
+          {JOB_STATUS_WORKER_CAVEAT}
+        </p>
+      </div>
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h1 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+          {JOB_STATUS_FAILED_HEADING}
+        </h1>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{JOB_STATUS_FAILED_BODY}</p>
+        {errorMessage && (
+          <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{errorMessage}</p>
+        )}
+        <div className="mt-4">
+          <Link
+            href="/"
+            className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            {JOB_STATUS_BACK_TO_INPUT_TEXT}
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // completed / partial
+  return (
+    <div>
+      <div className="mb-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h1 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+          {status === "partial" ? JOB_STATUS_PARTIAL_HEADING : JOB_STATUS_COMPLETED_HEADING}
+        </h1>
+        {status === "partial" && (
+          <p className="mt-2 text-sm text-amber-700 dark:text-amber-400">
+            {JOB_STATUS_PARTIAL_BODY}
+          </p>
+        )}
+      </div>
+
+      {resultView.kind === "loading" && (
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">結果を読み込んでいます...</p>
+      )}
+
+      {(resultView.kind === "unauthorized" ||
+        resultView.kind === "forbidden" ||
+        resultView.kind === "notFound" ||
+        resultView.kind === "incompatible" ||
+        resultView.kind === "error") && (
+        <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+          <p>{resultView.message}</p>
+        </div>
+      )}
+
+      {resultView.kind === "notReady" && (
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">結果を読み込んでいます...</p>
+      )}
+
+      {resultView.kind === "failed" && (
+        <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+          <p>{JOB_STATUS_FAILED_BODY}</p>
+          {resultView.errorMessage && (
+            <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
+              {resultView.errorMessage}
+            </p>
+          )}
+        </div>
+      )}
+
+      {resultView.kind === "success" && (
+        <>
+          {resultView.result.analysisRunId && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+              <p className="text-sm text-blue-900 dark:text-blue-200">
+                保存済みの履歴詳細からもこの結果を確認できます。
+              </p>
+              <Link
+                href={buildHistoryDetailPath(resultView.result.analysisRunId)}
+                className="shrink-0 rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+              >
+                {JOB_STATUS_RESULT_LINK_TEXT}
+              </Link>
+            </div>
+          )}
+          <AnalysisDashboard result={resultView.result} />
+        </>
+      )}
+    </div>
+  );
+}

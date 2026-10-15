@@ -509,6 +509,17 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「21. Phase 2 実装状況」を参照。
 - **2026-10-16、レビューで見つかった2つの不具合を修正**（同branch、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「22」参照）。(1)分析完了保存時にlease（worker所有権の期限）の有効性チェックが漏れていたため、ごく短い時間帯（lease失効直後〜次回の自動整理が走るまでの間）に限り、本来失効しているはずの古いworkerの結果が保存されてしまう可能性があった——修正済み。(2)全provider有効時など分析が長くかかる場合、workerの処理中にleaseが更新されず、正常に動作中のジョブが誤って「失敗」扱いにされる可能性があった——分析実行中に一定間隔でleaseを更新する仕組み（heartbeat）を追加して解消した。**いずれもbackend内部の安全性修正であり、通常の利用・デモでの見え方は変わらない**（`ANALYSIS_JOBS_WORKER_ENABLED`は引き続き未設定）。**Render無料プランでプロセス自体が停止した場合はheartbeatも止まるため、処理中だったジョブの復旧はそのプロセスが次に起動するまで遅れる**——これは非同期ジョブ化全体の既知の制約であり、今回の修正でも変わらない。
 
+## 34. 非同期分析ジョブAPIのPhase 3について（2026-10-16追記、frontend実装・本番未有効）
+
+`feature/async-analysis-jobs-phase3`で、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)のPhase 3（非同期分析の画面・ポーリング・状態復元）をfrontendに追加した。**通常の利用・デモでは何も変わらない**——`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`が未設定（デフォルトfalse）のため、分析開始ボタンは引き続き既存の`POST /api/analyze`を呼ぶ同期フローのまま動作する。
+
+- 同期フローと非同期フローを切り替える新しいfeature flag`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`を追加した（本番Vercelには設定していない）。
+- 非同期フロー（flag=trueの場合のみ）: 分析開始時にジョブを受け付け（`POST /api/analysis-jobs`）、`/analysis/jobs/{id}`という新しい画面へ移動する。この画面はqueued/running/completed/partial/failedそれぞれの状態を表示し、一定間隔（初期値5秒、通信エラー時は徐々に間隔を伸ばす）で状態を確認する。完了・一部完了のときは保存済みの結果を取得して表示し、既存の履歴詳細画面への導線も表示する。
+- 調査の過程で、「分析を開始するプロジェクト」をfrontendが知る手段が元々なかったことが判明したため、ログイン中のユーザーが所属するプロジェクトを返す新しいbackend API（`GET /me/projects`）を追加した。所属プロジェクトが1件なら自動選択、複数件なら選択UI、0件なら分析を開始できない旨を案内する。
+- 二重クリック・誤った二重送信を防ぐため、分析開始ボタンは送信中無効化され、同じ入力内容での再送（通信切断後の再送やページ再読み込み後の再送を含む）は同じ識別子を使う。入力内容を変えて送信した場合や、画面を操作して明示的にやり直した場合は新しい識別子になる。
+- このページを閉じても、処理が稼働中であれば分析は継続される——Render無料プランでサーバーが一時停止している場合は、処理の開始が遅れることがある旨を画面に明記している。
+- 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「23. Phase 3 実装状況」を参照。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
