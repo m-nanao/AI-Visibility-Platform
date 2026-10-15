@@ -124,6 +124,10 @@ def db_connection():
                 deleted_at timestamptz,
                 created_by_user_id uuid,
                 idempotency_key text,
+                locked_by text,
+                locked_at timestamptz,
+                lease_expires_at timestamptz,
+                attempt_count integer not null default 0,
                 created_at timestamptz not null default now()
             )
             """
@@ -578,3 +582,636 @@ def test_migration_005_preserves_existing_history_and_enforces_idempotency():
         with conn.cursor() as cur:
             cur.execute(f"drop schema if exists {schema} cascade")
         conn.close()
+
+
+# --- Phase 2 worker functions (claim/complete/fail_expired) ----------------
+# — migration 006's locked_by/locked_at/lease_expires_at/attempt_count
+# columns are included in the db_connection fixture's schema above (see
+# its create table analysis_runs statement) — this section proves the
+# real safety properties a mocked test cannot:
+# claim_next_queued_analysis_run()'s `for update skip locked` under
+# genuine concurrency, and complete_analysis_job()'s stale-worker
+# rejection under a genuine race between two real connections.
+
+
+class _PatchedDbSettings:
+    def __init__(self, database_url):
+        self.database_url = database_url
+        self.save_enabled = True
+
+
+def _patched_load_db_settings(database_url):
+    import services.analysis_history_repository as repo
+
+    original = repo.load_db_settings
+    repo.load_db_settings = lambda: _PatchedDbSettings(database_url)
+    return original
+
+
+def _restore_load_db_settings(original):
+    import services.analysis_history_repository as repo
+
+    repo.load_db_settings = original
+
+
+def _claim(database_url, *, worker_id, lease_seconds=180):
+    from services.analysis_history_repository import claim_next_queued_analysis_run
+
+    original = _patched_load_db_settings(database_url)
+    try:
+        return claim_next_queued_analysis_run(worker_id=worker_id, lease_seconds=lease_seconds)
+    finally:
+        _restore_load_db_settings(original)
+
+
+def _complete(database_url, analysis_run_id, **kwargs):
+    from services.analysis_history_repository import complete_analysis_job
+
+    original = _patched_load_db_settings(database_url)
+    try:
+        return complete_analysis_job(analysis_run_id, **kwargs)
+    finally:
+        _restore_load_db_settings(original)
+
+
+def _fail_expired(database_url):
+    from services.analysis_history_repository import fail_expired_running_analysis_runs
+
+    original = _patched_load_db_settings(database_url)
+    try:
+        return fail_expired_running_analysis_runs()
+    finally:
+        _restore_load_db_settings(original)
+
+
+def _extend(database_url, analysis_run_id, *, worker_id, lease_seconds=180):
+    from services.analysis_history_repository import extend_analysis_job_lease
+
+    original = _patched_load_db_settings(database_url)
+    try:
+        return extend_analysis_job_lease(
+            analysis_run_id, worker_id=worker_id, lease_seconds=lease_seconds
+        )
+    finally:
+        _restore_load_db_settings(original)
+
+
+def test_concurrent_claim_by_many_workers_each_gets_a_distinct_job(db_connection):
+    """The scenario claim_next_queued_analysis_run()'s `for update
+    skip locked` exists for: with several queued jobs and several
+    workers polling concurrently (real threads, real separate
+    PostgreSQL connections), every job must be claimed by exactly one
+    worker — no job claimed twice, no worker left idle while a job
+    sits unclaimed."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    for i in range(6):
+        _create(database_url, idempotency_key=f"key-{i}")
+
+    claims: list = []
+    lock = threading.Lock()
+
+    def worker(worker_id):
+        result = _claim(database_url, worker_id=worker_id)
+        if result is not None:
+            with lock:
+                claims.append((worker_id, result.analysis_run_id))
+
+    threads = [threading.Thread(target=worker, args=(f"worker-{i}",)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(claims) == 6
+    claimed_run_ids = [run_id for _worker_id, run_id in claims]
+    assert len(set(claimed_run_ids)) == 6  # every job claimed exactly once
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs where status = 'running'")
+        (running_count,) = cur.fetchone()
+    assert running_count == 6
+
+
+def test_claim_with_more_workers_than_jobs_leaves_extras_empty_handed(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    _create(database_url, idempotency_key="only-job")
+
+    results: list = []
+    lock = threading.Lock()
+
+    def worker(worker_id):
+        result = _claim(database_url, worker_id=worker_id)
+        with lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=worker, args=(f"worker-{i}",)) for i in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    non_none = [r for r in results if r is not None]
+    assert len(non_none) == 1
+
+
+def test_complete_job_atomically_saves_result_and_updates_status(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="w1")
+    assert claimed.analysis_run_id == created.analysis_run_id
+
+    ok = _complete(
+        database_url,
+        created.analysis_run_id,
+        worker_id="w1",
+        status="completed",
+        result_json={"brandName": "Acme"},
+        meta_json={"sections": {}},
+        error_message=None,
+    )
+    assert ok is True
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select ar.status, res.result_json, res.meta_json "
+            f"from {schema}.analysis_runs ar "
+            f"join {schema}.analysis_results res on res.analysis_run_id = ar.id "
+            f"where ar.id = %s",
+            (created.analysis_run_id,),
+        )
+        status, result_json, meta_json = cur.fetchone()
+
+    assert status == "completed"
+    assert result_json == {"brandName": "Acme"}
+    assert meta_json == {"sections": {}}
+
+    # No new analysis_runs row was created by completing this job.
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (row_count,) = cur.fetchone()
+    assert row_count == 1
+
+
+def test_stale_worker_cannot_overwrite_a_job_reclaimed_after_lease_expiry(db_connection):
+    """The real race complete_analysis_job()'s `locked_by = worker_id
+    and status = 'running'` condition exists to prevent: worker A
+    claims a job, its lease expires, fail_expired_running_analysis_runs()
+    reaps it to 'failed' — and *then* worker A (unaware its lease is
+    gone) tries to save a result. That late write must be discarded,
+    never overwriting the 'failed' state with stale data."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    time.sleep(1.2)  # let the 1-second lease actually expire
+
+    expired_ids = _fail_expired(database_url)
+    assert expired_ids == [created.analysis_run_id]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "failed"
+
+    # worker-a, unaware its lease already expired, now tries to save
+    # its (late) result.
+    ok = _complete(
+        database_url,
+        claimed.analysis_run_id,
+        worker_id="worker-a",
+        status="completed",
+        result_json={"brandName": "too late, should never be saved"},
+        meta_json=None,
+        error_message=None,
+    )
+
+    assert ok is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select ar.status, res.result_json "
+            f"from {schema}.analysis_runs ar "
+            f"join {schema}.analysis_results res on res.analysis_run_id = ar.id "
+            f"where ar.id = %s",
+            (created.analysis_run_id,),
+        )
+        status, result_json = cur.fetchone()
+    assert status == "failed"  # still failed, not resurrected to 'completed'
+    assert result_json == {}  # the stale result was never written
+
+
+def test_fail_expired_never_requeues_an_abandoned_job(db_connection):
+    """Explicit real-DB regression guard for docs/40 "11.4": an
+    abandoned job (expired lease) must become 'failed', never
+    'queued' again — the whole point is that this backend cannot
+    safely assume a full automatic re-run is free of duplicate paid
+    API calls."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    time.sleep(1.2)
+
+    _fail_expired(database_url)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "failed"
+    assert status != "queued"
+
+
+def test_migration_006_preserves_phase1_jobs_and_adds_lease_columns():
+    """Applies the *actual* migration file
+    (backend/migrations/006_async_analysis_jobs_phase2.sql) verbatim
+    against a schema shaped like the post-005 database: a legacy
+    synchronous-/analyze row, AND an already-existing Phase 1 'queued'
+    job (created_by_user_id/idempotency_key set, no lease columns yet)
+    — proving 006 is additive-only on top of 005, not just on top of
+    001."""
+    import psycopg
+
+    conn = psycopg.connect(TEST_DATABASE_URL, autocommit=True)
+    schema = f"analysis_jobs_migration006_test_{uuid.uuid4().hex[:8]}"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"create schema {schema}")
+            cur.execute(f"set search_path to {schema}")
+            cur.execute("create extension if not exists pgcrypto")
+            cur.execute(
+                """
+                create table brands (
+                    id uuid primary key default gen_random_uuid(),
+                    name text not null,
+                    project_id uuid,
+                    created_at timestamptz not null default now()
+                )
+                """
+            )
+            # Post-005 shape: 001's analysis_runs + 002's project_id +
+            # 005's created_by_user_id/idempotency_key — no lease
+            # columns yet, exactly what a real database would look
+            # like right before 006 is applied.
+            cur.execute(
+                """
+                create table analysis_runs (
+                    id uuid primary key default gen_random_uuid(),
+                    brand_id uuid not null references brands(id),
+                    project_id uuid,
+                    status text not null,
+                    input_snapshot jsonb not null,
+                    started_at timestamptz not null default now(),
+                    completed_at timestamptz,
+                    error_message text,
+                    deleted_at timestamptz,
+                    created_by_user_id uuid,
+                    idempotency_key text,
+                    created_at timestamptz not null default now(),
+                    constraint analysis_runs_status_check check (
+                        status in ('queued', 'running', 'completed', 'partial', 'failed')
+                    )
+                )
+                """
+            )
+            cur.execute(
+                """
+                create unique index idx_analysis_runs_idempotency
+                on analysis_runs (project_id, created_by_user_id, idempotency_key)
+                where idempotency_key is not null
+                """
+            )
+            cur.execute(
+                """
+                create table analysis_results (
+                    id uuid primary key default gen_random_uuid(),
+                    analysis_run_id uuid not null references analysis_runs(id),
+                    result_json jsonb not null,
+                    meta_json jsonb,
+                    created_at timestamptz not null default now()
+                )
+                """
+            )
+
+            cur.execute("insert into brands (name) values ('Legacy Brand') returning id")
+            (brand_id,) = cur.fetchone()
+            cur.execute(
+                """
+                insert into analysis_runs (brand_id, status, input_snapshot)
+                values (%s, 'completed', '{"brandName": "Legacy Brand"}')
+                returning id
+                """,
+                (brand_id,),
+            )
+            (legacy_run_id,) = cur.fetchone()
+
+            cur.execute(
+                """
+                insert into analysis_runs
+                    (brand_id, status, input_snapshot, created_by_user_id, idempotency_key)
+                values (%s, 'queued', '{"brandName": "Phase1 Job"}',
+                        '99999999-9999-9999-9999-999999999999', 'phase1-key')
+                returning id
+                """,
+                (brand_id,),
+            )
+            (phase1_job_id,) = cur.fetchone()
+
+            migration_path = os.path.join(
+                os.path.dirname(__file__), "..", "migrations",
+                "006_async_analysis_jobs_phase2.sql",
+            )
+            with open(migration_path, encoding="utf-8") as f:
+                migration_sql = f.read()
+            cur.execute(migration_sql)
+
+            # The legacy row and the Phase 1 job are both unaffected,
+            # and both get the new lease columns as null/0 defaults.
+            cur.execute(
+                "select status, locked_by, locked_at, lease_expires_at, attempt_count "
+                "from analysis_runs where id = %s",
+                (legacy_run_id,),
+            )
+            status, locked_by, locked_at, lease_expires_at, attempt_count = cur.fetchone()
+            assert status == "completed"
+            assert locked_by is None
+            assert locked_at is None
+            assert lease_expires_at is None
+            assert attempt_count == 0
+
+            cur.execute(
+                "select status, created_by_user_id, idempotency_key, locked_by, attempt_count "
+                "from analysis_runs where id = %s",
+                (phase1_job_id,),
+            )
+            (
+                status,
+                created_by_user_id,
+                idempotency_key,
+                locked_by,
+                attempt_count,
+            ) = cur.fetchone()
+            assert status == "queued"
+            assert str(created_by_user_id) == "99999999-9999-9999-9999-999999999999"
+            assert idempotency_key == "phase1-key"
+            assert locked_by is None
+            assert attempt_count == 0
+
+            # The two new partial indexes exist.
+            cur.execute(
+                f"select indexname from pg_indexes where schemaname = %s "
+                f"and tablename = 'analysis_runs'",
+                (schema,),
+            )
+            index_names = {row[0] for row in cur.fetchall()}
+            assert "idx_analysis_runs_status_created_at" in index_names
+            assert "idx_analysis_runs_status_lease_expires_at" in index_names
+
+            # Re-applying the migration is a no-op (idempotent).
+            cur.execute(migration_sql)
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(f"drop schema if exists {schema} cascade")
+        conn.close()
+
+
+# --- lease-check-on-complete / heartbeat (Problems 1 & 2) --------------------
+# These tests exist because a review found two real gaps in the first
+# Phase 2 cut: (1) complete_analysis_job()'s original condition
+# (locked_by + status='running') did not check whether the lease had
+# already expired, so a completion could land in the gap between the
+# lease actually expiring and fail_expired_running_analysis_runs()'s
+# next sweep; (2) nothing extended a job's lease while it was still
+# genuinely running, so any analysis slower than the lease
+# (lease_seconds, default 180s) would be reaped out from under its own
+# worker. Both are fixed by adding `lease_expires_at > now()` to
+# complete_analysis_job()'s condition and by extend_analysis_job_lease()
+# (the heartbeat) — see docs/40_async_analysis_jobs_design.md "21".
+
+
+def test_complete_rejected_when_lease_expired_but_sweeper_has_not_run_yet(db_connection):
+    """The exact gap Problem 1 closes: the lease has already passed
+    (by wall-clock time), but fail_expired_running_analysis_runs()
+    has deliberately NOT been called yet (simulating the real-world
+    gap between a lease expiring and the next sweep cycle actually
+    running) — the owning worker's own completion write must still be
+    rejected, not merely a *different* worker's."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    time.sleep(1.2)  # the 1-second lease has now passed — sweeper NOT called
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "running"  # still 'running' — nothing has swept it yet
+
+    ok = _complete(
+        database_url,
+        created.analysis_run_id,
+        worker_id="worker-a",
+        status="completed",
+        result_json={"brandName": "should never be saved — lease already expired"},
+        meta_json=None,
+        error_message=None,
+    )
+
+    assert ok is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select ar.status, res.result_json from {schema}.analysis_runs ar "
+            f"join {schema}.analysis_results res on res.analysis_run_id = ar.id "
+            f"where ar.id = %s",
+            (created.analysis_run_id,),
+        )
+        status, result_json = cur.fetchone()
+    assert status == "running"  # untouched (not even flipped to 'failed' by this call)
+    assert result_json == {}  # the stale result was never written
+
+
+def test_heartbeat_keeps_a_long_running_job_alive_past_its_original_lease(db_connection):
+    """Problem 2's fix, proven for real: a job claimed with a short
+    lease, kept alive purely by repeated extend_analysis_job_lease()
+    calls (simulating a heartbeat ticking throughout a long analysis),
+    survives well past when its *original* lease would have expired —
+    the sweeper must not reap it, and completion must still succeed
+    afterward."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    # Three heartbeat ticks, each re-extending by 1s, spanning well
+    # past the original 1-second lease.
+    for _ in range(3):
+        time.sleep(0.4)
+        extended = _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=1)
+        assert extended is True
+
+    # Total elapsed time (~1.2s) already exceeds the original 1-second
+    # lease — if heartbeating weren't working, this job would already
+    # be failed.
+    _fail_expired(database_url)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "running"  # still alive — the heartbeat kept extending it
+
+    ok = _complete(
+        database_url,
+        claimed.analysis_run_id,
+        worker_id="worker-a",
+        status="completed",
+        result_json={"brandName": "Acme"},
+        meta_json=None,
+        error_message=None,
+    )
+    assert ok is True
+
+
+def test_heartbeat_cannot_extend_a_lease_already_reaped_by_the_sweeper(db_connection):
+    """The other direction of the same race: once the sweeper has
+    already failed a job, a heartbeat that was still in flight for it
+    (e.g. a worker that hadn't yet noticed its pipeline call returned,
+    or a heartbeat tick that lost a race with the sweeper) must not be
+    able to revive it."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    time.sleep(1.2)
+    expired_ids = _fail_expired(database_url)
+    assert expired_ids == [created.analysis_run_id]
+
+    extended = _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=180)
+
+    assert extended is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (status,) = cur.fetchone()
+    assert status == "failed"  # still failed — the heartbeat did not resurrect it
+
+
+def test_heartbeat_and_sweeper_race_near_the_lease_boundary(db_connection):
+    """A genuine concurrency race at the exact moment a lease crosses
+    its expiry: one real thread repeatedly tries to extend the lease
+    (as a heartbeat would) while another repeatedly calls the sweeper,
+    both running concurrently right around the boundary. Whichever
+    wins, the final state must be *consistent* — never both "extended"
+    and "failed" at once, and never a state that would let the worker
+    believe it still owns a job the sweeper has already reaped."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="worker-a", lease_seconds=1)
+
+    import time
+
+    extend_results: list[bool] = []
+    sweep_results: list[list[str]] = []
+    stop = threading.Event()
+
+    def heartbeat_worker():
+        while not stop.is_set():
+            extend_results.append(
+                _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=1)
+            )
+            time.sleep(0.05)
+
+    def sweeper_worker():
+        while not stop.is_set():
+            sweep_results.append(_fail_expired(database_url))
+            time.sleep(0.05)
+
+    threads = [
+        threading.Thread(target=heartbeat_worker),
+        threading.Thread(target=sweeper_worker),
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(1.5)  # let the race run across the ~1s lease boundary
+    stop.set()
+    for t in threads:
+        t.join()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status, lease_expires_at from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        status, lease_expires_at = cur.fetchone()
+
+    # Consistency check: if the job ended up 'failed', no extend call
+    # after that point may have reported success, and vice versa — a
+    # heartbeat and the sweeper must never disagree about ownership at
+    # the same instant.
+    if status == "failed":
+        # Once failed, the row must never again be extendable.
+        assert _extend(database_url, claimed.analysis_run_id, worker_id="worker-a", lease_seconds=1) is False
+    else:
+        assert status == "running"
+        assert lease_expires_at is not None
+
+    # The sweeper never left the job in an invalid intermediate state
+    # (e.g. 'queued') regardless of how the race resolved.
+    assert status in ("running", "failed")
+
+
+def test_extend_rejects_wrong_worker_id_for_real(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="k1")
+    claimed = _claim(database_url, worker_id="the-real-owner", lease_seconds=180)
+
+    extended = _extend(database_url, claimed.analysis_run_id, worker_id="an-impostor", lease_seconds=180)
+
+    assert extended is False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select locked_by from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        (locked_by,) = cur.fetchone()
+    assert locked_by == "the-real-owner"  # ownership untouched by the impostor's attempt

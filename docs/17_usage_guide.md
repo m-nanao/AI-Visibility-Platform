@@ -499,6 +499,16 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - frontendの変更は一切ない。`app/page.tsx`の分析開始ボタンは引き続き`POST /analyze`を呼ぶ（Phase 3で切り替える予定、まだ着手していない）。
 - 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「15. 段階的実装計画」のPhase 1、および同ドキュメントの改訂履歴を参照。
 
+## 33. 非同期分析ジョブAPIのPhase 2について（2026-10-16追記、backendのみ・ユーザー向け機能ではない）
+
+`feature/async-analysis-jobs-phase2`で、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)のPhase 2（queuedジョブを実際に実行するworker）をbackendに追加した。**通常の利用・デモでは何も変わらない**——`ANALYSIS_JOBS_WORKER_ENABLED`が未設定（デフォルトfalse）のため、workerは起動せず、`ANALYSIS_JOBS_ENABLED`も引き続きfalseのためPhase 1のジョブAPI自体にも到達できない。分析開始は引き続き既存の`POST /analyze`のみで行う。
+
+- 既存`POST /analyze`の処理ロジックをそのまま再利用する形でworkerを実装した——AI分析の計算内容・判定ロジックは一切変更していない。
+- workerは既存のRender Web Serviceと同じプロセス内で動作し、新しいサービス・インフラは追加していない。
+- frontend・既存`POST /analyze`のレスポンス形・履歴保存動作はいずれも無変更。
+- 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「21. Phase 2 実装状況」を参照。
+- **2026-10-16、レビューで見つかった2つの不具合を修正**（同branch、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「22」参照）。(1)分析完了保存時にlease（worker所有権の期限）の有効性チェックが漏れていたため、ごく短い時間帯（lease失効直後〜次回の自動整理が走るまでの間）に限り、本来失効しているはずの古いworkerの結果が保存されてしまう可能性があった——修正済み。(2)全provider有効時など分析が長くかかる場合、workerの処理中にleaseが更新されず、正常に動作中のジョブが誤って「失敗」扱いにされる可能性があった——分析実行中に一定間隔でleaseを更新する仕組み（heartbeat）を追加して解消した。**いずれもbackend内部の安全性修正であり、通常の利用・デモでの見え方は変わらない**（`ANALYSIS_JOBS_WORKER_ENABLED`は引き続き未設定）。**Render無料プランでプロセス自体が停止した場合はheartbeatも止まるため、処理中だったジョブの復旧はそのプロセスが次に起動するまで遅れる**——これは非同期ジョブ化全体の既知の制約であり、今回の修正でも変わらない。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
