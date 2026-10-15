@@ -552,8 +552,43 @@ FastAPIの`lifespan`コンテキストマネージャ内で、アプリ起動時
 ## 19. 改訂履歴
 
 - 2026-10-15: 初版作成（調査・設計のみ）。
-- 2026-10-16: レビュー指摘を反映した改訂（本改訂）。Phase 1の範囲見直し、必要データの確定、idempotency設計の確定（failedへの同一キー再送の扱いを修正）、worker排他制御・原子性の確定、worker実装方法の新設、認証必須化、状態・履歴表示の確定、Phase 1〜4の再整理。
+- 2026-10-16: レビュー指摘を反映した改訂。Phase 1の範囲見直し、必要データの確定、idempotency設計の確定（failedへの同一キー再送の扱いを修正）、worker排他制御・原子性の確定、worker実装方法の新設、認証必須化、状態・履歴表示の確定、Phase 1〜4の再整理。
+- 2026-10-16: `feature/async-analysis-jobs-phase1`でPhase 1を実装（20章参照）。本番未適用・レビュー待ち。
 
 ---
 
-以上が調査・設計内容である。**実装は行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 20. Phase 1 実装状況（2026-10-16、`feature/async-analysis-jobs-phase1`）
+
+本章はPhase 1の実装結果を記録する。**migrationは本番Supabaseに未適用、`ANALYSIS_JOBS_ENABLED`は本番で未設定（false）のまま。**
+
+### 20.1 実装したもの
+
+- migration案 `backend/migrations/005_async_analysis_jobs_phase1.sql`（`analysis_runs.created_by_user_id`/`idempotency_key`列＋`(project_id, created_by_user_id, idempotency_key)`のpartial unique index、`idempotency_key is not null`時のみ対象）。
+- `backend/services/analysis_history_repository.py`に`create_queued_analysis_run()`/`get_analysis_job_status()`/`get_analysis_job_result()`/`_canonicalize_job_input()`を追加。
+- `backend/services/analysis_jobs_settings.py`（新規）: `ANALYSIS_JOBS_ENABLED`（デフォルトfalse）、`ANALYSIS_JOBS_MAX_QUEUED_PER_PROJECT`/`ANALYSIS_JOBS_MAX_QUEUED_PER_USER`（8.3章のMVP上限、デフォルト5/3）。
+- `backend/main.py`に`POST /analysis-jobs`・`GET /analysis-jobs/{id}`・`GET /analysis-jobs/{id}/result`を追加（`_resolve_job_auth()`、JWT必須）。
+- `backend/models.py`に`AnalysisJobCreateRequest`/`AnalysisJobAcceptedResponse`/`AnalysisJobStatusResponse`/`AnalysisJobResultResponse`を追加。
+- テスト: `tests/test_analysis_jobs_repository.py`（モックDB、query logicの検証）、`tests/test_main_analysis_jobs_api.py`（API層の認証・認可・バリデーション・状態コード）、`tests/test_analysis_jobs_settings.py`、`tests/test_analysis_jobs_repository_integration.py`（**実PostgreSQL必須、本タスクを実装した環境にはpsql/docker/psycopgドライバのいずれも存在せず未実行**——advisory lock + unique indexによる同時実行安全性の最終的な証明はこのファイルの実行に委ねられる。モックテストのみでは並行性の安全性は証明できない）。
+
+### 20.2 設計書（6章・7章）からの実装時の変更点
+
+- **7.2章で許容していた`GET /analysis-jobs/{id}`への`HISTORY_READ_TOKEN`アクセスは実装しなかった。** 3本のエンドポイントすべてJWT必須・フォールバックなしに統一した——内部トークンの読み取り範囲を新たに設計判断するより、Phase 1の時点では単純で安全な「JWTのみ」に絞る方が、認可バグのリスクを減らせると判断した。将来、内部/運用ツールからの状態確認が必要になった場合は、別タスクでスコープを定義して追加する。
+- 6.2章では「Phase 1は`created_by_user_id`/`idempotency_key`の2カラムのみ」としていた方針どおり実装した（lease系4カラムはPhase 2へ持ち越し、本migrationには含めていない）。
+- 8.3章の同時実行数上限は、具体的な数値（project 5件・user 3件、いずれもデフォルト）を実装時に仮決定した。**これは製品判断ではなく、Phase 1のjobが`queued`のまま溜まり続けることを防ぐための実装上の仮値**であり、環境変数で上書き可能（18章の未解決事項として変更なし、本番投入前に改めて確認が必要）。
+
+### 20.3 Phase 2への引き継ぎ事項
+
+- lease系4カラム（`locked_by`/`locked_at`/`lease_expires_at`/`attempt_count`）のmigration追加。
+- 実際のworker実装（既存`/analyze`ロジックの関数分離含む、12章参照）。
+- `tests/test_analysis_jobs_repository_integration.py`を実PostgreSQL環境で実行し、advisory lock + unique indexの並行性安全性を実証すること（Phase 2着手前に必須）。
+- 8.3章の上限値の製品判断確定。
+
+### 20.4 本番反映前に必要な手作業（Phase 1範囲）
+
+1. `backend/migrations/005_async_analysis_jobs_phase1.sql`を検証DB → 本番Supabaseへ適用（本タスクでは実施していない、既存の002/004適用runbookと同様の手順を踏む）。
+2. `tests/test_analysis_jobs_repository_integration.py`を実PostgreSQL環境で実行し、結果を記録する。
+3. Render本番環境変数は変更しない（`ANALYSIS_JOBS_ENABLED`は追加後もfalseのまま——Phase 3でfrontendが揃うまで有効化しない）。
+
+---
+
+以上が調査・設計・Phase 1実装内容である。**本番DBへのmigration適用・本番`ANALYSIS_JOBS_ENABLED`の有効化・Phase 2(worker)/Phase 3(frontend)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**

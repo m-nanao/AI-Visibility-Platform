@@ -490,6 +490,15 @@ AI Overview（DataForSEO）・ChatGPT・Claude・Gemini・Common Crawlを全てO
 - **2026-10-15、AI改善提案が表示されない不具合を調査・修正（`fix/ai-gap-action-recommendations-missing`）**: 上記のリリース後、本番で「AIによる差分比較」は正常に表示されるが「AIによる改善提案」が一度も表示されない不具合が報告された。調査の結果、対象ページ・優先度・確認方法のいずれか1つでも欠けていると提案全体を破棄していた検証ロジックが厳しすぎたこと、`actionRecommendations`をClaudeへの出力指示の最後に置いていたため省略されやすかったことが原因と判明した。課題・改善方法・判断根拠が揃っている施策は、対象ページが不明（断定しない）、優先度や確認方法が省略されていても採用されるように変更し、出力指示の順序も早める調整を行った。**比較結果の内容・Claude API呼び出し回数（1回のまま）・DB schema/環境変数は変更していない。** それでも表示されない場合は、Renderログの安全な診断情報（Claude出力の終了理由・提案キーの検出有無・採用件数など、提案本文は含まない）で原因を確認できる。
 - **まだ実装していないもの**: provider切替（Claude固定のまま）、通常分析実行時の自動生成、非同期ジョブ化との統合——次の段階として設計docsに記録済み（[39_ai_gap_comparison_design.md](./39_ai_gap_comparison_design.md)「11」参照）。
 
+## 32. 非同期分析ジョブAPIのPhase 1について（2026-10-16追記、backendのみ・ユーザー向け機能ではない）
+
+`feature/async-analysis-jobs-phase1`で、[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)のPhase 1（ジョブの受付・状態参照のみ、実際の分析は実行しない）をbackendに追加した。**通常の利用・デモでは何も変わらない**——`ANALYSIS_JOBS_ENABLED`が未設定（デフォルトfalse）のため、新しいAPI自体が404として振る舞い、画面上にも導線は一切ない。分析開始は引き続き既存の`POST /analyze`（分析結果画面からの通常操作）のみで行う。
+
+- 追加されたのは`POST /analysis-jobs`・`GET /analysis-jobs/{id}`・`GET /analysis-jobs/{id}/result`の3本のbackend APIのみ。いずれもSupabase Auth JWT必須・project所属確認必須で、`ANALYSIS_JOBS_ENABLED=true`にしない限り到達できない。
+- ジョブを作成しても、Phase 1には実行する仕組み（worker）がまだないため、作成されたジョブは`queued`のまま残り続ける。AI Overview/ChatGPT/Claude/Gemini/Common Crawlのいずれも呼び出されない。
+- frontendの変更は一切ない。`app/page.tsx`の分析開始ボタンは引き続き`POST /analyze`を呼ぶ（Phase 3で切り替える予定、まだ着手していない）。
+- 詳細は[40_async_analysis_jobs_design.md](./40_async_analysis_jobs_design.md)「15. 段階的実装計画」のPhase 1、および同ドキュメントの改訂履歴を参照。
+
 ## 関連ドキュメント
 
 - docs全体の索引・読む順番: [00_index.md](./00_index.md)
