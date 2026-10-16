@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import AnalysisDashboard from "../../components/AnalysisDashboard";
 import AppHeader from "../../components/AppHeader";
 import Breadcrumb from "../../components/Breadcrumb";
+import RetryAnalysisControls from "../../components/RetryAnalysisControls";
 import { REPORT_LINK_BUTTON_CLASSNAME } from "../../lib/link-button-styles";
 import {
   AI_GAP_COMPARISON_CONFIRM_MESSAGE,
@@ -41,7 +42,13 @@ import {
   resolveHistoryDetailFetchOutcome,
   resolveSetAnalysisRunImportantOutcome,
 } from "../../lib/analysis-history";
-import { buildAnalysisJobPath } from "../../lib/analysis-jobs";
+import {
+  RETRY_CONFIRM_MESSAGE,
+  buildAnalysisJobPath,
+  isAsyncAnalysisEnabled,
+  parseRetryableAnalysisInput,
+  submitRetryAnalysis,
+} from "../../lib/analysis-jobs";
 import type {
   AnalysisRunDetailViewState,
   HistoryComparisonViewState,
@@ -56,6 +63,7 @@ import type {
 // docs/22_analysis_history_detail_ui_design.md.
 export default function HistoryDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const id = params?.id;
   const [view, setView] = useState<AnalysisRunDetailViewState>({ kind: "loading" });
   const [comparisonView, setComparisonView] = useState<HistoryComparisonViewState>({
@@ -80,6 +88,33 @@ export default function HistoryDetailPage() {
   const [aiGapComparisonSuccessMessage, setAiGapComparisonSuccessMessage] = useState<
     string | undefined
   >(undefined);
+  // Manual retry ("同じ条件で再分析する") — same shared logic/UI as the
+  // failed-job progress page (app/analysis/jobs/[id]/page.tsx's
+  // handleRetry) via app/lib/analysis-jobs.ts's submitRetryAnalysis()
+  // and app/components/RetryAnalysisControls.tsx, since this page
+  // already has `view.detail.run.inputSnapshot`/`view.detail.projectId`
+  // from its own existing fetch — no extra request needed here, unlike
+  // the job page which has to fetch this endpoint separately.
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const handleRetry = async () => {
+    if (view.kind !== "success" || !view.detail.projectId || isRetrying) return;
+    if (!window.confirm(RETRY_CONFIRM_MESSAGE)) return;
+
+    setIsRetrying(true);
+    setRetryError(null);
+
+    const outcome = await submitRetryAnalysis(view.detail.run.inputSnapshot, view.detail.projectId);
+
+    if (outcome.kind === "accepted") {
+      router.push(buildAnalysisJobPath(outcome.analysisRunId));
+      return;
+    }
+
+    setRetryError(outcome.message);
+    setIsRetrying(false);
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -299,6 +334,19 @@ export default function HistoryDetailPage() {
               onToggleImportant={handleToggleImportant}
               importantError={importantError}
             />
+            <div className="mt-4">
+              <RetryAnalysisControls
+                preview={
+                  view.detail.projectId
+                    ? parseRetryableAnalysisInput(view.detail.run.inputSnapshot)
+                    : null
+                }
+                isAsyncEnabled={isAsyncAnalysisEnabled()}
+                isRetrying={isRetrying}
+                retryError={retryError}
+                onRetry={handleRetry}
+              />
+            </div>
             <div className="mt-6">
               <ComparisonSection view={comparisonView} />
             </div>

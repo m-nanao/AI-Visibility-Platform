@@ -952,4 +952,49 @@ frontend新規テスト14件（`app/api/analysis-jobs/[id]/route.test.ts`に`des
 
 ---
 
-以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3・ジョブキャンセル安全性修正（レビュー対応含む）・履歴/進捗管理UIの実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 26. 非同期分析の障害表示改善と手動再分析（2026-10-17、`feature/async-job-failure-display-and-retry`）
+
+本章は、failed状態の表示改善と、failedジョブ/完了済み履歴の両方から同条件で再分析できる機能を追加したタスクの結果を記録する。**migration追加・本番Supabase操作・Render/Vercel設定変更・worker本番有効化・外部有料API実行はいずれも行っていない。**
+
+### 26.1 障害表示の改善
+
+`app/lib/analysis-jobs.ts`に`classifyJobFailure()`を追加。backendの`error_message`は常に次の3種類の固定・安全な文字列のいずれかであることをコード上確認済み（`services/analysis_job_worker.py`・`services/analysis_history_repository.py`）——生の例外・スタックトレース・APIキーが書き込まれる経路は存在しない:
+
+1. 入力検証エラー文言（`AnalysisPipelineInputError`、動的だが既存`/analyze`の400と同一の安全な短文）
+2. 固定文字列`"unexpected error while running analysis"`（予期しない例外、実際の例外内容はサーバーログのみ）
+3. 固定文字列`"worker lease expired (possible partial execution, not auto-retried)"`（lease失効）
+
+この3種を厳密な文字列一致で判別し（任意の利用者入力に対するヒューリスティックではなく、backendが書き込む値の集合が3種に限定されていることを前提にした安全な判別）、`/analysis/jobs/[id]`で以下を出し分ける: lease失効時は「外部APIが部分的に実行済みの可能性があり、自動再試行は行われない」旨の追加説明、予期しないエラー時は簡潔な追加説明、入力検証エラー時は既存どおり`errorMessage`をそのまま表示（元から安全）。`errorMessage`が存在しない場合は既存の`JOB_STATUS_FAILED_BODY`（汎用メッセージ）のみが表示される——変更なし。
+
+### 26.2 手動再分析の共通実装
+
+- `app/lib/analysis-jobs.ts`に`parseRetryableAnalysisInput()`・`buildRetryAnalysisJobRequestBody()`・`submitRetryAnalysis()`・`retryMayCallPaidProvider()`を追加。「保存済み`input_snapshot`から再分析する」という操作そのもの（新しいidempotency keyの生成・リクエストボディ構築・`POST /api/analysis-jobs`・レスポンス解釈）を1つの関数（`submitRetryAnalysis()`）に集約し、failedジョブの進捗画面と完了済み履歴詳細の両方から**全く同じ実装**を呼び出す。
+- `parseRetryableAnalysisInput()`は「再分析可能か」を判定する——非同期ジョブ経由で保存された行は`input_snapshot`に`documents`キーが常に（空配列でも）存在するため、その値をそのまま信頼する。既存の同期`/analyze`経由の行は`documents`キーを一度も書き込まない実装のため、`urls`が非空であれば再分析可能、`urls`も`documents`もいずれも使えない場合は**「保存されている入力情報が不足しているため再分析不可」として案内する**（タスクの該当要件）——誤って開発用サンプルデータ等で「同条件のつもり」の分析を実行してしまうことを防ぐ。
+- UIは共通コンポーネント`app/components/RetryAnalysisControls.tsx`に切り出し、`/analysis/jobs/[id]`（failed時）・`/history/[id]`（completed/partial時）の両方から使う。ブランド名・入力種別（文章/URL）・件数・記録されているprovider modeを再分析前に表示し、「設定によっては外部の有料APIが再度呼び出される場合があります」という注意文を常に表示する（frontend側からは本番の`ALLOW_*_MODE_OVERRIDE`状態を正確に判定できないため、断定的な予測ではなく一般的な注意として扱う——docs/41「3.0」の既存整理と整合）。
+- 二重クリック防止は既存のキャンセル機能と同じ`isRetrying`状態ガード、確認ダイアログも同じ`window.confirm()`パターン。成功時は新しいジョブの`analysisRunId`を使って`/analysis/jobs/{newId}`へ遷移する。自動再実行は一切実装していない——常に利用者の明示的なクリックが起点。
+
+### 26.3 backend変更（`projectId`の公開、migrationなし）
+
+再分析リクエストの送信には元の`projectId`が必要だが、既存のread API（`GET /analysis-jobs/{id}`・`GET /analysis-runs/{id}`）はいずれも`projectId`をレスポンスに含めていなかった。`backend/models.py`の`AnalysisRunDetailResponse`に`projectId: str | None = None`を追加し、`backend/main.py`の`get_analysis_run()`エンドポイントで`detail.get("projectId")`を設定するよう変更した——リポジトリ層（`get_analysis_run()`）は元々この値を内部的に返していた（既存の比較API等が使用）ため、新しい列・migrationは不要。この値を見られるのは、その履歴自体への既存のアクセス権限チェック（JWTモード: `can_user_access_analysis_run()`、history_tokenモード: 無制限）を通過した呼び出し元のみであり、新しい情報漏洩にはならない——あくまで「どのprojectへ新規ジョブを送るべきか」という問い合わせ先を示すだけで、実際の作成時には`POST /analysis-jobs`が独立して`can_user_access_project()`の本チェックを行う。
+
+`GET /analysis-jobs/{id}`自体は変更していない——failedジョブの進捗画面は、この新しい`projectId`フィールドを得るために既存の`GET /api/analysis-runs/{id}`へ1回だけ追加fetchする（failedになった時だけ、ポーリングとは独立）。完了済み履歴詳細画面は元々このエンドポイントを使っているため追加fetchは不要。
+
+### 26.4 feature flagの扱い
+
+`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS=false`の間、再分析ボタン自体を`RetryAnalysisControls`が表示しない（既存の`isAsyncAnalysisEnabled()`を再利用）——workerが無効（`ANALYSIS_JOBS_WORKER_ENABLED=false`）な状態で新しいqueuedジョブを作っても進行しないまま溜まり続けるため、一般利用者が気づかず新規ジョブを作れないようにする。**このflagはUX制御であり、実際の作成可否は常にbackendの`ANALYSIS_JOBS_ENABLED`・project権限判定が独立して決める**——flagをtrueにしただけで認可が緩むことはない。ジョブ詳細・履歴の閲覧、キャンセル操作はこのflagと無関係に、従来通り利用できる（無変更）。
+
+### 26.5 既存機能への影響
+
+同期`/analyze`・履歴削除・重要フラグ・Gemini単体再実行・AI差分比較・改善提案はいずれもコード変更なし（`app/history/[id]/page.tsx`では既存の`BasicInfo`/`ComparisonSection`/`AnalysisDashboard`呼び出しの間に新しいブロックを1つ追加したのみ）。project認可は既存の`can_user_access_project()`/`can_user_access_analysis_run()`をそのまま使用——新しい認可ロジックは追加していない。
+
+### 26.6 テスト
+
+- `app/lib/analysis-jobs.test.ts`に追加: `classifyJobFailure()`4件、`parseRetryableAnalysisInput()`6件（レガシー行・ジョブ行・不足データの判定を含む）、`retryMayCallPaidProvider()`2件、`buildRetryAnalysisJobRequestBody()`4件、`submitRetryAnalysis()`4件（fetchをモックし、リクエストボディ・idempotency keyの重複なし・409転送・通信失敗時のerrorを確認）。
+- `app/lib/analysis-history-schema.test.ts`に`projectId`の受理/未設定/null処理のテスト3件を追加。
+- `backend/tests/test_main_analysis_history_read_api.py`に`projectId`が存在する場合/しない場合のレスポンス確認テスト2件を追加。
+- `.tsx`コンポーネント（進捗画面・履歴詳細・`RetryAnalysisControls`）自体のレンダリングテストは、既存の確立された方針（jsdom未導入）どおり追加せず、`npm run build`の型チェックとコードレビューで確認。
+- `npm run lint`/`npm run test`（877 passed、既存853+新規24）/`npm run build`すべて成功。`cd backend && pytest`は1375 passed, 31 skipped（既存1373+新規2、既存の同期`/analyze`・履歴・重要フラグ関連テストは無変更のまま成功）。
+
+---
+
+以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3・ジョブキャンセル安全性修正（レビュー対応含む）・履歴/進捗管理UI・障害表示改善と手動再分析の実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**

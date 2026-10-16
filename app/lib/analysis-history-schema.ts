@@ -138,6 +138,11 @@ export const analysisRunDetailResponseSchema = z.object({
   meta: optionalFromPython(z.record(z.string(), z.unknown())),
   // Same field/default as analysisRunListItemSchema.isImportant above.
   isImportant: z.boolean().default(false),
+  // backend/models.py's AnalysisRunDetailResponse.projectId — added for
+  // feature/async-job-failure-display-and-retry's "re-run this
+  // analysis" action, which needs the original project id to submit a
+  // new job against. `null`/absent for a legacy run.
+  projectId: optionalFromPython(z.string()),
 });
 
 export type AnalysisRunDetailParseResult =

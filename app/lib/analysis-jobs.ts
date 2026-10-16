@@ -689,3 +689,266 @@ export async function resolveCancelAnalysisJobOutcome(
 
   return { kind: "cancelled" };
 }
+
+// --- failed-job display classification (feature/async-job-failure-display-and-retry) ---
+//
+// GET /api/analysis-jobs/{id}'s `errorMessage` is, by construction on
+// the backend side, always one of exactly three kinds of string (see
+// services/analysis_job_worker.py's process_one_job() and
+// services/analysis_history_repository.py's
+// fail_expired_running_analysis_runs()) — never a raw caught
+// exception, stack trace, API key, or internal connection detail:
+//
+// 1. An input-validation message (AnalysisPipelineInputError, e.g.
+//    "urls must not be empty") — the exact same short, user-facing
+//    text POST /analyze has always returned as a 400 for the same
+//    problem.
+// 2. The fixed string below when the pipeline raised an unexpected
+//    exception — the real exception is logged server-side only, never
+//    persisted to error_message or returned by any API.
+// 3. The fixed string below when a worker's lease expired before it
+//    finished (fail_expired_running_analysis_runs()) — the worker
+//    that held the job may have crashed or been reaped mid-flight, so
+//    this is the one case worth explaining further: an external paid
+//    API call this job's pipeline had already made before dying is
+//    not undone, and this job is never auto-retried (see docs/40
+//    "11.4").
+//
+// classifyJobFailure() tells these apart by exact string match (safe
+// here specifically because the backend only ever writes one of these
+// three kinds of string — this is not a heuristic over arbitrary
+// user-controlled text). Anything else non-empty is treated as
+// "validation" (safe to show verbatim, same as before this task);
+// absent entirely is "unknown" (the pre-existing generic
+// JOB_STATUS_FAILED_BODY already covers this — "原因不明時の汎用
+// メッセージ").
+const JOB_LEASE_EXPIRED_ERROR_MESSAGE_RAW =
+  "worker lease expired (possible partial execution, not auto-retried)";
+const JOB_UNEXPECTED_ERROR_MESSAGE_RAW = "unexpected error while running analysis";
+
+export type JobFailureCategory = "leaseExpired" | "unexpected" | "validation" | "unknown";
+
+export function classifyJobFailure(errorMessage: string | undefined): JobFailureCategory {
+  if (!errorMessage) return "unknown";
+  if (errorMessage === JOB_LEASE_EXPIRED_ERROR_MESSAGE_RAW) return "leaseExpired";
+  if (errorMessage === JOB_UNEXPECTED_ERROR_MESSAGE_RAW) return "unexpected";
+  return "validation";
+}
+
+export const JOB_FAILED_LEASE_EXPIRED_EXPLANATION =
+  "処理中に担当のワーカーが応答を失い、分析が中断しました。外部APIの呼び出しが一部完了している可能性があります。安全のため自動的な再試行は行われません。再分析が必要な場合は、下から新しい分析を開始してください。";
+export const JOB_FAILED_UNEXPECTED_EXPLANATION = "処理中に予期しないエラーが発生しました。";
+export const JOB_FAILED_VALIDATION_LABEL = "入力内容の確認が必要です:";
+
+// --- manual re-analysis from a saved inputSnapshot (same task) -------------
+//
+// Shared by both the failed-job progress page (app/analysis/jobs/[id]/
+// page.tsx) and the completed/partial history detail page
+// (app/history/[id]/page.tsx) — "re-run with the same input" is
+// exactly the same operation regardless of which screen triggers it:
+// read the saved analysis_runs.input_snapshot, generate a fresh
+// idempotency key (never reuse the original job/run's — this is a
+// deliberate new "start analysis" operation, not a replay), and POST
+// /api/analysis-jobs. The actual submission result is interpreted by
+// the existing resolveCreateAnalysisJobOutcome() above — no new
+// resolver needed, since POST /api/analysis-jobs' response shape is
+// identical either way.
+
+export type RetryAnalysisInputPreview = {
+  brandName: string;
+  inputKind: "documents" | "urls";
+  inputCount: number;
+  aiOverviewMode?: string;
+  chatgptMode?: string;
+  claudeMode?: string;
+  geminiMode?: string;
+  commonCrawlMode?: string;
+};
+
+function readOptionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  if (!value.every((entry): entry is string => typeof entry === "string")) return undefined;
+  return value;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/**
+ * Decides whether one saved `input_snapshot` has enough information
+ * to safely re-submit as a new analysis, and if so, what to show the
+ * user before they confirm (brandName/input kind+count/provider
+ * modes) — this task's "再分析前にブランド名・入力種別・provider mode
+ * を確認できる". Returns null when it doesn't — this task's "input
+ * Snapshotに必要なデータが不足する古い履歴は再分析不可として分かり
+ * やすく案内する":
+ *
+ * - every row this app has ever written has `brandName` — a missing
+ *   or blank one means the snapshot itself is unusable, full stop.
+ * - a job-created row (services/analysis_history_repository.py's
+ *   _canonicalize_job_input()) always has an explicit `documents` key
+ *   (even `[]`, a legitimate "0 real documents" request — see this
+ *   project's documents:[]-is-allowed convention) — that key being a
+ *   real array at all is reliable evidence of what the original
+ *   request actually was, so it's trusted outright, empty or not.
+ * - a row saved by the existing *synchronous* /analyze path
+ *   (backend/main.py's save_analysis_history() call site) never
+ *   writes a `documents` key at all, regardless of whether the
+ *   original request used `documents` or `urls` — so for those rows,
+ *   a non-empty `urls` array is trusted (the common case, and
+ *   unambiguous), but an *absent or empty* `urls` with no `documents`
+ *   key is treated as "can't tell" (the original could have used
+ *   `documents`, now unrecoverable, or relied on the backend's
+ *   development-sample fallback) rather than guessed at — silently
+ *   retrying with no input at all would not reproduce "the same
+ *   analysis", so this case refuses rather than risk that.
+ */
+export function parseRetryableAnalysisInput(
+  inputSnapshot: Record<string, unknown> | undefined,
+): RetryAnalysisInputPreview | null {
+  if (!inputSnapshot) return null;
+
+  const brandName = readOptionalString(inputSnapshot.brandName);
+  if (!brandName) return null;
+
+  const documents = readOptionalStringArray(inputSnapshot.documents);
+  const urls = readOptionalStringArray(inputSnapshot.urls);
+
+  let inputKind: "documents" | "urls";
+  let inputCount: number;
+  if (documents !== undefined) {
+    inputKind = "documents";
+    inputCount = documents.length;
+  } else if (urls !== undefined && urls.length > 0) {
+    inputKind = "urls";
+    inputCount = urls.length;
+  } else {
+    return null;
+  }
+
+  return {
+    brandName,
+    inputKind,
+    inputCount,
+    aiOverviewMode: readOptionalString(inputSnapshot.aiOverviewMode),
+    chatgptMode: readOptionalString(inputSnapshot.chatgptMode),
+    claudeMode: readOptionalString(inputSnapshot.claudeMode),
+    geminiMode: readOptionalString(inputSnapshot.geminiMode),
+    commonCrawlMode: readOptionalString(inputSnapshot.commonCrawlMode),
+  };
+}
+
+/** True when the preview's recorded provider modes include anything
+ * other than off/mock/unset — used only to decide UI emphasis
+ * (whether to show the payment caution more prominently). This can
+ * never be a precise prediction of whether a paid call will actually
+ * happen (that also depends on the backend's ALLOW_*_MODE_OVERRIDE
+ * env state, which the frontend has no way to know — see
+ * docs/41_async_analysis_production_rollout.md "3.0") — the caution
+ * message itself (RETRY_CONFIRM_MESSAGE below) is shown unconditionally
+ * regardless of this, precisely because it can't be known for certain
+ * either way. */
+export function retryMayCallPaidProvider(preview: RetryAnalysisInputPreview): boolean {
+  return [preview.aiOverviewMode, preview.chatgptMode, preview.claudeMode, preview.geminiMode].some(
+    (mode) => mode !== undefined && mode !== "off" && mode !== "mock",
+  );
+}
+
+/** POST /api/analysis-jobs body for a manual retry — mirrors
+ * backend's AnalysisJobCreateRequest exactly (unlike
+ * AnalysisJobCreateRequestBody above, this supports `documents` too,
+ * since a retried inputSnapshot may have used either). */
+export interface RetryAnalysisJobRequestBody {
+  projectId: string;
+  idempotencyKey: string;
+  brandName: string;
+  documents?: string[];
+  urls?: string[];
+  aiOverviewMode?: string;
+  chatgptMode?: string;
+  commonCrawlMode?: string;
+  commonCrawlDomain?: string;
+  claudeMode?: string;
+  geminiMode?: string;
+}
+
+/** Builds the retry request body straight from the saved
+ * `inputSnapshot` — call only after parseRetryableAnalysisInput()
+ * returned non-null for the same snapshot. Always generates a fresh
+ * idempotency key (never the original job/run's own) unless one is
+ * explicitly passed (tests only) — this is deliberately a new "start
+ * analysis" operation, not a replay of the old one, so it must never
+ * collide with (or be confused for a resubmission of) the original
+ * key. */
+export function buildRetryAnalysisJobRequestBody(
+  inputSnapshot: Record<string, unknown>,
+  projectId: string,
+  idempotencyKey: string = generateIdempotencyKey(),
+): RetryAnalysisJobRequestBody {
+  const body: RetryAnalysisJobRequestBody = {
+    projectId,
+    idempotencyKey,
+    brandName: readOptionalString(inputSnapshot.brandName) ?? "",
+  };
+
+  const documents = readOptionalStringArray(inputSnapshot.documents);
+  const urls = readOptionalStringArray(inputSnapshot.urls);
+  if (documents !== undefined) {
+    body.documents = documents;
+  } else if (urls !== undefined) {
+    body.urls = urls;
+  }
+
+  const aiOverviewMode = readOptionalString(inputSnapshot.aiOverviewMode);
+  if (aiOverviewMode) body.aiOverviewMode = aiOverviewMode;
+  const chatgptMode = readOptionalString(inputSnapshot.chatgptMode);
+  if (chatgptMode) body.chatgptMode = chatgptMode;
+  const claudeMode = readOptionalString(inputSnapshot.claudeMode);
+  if (claudeMode) body.claudeMode = claudeMode;
+  const geminiMode = readOptionalString(inputSnapshot.geminiMode);
+  if (geminiMode) body.geminiMode = geminiMode;
+  const commonCrawlMode = readOptionalString(inputSnapshot.commonCrawlMode);
+  if (commonCrawlMode) body.commonCrawlMode = commonCrawlMode;
+  const commonCrawlDomain = readOptionalString(inputSnapshot.commonCrawlDomain);
+  if (commonCrawlDomain) body.commonCrawlDomain = commonCrawlDomain;
+
+  return body;
+}
+
+export const RETRY_BUTTON_LABEL = "同じ条件で再分析する";
+export const RETRY_CONFIRM_MESSAGE =
+  "同じ条件で新しい分析を開始しますか？設定によっては外部の有料APIが再度呼び出される場合があります。";
+export const RETRY_PENDING_TEXT = "再分析を開始しています...";
+export const RETRY_NOT_RETRYABLE_MESSAGE =
+  "この履歴は保存されている入力情報が不足しているため、同じ条件での再分析はできません。";
+export const RETRY_DISABLED_BY_FLAG_MESSAGE =
+  "現在、新しい分析の作成は一時的に無効化されています。既存の分析結果の確認・取り消しは引き続き利用できます。";
+
+/**
+ * The full "submit a retry" operation, shared verbatim by both
+ * callers (the failed-job progress page and the completed/partial
+ * history detail page — this task's "再分析の共通ロジックを作成") so
+ * neither reimplements the request body shape or the response
+ * interpretation. Builds a fresh idempotency key every call (never
+ * passed in), POSTs to the existing /api/analysis-jobs proxy, and
+ * interprets the response with the exact same
+ * resolveCreateAnalysisJobOutcome() the original "start analysis" flow
+ * (app/page.tsx) uses — there is nothing retry-specific about how the
+ * response is interpreted, only about how the request body is built
+ * (from a saved inputSnapshot instead of the input form).
+ */
+export async function submitRetryAnalysis(
+  inputSnapshot: Record<string, unknown>,
+  projectId: string,
+): Promise<CreateAnalysisJobOutcome> {
+  const body = buildRetryAnalysisJobRequestBody(inputSnapshot, projectId);
+
+  const response = await fetch("/api/analysis-jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => null);
+
+  return resolveCreateAnalysisJobOutcome(response);
+}

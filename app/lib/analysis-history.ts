@@ -767,6 +767,10 @@ export type AnalysisRunDetailResponse = {
   // Same field/default as AnalysisRunListItem.isImportant above — see
   // that field's comment and docs/38_history_marking_design.md.
   isImportant?: boolean;
+  // backend/models.py's AnalysisRunDetailResponse.projectId — see that
+  // field's docstring. undefined for a legacy run saved before
+  // 002_add_organizations_projects.sql.
+  projectId?: string;
 };
 
 export type AnalysisRunDetailBasicInfoDisplay = {

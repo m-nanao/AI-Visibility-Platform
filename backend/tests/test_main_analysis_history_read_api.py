@@ -481,6 +481,72 @@ def test_detail_success_includes_result(monkeypatch):
     assert body["meta"] == fake_detail["meta"]
 
 
+def test_detail_includes_project_id_when_present(monkeypatch):
+    """feature/async-job-failure-display-and-retry: the frontend's
+    "re-run this analysis" action needs the run's own project id to
+    submit a new job against — see AnalysisRunDetailResponse.projectId's
+    docstring for why exposing it here is not a new authorization
+    grant (the caller already passed this run's own access check to
+    get this response at all)."""
+    _enable_read_env(monkeypatch)
+    fake_detail = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "brand": {"id": "22222222-2222-2222-2222-222222222222", "name": "サイボウズ", "canonicalDomain": None},
+        "run": {
+            "status": "completed",
+            "inputSnapshot": {"brandName": "サイボウズ"},
+            "sourceSummary": None,
+            "startedAt": None,
+            "completedAt": None,
+        },
+        "result": {},
+        "meta": None,
+        "projectId": "33333333-3333-3333-3333-333333333333",
+    }
+    monkeypatch.setattr(
+        main, "repository_get_analysis_run", lambda analysis_run_id: fake_detail
+    )
+
+    response = client.get(
+        "/analysis-runs/11111111-1111-1111-1111-111111111111",
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["projectId"] == "33333333-3333-3333-3333-333333333333"
+
+
+def test_detail_project_id_is_null_for_a_legacy_run(monkeypatch):
+    _enable_read_env(monkeypatch)
+    fake_detail = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "brand": {"id": "22222222-2222-2222-2222-222222222222", "name": "サイボウズ", "canonicalDomain": None},
+        "run": {
+            "status": "completed",
+            "inputSnapshot": {"brandName": "サイボウズ"},
+            "sourceSummary": None,
+            "startedAt": None,
+            "completedAt": None,
+        },
+        "result": {},
+        "meta": None,
+        # No "projectId" key at all — mirrors a row saved before
+        # 002_add_organizations_projects.sql, or any other legacy shape
+        # the repository might still return it without.
+    }
+    monkeypatch.setattr(
+        main, "repository_get_analysis_run", lambda analysis_run_id: fake_detail
+    )
+
+    response = client.get(
+        "/analysis-runs/11111111-1111-1111-1111-111111111111",
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["projectId"] is None
+
+
 # --- /analyze schema is untouched by this feature ---------------------------
 
 

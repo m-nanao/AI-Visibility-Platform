@@ -924,6 +924,19 @@ class AnalysisRunDetailResponse(BaseModel):
     # Same field/default as AnalysisRunListItem.isImportant above — see
     # that field's docstring and docs/38_history_marking_design.md.
     isImportant: bool = False
+    # Exposes `analysis_runs.project_id` to a caller who has, by
+    # definition, already passed this same run's access check (JWT
+    # mode: can_user_access_analysis_run(); history_token mode:
+    # unrestricted) to see this response at all — so this is not a new
+    # information leak, only a convenience. Added for
+    # feature/async-job-failure-display-and-retry: the frontend's
+    # "re-run this analysis" action needs the original project id to
+    # submit POST /analysis-jobs against (that endpoint still performs
+    # its own full can_user_access_project() check independently —
+    # this field is never treated as an authorization grant by itself,
+    # only as "which project to ask the real check about"). `None` for
+    # a legacy run saved before 002_add_organizations_projects.sql.
+    projectId: str | None = None
 
 
 class AnalysisRunImportantRequest(BaseModel):
