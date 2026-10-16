@@ -10,6 +10,7 @@ import {
   isTerminalJobStatus,
   resolveAnalysisJobResultOutcome,
   resolveAnalysisJobStatusOutcome,
+  resolveCancelAnalysisJobOutcome,
   resolveCreateAnalysisJobOutcome,
   resolveIdempotencyKeyForJobSubmission,
   resolveMeProjectsOutcome,
@@ -554,5 +555,59 @@ describe("resolveAnalysisJobResultOutcome", () => {
     if (outcome.kind === "success") {
       expect(outcome.status).toBe("partial");
     }
+  });
+});
+
+describe("resolveCancelAnalysisJobOutcome", () => {
+  it("returns 'error' for a null response (network failure)", async () => {
+    const outcome = await resolveCancelAnalysisJobOutcome(null);
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("maps 401 to 'unauthorized'", async () => {
+    const outcome = await resolveCancelAnalysisJobOutcome(new Response(null, { status: 401 }));
+    expect(outcome.kind).toBe("unauthorized");
+  });
+
+  it("maps 403 to 'forbidden' (not this job's creator, or it doesn't exist)", async () => {
+    const outcome = await resolveCancelAnalysisJobOutcome(new Response(null, { status: 403 }));
+    expect(outcome.kind).toBe("forbidden");
+  });
+
+  it("maps 404 to 'notFound'", async () => {
+    const outcome = await resolveCancelAnalysisJobOutcome(new Response(null, { status: 404 }));
+    expect(outcome.kind).toBe("notFound");
+  });
+
+  it("maps 409 to 'conflict' (no longer queued)", async () => {
+    const response = new Response(
+      JSON.stringify({ error: "analysis job can no longer be cancelled" }),
+      { status: 409 },
+    );
+    const outcome = await resolveCancelAnalysisJobOutcome(response);
+    expect(outcome.kind).toBe("conflict");
+  });
+
+  it("maps an unexpected status to 'error'", async () => {
+    const outcome = await resolveCancelAnalysisJobOutcome(new Response(null, { status: 500 }));
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("returns 'cancelled' for a 200 with cancelled: true", async () => {
+    const response = new Response(JSON.stringify({ cancelled: true }), { status: 200 });
+    const outcome = await resolveCancelAnalysisJobOutcome(response);
+    expect(outcome.kind).toBe("cancelled");
+  });
+
+  it("returns 'error' for a 200 whose body doesn't confirm cancellation", async () => {
+    const response = new Response(JSON.stringify({ ok: true }), { status: 200 });
+    const outcome = await resolveCancelAnalysisJobOutcome(response);
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("returns 'error' for a 200 with unparseable JSON", async () => {
+    const response = new Response("not json", { status: 200 });
+    const outcome = await resolveCancelAnalysisJobOutcome(response);
+    expect(outcome.kind).toBe("error");
   });
 });

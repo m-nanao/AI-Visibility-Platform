@@ -20,6 +20,7 @@ import {
   HISTORY_COMPARISON_INTRO_TEXT,
   HISTORY_COMPARISON_SECTION_TITLE,
   HISTORY_COMPARISON_VISIBILITY_SCORE_LABEL,
+  HISTORY_DETAIL_JOB_PROGRESS_LINK_TEXT,
   HISTORY_DETAIL_OFFICIAL_NOTE,
   HISTORY_DETAIL_PAGE_TITLE,
   HISTORY_IMPORTANT_BADGE_LABEL,
@@ -40,6 +41,7 @@ import {
   resolveHistoryDetailFetchOutcome,
   resolveSetAnalysisRunImportantOutcome,
 } from "../../lib/analysis-history";
+import { buildAnalysisJobPath } from "../../lib/analysis-jobs";
 import type {
   AnalysisRunDetailViewState,
   HistoryComparisonViewState,
@@ -266,6 +268,25 @@ export default function HistoryDetailPage() {
                 {view.detail}
               </p>
             )}
+          </div>
+        )}
+
+        {/* この履歴がまだ結果を持たない（queued/running）、または失敗した
+            (failed) 非同期ジョブの場合 — 一覧からはここへのリンクを作らな
+            いが、直接URLで開かれた場合に備える（タスク「既存の履歴詳細に
+            まだ結果がないジョブを開いたとき、空の分析結果画面や不明なエ
+            ラーを表示しないこと」）。*/}
+        {(view.kind === "jobInProgress" || view.kind === "jobFailed") && (
+          <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+            <p>{view.message}</p>
+            <div className="mt-3">
+              <Link
+                href={buildAnalysisJobPath(view.id)}
+                className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                {HISTORY_DETAIL_JOB_PROGRESS_LINK_TEXT}
+              </Link>
+            </div>
           </div>
         )}
 

@@ -23,6 +23,8 @@ import {
   HISTORY_DELETE_NOT_FOUND_MESSAGE,
   HISTORY_DETAIL_GENERIC_ERROR_MESSAGE,
   HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
+  HISTORY_DETAIL_JOB_FAILED_MESSAGE,
+  HISTORY_DETAIL_JOB_IN_PROGRESS_MESSAGE,
   HISTORY_DETAIL_NOT_FOUND_MESSAGE,
   HISTORY_DETAIL_OFFICIAL_NOTE,
   HISTORY_DISABLED_MESSAGE,
@@ -48,6 +50,7 @@ import {
   buildDomainSearchVariants,
   buildHistoryDetailPath,
   buildHistoryReportPath,
+  canManageHistoryListItem,
   extractHostname,
   formatAnalysisRunDetailBasicInfo,
   formatAnalysisRunListItem,
@@ -71,6 +74,7 @@ import {
   resolveHistoryComparisonFetchOutcome,
   resolveHistoryDetailFetchOutcome,
   resolveHistoryFetchOutcome,
+  resolveHistoryListItemDetailPath,
   resolvePostAnalyzeHistoryLink,
   resolveReportComparisonMessage,
   resolveReportDetailMessage,
@@ -264,6 +268,51 @@ describe("formatAnalysisRunListItem", () => {
       { label: "Common Crawl", value: "不明" },
     ]);
   });
+});
+
+describe("resolveHistoryListItemDetailPath (feature/async-job-history-progress-ui)", () => {
+  it.each(["queued", "running", "failed"])(
+    "routes a %s job to its /analysis/jobs/{id} status page, not the history detail page",
+    (status) => {
+      const path = resolveHistoryListItemDetailPath({
+        id: "11111111-1111-1111-1111-111111111111",
+        brandName: "サイボウズ",
+        status,
+      });
+
+      expect(path).toBe("/analysis/jobs/11111111-1111-1111-1111-111111111111");
+    },
+  );
+
+  it.each(["completed", "partial"])(
+    "keeps routing a %s run to the existing history detail page",
+    (status) => {
+      const path = resolveHistoryListItemDetailPath({
+        id: "11111111-1111-1111-1111-111111111111",
+        brandName: "サイボウズ",
+        status,
+      });
+
+      expect(path).toBe("/history/11111111-1111-1111-1111-111111111111");
+    },
+  );
+});
+
+describe("canManageHistoryListItem (feature/async-job-history-progress-ui)", () => {
+  it.each(["completed", "partial", "failed"])(
+    "allows managing (important flag / delete) a %s run — unchanged from before async jobs",
+    (status) => {
+      expect(canManageHistoryListItem(status)).toBe(true);
+    },
+  );
+
+  it.each(["queued", "running"])(
+    "hides the manage actions for a %s job — only the dedicated, creator-only cancel action on " +
+      "the job status page may stop it",
+    (status) => {
+      expect(canManageHistoryListItem(status)).toBe(false);
+    },
+  );
 });
 
 describe("formatModeSummaryBadges", () => {
@@ -938,6 +987,40 @@ describe("resolveHistoryDetailFetchOutcome", () => {
     expect(outcome).toEqual({
       kind: "incompatible",
       message: HISTORY_DETAIL_INCOMPATIBLE_MESSAGE,
+    });
+  });
+
+  it.each(["queued", "running"])(
+    "returns a jobInProgress view for a %s job — never the generic 'incompatible' message " +
+      "(feature/async-job-history-progress-ui)",
+    async (status) => {
+      const outcome = await resolveHistoryDetailFetchOutcome(
+        jsonDetailResponse(
+          { ...SAMPLE_DETAIL, run: { ...SAMPLE_DETAIL.run, status }, result: {} },
+          200,
+        ),
+      );
+
+      expect(outcome).toEqual({
+        kind: "jobInProgress",
+        id: SAMPLE_DETAIL.id,
+        message: HISTORY_DETAIL_JOB_IN_PROGRESS_MESSAGE,
+      });
+    },
+  );
+
+  it("returns a jobFailed view for a failed job — never the generic 'incompatible' message", async () => {
+    const outcome = await resolveHistoryDetailFetchOutcome(
+      jsonDetailResponse(
+        { ...SAMPLE_DETAIL, run: { ...SAMPLE_DETAIL.run, status: "failed" }, result: {} },
+        200,
+      ),
+    );
+
+    expect(outcome).toEqual({
+      kind: "jobFailed",
+      id: SAMPLE_DETAIL.id,
+      message: HISTORY_DETAIL_JOB_FAILED_MESSAGE,
     });
   });
 
