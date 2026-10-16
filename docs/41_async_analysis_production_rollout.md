@@ -110,7 +110,14 @@ order by status;
 
 ### 1.5 005・006との競合確認
 
-005・006のSQLはすべて`add column if not exists`/`create index if not exists`なので、**同名の列・indexが既に別目的で存在していない限り、再実行しても失敗しない**（冪等）。1.1・1.2の結果に005/006対象の列・indexが**存在しない**場合のみ、2章の適用手順を進める。**存在する場合は、それが本当に005/006由来か（既存のPhase 1/2コードが期待する型・制約と一致するか）を個別に確認してから進める**（例: 他目的で同名の列が作られていた場合は型不一致などの事故につながるため、該当列の`data_type`/`is_nullable`を1.1の結果と見比べる）。
+**`if not exists`が付いているからといって、再実行が常に無害だと断定しない。** `add column if not exists`/`create index if not exists`は「同名オブジェクトがあれば何もしない」という意味に過ぎず、**既存の列・indexの名前が一致していても、型・NOT NULL制約・デフォルト値・index定義まで005/006が期待するものと一致しているとは保証しない**（例: 別のタスクが同名`locked_by`列を異なる型で先に作っていた場合、このSQLは「何もしない」まま終わり、Phase 2のworkerコードが期待する型と食い違ったまま気づかれない可能性がある）。
+
+したがって方針は次の通りとする。
+
+- 1.1・1.2の結果に005/006対象の列・indexが**1件も存在しない**場合のみ、「未適用」と判断して2章の適用手順を進める。
+- **1件でも存在する場合は、その場でmigrationを再実行せず、作業を停止する。** 該当する列の`data_type`/`is_nullable`/`column_default`（1.1の結果）、および該当indexの`indexdef`（1.2の結果）を、005・006のSQL本文（`backend/migrations/005_async_analysis_jobs_phase1.sql`・`006_async_analysis_jobs_phase2.sql`）が定義する型・制約・index定義と1つずつ見比べる。
+  - 完全に一致する場合: そのmigrationは既に適用済みと判断し、該当する適用手順（2章）は**実行せずスキップ**する。
+  - 一部でも一致しない場合（型違い・NOT NULL有無の違い・index対象列の違い等）: 想定と異なる状態であり、そのままmigrationを再実行すると既存の列・indexを壊す可能性がある。**再実行せず、相違点をそのままユーザーに報告して判断を待つ。**
 
 ### 1.6 RLS状態の確認（参考・今回は変更しない）
 
@@ -212,7 +219,7 @@ from analysis_runs;
 このプロジェクトには、Supabase移行の実行履歴を記録する`schema_migrations`相当のテーブルが存在しない（docs横断で確認済み、001〜004もこの仕組みなしに手動適用してきた）。再実行を避けるため、以下を徹底する。
 
 1. **適用前に必ず1章の確認SQLを実行し、結果を見てから進める**（「おそらく未適用だろう」という推測で進めない）。
-2. 005・006のSQL自体は`if not exists`で書かれているため、**誤って再実行しても構造的には無害**（冪等）。ただし、再実行する前に必ず1章の確認SQLで現在の状態を把握してから行う運用を徹底する。
+2. **「`if not exists`だから再実行しても安全」という判断はしない。** 1.5で述べた通り、名前が一致していても型・制約・index定義まで一致している保証はないため、1章の確認SQLで対象列・indexが**既に存在すると分かった時点で、そのmigrationは再実行せず**、1.5の比較手順で定義が一致しているかを確認する。一致していれば「適用済みなので何もしない」、一致していなければ「停止してユーザーに報告する」のいずれかであり、「とりあえず再実行する」という選択肢は取らない。
 3. 適用が完了したら、002・004と同じ慣習に従い、**本ドキュメントまたは`docs/development_status.md`に適用日・確認結果を追記する**（004のケースのように、docsの更新が遅れると「未適用」という古い記述が後続作業者を誤らせるため、適用したその日のうちに記録することを徹底する）。
 
 ### 2.10 rollbackの方法とデータ消失リスク
@@ -280,18 +287,47 @@ select count(*) from analysis_runs where status in ('queued', 'running');
 
 **Step 2で作成したqueuedジョブ（テスト用）が溜まっている場合、workerを有効化した瞬間にそれらが一括で実行され始める。** 意図せず複数件・高コストのproviderで一括実行されることを避けるため、有効化前に必ず以下を確認する。
 
-- **承認ポイント③-a（有効化前）**: 以下の確認SQLで`queued`件数を確認し、意図したテスト用ジョブの件数と一致することを確認したうえで、workerを有効化してよいか承認を得る。
+#### 3.0 各providerが実際に有効になる条件（コードを根拠に確認）
+
+**「本番の`ALLOW_*_MODE_OVERRIDE`はデフォルトfalseのはず」という前提だけで進めない。** 過去のdocs記録（[36_multi_ai_comparison_design.md](./36_multi_ai_comparison_design.md)「9」「11」）には、Claude/Gemini観測の検証用frontend selectorを動かすために、**`ALLOW_CLAUDE_MODE_OVERRIDE=true`・`ALLOW_GEMINI_MODE_OVERRIDE=true`が2026-09-17/2026-09-19時点でRender本番に実際に設定されていたという記録がある**（`CLAUDE_PROVIDER_MODE`/`GEMINI_PROVIDER_MODE`自体は`off`のまま、selector経由でリクエストに明示的なmodeが来たときだけ上書きを許す運用）。これが現在も設定されたままかは、003/004 migrationのケースと同様に**docsの記述だけでは分からない**——この後の運用でRender側の設定が変わっていてもClaude Codeに共有されていない可能性がある。そのため、**worker有効化前に、Render dashboardで以下の環境変数の現在値を直接確認する**（値そのもの——特にAPIキーの値——は絶対にログ・報告書・docsに書かない。「設定されている/true/false/未設定」という状態のみを記録する）。
+
+| 環境変数 | 対象provider | 参照コード |
+| --- | --- | --- |
+| `AI_OVERVIEW_PROVIDER_MODE` / `ALLOW_AI_OVERVIEW_MODE_OVERRIDE` | AI Overview（DataForSEO） | `backend/services/ai_overview_provider.py`の`resolve_ai_overview_mode()` |
+| `CHATGPT_PROVIDER_MODE` / `ALLOW_CHATGPT_MODE_OVERRIDE` | ChatGPT（OpenAI） | `backend/services/chatgpt_provider.py`の`resolve_chatgpt_mode()` |
+| `CLAUDE_PROVIDER_MODE` / `ALLOW_CLAUDE_MODE_OVERRIDE` | Claude（Anthropic） | `backend/services/claude_provider.py`の`resolve_claude_mode()` |
+| `GEMINI_PROVIDER_MODE` / `ALLOW_GEMINI_MODE_OVERRIDE` | Gemini（Google） | `backend/services/gemini_provider.py`の`resolve_gemini_mode()` |
+| `DATAFORSEO_API_ENV`/`DATAFORSEO_LIVE_API_ENABLED`/`DATAFORSEO_LIVE_CONFIRM_TEXT`/`DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE` | DataForSEO Live（追加の5ゲート） | `backend/services/dataforseo_settings.py` |
+
+上記4つの`resolve_*_mode()`はいずれも同じロジック（コードで確認済み）: **リクエストの該当フィールドが`null`（未指定）なら、`ALLOW_*_MODE_OVERRIDE`の値に関係なく常にそのproviderの env default（`*_PROVIDER_MODE`）が使われる。override が効くのは、リクエストに非null値があり、かつ`ALLOW_*_MODE_OVERRIDE=true`の両方が揃った場合のみ**。つまり、ジョブ作成時のリクエストボディで該当フィールドを送らない（またはNext.js側の検証用selectorを使わない）限り、`ALLOW_*_MODE_OVERRIDE`が本番で`true`のままであっても、そのジョブ単体では該当providerは呼ばれない。**危険なのは「`ALLOW_*_MODE_OVERRIDE=true`のまま」かつ「queuedジョブのinput_snapshotに非null・非off・非mockのproviderモードが入っている」の組み合わせが同時に起きている場合**であり、どちらか一方だけでは発生しない。
+
+なお`CHATGPT_PROVIDER_MODE`系は、有効なai_overview_modeが`"mock"`の場合に限り常に`"off"`へ強制される特例があるが（`backend/main.py`、`ai_overview_mode == "mock"`時の分岐）、Claude/Geminiにはこの特例がない（aiOverviewModeがmockでもClaude/Geminiは自身の設定だけで判定される）——`services/claude_provider.py`/`services/gemini_provider.py`のモジュールコメント参照。
+
+#### 3.1 queuedジョブのprovider modeを確認する読み取り専用SQL
+
+worker有効化前に、以下のSQLで**現在queuedになっている全ジョブのprovider mode指定**を確認する。
 
 ```sql
-select count(*) from analysis_runs where status = 'queued';
-select id, created_at, created_by_user_id, project_id, status, input_snapshot->>'brandName' as brand_name
+select id, created_at, created_by_user_id, project_id, status,
+       input_snapshot->>'brandName' as brand_name,
+       input_snapshot->>'aiOverviewMode' as ai_overview_mode,
+       input_snapshot->>'chatgptMode' as chatgpt_mode,
+       input_snapshot->>'claudeMode' as claude_mode,
+       input_snapshot->>'geminiMode' as gemini_mode,
+       input_snapshot->>'commonCrawlMode' as common_crawl_mode
 from analysis_runs
 where status = 'queued'
 order by created_at;
+
+select count(*) from analysis_runs where status = 'queued';
 ```
 
-  - 件数が想定外に多い場合（例: Step 2の確認作業で作ったテストジョブ以外が混在している）、必ず内容を確認してからにする。
-  - **外部有料APIを使うプロバイダ（DataForSEO/ChatGPT/Claude/Gemini）は、本番の`AI_OVERVIEW_PROVIDER_MODE`（デフォルト`mock`）・`CHATGPT_PROVIDER_MODE`/`CLAUDE_PROVIDER_MODE`/`GEMINI_PROVIDER_MODE`（いずれもデフォルト`off`）・各`ALLOW_*_MODE_OVERRIDE`（デフォルト`false`）がそのままであれば、`POST /analysis-jobs`のリクエストボディにどんなproviderモードを指定しても無視される**（既存の`/analyze`と同じゲート構造を`AnalysisJobCreateRequest`もそのまま継承しているため——`backend/README.md`「329」「474」「545」参照）。つまり**このゲート構成を変えない限り、workerを有効化しても外部有料APIは一切呼ばれない**。このことを明示的に確認したうえでStep 3へ進む。
+- **承認ポイント③-a（有効化前）**: 上記SQLの結果と、3.0で確認したRender本番の`ALLOW_*_MODE_OVERRIDE`の現在値を照合し、以下のいずれにも該当しないことを確認したうえで、workerを有効化してよいか承認を得る。
+  1. `queued`件数が、意図したテスト用ジョブの件数と一致していること（想定外の件数が混在していないこと）。
+  2. いずれかの`*_mode`列が非null・非`"off"`・非`"mock"`で、かつ対応する`ALLOW_*_MODE_OVERRIDE`がRender本番で`true`になっている行が**存在しないこと**（存在する場合、worker有効化と同時に該当する外部有料APIが実際に呼ばれる）。
+  3. 上記2に該当する行が見つかった場合は、**worker有効化を一旦止めてユーザーに報告する**。対応案（例: 該当ジョブだけを個別に扱う、該当providerのoverrideを一時的に外す等）は、必ずユーザーの判断・承認を経てから実施する——後述の通り、Renderのグローバル設定（`ALLOW_*_MODE_OVERRIDE`等）をClaude Codeが勝手に変更することはしない。
+- **最初のテストは、外部有料providerをすべてoff/mockにしたジョブ1件のみで行う**（リクエストボディで`aiOverviewMode`/`chatgptMode`/`claudeMode`/`geminiMode`をいずれも省略するか、明示的に`"mock"`/`"off"`を指定する）。これにより3.0の表のいずれのproviderも実行されないことが保証された状態でStep 3の動作確認ができる。
+- **provider無効化が必要になった場合でも、Renderのグローバル環境変数（`ALLOW_CLAUDE_MODE_OVERRIDE`等）をこのタスクの都合で勝手に変更しない。** これらのflagは既存の同期`/analyze`のClaude/Gemini検証用selector運用（docs/36参照）にも使われている共有設定であり、非同期ジョブのテストのためだけに変更すると、既存の同期分析側の検証環境を意図せず壊すことになる。変更が必要と判断した場合は、両方の用途への影響を明記した上で別途承認を得る。
 - **承認ポイント③-b（有効化）**: Render dashboardで`ANALYSIS_JOBS_WORKER_ENABLED=true`を設定してよいか。
 - 有効化後、以下を確認する。
   - Step 2で作ったqueuedジョブが`running`に遷移し、やがて`completed`/`partial`/`failed`のいずれかに到達すること。
@@ -325,9 +361,9 @@ order by created_at;
 
 ## 5. 本番動作確認とコスト管理
 
-- **最初は1件だけテストする**。Step 2・Step 3のいずれでも、複数件を同時に投入しない。
-- **DataForSEO等の有料providerは初回検証時に無効を基本とする**。上記3章「承認ポイント③-a」で確認した通り、`ALLOW_*_MODE_OVERRIDE`系の環境変数を本番で`true`にしない限り、`POST /analysis-jobs`のリクエストボディでどのproviderモードを送っても無視され、常に既存のデフォルト（AI Overview=mock、ChatGPT/Claude/Gemini=off）になる。**このドキュメントの範囲では、これらのoverride系環境変数を有効化することを一切想定していない。**
-- **外部API呼び出しが必要になる前に実施者の承認を得る**: 上記の構造により、通常の非同期ジョブ経由テストでは外部有料APIは呼ばれない。将来、非同期ジョブ経由でも実際の外部APIを使った検証をしたい場合は、既存の`/analyze`と同じ5段階の手動確認ゲート（`backend/README.md`のDataForSEO Live手動確認手順等）を踏む必要があり、その際は改めて承認を得る。
+- **最初は1件だけテストする**。Step 2・Step 3のいずれでも、複数件を同時に投入しない。最初のテストジョブは、リクエストボディで`aiOverviewMode`/`chatgptMode`/`claudeMode`/`geminiMode`をいずれも省略する（または明示的に`mock`/`off`を指定する）ことで、外部有料providerをすべて確実にoff/mockにする（3.0・3.1参照）。
+- **DataForSEO等の有料providerは初回検証時に無効を基本とする**。ただし3.0で述べた通り、**本番Renderの`ALLOW_*_MODE_OVERRIDE`系環境変数が実際に`false`であることは保証されていない**（Claude/Geminiについては過去に`true`で設定されていた記録がある）。override自体は「リクエストの該当フィールドが非nullである」ことも同時に要求するため、**worker有効化前にRender dashboardで実際の値を確認し（3.0）、かつqueuedジョブのinput_snapshotに該当providerの非null値が入っていないことを3.1のSQLで確認する**、という2点セットでの確認を徹底する——どちらか一方の確認だけでは不十分である。
+- **外部API呼び出しが必要になる前に実施者の承認を得る**: 3.0・3.1の確認により、意図していない外部有料API呼び出しが発生しないことを確認してからworkerを有効化する。将来、非同期ジョブ経由で実際の外部APIを使った検証をしたい場合は、既存の`/analyze`と同じ5段階の手動確認ゲート（`backend/README.md`のDataForSEO Live手動確認手順等）を踏む必要があり、その際は改めて承認を得る。
 - **ジョブの二重作成がないことの確認**: `app/lib/analysis-jobs.ts`のidempotency key機構（`userScope`+`projectId`+`content`のハッシュをsessionStorageに保存）により、同一タブでの連続クリック・通信失敗後の再試行では同じキーが再利用され、backend側の`(project_id, created_by_user_id, idempotency_key)`unique indexで重複が防止される。確認方法: 本番で1回だけ「分析開始」を押したあと、`select count(*) from analysis_runs where idempotency_key = '<対象key>';`が1件であることを確認する。
   - **既知の限界（今回は対応しない。7章「UXチェック」で扱う範囲外の技術的注意として記録）**: `sessionStorage`はブラウザタブ単位の保存領域であり、同じユーザーが複数タブで同時に同じ入力を送信した場合、タブごとに別のidempotency keyが生成されるため、意図的に複数タブを開いて同時操作すれば複数ジョブが作成され得る。これはPhase 3のレビュー時点から変わっていない既知の設計上の限界であり、今回拡張しない。
 - **Renderのスリープ・再起動リスク**: Render Freeプランは、一定時間アクセスがないとインスタンスがスリープする。workerはAPIプロセスと同一プロセス内で動作する設計（`backend/main.py`の`lifespan`、`backend/services/analysis_job_worker.py`冒頭のdocstring参照、別サービスとしてのworker分離はしていない）ため、**インスタンスがスリープすると、API・worker両方が同時に停止する**。スリープ中に`running`状態のジョブがあった場合、そのジョブのleaseはやがて期限切れになるが、**lease失効の検知（`fail_expired_running_analysis_runs()`）自体もworkerのポーリングループの一部として動くため、インスタンスが完全にスリープしている間は検知も動かない**。次にインスタンスが外部アクセスで起動した時点で、起動直後のポーリングサイクルで初めて失効検知が走り、該当ジョブが`failed`に遷移する。
@@ -370,6 +406,7 @@ order by created_at;
   - Vercel側サーバーレス関数の実行時間上限は依然未確認。
   - SIGTERM受信時のgraceful shutdown（実行中ジョブの完了待ち）は設計していない。
 - 本ドキュメント0.1で報告した、003 migrationの本番適用状況の記録ギャップ（1章の確認SQLで実際の状態を確認するまで未確定）。
+- 本ドキュメント3.0で報告した、本番Renderの`ALLOW_CLAUDE_MODE_OVERRIDE`/`ALLOW_GEMINI_MODE_OVERRIDE`等が現在も`true`のままかどうかの記録ギャップ（過去に検証用途で`true`に設定された記録はあるが、現在値はRender dashboardで直接確認するまで未確定）。
 - Phase 4（既存同期`/analyze`パスの整理）は今回も着手しない。
 
 ---
@@ -390,7 +427,7 @@ order by created_at;
 | --- | --- | --- |
 | ① | migration 005・006を本番Supabaseへ実際に適用してよいか | 2章・3章Step 1 |
 | ② | `ANALYSIS_JOBS_ENABLED=true`をRenderに設定してよいか | 3章Step 2 |
-| ③-a | workerを有効化する前に、queuedジョブの件数・内容を確認したうえで進めてよいか | 3章Step 3 |
+| ③-a | workerを有効化する前に、Render本番の`ALLOW_*_MODE_OVERRIDE`の現在値とqueuedジョブのprovider mode指定を照合し、想定外の有料API呼び出しが発生しないことを確認したうえで進めてよいか | 3章Step 3（3.0・3.1） |
 | ③-b | `ANALYSIS_JOBS_WORKER_ENABLED=true`をRenderに設定してよいか | 3章Step 3 |
 | ④ | `NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS=true`をVercelに設定し、再デプロイしてよいか | 4章 |
 
