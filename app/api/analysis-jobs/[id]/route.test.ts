@@ -6,10 +6,16 @@ vi.mock("../../../lib/supabase/server", () => ({
   getServerSupabaseAccessToken: () => getServerSupabaseAccessTokenMock(),
 }));
 
-import { GET } from "./route";
+import { DELETE, GET } from "./route";
 
 function callGet(id = "run-1") {
   return GET(new Request(`http://localhost/api/analysis-jobs/${id}`), {
+    params: Promise.resolve({ id }),
+  });
+}
+
+function callDelete(id = "run-1") {
+  return DELETE(new Request(`http://localhost/api/analysis-jobs/${id}`, { method: "DELETE" }), {
     params: Promise.resolve({ id }),
   });
 }
@@ -124,6 +130,149 @@ describe("GET /api/analysis-jobs/[id]", () => {
     global.fetch = fetchMock;
 
     await callGet("a/b");
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toContain("/analysis-jobs/a%2Fb");
+  });
+});
+
+describe("DELETE /api/analysis-jobs/[id]", () => {
+  const originalApiUrl = process.env.PYTHON_ANALYSIS_API_URL;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    getServerSupabaseAccessTokenMock.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    if (originalApiUrl === undefined) delete process.env.PYTHON_ANALYSIS_API_URL;
+    else process.env.PYTHON_ANALYSIS_API_URL = originalApiUrl;
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("returns 503 when PYTHON_ANALYSIS_API_URL is unset", async () => {
+    delete process.env.PYTHON_ANALYSIS_API_URL;
+
+    const response = await callDelete();
+
+    expect(response.status).toBe(503);
+  });
+
+  it("forwards the caller's access token as Authorization: Bearer", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    getServerSupabaseAccessTokenMock.mockResolvedValue("the-access-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ cancelled: true }), { status: 200 }));
+    global.fetch = fetchMock;
+
+    await callDelete();
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.get("Authorization")).toBe("Bearer the-access-token");
+  });
+
+  it("returns 401 when no session is present (no Authorization header forwarded)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    getServerSupabaseAccessTokenMock.mockResolvedValue(null);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ error: "authentication required" }), {
+        status: 401,
+      }));
+    global.fetch = fetchMock;
+
+    const response = await callDelete();
+
+    expect(response.status).toBe(401);
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.has("Authorization")).toBe(false);
+  });
+
+  it("sends a DELETE request to the Python API with no body", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ cancelled: true }), { status: 200 }));
+    global.fetch = fetchMock;
+
+    await callDelete();
+
+    const [url, requestInit] = fetchMock.mock.calls[0];
+    expect(url).toContain("/analysis-jobs/run-1");
+    expect(requestInit.method).toBe("DELETE");
+    expect(requestInit.body).toBeUndefined();
+  });
+
+  it("never attaches an X-History-Read-Token header", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+    global.fetch = fetchMock;
+
+    await callDelete();
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.has("X-History-Read-Token")).toBe(false);
+    delete process.env.HISTORY_READ_TOKEN;
+  });
+
+  it.each([401, 403, 404, 409, 503])(
+    "forwards a %i from the Python API as-is",
+    async (status) => {
+      process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+      global.fetch = vi
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify({ error: "some error" }), { status }));
+
+      const response = await callDelete();
+
+      expect(response.status).toBe(status);
+    },
+  );
+
+  it("returns 502 for an unexpected Python API status", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
+
+    const response = await callDelete();
+
+    expect(response.status).toBe(502);
+  });
+
+  it("returns 503 when the Python API request fails outright", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
+
+    const response = await callDelete();
+
+    expect(response.status).toBe(503);
+  });
+
+  it("returns the cancelled confirmation on success", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ cancelled: true }), { status: 200 }));
+
+    const response = await callDelete();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ cancelled: true });
+  });
+
+  it("URL-encodes the id when calling the Python API", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    global.fetch = fetchMock;
+
+    await callDelete("a/b");
 
     const [url] = fetchMock.mock.calls[0];
     expect(url).toContain("/analysis-jobs/a%2Fb");

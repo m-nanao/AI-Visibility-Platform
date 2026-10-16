@@ -896,6 +896,14 @@ frontend側では独自の権限判定を一切行わず、既存のJWT転送＋
 
 migration・DB schema変更・本番Supabase操作・Render/Vercel設定変更・worker本番有効化・外部AI API実行はいずれも行っていない。
 
+### 24.7 Next.js側DELETEプロキシの追加（2026-10-17、`feature/async-job-cancel-nextjs-api`）
+
+本番でのジョブ受付テスト中に、`DELETE /api/analysis-jobs/{id}`が**405 Method Not Allowed**になることが判明した。原因は、24章でbackendに`DELETE /analysis-jobs/{id}`を追加した際、**23.3章で追加したNext.js側のproxy route（`app/api/analysis-jobs/[id]/route.ts`）には対応するハンドラーを追加していなかった**こと——Next.js App Routerのroute handlerは、ファイルからexportされていないHTTPメソッドに対して自動的に405を返すため、GETのみexportされたこのファイルにDELETEリクエストを送ると、backend側の実装とは無関係に405になる。
+
+修正: 同ファイルに`DELETE`ハンドラーを追加した。既存の`GET`と全く同じ認証転送パターン（`getServerSupabaseAccessToken(request)`→`Authorization: Bearer`）・`HISTORY_READ_TOKEN`を一切付与しない方針・idの取得元（同じルートパラメータ）・401/403/404/409/503の転送、および502/503の自前fallbackを踏襲している。リクエストボディは送らない（backendの`DELETE /analysis-jobs/{id}`も受け取らない）。`GET`・`POST /api/analysis-jobs`・`GET /api/analysis-jobs/{id}/result`はいずれも無変更。
+
+frontend新規テスト14件（`app/api/analysis-jobs/[id]/route.test.ts`に`describe("DELETE ...")`追加、既存`GET`テストと対になる構成）: 503（env未設定）、Authorization転送、401時に未転送であることの確認、DELETEメソッド・ボディなしでbackendを呼ぶこと、HISTORY_READ_TOKEN不使用、401/403/404/409/503の転送、502フォールバック、通信失敗時503、成功時`{"cancelled": true}`の中継、id のURL-encode。`npm run lint`/`npm run test`（831 passed、既存817+新規14）/`npm run build`すべて成功。backendは無変更のため`pytest`は対象外。
+
 ---
 
 以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3・ジョブキャンセル安全性修正（レビュー対応含む）の実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
