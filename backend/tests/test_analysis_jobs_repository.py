@@ -107,6 +107,7 @@ class _FakeCursor:
                         run_id,
                         run["status"],
                         run["input_snapshot"],
+                        run["deleted_at"],
                     )
                     return
             self._pending_result = None
@@ -117,7 +118,9 @@ class _FakeCursor:
             count = sum(
                 1
                 for run in self.db.runs.values()
-                if run["project_id"] == project_id and run["status"] == "queued"
+                if run["project_id"] == project_id
+                and run["status"] == "queued"
+                and run["deleted_at"] is None
             )
             self._pending_result = (count,)
             return
@@ -127,7 +130,9 @@ class _FakeCursor:
             count = sum(
                 1
                 for run in self.db.runs.values()
-                if run["created_by_user_id"] == user_id and run["status"] == "queued"
+                if run["created_by_user_id"] == user_id
+                and run["status"] == "queued"
+                and run["deleted_at"] is None
             )
             self._pending_result = (count,)
             return
@@ -379,6 +384,58 @@ def test_create_queued_analysis_run_conflicts_on_same_key_different_input(jobs_d
 
     # No second row was created.
     assert len(jobs_db.runs) == 1
+
+
+def test_create_queued_analysis_run_rejects_replay_of_a_cancelled_job_key(jobs_db):
+    """fix/async-job-cancel-safety's second fix: cancel_queued_analysis_run()
+    deliberately keeps `idempotency_key` set (unlike the original fix,
+    which cleared it) so this exact lookup keeps finding the cancelled
+    row — and this must refuse the replay (409 at the API layer) rather
+    than either resurrecting it or creating a second job for the same
+    key, even when the resubmitted input is byte-identical."""
+    created = repo.create_queued_analysis_run(**BASE_KWARGS)
+    jobs_db.runs[created.analysis_run_id]["deleted_at"] = datetime.now(timezone.utc)
+
+    with pytest.raises(repo.AnalysisJobCancelledConflictError) as exc_info:
+        repo.create_queued_analysis_run(**BASE_KWARGS)
+
+    assert exc_info.value.existing_analysis_run_id == created.analysis_run_id
+    # No new row was created, and the cancelled row was left untouched.
+    assert len(jobs_db.runs) == 1
+    assert jobs_db.runs[created.analysis_run_id]["status"] == "queued"
+    assert jobs_db.runs[created.analysis_run_id]["deleted_at"] is not None
+
+
+def test_create_queued_analysis_run_rejects_replay_of_a_cancelled_job_key_even_with_different_input(
+    jobs_db,
+):
+    """The cancelled-key check runs *before* the input comparison —
+    a cancelled job's key is refused outright, never silently treated
+    as "different input, so 409 conflict" vs "same input, so replay"."""
+    created = repo.create_queued_analysis_run(**BASE_KWARGS)
+    jobs_db.runs[created.analysis_run_id]["deleted_at"] = datetime.now(timezone.utc)
+
+    different = dict(BASE_KWARGS, urls=["https://different.example.com"])
+    with pytest.raises(repo.AnalysisJobCancelledConflictError):
+        repo.create_queued_analysis_run(**different)
+
+    assert len(jobs_db.runs) == 1
+
+
+def test_create_queued_analysis_run_allows_a_fresh_key_after_cancellation(jobs_db):
+    """A genuinely new "start analysis" operation (a different
+    idempotency key, exactly what a client generates for an explicit
+    new attempt) must succeed normally even though an earlier,
+    cancelled job for the same project/user still exists."""
+    created = repo.create_queued_analysis_run(**BASE_KWARGS)
+    jobs_db.runs[created.analysis_run_id]["deleted_at"] = datetime.now(timezone.utc)
+
+    fresh = dict(BASE_KWARGS, idempotency_key="a-brand-new-key")
+    result = repo.create_queued_analysis_run(**fresh)
+
+    assert result.created is True
+    assert result.analysis_run_id != created.analysis_run_id
+    assert len(jobs_db.runs) == 2
 
 
 def test_create_queued_analysis_run_enforces_project_queued_limit(jobs_db):

@@ -138,8 +138,10 @@ from services.ai_overview_provider import build_ai_overview_comparison, resolve_
 from services.analysis_history_comparison import build_comparison_response
 from services.analysis_history_repository import (
     AnalysisHistoryReadError,
+    AnalysisJobCancelledConflictError,
     AnalysisJobCreateConflictError,
     AnalysisJobLimitExceededError,
+    cancel_queued_analysis_run,
     create_queued_analysis_run,
     get_analysis_job_result,
     get_analysis_job_status,
@@ -166,6 +168,7 @@ from services.project_access import (
     ProjectAccessError,
     can_user_access_analysis_run,
     can_user_access_project,
+    can_user_cancel_analysis_run,
     get_accessible_project_ids,
 )
 from services.brand_summary import build_brand_summary
@@ -1671,7 +1674,11 @@ ANALYSIS_JOBS_NOT_READY_MESSAGE = "analysis job is not finished yet"
 ANALYSIS_JOBS_CONFLICT_MESSAGE = (
     "an analysis job with this idempotency key already exists with different input"
 )
+ANALYSIS_JOBS_CANCELLED_CONFLICT_MESSAGE = (
+    "this idempotency key belongs to a cancelled analysis job"
+)
 ANALYSIS_JOBS_LIMIT_MESSAGE = "too many queued analysis jobs"
+ANALYSIS_JOBS_NOT_CANCELLABLE_MESSAGE = "analysis job can no longer be cancelled"
 
 
 def _resolve_job_auth(request: Request) -> AuthenticatedUser | JSONResponse:
@@ -1798,6 +1805,8 @@ def create_analysis_job(payload: AnalysisJobCreateRequest, request: Request):
         )
     except AnalysisJobCreateConflictError:
         return error_response(ANALYSIS_JOBS_CONFLICT_MESSAGE, status_code=409)
+    except AnalysisJobCancelledConflictError:
+        return error_response(ANALYSIS_JOBS_CANCELLED_CONFLICT_MESSAGE, status_code=409)
     except AnalysisJobLimitExceededError:
         return error_response(ANALYSIS_JOBS_LIMIT_MESSAGE, status_code=429)
     except AnalysisHistoryReadError:
@@ -1902,3 +1911,69 @@ def get_analysis_job_result_endpoint(analysis_run_id: str, request: Request):
         result=job["result"],
         meta=job["meta"],
     )
+
+
+@app.delete("/analysis-jobs/{analysis_run_id}")
+def cancel_analysis_job(analysis_run_id: str, request: Request):
+    """DELETE /analysis-jobs/{id} — cancels a job while it is still
+    'queued', so a worker never picks it up (see
+    services.analysis_history_repository.cancel_queued_analysis_run()
+    for the atomic DB-level mechanics this relies on).
+
+    Auth is JWT-only (same `_resolve_job_auth()` as every other
+    /analysis-jobs* endpoint, no HISTORY_READ_TOKEN fallback), but the
+    authorization check is deliberately *stricter* than every other
+    endpoint in this group: `can_user_cancel_analysis_run()` requires
+    the caller to be the job's *creator* (`created_by_user_id`), not
+    merely a member of its project — cancelling is scoped to "undo
+    your own not-yet-started request", not something any project
+    member may do to anyone else's job. A caller who isn't the
+    creator gets 403, indistinguishable from a nonexistent id (same
+    existence-leak avoidance as GET /analysis-jobs/{id} above).
+
+    This can never report success for a job that has already started
+    running: once claimed, nothing in this process can safely
+    interrupt it (see services/analysis_job_worker.py's
+    asyncio.to_thread() docstring), so a 'running' (or already
+    terminal) job is reported as 409 — this endpoint never pretends to
+    have stopped work that is already in flight or finished.
+    """
+    auth_result = _resolve_job_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+    authenticated_user = auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_cancel_analysis_run(
+                conn, authenticated_user.user_id, analysis_run_id
+            )
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check analysis run access for analysis job cancel")
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if not allowed:
+        return error_response(ANALYSIS_JOBS_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        result = cancel_queued_analysis_run(analysis_run_id)
+    except AnalysisHistoryReadError:
+        return error_response(ANALYSIS_JOBS_FAILED_MESSAGE, status_code=503)
+
+    if result.outcome == "not_found":
+        return error_response(ANALYSIS_JOBS_NOT_FOUND_MESSAGE, status_code=404)
+
+    if result.outcome == "not_cancellable":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": ANALYSIS_JOBS_NOT_CANCELLABLE_MESSAGE,
+                "status": result.status,
+            },
+        )
+
+    # "cancelled" or "already_cancelled" — both are a successful,
+    # idempotent outcome from the caller's point of view (mirrors
+    # DELETE /analysis-runs/{id}'s existing "repeat delete succeeds"
+    # convention above).
+    return {"cancelled": True}

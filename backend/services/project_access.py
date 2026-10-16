@@ -112,6 +112,45 @@ def can_user_access_analysis_run(conn: Any, user_id: str, analysis_run_id: str) 
     return row is not None
 
 
+def can_user_cancel_analysis_run(conn: Any, user_id: str, analysis_run_id: str) -> bool:
+    """True only if `user_id` is the user who *created* this job
+    (`analysis_runs.created_by_user_id`) — deliberately stricter than
+    can_user_access_analysis_run() above (project membership), which
+    would let any other member of the same project cancel someone
+    else's queued job. main.py's DELETE /analysis-jobs/{id}
+    (fix/async-job-cancel-safety) uses this instead of the
+    project-membership check every other /analysis-jobs* endpoint
+    uses — cancellation is scoped to "undo your own not-yet-started
+    request", not a project-wide operation; adding a project-admin
+    override is explicitly out of scope for now.
+
+    Returns False (never raises) for an empty user_id/analysis_run_id,
+    a nonexistent analysis_run_id, or a row with a null
+    created_by_user_id (every row saved by the existing synchronous
+    POST /analyze, which has no caller identity at all) — same
+    existence-leak avoidance as can_user_access_analysis_run() (a
+    caller who isn't the creator gets the same 403 whether the run
+    belongs to someone else or doesn't exist at all).
+
+    Raises ProjectAccessError on a connection/query failure.
+    """
+    if not user_id or not analysis_run_id:
+        return False
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select 1 from analysis_runs where id = %s and created_by_user_id = %s limit 1",
+                (analysis_run_id, user_id),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to check analysis run cancel ownership")
+        raise ProjectAccessError("failed to check analysis run cancel ownership") from exc
+
+    return row is not None
+
+
 def get_accessible_project_ids(conn: Any, user_id: str) -> list[str]:
     """Returns the id of every project `user_id` can access (every
     project belonging to an organization `user_id` is a member of),

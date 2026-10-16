@@ -325,8 +325,9 @@ select count(*) from analysis_runs where status = 'queued';
 - **承認ポイント③-a（有効化前）**: 上記SQLの結果と、3.0で確認したRender本番の`ALLOW_*_MODE_OVERRIDE`の現在値を照合し、以下のいずれにも該当しないことを確認したうえで、workerを有効化してよいか承認を得る。
   1. `queued`件数が、意図したテスト用ジョブの件数と一致していること（想定外の件数が混在していないこと）。
   2. いずれかの`*_mode`列が非null・非`"off"`・非`"mock"`で、かつ対応する`ALLOW_*_MODE_OVERRIDE`がRender本番で`true`になっている行が**存在しないこと**（存在する場合、worker有効化と同時に該当する外部有料APIが実際に呼ばれる）。
-  3. 上記2に該当する行が見つかった場合は、**worker有効化を一旦止めてユーザーに報告する**。対応案（例: 該当ジョブだけを個別に扱う、該当providerのoverrideを一時的に外す等）は、必ずユーザーの判断・承認を経てから実施する——後述の通り、Renderのグローバル設定（`ALLOW_*_MODE_OVERRIDE`等）をClaude Codeが勝手に変更することはしない。
-- **最初のテストは、外部有料providerをすべてoff/mockにしたジョブ1件のみで行う**（リクエストボディで`aiOverviewMode`/`chatgptMode`/`claudeMode`/`geminiMode`をいずれも省略するか、明示的に`"mock"`/`"off"`を指定する）。これにより3.0の表のいずれのproviderも実行されないことが保証された状態でStep 3の動作確認ができる。
+  3. 上記2に該当する行が見つかった場合は、**worker有効化を一旦止めてユーザーに報告する**。対応案（例: 該当ジョブだけを個別に扱う、該当providerのoverrideを一時的に外す等）は、必ずユーザーの判断・承認を経てから実施する——後述の通り、Renderのグローバル設定（`ALLOW_*_MODE_OVERRIDE`等）をClaude Codeが勝手に変更することはしない。問題のあるジョブ1件だけを取り消したい場合は、本節の次の項目で説明する`DELETE /analysis-jobs/{id}`が使える（承認を得たうえで実施する）。
+- **最初のテストは、外部有料providerをすべてoff/mockにしたジョブ1件のみで行う**（リクエストボディで`aiOverviewMode`/`chatgptMode`/`claudeMode`/`geminiMode`をいずれも省略するか、明示的に`"mock"`/`"off"`を指定する）。これにより3.0の表のいずれのproviderも実行されないことが保証された状態でStep 3の動作確認ができる。**なお「明示的に`"off"`/`"mock"`を指定する」方が「省略する」より安全側である**: 省略した場合は`ALLOW_*_MODE_OVERRIDE`の値に関係なく常にRender側のenv defaultが使われるのに対し、明示指定した場合は`ALLOW_*_MODE_OVERRIDE=true`であればその指定が確実に尊重される（`false`であれば省略時と同じくenv defaultに落ちる）——つまり明示指定はenv defaultが何であっても安全側に働く組み合わせを1つ増やすが、省略時の安全性はenv default自体が`off`/`mock`であることに完全に依存する。
+- **本番受付テスト用ジョブを安全に取り消す方法**: `fix/async-job-cancel-safety`で`DELETE /analysis-jobs/{id}`を追加した（[docs/40「24」](./40_async_analysis_jobs_design.md)参照）。queuedのまま残っているテストジョブを個別に取り消せば、`claim_next_queued_analysis_run()`が`deleted_at is null`も確認するようになったため、将来workerを有効化してもそのジョブは絶対にclaimされない。取り消し後はqueued件数の上限枠も正しく解放される。runningになってしまったジョブは取り消せない（409）——この場合は実行が完了するのを待つ以外に手段はない。
 - **provider無効化が必要になった場合でも、Renderのグローバル環境変数（`ALLOW_CLAUDE_MODE_OVERRIDE`等）をこのタスクの都合で勝手に変更しない。** これらのflagは既存の同期`/analyze`のClaude/Gemini検証用selector運用（docs/36参照）にも使われている共有設定であり、非同期ジョブのテストのためだけに変更すると、既存の同期分析側の検証環境を意図せず壊すことになる。変更が必要と判断した場合は、両方の用途への影響を明記した上で別途承認を得る。
 - **承認ポイント③-b（有効化）**: Render dashboardで`ANALYSIS_JOBS_WORKER_ENABLED=true`を設定してよいか。
 - 有効化後、以下を確認する。

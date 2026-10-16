@@ -504,3 +504,158 @@ def test_create_job_never_calls_any_ai_provider(monkeypatch):
     response = client.post("/analysis-jobs", json=VALID_CREATE_BODY, headers=_auth_headers())
 
     assert response.status_code == 202
+
+
+# --- DELETE /analysis-jobs/{id} (cancel a queued job) -------------------------
+#
+# cancel_queued_analysis_run()'s own DB-level atomicity/race-safety is
+# covered by tests/test_analysis_jobs_repository_integration.py; this
+# file's job is to verify main.py's auth wiring and status-code mapping,
+# mirroring the GET /analysis-jobs/{id} tests above exactly.
+
+from services.analysis_history_repository import CancelQueuedAnalysisJobResult
+
+
+def test_cancel_job_returns_404_when_flag_unset(monkeypatch):
+    _clear_jobs_env(monkeypatch)
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 404
+
+
+def test_cancel_job_returns_401_without_a_token(monkeypatch):
+    _enable_jobs_env(monkeypatch)
+
+    response = client.delete("/analysis-jobs/11111111-1111-1111-1111-111111111111")
+
+    assert response.status_code == 401
+
+
+def test_cancel_job_returns_403_for_inaccessible_job(monkeypatch):
+    """Covers "belongs to a different project", "does not exist", and
+    (see the dedicated test below) "same project but a different
+    user" — can_user_cancel_analysis_run() returning False means the
+    same 403 regardless of which of these it is (existence-leak
+    avoidance, same as GET /analysis-jobs/{id})."""
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: False)
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 403
+
+
+def test_cancel_job_rejects_non_creator_without_touching_it(monkeypatch):
+    """A caller who is not this job's creator must never reach
+    cancel_queued_analysis_run() at all — covers both a different
+    project and a different user within the same project, since
+    can_user_cancel_analysis_run() (unlike can_user_access_analysis_run()
+    used by every other /analysis-jobs* endpoint) checks
+    created_by_user_id, not project membership."""
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch, user_id="not-the-creator")
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: False)
+    monkeypatch.setattr(main, "cancel_queued_analysis_run", _never_call)
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 403
+
+
+def test_cancel_job_returns_200_when_cancelled(monkeypatch):
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(
+        main,
+        "cancel_queued_analysis_run",
+        lambda rid: CancelQueuedAnalysisJobResult(outcome="cancelled"),
+    )
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": True}
+
+
+def test_cancel_job_is_idempotent_for_an_already_cancelled_job(monkeypatch):
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(
+        main,
+        "cancel_queued_analysis_run",
+        lambda rid: CancelQueuedAnalysisJobResult(outcome="already_cancelled"),
+    )
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": True}
+
+
+def test_cancel_job_returns_409_for_a_running_job_without_claiming_to_stop_it(monkeypatch):
+    """The explicit requirement: a running job is never reported as
+    successfully cancelled."""
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(
+        main,
+        "cancel_queued_analysis_run",
+        lambda rid: CancelQueuedAnalysisJobResult(outcome="not_cancellable", status="running"),
+    )
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "running"
+
+
+def test_cancel_job_returns_409_for_a_completed_job(monkeypatch):
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(
+        main,
+        "cancel_queued_analysis_run",
+        lambda rid: CancelQueuedAnalysisJobResult(outcome="not_cancellable", status="completed"),
+    )
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "completed"
+
+
+def test_cancel_job_returns_404_when_repository_reports_not_found(monkeypatch):
+    _enable_jobs_env(monkeypatch)
+    _mock_auth(monkeypatch)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(
+        main,
+        "cancel_queued_analysis_run",
+        lambda rid: CancelQueuedAnalysisJobResult(outcome="not_found"),
+    )
+
+    response = client.delete(
+        "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
+    )
+
+    assert response.status_code == 404
