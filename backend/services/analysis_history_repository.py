@@ -54,7 +54,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from services.db_settings import load_db_settings
 from services.history_mode_summary import build_mode_summary
@@ -1023,12 +1023,15 @@ def create_queued_analysis_run(
     Queued-job limits (docs/40 "8.3"): only checked when actually about
     to insert a new row (never on an idempotent replay, see above) —
     counts this *project's* and this *user's* currently-'queued' jobs
-    and raises AnalysisJobLimitExceededError if either would meet or
-    exceed its limit (main.py -> 429). Both counts are taken inside the
-    same doubly-locked transaction, so neither check can be slipped
-    past by a burst of concurrent requests — not a burst for the same
-    project (the project lock), and not a burst from the same user
-    spread across different projects (the user lock, which the
+    (excluding any that have been cancelled via
+    cancel_queued_analysis_run() below, i.e. `deleted_at is not null`
+    — a cancelled job must free its slot, not count against the limit
+    forever) and raises AnalysisJobLimitExceededError if either would
+    meet or exceed its limit (main.py -> 429). Both counts are taken
+    inside the same doubly-locked transaction, so neither check can be
+    slipped past by a burst of concurrent requests — not a burst for
+    the same project (the project lock), and not a burst from the same
+    user spread across different projects (the user lock, which the
     project-only lock from before this fix could not protect against).
 
     A psycopg UniqueViolation on the final INSERT (defense in depth —
@@ -1112,7 +1115,8 @@ def create_queued_analysis_run(
                     )
 
                 cur.execute(
-                    "select count(*) from analysis_runs where project_id = %s and status = 'queued'",
+                    "select count(*) from analysis_runs"
+                    " where project_id = %s and status = 'queued' and deleted_at is null",
                     (project_id,),
                 )
                 if cur.fetchone()[0] >= max_queued_per_project:
@@ -1121,7 +1125,8 @@ def create_queued_analysis_run(
                     )
 
                 cur.execute(
-                    "select count(*) from analysis_runs where created_by_user_id = %s and status = 'queued'",
+                    "select count(*) from analysis_runs"
+                    " where created_by_user_id = %s and status = 'queued' and deleted_at is null",
                     (created_by_user_id,),
                 )
                 if cur.fetchone()[0] >= max_queued_per_user:
@@ -1315,6 +1320,15 @@ def claim_next_queued_analysis_run(
     docs/40_async_analysis_jobs_design.md "11.1". Returns None when
     there is no queued row to claim (not an error).
 
+    Excludes soft-deleted rows (`deleted_at is not null`) — see
+    cancel_queued_analysis_run() below, added alongside this fix. A
+    caller who cancels a queued job before a worker claims it must
+    have that cancellation actually honored; without this condition, a
+    row soft-deleted while still 'queued' (already hidden from every
+    history list/detail read path, which filters on `deleted_at is
+    null`) would still be silently claimed and executed here, directly
+    contradicting what the cancellation told the caller it did.
+
     Uses `for update skip locked` inside the id-selecting subquery so
     multiple worker processes/tasks polling concurrently (see docs/40
     "12.3": uvicorn with `--workers` > 1, or more than one Render
@@ -1350,6 +1364,7 @@ def claim_next_queued_analysis_run(
                         select id
                         from analysis_runs
                         where status = 'queued'
+                          and deleted_at is null
                         order by created_at asc
                         limit 1
                         for update skip locked
@@ -1373,6 +1388,120 @@ def claim_next_queued_analysis_run(
         input_snapshot=input_snapshot,
         attempt_count=attempt_count,
     )
+
+
+@dataclass(frozen=True)
+class CancelQueuedAnalysisJobResult:
+    """Returned by cancel_queued_analysis_run() — main.py's DELETE
+    /analysis-jobs/{id} maps `outcome` to an HTTP status:
+
+    - "cancelled": this call just cancelled the job (200).
+    - "already_cancelled": the job was already cancelled by an earlier
+      call — treated as a successful no-op, mirroring
+      soft_delete_analysis_run()'s existing "repeat delete succeeds"
+      convention (200).
+    - "not_cancellable": the job exists and is not soft-deleted, but
+      is no longer 'queued' (a worker already claimed it, or it
+      already reached a terminal status) — never reported as success,
+      since this function never stops a 'running' job or undoes a
+      finished one (main.py -> 409). `status` carries the job's actual
+      current status for the error message.
+    - "not_found": `analysis_run_id` doesn't exist or is malformed
+      (main.py -> 404).
+    """
+
+    outcome: Literal["cancelled", "already_cancelled", "not_cancellable", "not_found"]
+    status: str | None = None
+
+
+def cancel_queued_analysis_run(analysis_run_id: str) -> CancelQueuedAnalysisJobResult:
+    """Cancels one job while it is still 'queued' — the only state a
+    cancellation can actually prevent from ever running (docs/40
+    "11.4"-equivalent reasoning extended to cancellation: once a
+    worker has claimed a job, nothing in this process can safely stop
+    it mid-flight — see services/analysis_job_worker.py's
+    asyncio.to_thread() docstring — so this function deliberately
+    never touches a 'running' row and never claims to have cancelled
+    one).
+
+    The single atomic `update ... where status = 'queued' and
+    deleted_at is null` below is what makes this race-safe against
+    claim_next_queued_analysis_run()'s own atomic claim (which now
+    requires the same two conditions, see that function's docstring):
+    whichever of the two UPDATEs commits first on a given row decides
+    the outcome — PostgreSQL's row-level locking means the second one
+    to reach that row re-evaluates its WHERE clause against the
+    now-committed data and simply matches zero rows if it lost the
+    race, never double-claims or double-cancels the same row. No
+    explicit locking beyond each statement's own row lock is needed.
+
+    Also clears `idempotency_key` to NULL in the same UPDATE — this is
+    what lets a genuine retry of the same "start analysis" operation
+    (same project_id/created_by_user_id/idempotency_key, e.g. a client
+    that never received a definitive response and retries with its
+    stored key) create a *new* job after this one was cancelled,
+    rather than either resurrecting the dead row via
+    _fetch_existing_job_by_idempotency_key()'s lookup (which matches
+    on `idempotency_key = %s` and would otherwise still find this row)
+    or failing with a spurious unique-constraint conflict on
+    idx_analysis_runs_idempotency (whose partial `where idempotency_key
+    is not null` condition stops applying to this row once the key is
+    cleared, freeing that (project_id, created_by_user_id,
+    idempotency_key) slot for reuse). This was deliberately done
+    without any migration change — the column was already nullable
+    (backend/migrations/005_async_analysis_jobs_phase1.sql), so
+    clearing it is just a second column in the same UPDATE, not a
+    schema change.
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return CancelQueuedAnalysisJobResult(outcome="not_found")
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set deleted_at = now(),
+                        idempotency_key = null
+                    where id = %s
+                      and status = 'queued'
+                      and deleted_at is null
+                    returning id
+                    """,
+                    (analysis_run_id,),
+                )
+                cancelled_now = cur.fetchone() is not None
+
+                if cancelled_now:
+                    conn.commit()
+                    return CancelQueuedAnalysisJobResult(outcome="cancelled")
+
+                # The UPDATE above matched nothing — distinguish why,
+                # without having committed any write yet.
+                cur.execute(
+                    "select status, deleted_at from analysis_runs where id = %s",
+                    (analysis_run_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to cancel queued analysis job")
+        raise AnalysisHistoryReadError("failed to cancel analysis job") from exc
+
+    if row is None:
+        return CancelQueuedAnalysisJobResult(outcome="not_found")
+
+    status, deleted_at = row
+    if deleted_at is not None:
+        return CancelQueuedAnalysisJobResult(outcome="already_cancelled")
+    return CancelQueuedAnalysisJobResult(outcome="not_cancellable", status=status)
 
 
 def extend_analysis_job_lease(

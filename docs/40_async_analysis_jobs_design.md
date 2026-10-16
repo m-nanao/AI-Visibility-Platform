@@ -820,4 +820,48 @@ frontend側では独自の権限判定を一切行わず、既存のJWT転送＋
 
 ---
 
-以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 24. ジョブのキャンセル・削除とworker claim条件の整合性修正（2026-10-17、`fix/async-job-cancel-safety`）
+
+本章は、本番移行前チェック（[41_async_analysis_production_rollout.md](./41_async_analysis_production_rollout.md)）の受付テスト手順を調査した際に見つかった不整合の修正結果を記録する。**migration変更・本番Supabase操作・worker本番有効化・Vercel非同期UI有効化・外部有料API実行・Render環境変数変更はいずれも行っていない。**
+
+### 24.1 発見した問題
+
+1. `claim_next_queued_analysis_run()`（worker用のジョブ取得クエリ）が`status = 'queued'`のみで絞り込み、**`deleted_at is null`を確認していなかった**——queuedジョブをsoft delete（既存の`analysis_runs.deleted_at`、003 migration）しても、将来workerが有効化された時点でそのジョブが依然としてclaimされ、実行されてしまう。
+2. 上記1の結果、queuedジョブを安全に取り消す（将来workerに実行させない）方法が存在しなかった——既存の`DELETE /analysis-runs/{id}`（soft delete）はstatusを問わず呼べるが、実際の実行防止には無関係だった。
+3. `create_queued_analysis_run()`のproject/user単位queued件数上限チェックも`deleted_at`を見ておらず、**取り消したジョブが上限に永久に居座り続ける**——「取り消し」が実質的に機能しない状態だった。
+4. `_fetch_existing_job_by_idempotency_key()`（idempotency replay用の既存ジョブ検索）とidempotencyのunique index (`idx_analysis_runs_idempotency`) もともに`deleted_at`を見ておらず、**取り消したジョブと同じidempotencyKeyで再送すると、死んだジョブがそのまま返るか、unique制約違反で失敗する**可能性があった。
+
+### 24.2 修正内容（migration・新status値は追加していない）
+
+- `claim_next_queued_analysis_run()`の claim 対象subqueryに`and deleted_at is null`を追加。
+- `create_queued_analysis_run()`のproject/user単位queued件数カウントに`and deleted_at is null`を追加——取り消し済みジョブはカウントされなくなり、上限枠が正しく解放される。
+- 新規`cancel_queued_analysis_run()`（`backend/services/analysis_history_repository.py`）を追加。1本の原子的な`update ... where status = 'queued' and deleted_at is null set deleted_at = now(), idempotency_key = null returning id`で、以下を同時に達成する:
+  - `claim_next_queued_analysis_run()`の claim UPDATE と同じ2条件（`status = 'queued' and deleted_at is null`）を使うことで、どちらが先にそのレコードへ辿り着いても整合性が取れる（PostgreSQLの行ロックにより、後から辿り着いた側のUPDATEは条件不一致で0行に自然に収まる——明示的なロック制御は追加していない）。
+  - `idempotency_key`を同時に`null`へクリアすることで、取り消したジョブがunique indexの対象（`where idempotency_key is not null`）から外れ、同じキーでの再送が死んだ行を見つけることも、制約違反になることもなく、新しいジョブとして作成される。migration変更は不要（列は005で既にnullable）。
+  - UPDATEが0行だった場合、追加のSELECTで「既に取り消し済み」（成功扱い、既存`soft_delete_analysis_run()`の「再実行は成功扱い」規約と一致）・「queuedでなくなっている」（running/completed/partial/failed、`"not_cancellable"`として現在のstatusを返す）・「存在しない」を区別する。
+- 新規`DELETE /analysis-jobs/{analysis_run_id}`（`backend/main.py`）を追加。他の`/analysis-jobs*`エンドポイントと同じ`_resolve_job_auth()`（JWT必須、`HISTORY_READ_TOKEN`フォールバックなし）+ `can_user_access_analysis_run()`（project membership確認、他projectのジョブは403でexistence-leakなし）で認可する。`cancelled`/`already_cancelled`は200、`not_cancellable`（既にrunning/completed等）は409（**runningジョブを即時停止できたかのように偽らない**）、`not_found`は404。
+- 既存の`DELETE /analysis-runs/{id}`（history一覧からの削除）・`soft_delete_analysis_run()`は無変更——completed/partial/failed行のhide目的の削除は、今回の修正の影響を受けない。
+
+### 24.3 認証・権限チェック
+
+既存の`GET /analysis-jobs/{id}`と全く同じパターン（`_resolve_job_auth()` → `can_user_access_analysis_run()`）を再利用しており、新しい認可ロジックは追加していない。他ユーザー・他projectのジョブは本人のJWTでは403になる。
+
+### 24.4 テスト
+
+- `backend/tests/test_analysis_jobs_repository_integration.py`に9件追加（実PostgreSQL、Homebrew経由でローカルに一時用意、Supabaseへは一切接続していない）: 取り消し済みジョブがclaimされないこと、他の通常queuedジョブはclaimされ続けること、claim-first/cancel-firstの両方の競合順序で二重処理が起きないこと、取り消しの冪等性、running/completedジョブは取り消し不可として報告されること、存在しないジョブは not_found、取り消しがqueued件数上限を解放すること、取り消し後に同じidempotencyKeyで再送すると新しいジョブが作られること。**修正前のコードに戻して3件が実際に失敗することを確認したうえで、修正を戻して全27件成功することを再確認した**（このプロジェクトの既存の「regressionを実際に再現してから直す」慣習に従う）。
+- `backend/tests/test_main_analysis_jobs_api.py`に9件追加（モックベース、main.pyの認可・ステータスコード配線のみ検証）。
+- backend全体: `pytest` 1391 passed（`TEST_DATABASE_URL`設定時、既存1355+新規integration 9+新規unit 9+既存skip分18=1391）/ 設定なし時は1364 passed, 27 skipped。既存`/analyze`・履歴削除・重要フラグ・worker lease/heartbeat関連テストはすべて無変更のまま成功——既存機能への影響なしを確認。
+- frontend（今回コード変更していないため）: `npm run lint`/`npm run test`/`npm run build`すべて成功、既存テスト件数から増減なし。
+
+### 24.5 provider設定の安全性についての確認・docs修正
+
+[41_async_analysis_production_rollout.md](./41_async_analysis_production_rollout.md)「3.0」に、以下を明記済み（本章でさらに確認・補強した）:
+
+- providerモードのリクエストフィールドを**省略した場合**、`ALLOW_*_MODE_OVERRIDE`の値に関わらず常にRender側の env default（`*_PROVIDER_MODE`）が使われる。
+- providerモードのリクエストフィールドに**明示的に`"off"`/`"mock"`を指定した場合**でも、`ALLOW_*_MODE_OVERRIDE`が本番で`false`であれば、そのリクエスト値は無視され、env defaultがそのまま使われる（env default自体が`off`/`mock`でない限り安全とは言えない）。`ALLOW_*_MODE_OVERRIDE=true`であれば、明示的な`"off"`/`"mock"`の指定が確実に尊重される——**省略よりも明示指定の方が、env defaultが何であっても安全側に働く点で優れている**。
+- 本番受付テスト用ジョブについては、上記に加え、本章で追加した`DELETE /analysis-jobs/{id}`が「worker有効化前に問題のあるqueuedジョブを個別に取り消す」という新しい安全策として使えるようになった——以前は「workerを有効化しない」という運用上の注意だけが唯一の防御線だったが、今はqueuedジョブ1件単位で確実に取り消せる。
+- Renderのprovider関連環境変数自体は、本タスクでも変更していない。
+
+---
+
+以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3・ジョブキャンセル安全性修正の実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
