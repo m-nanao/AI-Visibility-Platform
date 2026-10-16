@@ -535,11 +535,14 @@ def test_cancel_job_returns_401_without_a_token(monkeypatch):
 
 
 def test_cancel_job_returns_403_for_inaccessible_job(monkeypatch):
-    """Covers both "belongs to a different project" and "does not
-    exist" — same existence-leak avoidance as GET /analysis-jobs/{id}."""
+    """Covers "belongs to a different project", "does not exist", and
+    (see the dedicated test below) "same project but a different
+    user" — can_user_cancel_analysis_run() returning False means the
+    same 403 regardless of which of these it is (existence-leak
+    avoidance, same as GET /analysis-jobs/{id})."""
     _enable_jobs_env(monkeypatch)
     _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: False)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: False)
 
     response = client.delete(
         "/analysis-jobs/11111111-1111-1111-1111-111111111111", headers=_auth_headers()
@@ -548,12 +551,16 @@ def test_cancel_job_returns_403_for_inaccessible_job(monkeypatch):
     assert response.status_code == 403
 
 
-def test_cancel_job_rejects_other_project_without_touching_it(monkeypatch):
-    """A caller who is not a member of the job's project must never
-    reach cancel_queued_analysis_run() at all."""
+def test_cancel_job_rejects_non_creator_without_touching_it(monkeypatch):
+    """A caller who is not this job's creator must never reach
+    cancel_queued_analysis_run() at all — covers both a different
+    project and a different user within the same project, since
+    can_user_cancel_analysis_run() (unlike can_user_access_analysis_run()
+    used by every other /analysis-jobs* endpoint) checks
+    created_by_user_id, not project membership."""
     _enable_jobs_env(monkeypatch)
-    _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: False)
+    _mock_auth(monkeypatch, user_id="not-the-creator")
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: False)
     monkeypatch.setattr(main, "cancel_queued_analysis_run", _never_call)
 
     response = client.delete(
@@ -566,7 +573,7 @@ def test_cancel_job_rejects_other_project_without_touching_it(monkeypatch):
 def test_cancel_job_returns_200_when_cancelled(monkeypatch):
     _enable_jobs_env(monkeypatch)
     _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
     monkeypatch.setattr(
         main,
         "cancel_queued_analysis_run",
@@ -584,7 +591,7 @@ def test_cancel_job_returns_200_when_cancelled(monkeypatch):
 def test_cancel_job_is_idempotent_for_an_already_cancelled_job(monkeypatch):
     _enable_jobs_env(monkeypatch)
     _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
     monkeypatch.setattr(
         main,
         "cancel_queued_analysis_run",
@@ -604,7 +611,7 @@ def test_cancel_job_returns_409_for_a_running_job_without_claiming_to_stop_it(mo
     successfully cancelled."""
     _enable_jobs_env(monkeypatch)
     _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
     monkeypatch.setattr(
         main,
         "cancel_queued_analysis_run",
@@ -622,7 +629,7 @@ def test_cancel_job_returns_409_for_a_running_job_without_claiming_to_stop_it(mo
 def test_cancel_job_returns_409_for_a_completed_job(monkeypatch):
     _enable_jobs_env(monkeypatch)
     _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
     monkeypatch.setattr(
         main,
         "cancel_queued_analysis_run",
@@ -640,7 +647,7 @@ def test_cancel_job_returns_409_for_a_completed_job(monkeypatch):
 def test_cancel_job_returns_404_when_repository_reports_not_found(monkeypatch):
     _enable_jobs_env(monkeypatch)
     _mock_auth(monkeypatch)
-    monkeypatch.setattr(main, "can_user_access_analysis_run", lambda conn, uid, rid: True)
+    monkeypatch.setattr(main, "can_user_cancel_analysis_run", lambda conn, uid, rid: True)
     monkeypatch.setattr(
         main,
         "cancel_queued_analysis_run",

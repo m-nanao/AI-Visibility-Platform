@@ -1380,30 +1380,93 @@ def test_cancelled_job_does_not_count_against_the_queued_limit(db_connection):
     assert second.created is True
 
 
-def test_resubmission_after_cancel_creates_a_new_job_not_the_dead_one(db_connection):
+def test_cancel_retains_the_idempotency_key(db_connection):
+    """The current design (revised from this task's first commit):
+    cancellation does NOT clear idempotency_key — it stays set,
+    `status` stays 'queued', and only `deleted_at` changes. This is
+    what lets the exact-key lookup below keep finding the cancelled
+    row on a replay, so it can be refused rather than silently
+    resurrected or duplicated."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(database_url, idempotency_key="keep-me")
+    _cancel(database_url, created.analysis_run_id)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select status, deleted_at, idempotency_key from {schema}.analysis_runs where id = %s",
+            (created.analysis_run_id,),
+        )
+        status, deleted_at, idempotency_key = cur.fetchone()
+    assert status == "queued"
+    assert deleted_at is not None
+    assert idempotency_key == "keep-me"
+
+
+def test_replay_with_the_same_key_after_cancel_is_rejected_not_recreated(db_connection):
     """A client retrying the exact same "start analysis" operation
     (same project/user/idempotency key) after that job was cancelled
-    must get a brand-new job — never the cancelled row, and never a
-    spurious conflict from the now-freed idempotency key."""
+    must be refused outright — never a brand-new job for the same key
+    (that would let a cancelled operation silently come back to life
+    via a retry), and never the cancelled row handed back as if
+    nothing had happened."""
     conn, schema = db_connection
     database_url = _database_url_with_search_path(schema)
 
     first = _create(database_url, idempotency_key="retry-key")
     _cancel(database_url, first.analysis_run_id)
 
-    second = _create(database_url, idempotency_key="retry-key")
+    from services.analysis_history_repository import AnalysisJobCancelledConflictError
+
+    with pytest.raises(AnalysisJobCancelledConflictError) as exc_info:
+        _create(database_url, idempotency_key="retry-key")
+
+    assert exc_info.value.existing_analysis_run_id == first.analysis_run_id
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (total,) = cur.fetchone()
+    assert total == 1  # no second row was created
+
+
+def test_replay_with_the_same_key_after_cancel_is_rejected_even_with_different_input(
+    db_connection,
+):
+    """The cancelled-key check runs before the input-match comparison
+    — refused outright, regardless of whether the resubmitted input
+    happens to match the original."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    first = _create(database_url, idempotency_key="retry-key-2", urls=["https://a.example.com"])
+    _cancel(database_url, first.analysis_run_id)
+
+    from services.analysis_history_repository import AnalysisJobCancelledConflictError
+
+    with pytest.raises(AnalysisJobCancelledConflictError):
+        _create(database_url, idempotency_key="retry-key-2", urls=["https://b.example.com"])
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (total,) = cur.fetchone()
+    assert total == 1
+
+
+def test_a_fresh_key_after_cancel_starts_a_normal_new_job(db_connection):
+    """An explicit new "start analysis" operation — a different
+    idempotency key, exactly what a client generates deliberately for
+    a new attempt — must succeed completely normally, unaffected by
+    an earlier cancelled job for the same project/user."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    first = _create(database_url, idempotency_key="old-key")
+    _cancel(database_url, first.analysis_run_id)
+
+    second = _create(database_url, idempotency_key="brand-new-key")
 
     assert second.created is True
     assert second.analysis_run_id != first.analysis_run_id
-    with conn.cursor() as cur:
-        cur.execute(
-            f"select status, deleted_at, idempotency_key from {schema}.analysis_runs where id = %s",
-            (first.analysis_run_id,),
-        )
-        status, deleted_at, idempotency_key = cur.fetchone()
-    assert status == "queued"
-    assert deleted_at is not None
-    assert idempotency_key is None  # cleared by the cancellation
     with conn.cursor() as cur:
         cur.execute(
             f"select status, idempotency_key from {schema}.analysis_runs where id = %s",
@@ -1411,4 +1474,36 @@ def test_resubmission_after_cancel_creates_a_new_job_not_the_dead_one(db_connect
         )
         status2, idempotency_key2 = cur.fetchone()
     assert status2 == "queued"
-    assert idempotency_key2 == "retry-key"
+    assert idempotency_key2 == "brand-new-key"
+
+
+def test_can_user_cancel_analysis_run_rejects_a_different_user_in_the_same_project(
+    db_connection,
+):
+    """Real-DB proof of the authorization requirement: a fellow
+    project member (even within the exact same project) who did not
+    create this job must not be treated as able to cancel it —
+    can_user_cancel_analysis_run() checks created_by_user_id only, no
+    project/organization join at all."""
+    from services.project_access import can_user_cancel_analysis_run
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(
+        database_url,
+        idempotency_key="owned-by-creator",
+        created_by_user_id="22222222-2222-2222-2222-222222222222",
+    )
+
+    # `conn`'s search_path is already set to `schema` by the
+    # db_connection fixture for the lifetime of this session.
+    allowed_for_creator = can_user_cancel_analysis_run(
+        conn, "22222222-2222-2222-2222-222222222222", created.analysis_run_id
+    )
+    allowed_for_other_user = can_user_cancel_analysis_run(
+        conn, "33333333-3333-3333-3333-333333333333", created.analysis_run_id
+    )
+
+    assert allowed_for_creator is True
+    assert allowed_for_other_user is False

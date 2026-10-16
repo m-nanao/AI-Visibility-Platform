@@ -13,6 +13,7 @@ from services.project_access import (
     ProjectAccessError,
     can_user_access_analysis_run,
     can_user_access_project,
+    can_user_cancel_analysis_run,
     get_accessible_project_ids,
 )
 
@@ -202,3 +203,62 @@ def test_get_accessible_project_ids_raises_on_db_error():
 
     with pytest.raises(ProjectAccessError):
         get_accessible_project_ids(conn, "user-1")
+
+
+# --- can_user_cancel_analysis_run (fix/async-job-cancel-safety) ---------
+#
+# Deliberately stricter than can_user_access_analysis_run() above: this
+# checks created_by_user_id (the creator), not project membership — a
+# fellow project member must NOT be able to cancel someone else's job.
+
+
+def test_can_user_cancel_analysis_run_true_for_the_creator():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_cancel_analysis_run(conn, "user-1", "run-1") is True
+    assert cursor.queries[0][1] == ("run-1", "user-1")
+    assert "created_by_user_id" in cursor.queries[0][0]
+
+
+def test_can_user_cancel_analysis_run_false_for_a_different_user_in_the_same_project():
+    """The query itself is scoped purely by created_by_user_id, with no
+    project/organization join at all — so a fellow project member who
+    didn't create this job gets no row back, same as a stranger."""
+    cursor = _FakeCursor(fetchone_result=None)
+    conn = _FakeConnection(cursor)
+
+    assert can_user_cancel_analysis_run(conn, "a-different-project-member", "run-1") is False
+    assert "projects" not in cursor.queries[0][0]
+    assert "organization_members" not in cursor.queries[0][0]
+
+
+def test_can_user_cancel_analysis_run_false_when_run_does_not_exist():
+    cursor = _FakeCursor(fetchone_result=None)
+    conn = _FakeConnection(cursor)
+
+    assert can_user_cancel_analysis_run(conn, "user-1", "no-such-run") is False
+
+
+def test_can_user_cancel_analysis_run_false_when_user_id_empty():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_cancel_analysis_run(conn, "", "run-1") is False
+    assert cursor.queries == []
+
+
+def test_can_user_cancel_analysis_run_false_when_analysis_run_id_empty():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_cancel_analysis_run(conn, "user-1", "") is False
+    assert cursor.queries == []
+
+
+def test_can_user_cancel_analysis_run_raises_on_db_error():
+    cursor = _FakeCursor(raise_error=True)
+    conn = _FakeConnection(cursor)
+
+    with pytest.raises(ProjectAccessError):
+        can_user_cancel_analysis_run(conn, "user-1", "run-1")

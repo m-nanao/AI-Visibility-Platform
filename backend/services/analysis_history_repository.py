@@ -857,6 +857,28 @@ class AnalysisJobCreateConflictError(Exception):
         self.existing_analysis_run_id = existing_analysis_run_id
 
 
+class AnalysisJobCancelledConflictError(Exception):
+    """Raised by create_queued_analysis_run() when the same
+    (project_id, created_by_user_id, idempotency_key) belongs to a job
+    that was cancelled (see cancel_queued_analysis_run() —
+    fix/async-job-cancel-safety). Deliberately distinct from
+    AnalysisJobCreateConflictError above: this is not about the input
+    differing, it's that the key itself is no longer usable once its
+    job was cancelled, *regardless* of whether the resubmitted input
+    matches — resurrecting a cancelled job (returning it as if this
+    call had just "idempotently" succeeded) would silently undo the
+    cancellation, and creating a brand-new row for it would defeat the
+    whole point of idempotency keys (the client must get a fresh key
+    deliberately, by the same path it would for any other new
+    operation, never by having a reused key "unstick" itself here).
+    main.py turns this into a 409. Carries the existing (cancelled)
+    job's id for diagnostics."""
+
+    def __init__(self, existing_analysis_run_id: str):
+        super().__init__("idempotency key belongs to a cancelled analysis job")
+        self.existing_analysis_run_id = existing_analysis_run_id
+
+
 class AnalysisJobLimitExceededError(Exception):
     """Raised by create_queued_analysis_run() when creating a new job
     would meet or exceed the project- or user-scoped queued-job limit
@@ -912,9 +934,16 @@ def _canonicalize_job_input(
 def _fetch_existing_job_by_idempotency_key(
     cur, *, project_id: str, created_by_user_id: str, idempotency_key: str
 ):
+    """Looks up an existing job by its exact idempotency key —
+    deliberately matches a cancelled row too (no `deleted_at is null`
+    filter): the caller must be able to tell "this key belongs to a
+    cancelled job" apart from "this key doesn't exist yet", which is
+    exactly what the returned `deleted_at` is for (see
+    create_queued_analysis_run()'s and
+    _resolve_job_after_unique_violation()'s use of it below)."""
     cur.execute(
         """
-        select id, status, input_snapshot
+        select id, status, input_snapshot, deleted_at
         from analysis_runs
         where project_id = %s
           and created_by_user_id = %s
@@ -959,7 +988,12 @@ def _resolve_job_after_unique_violation(
         # failure rather than silently creating a duplicate.
         raise AnalysisHistoryReadError("failed to create analysis job")
 
-    existing_id, existing_status, existing_snapshot = existing
+    existing_id, existing_status, existing_snapshot, existing_deleted_at = existing
+    if existing_deleted_at is not None:
+        # The row that caused the violation was cancelled — never
+        # resurrect it here either, same reasoning as the pre-insert
+        # check in create_queued_analysis_run() above.
+        raise AnalysisJobCancelledConflictError(str(existing_id))
     if existing_snapshot != canonical_input:
         raise AnalysisJobCreateConflictError(str(existing_id))
 
@@ -1013,11 +1047,20 @@ def create_queued_analysis_run(
     plain SELECT-then-INSERT in application code alone would race
     under concurrency — see docs/40 "10.1"/"11.1"). If a matching row
     already exists:
-    - same canonicalized input -> returns that job's existing
-      id/status with created=False (no new row, no limit check — a
-      retry of an already-accepted operation must never be rejected by
-      the very limits meant to stop *new* operations).
-    - different canonicalized input -> raises
+    - it was cancelled (`deleted_at is not null`, see
+      cancel_queued_analysis_run() below) -> always raises
+      AnalysisJobCancelledConflictError (main.py -> 409), regardless of
+      whether the input matches — checked *before* the input
+      comparison below, since a cancelled job's key must never be
+      treated as a normal idempotent replay (fix/async-job-cancel-safety:
+      cancellation deliberately keeps `idempotency_key` set, precisely
+      so this exact lookup keeps finding it and refusing to reuse it,
+      rather than silently freeing the key for reuse).
+    - not cancelled, same canonicalized input -> returns that job's
+      existing id/status with created=False (no new row, no limit
+      check — a retry of an already-accepted operation must never be
+      rejected by the very limits meant to stop *new* operations).
+    - not cancelled, different canonicalized input -> raises
       AnalysisJobCreateConflictError (main.py -> 409).
 
     Queued-job limits (docs/40 "8.3"): only checked when actually about
@@ -1105,7 +1148,16 @@ def create_queued_analysis_run(
                     idempotency_key=idempotency_key,
                 )
                 if existing is not None:
-                    existing_id, existing_status, existing_snapshot = existing
+                    existing_id, existing_status, existing_snapshot, existing_deleted_at = existing
+                    if existing_deleted_at is not None:
+                        # This key belongs to a cancelled job — never
+                        # create a new row for it, and never return
+                        # the cancelled row as if this were a normal
+                        # idempotent replay (that would silently
+                        # resurrect it from the caller's point of
+                        # view). See AnalysisJobCancelledConflictError's
+                        # docstring for the full reasoning.
+                        raise AnalysisJobCancelledConflictError(str(existing_id))
                     if existing_snapshot != canonical_input:
                         raise AnalysisJobCreateConflictError(str(existing_id))
                     return AnalysisJobCreateResult(
@@ -1169,7 +1221,11 @@ def create_queued_analysis_run(
                     (analysis_run_id, Jsonb({})),
                 )
             conn.commit()
-    except (AnalysisJobCreateConflictError, AnalysisJobLimitExceededError):
+    except (
+        AnalysisJobCreateConflictError,
+        AnalysisJobCancelledConflictError,
+        AnalysisJobLimitExceededError,
+    ):
         raise
     except Exception as exc:
         if UniqueViolation is not None and isinstance(exc, UniqueViolation):
@@ -1435,23 +1491,22 @@ def cancel_queued_analysis_run(analysis_run_id: str) -> CancelQueuedAnalysisJobR
     race, never double-claims or double-cancels the same row. No
     explicit locking beyond each statement's own row lock is needed.
 
-    Also clears `idempotency_key` to NULL in the same UPDATE — this is
-    what lets a genuine retry of the same "start analysis" operation
-    (same project_id/created_by_user_id/idempotency_key, e.g. a client
-    that never received a definitive response and retries with its
-    stored key) create a *new* job after this one was cancelled,
-    rather than either resurrecting the dead row via
-    _fetch_existing_job_by_idempotency_key()'s lookup (which matches
-    on `idempotency_key = %s` and would otherwise still find this row)
-    or failing with a spurious unique-constraint conflict on
-    idx_analysis_runs_idempotency (whose partial `where idempotency_key
-    is not null` condition stops applying to this row once the key is
-    cleared, freeing that (project_id, created_by_user_id,
-    idempotency_key) slot for reuse). This was deliberately done
-    without any migration change — the column was already nullable
-    (backend/migrations/005_async_analysis_jobs_phase1.sql), so
-    clearing it is just a second column in the same UPDATE, not a
-    schema change.
+    Deliberately does **not** clear `idempotency_key` (an earlier
+    version of this function did — see fix/async-job-cancel-safety's
+    initial commit — but that let a resubmission with the same key
+    silently create a brand-new job instead of being refused, which
+    defeats the point of cancelling: the caller could get back a
+    "new" job that looks like nothing happened). Keeping the key set
+    means _fetch_existing_job_by_idempotency_key() keeps finding this
+    row, and create_queued_analysis_run() checks `deleted_at` on that
+    lookup specifically to refuse a replay against a cancelled job
+    (AnalysisJobCancelledConflictError, main.py -> 409) rather than
+    creating a new row or returning this one as if it were a normal
+    idempotent success — see that function's docstring. A genuinely
+    *new* "start analysis" operation (a fresh idempotency key, which
+    is what a client generates for any explicit new attempt — see
+    app/lib/analysis-jobs.ts's clearPendingJobSubmission()) is
+    unaffected: a different key never matches this row at all.
 
     Raises AnalysisHistoryReadError on any connection/query failure.
     """
@@ -1468,8 +1523,7 @@ def cancel_queued_analysis_run(analysis_run_id: str) -> CancelQueuedAnalysisJobR
                 cur.execute(
                     """
                     update analysis_runs
-                    set deleted_at = now(),
-                        idempotency_key = null
+                    set deleted_at = now()
                     where id = %s
                       and status = 'queued'
                       and deleted_at is null
