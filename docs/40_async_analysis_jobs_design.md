@@ -906,4 +906,50 @@ frontend新規テスト14件（`app/api/analysis-jobs/[id]/route.test.ts`に`des
 
 ---
 
-以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3・ジョブキャンセル安全性修正（レビュー対応含む）の実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**
+## 25. 非同期分析の履歴・進捗管理UI（2026-10-17、`feature/async-job-history-progress-ui`）
+
+本章は、履歴一覧・履歴詳細から非同期ジョブ（queued/running/failed）を扱えるようにし、`/analysis/jobs/[id]`にqueuedジョブのキャンセル操作を追加したタスクの結果を記録する。**migration・backend変更・本番Supabase操作・Render/Vercel設定変更・worker本番有効化・外部有料API実行はいずれも行っていない。**
+
+### 25.1 データ取得は既存APIで十分（backend変更なし）
+
+調査の結果、`GET /analysis-runs`（`list_analysis_runs()`）は元から`status`で絞り込みをしておらず（`ar.deleted_at is null`のみが無条件条件）、queued/running/failed行もそのまま返している。`AnalysisRunListItem`の`status`はPydantic側も`str`（enum制約なし）、frontend側のZodスキーマも`z.string()`で、`visibilityScore`等の他フィールドもすべてoptionalなため、結果が未確定なジョブの行（スコアnull等）もそのまま検証を通る。**同様に`GET /analysis-runs/{id}`（`get_analysis_run()`）もstatusで絞り込んでおらず、queued/running/failedの行をそのまま返す**（`result`は作成時のプレースホルダー`{}`）。キャンセル済み（`deleted_at`設定済み）の行は両APIとも元から除外される（`ar.deleted_at is null`が無条件）ため、「キャンセル済みジョブは履歴一覧に表示しない」という要件も**backend変更なしで既に満たされている**。migrationは不要。
+
+### 25.2 履歴一覧の表示・遷移
+
+- `app/lib/analysis-history.ts`に`resolveHistoryListItemDetailPath(item)`を追加——`status`が`queued`/`running`/`failed`なら`buildAnalysisJobPath(id)`（`/analysis/jobs/{id}`）、それ以外（`completed`/`partial`）なら既存の`buildHistoryDetailPath(id)`（`/history/{id}`）を返す。`app/history/page.tsx`の詳細リンクをこれに置き換えた。
+- 同ファイルに`canManageHistoryListItem(status)`を追加——`completed`/`partial`/`failed`（真）/`queued`/`running`（偽）。`app/history/page.tsx`の★重要フラグ・削除ボタンをこの条件で囲み、queued/runningの間は非表示にした。**理由**: 既存の削除（`DELETE /analysis-runs/{id}`）はproject membership判定であり、作成者限定ではない——もしqueuedジョブに対してこの削除ボタンをそのまま使わせると、作成者以外のproject member が、本来は作成者限定であるべき「取り消し」相当の効果（24章のキャンセル機能のバックエンド条件と同じ`deleted_at`を使うため、claimされなくなる）を代わりに持ってしまう。取り消しの導線は`/analysis/jobs/[id]`の専用ボタン（作成者限定、25.3参照）のみとし、履歴一覧の既存削除機能は従来通りcompleted/partial/failedに対してのみ提供する。
+- 既存のstatusラベル（`STATUS_LABELS`、queued="待機中"/running="実行中"等）・`formatAnalysisRunListItem()`の各フィールドはすべて元から未定義値を許容する実装だったため、表示ロジック自体は無変更。
+
+### 25.3 `/analysis/jobs/[id]`へのキャンセル操作の追加
+
+- `app/lib/analysis-jobs.ts`に`resolveCancelAnalysisJobOutcome()`（`CancelAnalysisJobOutcome`型、`cancelled`/`unauthorized`/`forbidden`/`notFound`/`conflict`/`error`の6種）を追加——既存の`DELETE /api/analysis-jobs/{id}`（24章で追加済み）のレスポンスを解釈する。
+- `app/analysis/jobs/[id]/page.tsx`に`handleCancel()`を追加。`status === "queued"`のときだけキャンセルボタンを表示する（`running`には出さない——即時停止できると誤認させないため）。
+  - `window.confirm()`で実行前確認。
+  - `isCancelling`状態でボタンを無効化し、ハンドラ自身も先頭で早期returnすることで二重クリックによる重複リクエストを防止。
+  - 成功時は`router.push("/history")`で履歴一覧へ遷移。
+  - 409（既にclaimされた等）時は、ポーリング用の`resolveAnalysisJobStatusOutcome()`と同じ関数で`GET /api/analysis-jobs/{id}`を1回だけ追加fetchし、`view`を最新状態に更新する——既存のpoll controller（`createAnalysisJobPollController`）自体には触れておらず、新しい定期ポーリング機構を追加していない。1回限りのユーザー操作に対する1回限りの確認fetchであり、ポーリングの重複ではない。
+  - その他（401/403/404/error）はインラインでエラーメッセージを表示し、ボタンはそのまま残す。
+- 認可はbackend側（24章で追加した`can_user_cancel_analysis_run()`、作成者本人のみ）がそのまま行う。frontend側はボタンの表示/非表示を認可判定の代わりとして使っていない——権限のない操作を実行しても、backendが403を返すだけで実害はない。
+
+### 25.4 履歴詳細（`/history/[id]`）への直接アクセス対応
+
+履歴一覧は25.2の変更によりqueued/running/failedのジョブへ`/history/{id}`のリンクをもう作らないが、`id`はURL中の生のUUIDであるため、ブックマーク・直接入力等で`/history/{id}`を開かれる可能性は残る。そのため:
+
+- `app/lib/analysis-history.ts`の`resolveHistoryDetailFetchOutcome()`に、`result`をパースする**前**に`run.status`を確認する分岐を追加した。`queued`/`running`なら新規`{kind: "jobInProgress", id, message}`、`failed`なら新規`{kind: "jobFailed", id, message}`を返す——いずれも既存の`HISTORY_DETAIL_INCOMPATIBLE_MESSAGE`（「保存済み分析結果の形式が現在の表示形式と一致しません。」）とは別の、専用の分かりやすい文言（`HISTORY_DETAIL_JOB_IN_PROGRESS_MESSAGE`/`HISTORY_DETAIL_JOB_FAILED_MESSAGE`）を使う——元の`incompatible`メッセージは「昔の結果が現行スキーマと噛み合わない」という別の事象向けの文言であり、単に未完了のジョブに対して出すと誤解を招くため。
+- `app/history/[id]/page.tsx`にこの2種の表示ケースを追加し、`/analysis/jobs/{id}`への案内リンクを表示する。
+- `completed`/`partial`（既存の唯一の実際の運用パターン）の挙動は一切変更していない。
+
+### 25.5 既存機能への影響
+
+同期`/analyze`・履歴削除・重要フラグ・Gemini単体再実行・AI差分比較・改善提案・レポート画面はいずれもコード変更なし、または（履歴一覧の重要フラグ/削除ボタンの表示条件のみ）completed/partial/failedに対する挙動は従来と同一。`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`は本タスクの変更のどこからも参照していない——履歴一覧・履歴詳細は元から非同期UIのfeature flagとは独立した既存画面であり、「flagがfalseでも、既に保存されたジョブへの再アクセスを優先する」というタスクの方針どおり、flagの値に関わらず動作する。
+
+### 25.6 テスト
+
+- `app/lib/analysis-jobs.test.ts`に`resolveCancelAnalysisJobOutcome()`のテスト8件（null/401/403/404/409/500/200成功/200だが`cancelled`未確認/不正JSON）。
+- `app/lib/analysis-history.test.ts`に`resolveHistoryListItemDetailPath()`（queued/running/failed→job path、completed/partial→history path）・`canManageHistoryListItem()`（許可/禁止の各ケース）・`resolveHistoryDetailFetchOutcome()`の新規2分岐（jobInProgress/jobFailed）のテストを追加。
+- `.tsx`コンポーネント（`app/analysis/jobs/[id]/page.tsx`・`app/history/page.tsx`・`app/history/[id]/page.tsx`）自体のレンダリングテストは、このプロジェクトに既存の仕組みがない（jsdom/@testing-library/react未導入）ため追加していない——既存の確立された方針どおり、表示/判定ロジックはすべて`app/lib/*.ts`の純粋関数側でテストし、コンポーネントは`npm run build`の型チェックとコードレビューのみで確認する。
+- `npm run lint`/`npm run test`（853 passed、既存831+新規22）/`npm run build`すべて成功。backendファイルは無変更のため`pytest`は対象外。
+
+---
+
+以上が調査・設計・Phase 1・Phase 2（レビュー修正含む）・Phase 3・ジョブキャンセル安全性修正（レビュー対応含む）・履歴/進捗管理UIの実装内容である。**本番DBへのmigration適用（005・006とも）・本番`ANALYSIS_JOBS_ENABLED`/`ANALYSIS_JOBS_WORKER_ENABLED`/`NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS`の有効化・Render/Vercel設定変更・Phase 4(同期API整理)の実装はいずれも行っていない。レビュー・承認を待って次のタスクとして着手する。**

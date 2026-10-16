@@ -20,7 +20,7 @@ import {
   HISTORY_SORT_DEFAULT_ORDER,
   HISTORY_SORT_NEWEST_LABEL,
   HISTORY_SORT_OLDEST_LABEL,
-  buildHistoryDetailPath,
+  canManageHistoryListItem,
   filterAnalysisRunListItems,
   filterAnalysisRunListItemsByImportance,
   formatAnalysisRunListItem,
@@ -29,6 +29,7 @@ import {
   resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
   resolveHistoryListEmptyText,
+  resolveHistoryListItemDetailPath,
   resolveSetAnalysisRunImportantOutcome,
   sortAnalysisRunListItems,
 } from "../lib/analysis-history";
@@ -378,29 +379,42 @@ export default function HistoryPage() {
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-3">
                     <Link
-                      href={buildHistoryDetailPath(item.id)}
+                      href={resolveHistoryListItemDetailPath(item)}
                       className={DETAIL_LINK_BUTTON_CLASSNAME}
                     >
                       {HISTORY_LIST_DETAIL_LINK_TEXT}
                       <span aria-hidden="true">→</span>
                     </Link>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleImportant(item.id, isImportant)}
-                      aria-pressed={isImportant}
-                      className="rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
-                    >
-                      <span aria-hidden="true">{isImportant ? "★" : "☆"} </span>
-                      {getImportantToggleLabel(isImportant)}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(item.id)}
-                      disabled={isDeleting}
-                      className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
-                    >
-                      {isDeleting ? "削除中..." : HISTORY_DELETE_BUTTON_LABEL}
-                    </button>
+                    {/* queued/runningの間は重要フラグ・削除を出さない —
+                        このproject全体に対する既存の削除操作（project
+                        membershipで判定、作成者限定ではない）をqueuedな
+                        ジョブに使うと、本来は作成者限定であるべきキャン
+                        セル相当の効果を誰でも持ててしまう。取り消し操作
+                        は`/analysis/jobs/{id}`の専用ボタン（作成者限定）
+                        のみを導線とする。failed（既にworkerが再度claim
+                        することはない終端状態）は既存のcompleted/partial
+                        と同様に扱う。 */}
+                    {canManageHistoryListItem(item.status) && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleImportant(item.id, isImportant)}
+                          aria-pressed={isImportant}
+                          className="rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+                        >
+                          <span aria-hidden="true">{isImportant ? "★" : "☆"} </span>
+                          {getImportantToggleLabel(isImportant)}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item.id)}
+                          disabled={isDeleting}
+                          className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                        >
+                          {isDeleting ? "削除中..." : HISTORY_DELETE_BUTTON_LABEL}
+                        </button>
+                      </>
+                    )}
                   </div>
                   {importantError && (
                     <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">

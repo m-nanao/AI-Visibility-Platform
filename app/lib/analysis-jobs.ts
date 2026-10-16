@@ -613,3 +613,79 @@ export async function resolveAnalysisJobResultOutcome(
 
   return { kind: "success", result: resultParsed.data, status: parsed.data.status };
 }
+
+// --- DELETE /api/analysis-jobs/{id} (cancel a queued job) --------------------
+//
+// Mirrors backend/main.py's cancel_analysis_job() —
+// docs/40_async_analysis_jobs_design.md "24". Only ever offered in the
+// UI while a job's last-known status is "queued" (see
+// app/analysis/jobs/[id]/page.tsx); the backend enforces the real
+// rule (creator-only, queued-only) regardless of what the UI shows, so
+// this resolver's job is purely to turn the proxy's response into a
+// view-level outcome, the same shape as every other resolve*Outcome()
+// in this file.
+
+export type CancelAnalysisJobOutcome =
+  | { kind: "cancelled" }
+  | { kind: "unauthorized"; message: string }
+  | { kind: "forbidden"; message: string }
+  | { kind: "notFound"; message: string }
+  // The job is no longer cancellable (already claimed by a worker, or
+  // already in a terminal status) — the caller must re-fetch the
+  // job's current status rather than show this as a plain error, see
+  // the page's handleCancel().
+  | { kind: "conflict"; message: string }
+  | { kind: "error"; message: string };
+
+export const JOB_CANCEL_BUTTON_LABEL = "分析をキャンセル";
+export const JOB_CANCEL_CONFIRM_MESSAGE =
+  "この分析をキャンセルしますか？キャンセルした分析は元に戻せません。";
+export const JOB_CANCEL_PENDING_TEXT = "キャンセルしています...";
+export const JOB_CANCEL_UNAUTHORIZED_MESSAGE =
+  "ログインが必要です。再度ログインしてから、このページを開き直してください。";
+export const JOB_CANCEL_FORBIDDEN_MESSAGE =
+  "この分析をキャンセルする権限がありません。";
+export const JOB_CANCEL_NOT_FOUND_MESSAGE =
+  "指定された分析ジョブが見つかりません。削除された可能性があります。";
+export const JOB_CANCEL_CONFLICT_MESSAGE =
+  "処理が開始されたため、キャンセルできませんでした。最新の状態を表示します。";
+export const JOB_CANCEL_GENERIC_ERROR_MESSAGE =
+  "分析をキャンセルできませんでした。時間をおいて再度お試しください。";
+
+/** Turns a fetch() Response (or null) from DELETE /api/analysis-jobs/{id}
+ * into a view-level outcome — mirrors every other resolve*Outcome()
+ * in this file. */
+export async function resolveCancelAnalysisJobOutcome(
+  response: Response | null,
+): Promise<CancelAnalysisJobOutcome> {
+  if (!response) {
+    return { kind: "error", message: JOB_CANCEL_GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === 401) {
+    return { kind: "unauthorized", message: JOB_CANCEL_UNAUTHORIZED_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { kind: "forbidden", message: JOB_CANCEL_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { kind: "notFound", message: JOB_CANCEL_NOT_FOUND_MESSAGE };
+  }
+
+  if (response.status === 409) {
+    return { kind: "conflict", message: JOB_CANCEL_CONFLICT_MESSAGE };
+  }
+
+  if (!response.ok) {
+    return { kind: "error", message: JOB_CANCEL_GENERIC_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  if (!json || (json as { cancelled?: unknown }).cancelled !== true) {
+    return { kind: "error", message: JOB_CANCEL_GENERIC_ERROR_MESSAGE };
+  }
+
+  return { kind: "cancelled" };
+}

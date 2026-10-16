@@ -14,6 +14,7 @@ import {
   parseGeminiRerunResponse,
   parseWebAiGapAiComparisonUpdateResponse,
 } from "./analysis-history-schema";
+import { buildAnalysisJobPath } from "./analysis-jobs";
 import { parseAnalysisResult } from "./analysis-result-schema";
 import type { AnalysisResult, CooccurrenceKeyword, WebAiGapAiComparison } from "./types";
 
@@ -652,6 +653,40 @@ export function buildHistoryDetailPath(id: string): string {
   return `/history/${encodeURIComponent(id)}`;
 }
 
+// A history list row whose status is one of these has no saved
+// result yet (or never will) — route it to the async-job status page
+// (which polls, shows queued/running/failed state, and offers
+// cancellation while queued) instead of the history detail page
+// (which only ever has something meaningful to show once a result
+// exists). Every status NOT in this set (completed/partial, and any
+// future status this list doesn't yet know about) keeps going to the
+// existing history detail page, unchanged — see
+// feature/async-job-history-progress-ui.
+const JOB_PROGRESS_STATUSES = new Set(["queued", "running", "failed"]);
+
+/** True for a status this history list should still let the user
+ * manage (mark important, soft-delete) — every status that already
+ * had these actions available before async jobs existed
+ * (completed/partial), plus "failed" (also terminal, never claimed by
+ * a worker again). False for "queued"/"running": a worker may still
+ * claim/complete these, and — for queued specifically — the only
+ * correct way to stop it is the dedicated, creator-only cancel action
+ * on the job status page, not this list's project-wide soft-delete. */
+export function canManageHistoryListItem(status: string): boolean {
+  return !JOB_PROGRESS_STATUSES.has(status) || status === "failed";
+}
+
+/** Resolves which detail page one history list row should link to —
+ * see JOB_PROGRESS_STATUSES above. Pure and separately testable from
+ * the JSX that calls it, same convention as every other resolve-
+ * or build-prefixed function in this file. */
+export function resolveHistoryListItemDetailPath(item: AnalysisRunListItem): string {
+  if (JOB_PROGRESS_STATUSES.has(item.status)) {
+    return buildAnalysisJobPath(item.id);
+  }
+  return buildHistoryDetailPath(item.id);
+}
+
 // --- Detail page (GET /analysis-runs/{id}, docs/22_analysis_history_detail_ui_design.md) ---
 
 export const HISTORY_DETAIL_PAGE_TITLE = "分析履歴の詳細";
@@ -680,6 +715,23 @@ export const HISTORY_DETAIL_INCOMPATIBLE_MESSAGE =
 
 export const HISTORY_DETAIL_GENERIC_ERROR_MESSAGE =
   "分析履歴の詳細を読み込めませんでした。時間をおいて再度お試しください。";
+
+// Shown when /history/{id} is opened directly (bookmark, typed URL,
+// an old link) for a job that has no saved result yet/ever — the
+// history list itself never links here for these statuses (see
+// resolveHistoryListItemDetailPath() above), but the id is a plain
+// UUID in the URL, so this page must still handle it rather than show
+// the "incompatible" message above (which was written for a
+// genuinely different situation — an old result whose shape predates
+// the current AnalysisResult type. Saying "保存済み分析結果の形式が
+// 現在の表示形式と一致しません" to someone who opened a job that
+// simply hasn't finished yet would be actively misleading — that is
+// not what happened here).
+export const HISTORY_DETAIL_JOB_IN_PROGRESS_MESSAGE =
+  "この分析はまだ実行中です。進捗確認ページで最新の状態を確認できます。";
+export const HISTORY_DETAIL_JOB_FAILED_MESSAGE =
+  "この分析は失敗しました。進捗確認ページでエラー内容を確認できます。";
+export const HISTORY_DETAIL_JOB_PROGRESS_LINK_TEXT = "進捗確認ページを開く";
 
 /** One row of GET /analysis-runs/{id}'s `brand` — mirrors
  * backend/models.py's AnalysisRunBrand. */
@@ -755,6 +807,13 @@ export type AnalysisRunDetailViewState =
   | { kind: "notFound"; message: string }
   | { kind: "incompatible"; message: string }
   | { kind: "error"; message: string }
+  // The job is still queued/running — see
+  // HISTORY_DETAIL_JOB_IN_PROGRESS_MESSAGE above. `id` is carried so
+  // the page can link to /analysis/jobs/{id}.
+  | { kind: "jobInProgress"; id: string; message: string }
+  // The job reached "failed" — see HISTORY_DETAIL_JOB_FAILED_MESSAGE
+  // above.
+  | { kind: "jobFailed"; id: string; message: string }
   | { kind: "success"; detail: AnalysisRunDetailResponse; result: AnalysisResult };
 
 /**
@@ -796,6 +855,27 @@ export async function resolveHistoryDetailFetchOutcome(
   const parsed = parseAnalysisRunDetailResponse(json);
   if (!parsed.success) {
     return { kind: "error", message: HISTORY_DETAIL_GENERIC_ERROR_MESSAGE };
+  }
+
+  // Checked before attempting to parse `result` at all — a
+  // queued/running/failed job's result is a placeholder ('{}') that
+  // will never parse as a real AnalysisResult, and isn't supposed to;
+  // reporting that honestly (with a link to the job's actual status
+  // page) instead of the generic "incompatible" message is the whole
+  // point of this task's "2. 状態に応じた遷移先" requirement.
+  if (parsed.data.run.status === "queued" || parsed.data.run.status === "running") {
+    return {
+      kind: "jobInProgress",
+      id: parsed.data.id,
+      message: HISTORY_DETAIL_JOB_IN_PROGRESS_MESSAGE,
+    };
+  }
+  if (parsed.data.run.status === "failed") {
+    return {
+      kind: "jobFailed",
+      id: parsed.data.id,
+      message: HISTORY_DETAIL_JOB_FAILED_MESSAGE,
+    };
   }
 
   const resultParsed = parseAnalysisResult(parsed.data.result);

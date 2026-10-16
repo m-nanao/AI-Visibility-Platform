@@ -2,11 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import AppHeader from "../../../components/AppHeader";
 import AnalysisDashboard from "../../../components/AnalysisDashboard";
 import { buildHistoryDetailPath } from "../../../lib/analysis-history";
 import {
+  JOB_CANCEL_BUTTON_LABEL,
+  JOB_CANCEL_CONFIRM_MESSAGE,
+  JOB_CANCEL_PENDING_TEXT,
   JOB_STATUS_BACK_TO_INPUT_TEXT,
   JOB_STATUS_COMPLETED_HEADING,
   JOB_STATUS_FAILED_BODY,
@@ -23,6 +26,8 @@ import {
   LONG_WAIT_THRESHOLD_MS,
   isTerminalJobStatus,
   resolveAnalysisJobResultOutcome,
+  resolveAnalysisJobStatusOutcome,
+  resolveCancelAnalysisJobOutcome,
 } from "../../../lib/analysis-jobs";
 import type {
   AnalysisJobResultViewState,
@@ -49,6 +54,7 @@ import { createAnalysisJobPollController } from "../../../lib/analysis-job-poll-
  */
 export default function AnalysisJobPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const id = params?.id;
   const [view, setView] = useState<AnalysisJobStatusViewState>({ kind: "loading" });
   const [resultView, setResultView] = useState<AnalysisJobResultViewState>({ kind: "loading" });
@@ -56,6 +62,53 @@ export default function AnalysisJobPage() {
   // Keeps the latest status reachable from the long-wait timer's
   // callback without re-registering that timer on every poll tick.
   const latestStatusRef = useRef<string | undefined>(undefined);
+  // Cancel (queued-only) — independent of the polling effect above, so
+  // an in-flight cancel request is never confused with a poll tick.
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  // Confirms, calls DELETE /api/analysis-jobs/{id}, and handles the
+  // three outcomes the task calls for: success -> back to the history
+  // list; 409 ("no longer queued" — a worker may have just claimed it)
+  // -> re-fetch the real current status via the exact same resolver
+  // the poll controller itself uses, rather than show a stale "queued"
+  // view or a misleading error; anything else -> an inline error,
+  // leaving the queued view (and the button) as they were. `isCancelling`
+  // both disables the button and guards the handler itself against a
+  // second click firing a second request while the first is in flight.
+  const handleCancel = async () => {
+    if (!id || isCancelling) return;
+    if (!window.confirm(JOB_CANCEL_CONFIRM_MESSAGE)) return;
+
+    setIsCancelling(true);
+    setCancelError(null);
+
+    const response = await fetch(`/api/analysis-jobs/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).catch(() => null);
+    const outcome = await resolveCancelAnalysisJobOutcome(response);
+
+    if (outcome.kind === "cancelled") {
+      router.push("/history");
+      return;
+    }
+
+    if (outcome.kind === "conflict") {
+      const statusResponse = await fetch(`/api/analysis-jobs/${encodeURIComponent(id)}`).catch(
+        () => null,
+      );
+      const statusOutcome = await resolveAnalysisJobStatusOutcome(statusResponse);
+      setView(statusOutcome);
+      if (statusOutcome.kind === "status") {
+        latestStatusRef.current = statusOutcome.job.status;
+      }
+      setIsCancelling(false);
+      return;
+    }
+
+    setCancelError(outcome.message);
+    setIsCancelling(false);
+  };
 
   // Status polling: delegated to createAnalysisJobPollController()
   // (app/lib/analysis-job-poll-controller.ts), which owns every
@@ -180,6 +233,9 @@ export default function AnalysisJobPage() {
             errorMessage={view.job.errorMessage}
             showLongWait={showLongWait}
             resultView={resultView}
+            onCancel={handleCancel}
+            isCancelling={isCancelling}
+            cancelError={cancelError}
           />
         )}
       </main>
@@ -192,11 +248,17 @@ function JobStatusBody({
   errorMessage,
   showLongWait,
   resultView,
+  onCancel,
+  isCancelling,
+  cancelError,
 }: {
   status: string;
   errorMessage?: string;
   showLongWait: boolean;
   resultView: AnalysisJobResultViewState;
+  onCancel: () => void;
+  isCancelling: boolean;
+  cancelError: string | null;
 }) {
   if (status === "queued" || status === "running") {
     return (
@@ -215,6 +277,27 @@ function JobStatusBody({
         <p className="mt-3 text-xs text-zinc-400 dark:text-zinc-500">
           {JOB_STATUS_WORKER_CAVEAT}
         </p>
+        {/* キャンセルはqueuedの間だけ提示する — runningは既にworkerが
+            claimしており即時停止できないため、ボタン自体を出さない
+            (runningジョブを即時停止できると誤認させないため)。本当の
+            権限チェック（作成者本人のみ）はbackend側が必ず行う——ここ
+            でのボタン表示/非表示はUXのためだけで、権限判定の代わりでは
+            ない。 */}
+        {status === "queued" && (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isCancelling}
+              className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+            >
+              {isCancelling ? JOB_CANCEL_PENDING_TEXT : JOB_CANCEL_BUTTON_LABEL}
+            </button>
+            {cancelError && (
+              <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{cancelError}</p>
+            )}
+          </div>
+        )}
       </div>
     );
   }
