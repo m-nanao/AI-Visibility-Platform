@@ -1276,6 +1276,7 @@ def get_analysis_run(analysis_run_id: str, request: Request):
         result=detail["result"],
         meta=detail["meta"],
         isImportant=detail.get("isImportant", False),
+        projectId=detail.get("projectId"),
     )
 
 

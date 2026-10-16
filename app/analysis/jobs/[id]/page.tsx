@@ -5,11 +5,16 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import AppHeader from "../../../components/AppHeader";
 import AnalysisDashboard from "../../../components/AnalysisDashboard";
+import RetryAnalysisControls from "../../../components/RetryAnalysisControls";
 import { buildHistoryDetailPath } from "../../../lib/analysis-history";
+import { parseAnalysisRunDetailResponse } from "../../../lib/analysis-history-schema";
 import {
   JOB_CANCEL_BUTTON_LABEL,
   JOB_CANCEL_CONFIRM_MESSAGE,
   JOB_CANCEL_PENDING_TEXT,
+  JOB_FAILED_LEASE_EXPIRED_EXPLANATION,
+  JOB_FAILED_UNEXPECTED_EXPLANATION,
+  JOB_FAILED_VALIDATION_LABEL,
   JOB_STATUS_BACK_TO_INPUT_TEXT,
   JOB_STATUS_COMPLETED_HEADING,
   JOB_STATUS_FAILED_BODY,
@@ -24,14 +29,21 @@ import {
   JOB_STATUS_RUNNING_HEADING,
   JOB_STATUS_WORKER_CAVEAT,
   LONG_WAIT_THRESHOLD_MS,
+  RETRY_CONFIRM_MESSAGE,
+  buildAnalysisJobPath,
+  classifyJobFailure,
+  isAsyncAnalysisEnabled,
   isTerminalJobStatus,
+  parseRetryableAnalysisInput,
   resolveAnalysisJobResultOutcome,
   resolveAnalysisJobStatusOutcome,
   resolveCancelAnalysisJobOutcome,
+  submitRetryAnalysis,
 } from "../../../lib/analysis-jobs";
 import type {
   AnalysisJobResultViewState,
   AnalysisJobStatusViewState,
+  RetryAnalysisInputPreview,
 } from "../../../lib/analysis-jobs";
 import { createAnalysisJobPollController } from "../../../lib/analysis-job-poll-controller";
 
@@ -66,6 +78,40 @@ export default function AnalysisJobPage() {
   // an in-flight cancel request is never confused with a poll tick.
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // Manual retry (failed-only) — this job's own status endpoint
+  // doesn't expose input_snapshot/projectId (AnalysisJobStatusResponse
+  // never has, see backend/models.py), so once the job reaches
+  // "failed" this fetches the one existing endpoint that does —
+  // GET /api/analysis-runs/{id} — purely for that data, never to
+  // re-derive the failed/queued/running view state itself (the
+  // ongoing poll above already owns that).
+  const [retryProjectId, setRetryProjectId] = useState<string | undefined>(undefined);
+  const [retryPreview, setRetryPreview] = useState<RetryAnalysisInputPreview | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  // Keeps the raw inputSnapshot reachable from handleRetry() without
+  // putting the whole (potentially large) object in component state —
+  // only the derived, display-ready `retryPreview` needs to trigger a
+  // re-render.
+  const retryInputSnapshotRef = useRef<Record<string, unknown> | undefined>(undefined);
+
+  const handleRetry = async () => {
+    if (!retryProjectId || !retryInputSnapshotRef.current || isRetrying) return;
+    if (!window.confirm(RETRY_CONFIRM_MESSAGE)) return;
+
+    setIsRetrying(true);
+    setRetryError(null);
+
+    const outcome = await submitRetryAnalysis(retryInputSnapshotRef.current, retryProjectId);
+
+    if (outcome.kind === "accepted") {
+      router.push(buildAnalysisJobPath(outcome.analysisRunId));
+      return;
+    }
+
+    setRetryError(outcome.message);
+    setIsRetrying(false);
+  };
 
   // Confirms, calls DELETE /api/analysis-jobs/{id}, and handles the
   // three outcomes the task calls for: success -> back to the history
@@ -183,6 +229,45 @@ export default function AnalysisJobPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, view.kind === "status" ? view.job.status : undefined]);
 
+  // Fetches input_snapshot/projectId exactly once, only after the job
+  // reaches "failed" — needed only to offer the manual-retry preview
+  // (see handleRetry above); never attempted for
+  // "queued"/"running"/"completed"/"partial". Reuses the existing
+  // GET /api/analysis-runs/{id} proxy (the job's own status endpoint
+  // doesn't expose this) and the same envelope parser the history
+  // detail page uses, but intentionally stops at the parsed envelope —
+  // this page's own `view` (from the polling effect above) is already
+  // the source of truth for "failed", so this never also tries to
+  // resolve a result/jobFailed view state from it.
+  useEffect(() => {
+    if (!id) return;
+    if (view.kind !== "status") return;
+    if (view.job.status !== "failed") return;
+
+    let cancelled = false;
+
+    async function loadInputSnapshotForRetry() {
+      const response = await fetch(`/api/analysis-runs/${encodeURIComponent(id)}`).catch(
+        () => null,
+      );
+      if (cancelled || !response || !response.ok) return;
+      const json = await response.json().catch(() => null);
+      if (cancelled) return;
+      const parsed = parseAnalysisRunDetailResponse(json);
+      if (cancelled || !parsed.success) return;
+
+      retryInputSnapshotRef.current = parsed.data.run.inputSnapshot;
+      setRetryPreview(parseRetryableAnalysisInput(parsed.data.run.inputSnapshot));
+      setRetryProjectId(parsed.data.projectId);
+    }
+
+    loadInputSnapshotForRetry();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, view.kind === "status" ? view.job.status : undefined]);
+
   // An honest "this is taking a while" notice — never a fabricated
   // progress percentage or ETA, since the backend provides neither
   // (docs/40 Phase 3 task's "5. 分析中画面"). Cleared automatically
@@ -236,6 +321,10 @@ export default function AnalysisJobPage() {
             onCancel={handleCancel}
             isCancelling={isCancelling}
             cancelError={cancelError}
+            retryPreview={retryProjectId ? retryPreview : null}
+            onRetry={handleRetry}
+            isRetrying={isRetrying}
+            retryError={retryError}
           />
         )}
       </main>
@@ -251,6 +340,10 @@ function JobStatusBody({
   onCancel,
   isCancelling,
   cancelError,
+  retryPreview,
+  onRetry,
+  isRetrying,
+  retryError,
 }: {
   status: string;
   errorMessage?: string;
@@ -259,6 +352,10 @@ function JobStatusBody({
   onCancel: () => void;
   isCancelling: boolean;
   cancelError: string | null;
+  retryPreview: RetryAnalysisInputPreview | null;
+  onRetry: () => void;
+  isRetrying: boolean;
+  retryError: string | null;
 }) {
   if (status === "queued" || status === "running") {
     return (
@@ -303,15 +400,41 @@ function JobStatusBody({
   }
 
   if (status === "failed") {
+    // 分析が正常完了していないことをheading/bodyで明示したうえで、
+    // errorMessageの内容（backendが書き込む3種類の固定・安全な文言の
+    // いずれか——classifyJobFailure()のコメント参照）に応じて追加の
+    // 説明を出し分ける。生の例外・スタックトレース・APIキー等は
+    // backend側でそもそもerror_messageに書かれないため、ここで追加の
+    // マスキングは不要。
+    const failureCategory = classifyJobFailure(errorMessage);
     return (
       <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <h1 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
           {JOB_STATUS_FAILED_HEADING}
         </h1>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{JOB_STATUS_FAILED_BODY}</p>
-        {errorMessage && (
-          <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{errorMessage}</p>
+        {failureCategory === "leaseExpired" && (
+          <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            {JOB_FAILED_LEASE_EXPIRED_EXPLANATION}
+          </p>
         )}
+        {failureCategory === "unexpected" && (
+          <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+            {JOB_FAILED_UNEXPECTED_EXPLANATION}
+          </p>
+        )}
+        {failureCategory === "validation" && errorMessage && (
+          <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
+            {JOB_FAILED_VALIDATION_LABEL} {errorMessage}
+          </p>
+        )}
+        <RetryAnalysisControls
+          preview={retryPreview}
+          isAsyncEnabled={isAsyncAnalysisEnabled()}
+          isRetrying={isRetrying}
+          retryError={retryError}
+          onRetry={onRetry}
+        />
         <div className="mt-4">
           <Link
             href="/"

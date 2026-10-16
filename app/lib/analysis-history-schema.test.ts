@@ -358,6 +358,38 @@ describe("parseAnalysisRunDetailResponse", () => {
     expect(result.success).toBe(false);
   });
 
+  it("parses projectId when present (feature/async-job-failure-display-and-retry)", () => {
+    const withProjectId = {
+      ...validDetailResponse(),
+      projectId: "33333333-3333-3333-3333-333333333333",
+    };
+
+    const result = parseAnalysisRunDetailResponse(withProjectId);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.projectId).toBe("33333333-3333-3333-3333-333333333333");
+    }
+  });
+
+  it("leaves projectId undefined for a legacy response with no projectId at all", () => {
+    const result = parseAnalysisRunDetailResponse(validDetailResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.projectId).toBeUndefined();
+    }
+  });
+
+  it("treats a null projectId the same as absent", () => {
+    const result = parseAnalysisRunDetailResponse({ ...validDetailResponse(), projectId: null });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.projectId).toBeUndefined();
+    }
+  });
+
   it("rejects a response with the wrong field types", () => {
     const invalid = {
       ...validDetailResponse(),

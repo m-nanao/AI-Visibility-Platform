@@ -8,10 +8,15 @@ import {
   isAsyncAnalysisEnabled,
   isDefinitiveCreateAnalysisJobOutcome,
   isTerminalJobStatus,
+  buildRetryAnalysisJobRequestBody,
+  classifyJobFailure,
+  parseRetryableAnalysisInput,
   resolveAnalysisJobResultOutcome,
   resolveAnalysisJobStatusOutcome,
   resolveCancelAnalysisJobOutcome,
   resolveCreateAnalysisJobOutcome,
+  retryMayCallPaidProvider,
+  submitRetryAnalysis,
   resolveIdempotencyKeyForJobSubmission,
   resolveMeProjectsOutcome,
 } from "./analysis-jobs";
@@ -609,5 +614,259 @@ describe("resolveCancelAnalysisJobOutcome", () => {
     const response = new Response("not json", { status: 200 });
     const outcome = await resolveCancelAnalysisJobOutcome(response);
     expect(outcome.kind).toBe("error");
+  });
+});
+
+describe("classifyJobFailure", () => {
+  it("returns 'unknown' when there is no errorMessage at all", () => {
+    expect(classifyJobFailure(undefined)).toBe("unknown");
+  });
+
+  it("returns 'leaseExpired' for the exact fixed string the sweeper writes", () => {
+    expect(
+      classifyJobFailure("worker lease expired (possible partial execution, not auto-retried)"),
+    ).toBe("leaseExpired");
+  });
+
+  it("returns 'unexpected' for the exact fixed string an unhandled pipeline exception writes", () => {
+    expect(classifyJobFailure("unexpected error while running analysis")).toBe("unexpected");
+  });
+
+  it("returns 'validation' for any other non-empty message (input-validation text)", () => {
+    expect(classifyJobFailure("urls must not be empty")).toBe("validation");
+    expect(classifyJobFailure("brandName is required")).toBe("validation");
+  });
+});
+
+describe("parseRetryableAnalysisInput", () => {
+  it("returns null when there is no inputSnapshot at all", () => {
+    expect(parseRetryableAnalysisInput(undefined)).toBeNull();
+  });
+
+  it("returns null when brandName is missing or blank", () => {
+    expect(parseRetryableAnalysisInput({ urls: ["https://example.com"] })).toBeNull();
+    expect(parseRetryableAnalysisInput({ brandName: "  ", urls: ["https://example.com"] })).toBeNull();
+  });
+
+  it("trusts an explicit (even empty) documents array outright — a job-shaped snapshot", () => {
+    const preview = parseRetryableAnalysisInput({ brandName: "サイボウズ", documents: [] });
+
+    expect(preview).toEqual({
+      brandName: "サイボウズ",
+      inputKind: "documents",
+      inputCount: 0,
+      aiOverviewMode: undefined,
+      chatgptMode: undefined,
+      claudeMode: undefined,
+      geminiMode: undefined,
+      commonCrawlMode: undefined,
+    });
+  });
+
+  it("trusts a non-empty documents array and reports its count", () => {
+    const preview = parseRetryableAnalysisInput({
+      brandName: "サイボウズ",
+      documents: ["本文1", "本文2"],
+    });
+
+    expect(preview?.inputKind).toBe("documents");
+    expect(preview?.inputCount).toBe(2);
+  });
+
+  it("trusts a non-empty urls array when documents is entirely absent (legacy sync-shaped snapshot)", () => {
+    const preview = parseRetryableAnalysisInput({
+      brandName: "サイボウズ",
+      urls: ["https://cybozu.co.jp/", "https://example.com/"],
+    });
+
+    expect(preview?.inputKind).toBe("urls");
+    expect(preview?.inputCount).toBe(2);
+  });
+
+  it("returns null when neither documents nor a non-empty urls array is present (ambiguous legacy row)", () => {
+    expect(parseRetryableAnalysisInput({ brandName: "サイボウズ" })).toBeNull();
+    expect(parseRetryableAnalysisInput({ brandName: "サイボウズ", urls: [] })).toBeNull();
+    expect(parseRetryableAnalysisInput({ brandName: "サイボウズ", urls: null })).toBeNull();
+  });
+
+  it("carries through provider modes when present", () => {
+    const preview = parseRetryableAnalysisInput({
+      brandName: "サイボウズ",
+      urls: ["https://example.com"],
+      aiOverviewMode: "dataforseo",
+      chatgptMode: "openai",
+      claudeMode: "off",
+      geminiMode: "google",
+      commonCrawlMode: "domain",
+    });
+
+    expect(preview).toMatchObject({
+      aiOverviewMode: "dataforseo",
+      chatgptMode: "openai",
+      claudeMode: "off",
+      geminiMode: "google",
+      commonCrawlMode: "domain",
+    });
+  });
+});
+
+describe("retryMayCallPaidProvider", () => {
+  it("returns false when every provider mode is off/mock/unset", () => {
+    expect(
+      retryMayCallPaidProvider({
+        brandName: "x",
+        inputKind: "urls",
+        inputCount: 1,
+        aiOverviewMode: "mock",
+        chatgptMode: "off",
+      }),
+    ).toBe(false);
+    expect(retryMayCallPaidProvider({ brandName: "x", inputKind: "urls", inputCount: 1 })).toBe(
+      false,
+    );
+  });
+
+  it("returns true when any provider mode is a real value", () => {
+    expect(
+      retryMayCallPaidProvider({
+        brandName: "x",
+        inputKind: "urls",
+        inputCount: 1,
+        claudeMode: "anthropic",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("buildRetryAnalysisJobRequestBody", () => {
+  it("builds a documents-based body with a fresh idempotency key", () => {
+    const body = buildRetryAnalysisJobRequestBody(
+      { brandName: "サイボウズ", documents: ["本文1"] },
+      "project-1",
+      "key-1",
+    );
+
+    expect(body).toEqual({
+      projectId: "project-1",
+      idempotencyKey: "key-1",
+      brandName: "サイボウズ",
+      documents: ["本文1"],
+    });
+  });
+
+  it("builds a urls-based body when documents is absent", () => {
+    const body = buildRetryAnalysisJobRequestBody(
+      { brandName: "サイボウズ", urls: ["https://example.com"] },
+      "project-1",
+      "key-1",
+    );
+
+    expect(body.urls).toEqual(["https://example.com"]);
+    expect(body.documents).toBeUndefined();
+  });
+
+  it("carries through provider modes only when set", () => {
+    const body = buildRetryAnalysisJobRequestBody(
+      {
+        brandName: "サイボウズ",
+        urls: ["https://example.com"],
+        chatgptMode: "openai",
+        commonCrawlMode: "domain",
+        commonCrawlDomain: "cybozu.co.jp",
+      },
+      "project-1",
+      "key-1",
+    );
+
+    expect(body.chatgptMode).toBe("openai");
+    expect(body.commonCrawlMode).toBe("domain");
+    expect(body.commonCrawlDomain).toBe("cybozu.co.jp");
+    expect(body.aiOverviewMode).toBeUndefined();
+    expect(body.claudeMode).toBeUndefined();
+    expect(body.geminiMode).toBeUndefined();
+  });
+
+  it("generates a fresh idempotency key when none is passed explicitly", () => {
+    const first = buildRetryAnalysisJobRequestBody(
+      { brandName: "サイボウズ", urls: ["https://example.com"] },
+      "project-1",
+    );
+    const second = buildRetryAnalysisJobRequestBody(
+      { brandName: "サイボウズ", urls: ["https://example.com"] },
+      "project-1",
+    );
+
+    expect(first.idempotencyKey).not.toBe(second.idempotencyKey);
+  });
+});
+
+describe("submitRetryAnalysis", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("POSTs /api/analysis-jobs with a freshly-built body and returns the accepted outcome", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ analysisRunId: "new-run-1", status: "queued" }), {
+        status: 202,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    const outcome = await submitRetryAnalysis(
+      { brandName: "サイボウズ", urls: ["https://example.com"] },
+      "project-1",
+    );
+
+    expect(outcome).toEqual({ kind: "accepted", analysisRunId: "new-run-1", status: "queued" });
+    const [url, requestInit] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/analysis-jobs");
+    expect(requestInit.method).toBe("POST");
+    const sentBody = JSON.parse(requestInit.body);
+    expect(sentBody.projectId).toBe("project-1");
+    expect(sentBody.brandName).toBe("サイボウズ");
+    expect(sentBody.urls).toEqual(["https://example.com"]);
+    expect(typeof sentBody.idempotencyKey).toBe("string");
+    expect(sentBody.idempotencyKey.length).toBeGreaterThan(0);
+  });
+
+  it("returns 'error' when the request fails outright", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
+
+    const outcome = await submitRetryAnalysis(
+      { brandName: "サイボウズ", urls: ["https://example.com"] },
+      "project-1",
+    );
+
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("forwards a 409 conflict as-is (e.g. an exceedingly unlikely fresh-key collision)", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "conflict" }), { status: 409 }),
+    );
+
+    const outcome = await submitRetryAnalysis(
+      { brandName: "サイボウズ", urls: ["https://example.com"] },
+      "project-1",
+    );
+
+    expect(outcome.kind).toBe("conflict");
+  });
+
+  it("generates a different idempotency key on each call, even for identical input", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ analysisRunId: "r", status: "queued" }), { status: 202 }),
+    );
+    global.fetch = fetchMock;
+
+    await submitRetryAnalysis({ brandName: "サイボウズ", urls: ["https://example.com"] }, "project-1");
+    await submitRetryAnalysis({ brandName: "サイボウズ", urls: ["https://example.com"] }, "project-1");
+
+    const firstKey = JSON.parse(fetchMock.mock.calls[0][1].body).idempotencyKey;
+    const secondKey = JSON.parse(fetchMock.mock.calls[1][1].body).idempotencyKey;
+    expect(firstKey).not.toBe(secondKey);
   });
 });
