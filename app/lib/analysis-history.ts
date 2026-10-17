@@ -521,18 +521,84 @@ export function jstDateStringToRangeBoundary(
   return `${nextDateString}T00:00:00+09:00`;
 }
 
+// --- AI観測状態フィルター (feature/history-ai-observation-filter) -------
+//
+// Independent filters for Google AI Overview/ChatGPT/Claude/Gemini,
+// backed by GET /analysis-runs's new aiOverviewObservation/
+// chatgptObservation/claudeObservation/geminiObservation query params
+// (see backend/services/analysis_history_repository.py's "AI観測状態
+// フィルター" section for exactly what each of the 5 values means and
+// how it's computed from the saved meta_json/result_json). Purely
+// query-string plumbing on this side — all the actual judgment logic
+// runs server-side in PostgreSQL.
+
+/** The 5 states GET /analysis-runs's observation filters accept —
+ * `undefined` (not one of these) means "all" (no filter) everywhere
+ * this type is used, exactly like `search`/`startedFrom` above being
+ * absent means "no filter". */
+export type ObservationFilterValue =
+  | "mentioned"
+  | "not_mentioned"
+  | "off"
+  | "unavailable"
+  | "unknown";
+
+export const OBSERVATION_FILTER_DEFAULT = "all" as const;
+
+/** Select-box option labels shared by the 4 AI observation filters —
+ * the "すべて" + 5-state list, with wording specialized for AI Overview
+ * ("掲載あり/なし") vs. the other 3 ("観測あり/なし") per this task's "4.
+ * UI" — "観測あり（AI Overviewは掲載あり）" means both wordings describe
+ * the same underlying state, worded to match how each provider is
+ * usually talked about. */
+export const AI_OVERVIEW_OBSERVATION_FILTER_LABELS: Record<
+  "all" | ObservationFilterValue,
+  string
+> = {
+  all: "すべて",
+  mentioned: "掲載あり",
+  not_mentioned: "掲載なし",
+  off: "未実行",
+  unavailable: "取得失敗",
+  unknown: "判定不能",
+};
+
+export const SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS: Record<
+  "all" | ObservationFilterValue,
+  string
+> = {
+  all: "すべて",
+  mentioned: "観測あり",
+  not_mentioned: "観測なし",
+  off: "未実行",
+  unavailable: "取得失敗",
+  unknown: "判定不能",
+};
+
+export const AI_OVERVIEW_OBSERVATION_FILTER_LABEL_TEXT = "AI Overview掲載状態";
+export const CHATGPT_OBSERVATION_FILTER_LABEL_TEXT = "ChatGPT観測状態";
+export const CLAUDE_OBSERVATION_FILTER_LABEL_TEXT = "Claude観測状態";
+export const GEMINI_OBSERVATION_FILTER_LABEL_TEXT = "Gemini観測状態";
+
 /** One page request's worth of filter/sort/pagination state — the
  * history list page keeps exactly this shape as its own controlled
  * state and passes it straight to buildHistoryListRequestUrl() below
  * on every fetch. `startedFrom`/`startedTo` are plain `"YYYY-MM-DD"`
  * JST calendar dates (both inclusive from the caller's point of view —
  * see jstDateStringToRangeBoundary() for how `startedTo` becomes an
- * exclusive upper bound under the hood), `page` is 1-indexed. */
+ * exclusive upper bound under the hood), `page` is 1-indexed.
+ * `aiOverviewObservation`/`chatgptObservation`/`claudeObservation`/
+ * `geminiObservation` are `undefined` for "all" (no filter), exactly
+ * like `search`/`important`/`startedFrom`/`startedTo` being absent. */
 export type HistoryListQuery = {
   search?: string;
   important?: boolean;
   startedFrom?: string;
   startedTo?: string;
+  aiOverviewObservation?: ObservationFilterValue;
+  chatgptObservation?: ObservationFilterValue;
+  claudeObservation?: ObservationFilterValue;
+  geminiObservation?: ObservationFilterValue;
   sort: HistorySortOrder;
   page: number;
 };
@@ -562,23 +628,49 @@ export function buildHistoryListRequestUrl(query: HistoryListQuery): string {
   if (query.startedTo) {
     params.set("startedTo", jstDateStringToRangeBoundary(query.startedTo, "endExclusive"));
   }
+  if (query.aiOverviewObservation) {
+    params.set("aiOverviewObservation", query.aiOverviewObservation);
+  }
+  if (query.chatgptObservation) {
+    params.set("chatgptObservation", query.chatgptObservation);
+  }
+  if (query.claudeObservation) {
+    params.set("claudeObservation", query.claudeObservation);
+  }
+  if (query.geminiObservation) {
+    params.set("geminiObservation", query.geminiObservation);
+  }
 
   return `/api/analysis-runs?${params.toString()}`;
 }
 
-/** True when any of search/important/date-range is actually
- * narrowing the result set — used only to pick the right "0件"
- * message (see resolveServerFilteredEmptyText() below), never to
- * decide whether to fetch (every page request goes through
- * buildHistoryListRequestUrl() regardless). */
+/** True when any of search/important/date-range/the 4 AI observation
+ * filters is actually narrowing the result set — used only to pick
+ * the right "0件" message (see resolveServerFilteredEmptyText()
+ * below), never to decide whether to fetch (every page request goes
+ * through buildHistoryListRequestUrl() regardless). */
 export function isHistoryListQueryFiltered(
-  query: Pick<HistoryListQuery, "search" | "important" | "startedFrom" | "startedTo">,
+  query: Pick<
+    HistoryListQuery,
+    | "search"
+    | "important"
+    | "startedFrom"
+    | "startedTo"
+    | "aiOverviewObservation"
+    | "chatgptObservation"
+    | "claudeObservation"
+    | "geminiObservation"
+  >,
 ): boolean {
   return Boolean(
     (query.search && query.search.trim()) ||
       query.important ||
       query.startedFrom ||
-      query.startedTo,
+      query.startedTo ||
+      query.aiOverviewObservation ||
+      query.chatgptObservation ||
+      query.claudeObservation ||
+      query.geminiObservation,
   );
 }
 

@@ -262,4 +262,48 @@ describe("GET /api/analysis-runs", () => {
     expect(forwardedParams.has("startedTo")).toBe(false);
     expect(forwardedParams.has("sort")).toBe(false);
   });
+
+  // --- AI observation filter forwarding (feature/history-ai-observation-filter) ---
+
+  it("forwards aiOverviewObservation/chatgptObservation/claudeObservation/geminiObservation when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(
+      makeRequest(
+        "?aiOverviewObservation=mentioned&chatgptObservation=not_mentioned&claudeObservation=off&geminiObservation=unavailable",
+      ),
+    );
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.get("aiOverviewObservation")).toBe("mentioned");
+    expect(forwardedParams.get("chatgptObservation")).toBe("not_mentioned");
+    expect(forwardedParams.get("claudeObservation")).toBe("off");
+    expect(forwardedParams.get("geminiObservation")).toBe("unavailable");
+  });
+
+  it("omits the 4 AI observation filter params entirely when the caller didn't set them", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest());
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.has("aiOverviewObservation")).toBe(false);
+    expect(forwardedParams.has("chatgptObservation")).toBe(false);
+    expect(forwardedParams.has("claudeObservation")).toBe(false);
+    expect(forwardedParams.has("geminiObservation")).toBe(false);
+  });
 });

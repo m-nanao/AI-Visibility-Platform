@@ -772,6 +772,94 @@ def test_list_analysis_runs_combines_search_important_and_dates_as_and(monkeypat
     assert params[-2:] == [repo.DEFAULT_LIST_LIMIT, 0]
 
 
+# --- AI観測状態フィルター (feature/history-ai-observation-filter) -------
+
+
+def test_list_analysis_runs_no_observation_filter_adds_no_condition_or_join(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs()
+
+    query, params = fake_cursor.executed[0]
+    assert "aioverviewprovider" not in query.lower()
+    assert "chatgptprovider" not in query.lower()
+    assert len(params) == 2  # limit/offset only
+
+
+@pytest.mark.parametrize(
+    ("kwarg", "meta_key", "platform_label"),
+    [
+        ("chatgpt_observation", "chatgptProvider", "ChatGPT (OpenAI API)"),
+        ("claude_observation", "claudeProvider", "Claude (Anthropic API)"),
+        ("gemini_observation", "geminiProvider", "Gemini (Google API)"),
+    ],
+)
+def test_list_analysis_runs_simple_provider_observation_filter_builds_expected_sql(
+    monkeypatch, kwarg, meta_key, platform_label
+):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(**{kwarg: "mentioned"})
+
+    query, params = fake_cursor.executed[0]
+    assert f"res.meta_json->'{meta_key}'->>'status'" in query
+    assert platform_label in query
+    # One extra bound param (the filter value itself) beyond limit/offset.
+    assert params[0] == "mentioned"
+    assert len(params) == 3
+
+
+def test_list_analysis_runs_ai_overview_observation_filter_excludes_mock(monkeypatch):
+    """This task's "AI Overviewについては、mockデータを実際の掲載あり・
+    なしとして扱わない" — the generated SQL must map a mock-mode saved
+    run to "unknown", never to "mentioned"/"not_mentioned", and the
+    mock fixture's "Google AI Overview" platform label must never
+    match the real-data LIKE pattern."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(ai_overview_observation="unknown")
+
+    query, params = fake_cursor.executed[0]
+    assert "when res.meta_json->'aiOverviewProvider'->>'environment' = 'mock' then 'unknown'" in query
+    assert "Google AI Mode (DataForSEO%" in query
+    assert "Google AI Overview" not in query
+    assert params[0] == "unknown"
+
+
+def test_list_analysis_runs_observation_filters_combine_with_existing_filters_as_and(
+    monkeypatch,
+):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(
+        search="cybozu",
+        important=True,
+        ai_overview_observation="mentioned",
+        chatgpt_observation="off",
+        claude_observation="unavailable",
+        gemini_observation="unknown",
+    )
+
+    query, params = fake_cursor.executed[0]
+    assert "ilike" in query
+    assert "and ar.is_important" in query.lower()
+    assert "aiOverviewProvider" in query
+    assert "chatgptProvider" in query
+    assert "claudeProvider" in query
+    assert "geminiProvider" in query
+    # search's 3 params, then the 4 observation filter values, then limit/offset.
+    assert params[3:7] == ["mentioned", "off", "unavailable", "unknown"]
+    assert params[-2:] == [repo.DEFAULT_LIST_LIMIT, 0]
+
+
 # --- count_analysis_runs ----------------------------------------------------
 
 
@@ -861,6 +949,57 @@ def test_count_analysis_runs_applies_the_same_filters_as_list(monkeypatch):
     assert "coalesce(ar.started_at, ar.created_at) < %s" in query
     assert "ar.deleted_at is null" in query.lower()
     assert params[-1] == started_to
+
+
+def test_count_analysis_runs_joins_analysis_results_only_when_an_observation_filter_is_set(
+    monkeypatch,
+):
+    """count_analysis_runs() stays joinless (this task's "件数取得による
+    過度なDB負荷を避ける") unless one of the 4 new AI-observation
+    filters is actually used — only then does it need `res.meta_json`/
+    `res.result_json` at all."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs()
+
+    query, _ = fake_cursor.executed[0]
+    assert "analysis_results" not in query.lower()
+
+
+def test_count_analysis_runs_joins_analysis_results_when_chatgpt_observation_is_set(
+    monkeypatch,
+):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs(chatgpt_observation="mentioned")
+
+    query, params = fake_cursor.executed[0]
+    assert "left join analysis_results res on res.analysis_run_id = ar.id" in query.lower()
+    assert params[0] == "mentioned"
+
+
+def test_count_analysis_runs_applies_the_same_observation_filters_as_list(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs(
+        ai_overview_observation="mentioned",
+        chatgpt_observation="off",
+        claude_observation="unavailable",
+        gemini_observation="unknown",
+    )
+
+    query, params = fake_cursor.executed[0]
+    assert "aiOverviewProvider" in query
+    assert "chatgptProvider" in query
+    assert "claudeProvider" in query
+    assert "geminiProvider" in query
+    assert params == ["mentioned", "off", "unavailable", "unknown"]
 
 
 # --- get_analysis_run: invalid id / not found -----------------------------

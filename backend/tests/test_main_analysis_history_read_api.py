@@ -455,6 +455,10 @@ def test_list_success_default_query_params(monkeypatch):
         "important": None,
         "started_from": None,
         "started_to": None,
+        "ai_overview_observation": None,
+        "chatgpt_observation": None,
+        "claude_observation": None,
+        "gemini_observation": None,
         "sort": "newest",
         "project_ids": None,
     }
@@ -550,6 +554,58 @@ def test_list_rejects_an_unparseable_started_to(monkeypatch):
     assert "startedTo" in response.json()["error"]
 
 
+def test_list_passes_ai_observation_filters_through_to_the_repository(monkeypatch):
+    """feature/history-ai-observation-filter: the 4 new query params
+    pass straight through to list_analysis_runs() under their
+    snake_case kwarg names."""
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get(
+        "/analysis-runs?aiOverviewObservation=mentioned"
+        "&chatgptObservation=not_mentioned"
+        "&claudeObservation=off"
+        "&geminiObservation=unavailable",
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["ai_overview_observation"] == "mentioned"
+    assert calls[0]["chatgpt_observation"] == "not_mentioned"
+    assert calls[0]["claude_observation"] == "off"
+    assert calls[0]["gemini_observation"] == "unavailable"
+
+
+def test_list_unknown_ai_observation_filter_value_is_accepted(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get(
+        "/analysis-runs?aiOverviewObservation=unknown", headers=_auth_headers()
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["ai_overview_observation"] == "unknown"
+
+
+def test_list_rejects_an_invalid_ai_observation_filter_value(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", _never_called)
+
+    response = client.get(
+        "/analysis-runs?chatgptObservation=sideways", headers=_auth_headers()
+    )
+
+    assert response.status_code == 400
+    assert "chatgptObservation" in response.json()["error"]
+
+
 def test_list_invalid_started_from_is_rejected_before_touching_the_repository(monkeypatch):
     _enable_read_env(monkeypatch)
     monkeypatch.setattr(main, "repository_list_analysis_runs", _never_called)
@@ -596,7 +652,17 @@ def test_list_count_receives_the_same_filters_as_list_including_project_ids(monk
     assert response.status_code == 200
     # Same filter-relevant keys on both calls (list carries limit/
     # offset/sort too, which count() doesn't take at all).
-    for key in ("project_ids", "search", "important", "brand", "status"):
+    for key in (
+        "project_ids",
+        "search",
+        "important",
+        "brand",
+        "status",
+        "ai_overview_observation",
+        "chatgpt_observation",
+        "claude_observation",
+        "gemini_observation",
+    ):
         assert list_calls[0][key] == count_calls[0][key]
 
 
@@ -995,6 +1061,10 @@ def test_list_history_token_mode_when_auth_jwt_enabled_but_no_authorization_head
         "important": None,
         "started_from": None,
         "started_to": None,
+        "ai_overview_observation": None,
+        "chatgpt_observation": None,
+        "claude_observation": None,
+        "gemini_observation": None,
         "sort": "newest",
         "project_ids": None,
     }
