@@ -105,6 +105,24 @@ describe("GET /api/analysis-runs", () => {
     expect(await response.json()).toEqual({ error: "analysis history read access denied" });
   });
 
+  it("forwards a 400 from the Python API as-is (invalid startedFrom/startedTo)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    process.env.HISTORY_READ_TOKEN = "shared-secret-token";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "startedFrom must be a timezone-aware ISO-8601 datetime" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await GET(makeRequest("?startedFrom=not-a-date"));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "startedFrom must be a timezone-aware ISO-8601 datetime",
+    });
+  });
+
   it("still forwards a 503 from the Python API as before (disabled behavior unchanged)", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     process.env.HISTORY_READ_TOKEN = "shared-secret-token";
@@ -180,5 +198,68 @@ describe("GET /api/analysis-runs", () => {
     const text = await response.text();
 
     expect(text).not.toContain("supabase-access-token");
+  });
+
+  // --- Query param forwarding (feature/history-server-side-search-pagination) ---
+
+  it("forwards limit/offset as before", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 40, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest("?limit=20&offset=40"));
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.get("limit")).toBe("20");
+    expect(forwardedParams.get("offset")).toBe("40");
+  });
+
+  it("forwards search/important/startedFrom/startedTo/sort when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(
+      makeRequest(
+        "?search=cybozu&important=true&startedFrom=2026-03-01T00%3A00%3A00%2B09%3A00&startedTo=2026-03-06T00%3A00%3A00%2B09%3A00&sort=oldest",
+      ),
+    );
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.get("search")).toBe("cybozu");
+    expect(forwardedParams.get("important")).toBe("true");
+    expect(forwardedParams.get("startedFrom")).toBe("2026-03-01T00:00:00+09:00");
+    expect(forwardedParams.get("startedTo")).toBe("2026-03-06T00:00:00+09:00");
+    expect(forwardedParams.get("sort")).toBe("oldest");
+  });
+
+  it("omits search/important/startedFrom/startedTo/sort entirely when the caller didn't set them", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest());
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.has("search")).toBe(false);
+    expect(forwardedParams.has("important")).toBe(false);
+    expect(forwardedParams.has("startedFrom")).toBe(false);
+    expect(forwardedParams.has("startedTo")).toBe(false);
+    expect(forwardedParams.has("sort")).toBe(false);
   });
 });

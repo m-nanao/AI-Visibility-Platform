@@ -54,6 +54,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 from services.db_settings import load_db_settings
@@ -320,6 +321,154 @@ def _extract_source_urls(input_snapshot: Any) -> list[str]:
     return [url for url in urls if isinstance(url, str) and url.strip()]
 
 
+def _escape_like_pattern(term: str) -> str:
+    """Escapes the three characters that are special to SQL
+    LIKE/ILIKE (`\\`, `%`, `_`) so a search term containing one of them
+    is matched literally rather than as an unintended wildcard. This is
+    a correctness concern, not a SQL-injection one — every value below
+    is still passed as its own parameterized placeholder, never
+    interpolated into the query string, which is what actually
+    prevents injection regardless of this escaping."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _build_history_filter_conditions(
+    *,
+    brand: str | None,
+    status: str | None,
+    project_ids: list[str] | None,
+    search: str | None,
+    important: bool | None,
+    started_from: datetime | None,
+    started_to: datetime | None,
+) -> tuple[list[str], list[Any]]:
+    """Builds the shared WHERE-clause conditions/params for both
+    list_analysis_runs() and count_analysis_runs() below, so the two
+    can never drift apart (the count must reflect exactly the same
+    filter as the page being counted) — see
+    docs/40_async_analysis_jobs_design.md-adjacent
+    feature/history-server-side-search-pagination.
+
+    `search` matches brand name, `brands.canonical_domain`, or the raw
+    `urls` recorded in `input_snapshot` (a crude but effective
+    substring match over that JSON array's text form — covers the
+    common case of searching for a domain/hostname that appears
+    somewhere in one of the saved URLs), case-insensitively (`ilike`)
+    and with LIKE metacharacters in the term itself escaped (see
+    _escape_like_pattern() above) so a literal `%`/`_` in a brand name
+    can never behave as an unintended wildcard. Every value is bound
+    as its own parameterized placeholder — never string-interpolated
+    into the query — which is what actually prevents SQL injection
+    here (the escaping above is a separate, LIKE-specific correctness
+    concern).
+
+    `important=True` adds `ar.is_important`; `False` or `None` (the
+    default, "all") adds no condition at all — there is deliberately
+    no "important=False" filter mode, matching the existing
+    frontend's "すべて/重要のみ" 2-way toggle (not a 3-way one).
+
+    `started_from`/`started_to` filter on `coalesce(ar.started_at,
+    ar.created_at)` — the exact same fallback the existing display
+    layer already uses for a run with no `started_at`.
+    `started_from` is an inclusive lower bound, `started_to` an
+    *exclusive* upper bound — callers wanting "through end of a given
+    calendar day" pass the start of the *next* day as `started_to`
+    (see app/lib/analysis-history.ts's jstDateStringToRangeBoundary()
+    on the frontend side, which is where the JST calendar-date ->
+    precise instant conversion happens; this function only ever
+    compares already-resolved, timezone-aware instants).
+    """
+    conditions: list[str] = ["ar.deleted_at is null"]
+    params: list[Any] = []
+
+    if brand is not None:
+        conditions.append("b.name = %s")
+        params.append(brand)
+    if status is not None:
+        conditions.append("ar.status = %s")
+        params.append(status)
+    if project_ids is not None:
+        placeholders = ", ".join(["%s"] * len(project_ids))
+        conditions.append(f"ar.project_id in ({placeholders})")
+        params.extend(project_ids)
+    if search is not None and search.strip():
+        pattern = f"%{_escape_like_pattern(search.strip())}%"
+        conditions.append(
+            "(b.name ilike %s escape '\\' "
+            "or b.canonical_domain ilike %s escape '\\' "
+            "or (ar.input_snapshot->>'urls') ilike %s escape '\\')"
+        )
+        params.extend([pattern, pattern, pattern])
+    if important:
+        conditions.append("ar.is_important")
+    if started_from is not None:
+        conditions.append("coalesce(ar.started_at, ar.created_at) >= %s")
+        params.append(started_from)
+    if started_to is not None:
+        conditions.append("coalesce(ar.started_at, ar.created_at) < %s")
+        params.append(started_to)
+
+    return conditions, params
+
+
+def count_analysis_runs(
+    *,
+    brand: str | None = None,
+    status: str | None = None,
+    project_ids: list[str] | None = None,
+    search: str | None = None,
+    important: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+) -> int:
+    """Counts how many rows list_analysis_runs() would return across
+    *every* page for the exact same filter (same parameters, minus
+    limit/offset/sort, which don't affect a count) — backs
+    AnalysisRunListResponse.total. Deliberately a single lightweight
+    `count(*)` query, joined only to `brands` (needed for the `search`/
+    `brand` conditions), never to `analysis_results` — the per-page
+    query's heavier `left join` to fetch `visibility_score`/`meta_json`
+    is unnecessary for a count and would cost more without changing
+    the result (see this task's "件数取得による過度なDB負荷を避ける").
+
+    Raises AnalysisHistoryReadError on any connection/query failure.
+    Does not itself check READ_HISTORY_ENABLED — same contract as
+    list_analysis_runs().
+    """
+    if project_ids is not None and len(project_ids) == 0:
+        return 0
+
+    database_url = _require_connectable()
+
+    conditions, params = _build_history_filter_conditions(
+        brand=brand,
+        status=status,
+        project_ids=project_ids,
+        search=search,
+        important=important,
+        started_from=started_from,
+        started_to=started_to,
+    )
+    where_clause = f"where {' and '.join(conditions)}"
+    query = f"""
+        select count(*)
+        from analysis_runs ar
+        join brands b on b.id = ar.brand_id
+        {where_clause}
+    """
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                (total,) = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to count analysis runs from DB")
+        raise AnalysisHistoryReadError("failed to query analysis history") from exc
+
+    return int(total)
+
+
 def list_analysis_runs(
     *,
     limit: int = DEFAULT_LIST_LIMIT,
@@ -327,17 +476,26 @@ def list_analysis_runs(
     brand: str | None = None,
     status: str | None = None,
     project_ids: list[str] | None = None,
+    search: str | None = None,
+    important: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+    sort: Literal["newest", "oldest"] = "newest",
 ) -> list[dict[str, Any]]:
     """Returns saved analysis run summaries (brands ⋈ analysis_runs ⋈
-    analysis_results), newest first — see
+    analysis_results), newest-or-oldest-first per `sort` — see
     docs/20_analysis_history_read_api_design.md "5. GET /analysis-runs
-    の設計案". Deliberately never includes result_json (see that
-    section's "返さないもの"). Each item's `sourceUrls` is derived from
-    `analysis_runs.input_snapshot` (see _extract_source_urls() above)
-    — added so the frontend history list can search by domain even
-    though `canonicalDomain` (from `brands.canonical_domain`) is never
-    actually populated by save_analysis_history() today. Always
-    excludes a soft-deleted run
+    の設計案" and feature/history-server-side-search-pagination's
+    extension of it (search/important/date-range/sort, all applied in
+    PostgreSQL itself rather than over just the current page — see
+    that task for why: the previous client-side-only filtering could
+    never find a match past the first fetched page). Deliberately
+    never includes result_json (see that section's "返さないもの").
+    Each item's `sourceUrls` is derived from `analysis_runs.input_snapshot`
+    (see _extract_source_urls() above) — added so the frontend history
+    list can search by domain even though `canonicalDomain` (from
+    `brands.canonical_domain`) is never actually populated by
+    save_analysis_history() today. Always excludes a soft-deleted run
     (analysis_runs.deleted_at is not null — see
     backend/migrations/003_add_deleted_at_to_analysis_runs.sql and
     soft_delete_analysis_run() below) regardless of mode/project_ids;
@@ -361,6 +519,20 @@ def list_analysis_runs(
     own parameterized placeholder (never interpolated into the query
     string).
 
+    `search`/`important`/`started_from`/`started_to` are documented on
+    _build_history_filter_conditions() above, which this function
+    shares verbatim with count_analysis_runs() so the two can never
+    disagree about what matches.
+
+    The `order by` uses `ar.id` as a secondary, same-direction sort key
+    after the primary `coalesce(started_at, created_at)` key — without
+    a deterministic tie-breaker, PostgreSQL does not guarantee a
+    stable row order for ties across separate paginated queries (two
+    rows saved in the same transaction can easily share an identical
+    timestamp), which would otherwise risk a row appearing on two
+    pages or on none as the caller pages through results (this task's
+    "同日時の場合の安定ソート").
+
     Raises AnalysisHistoryReadError on any connection/query failure.
     Does not itself check READ_HISTORY_ENABLED — callers must call
     services.db_settings.is_history_read_enabled() first.
@@ -373,21 +545,17 @@ def list_analysis_runs(
     limit = max(1, min(limit, MAX_LIST_LIMIT))
     offset = max(0, offset)
 
-    # "ar.deleted_at is null" is unconditional (not behind an opt-out) —
-    # this endpoint never has a "show deleted runs too" mode.
-    conditions: list[str] = ["ar.deleted_at is null"]
-    params: list[Any] = []
-    if brand is not None:
-        conditions.append("b.name = %s")
-        params.append(brand)
-    if status is not None:
-        conditions.append("ar.status = %s")
-        params.append(status)
-    if project_ids is not None:
-        placeholders = ", ".join(["%s"] * len(project_ids))
-        conditions.append(f"ar.project_id in ({placeholders})")
-        params.extend(project_ids)
+    conditions, params = _build_history_filter_conditions(
+        brand=brand,
+        status=status,
+        project_ids=project_ids,
+        search=search,
+        important=important,
+        started_from=started_from,
+        started_to=started_to,
+    )
     where_clause = f"where {' and '.join(conditions)}"
+    order_direction = "asc" if sort == "oldest" else "desc"
 
     query = f"""
         select
@@ -407,7 +575,7 @@ def list_analysis_runs(
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
         {where_clause}
-        order by ar.created_at desc
+        order by coalesce(ar.started_at, ar.created_at) {order_direction}, ar.id {order_direction}
         limit %s offset %s
     """
     params.extend([limit, offset])
