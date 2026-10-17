@@ -27,6 +27,9 @@ const DEFAULT_OFFSET = "0";
  * - 403: the HISTORY_READ_TOKEN gate rejected the request (see
  *   docs/24_auth_rls_history_access_design.md "7. backend APIでの
  *   アクセス制御案") — forwarded as-is.
+ * - 400: the Python API rejected `startedFrom`/`startedTo` as invalid
+ *   (not a timezone-aware ISO-8601 datetime — see backend/main.py's
+ *   _parse_history_list_boundary()). Forwarded as-is.
  * - 502: the Python API responded with something else unexpected
  *   (non-2xx, invalid JSON, or a body that fails schema validation).
  *
@@ -59,6 +62,23 @@ export async function GET(request: Request) {
   const limit = searchParams.get("limit") ?? DEFAULT_LIMIT;
   const offset = searchParams.get("offset") ?? DEFAULT_OFFSET;
 
+  // Forwarded straight through to the Python API as-is — all of this
+  // route's own query-param validation (shape, SQL-injection safety,
+  // JST-instant parsing of startedFrom/startedTo) lives there, not
+  // here (see backend/main.py's list_analysis_runs() /
+  // _parse_history_list_boundary()). Only present when the caller
+  // actually set them, so omitting a filter here never sends an empty
+  // string the backend would have to special-case.
+  const forwardedParams = new URLSearchParams();
+  forwardedParams.set("limit", limit);
+  forwardedParams.set("offset", offset);
+  for (const key of ["search", "important", "startedFrom", "startedTo", "sort"]) {
+    const value = searchParams.get(key);
+    if (value !== null) {
+      forwardedParams.set(key, value);
+    }
+  }
+
   const historyReadToken = process.env.HISTORY_READ_TOKEN;
   const accessToken = await getServerSupabaseAccessToken(request);
   const headers: HeadersInit = {
@@ -69,7 +89,7 @@ export async function GET(request: Request) {
   let response: Response;
   try {
     response = await fetch(
-      `${baseUrl.replace(/\/$/, "")}/analysis-runs?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
+      `${baseUrl.replace(/\/$/, "")}/analysis-runs?${forwardedParams.toString()}`,
       { headers },
     );
   } catch {
@@ -96,6 +116,15 @@ export async function GET(request: Request) {
         ? errorBody.error
         : "analysis history read access denied";
     return NextResponse.json({ error: message }, { status: 403 });
+  }
+
+  if (response.status === 400) {
+    const errorBody = await response.json().catch(() => null);
+    const message =
+      errorBody && typeof errorBody.error === "string"
+        ? errorBody.error
+        : "invalid request";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 
   if (!response.ok) {

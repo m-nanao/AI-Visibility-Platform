@@ -22,6 +22,7 @@ material, since its job is to verify main.py's own wiring and
 status-code mapping.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 import main
@@ -33,6 +34,23 @@ from services.jwt_auth import AuthenticatedUser, JWTAuthError
 client = TestClient(app)
 
 TEST_TOKEN = "test-history-read-token"
+
+
+def _never_called(*args, **kwargs):
+    raise AssertionError("this repository function must not be called")
+
+
+@pytest.fixture(autouse=True)
+def _default_count_analysis_runs(monkeypatch):
+    """GET /analysis-runs now also calls repository_count_analysis_runs()
+    for AnalysisRunListResponse.total (feature/history-server-side-
+    search-pagination) — every test in this file that only cares about
+    `items` gets a harmless default (0) here so it doesn't also have
+    to mock the count call just to avoid a real DB connection attempt.
+    A test that specifically wants to assert on `total` (see the
+    dedicated tests below) overrides this with its own
+    monkeypatch.setattr() afterward, which simply takes precedence."""
+    monkeypatch.setattr(main, "repository_count_analysis_runs", lambda **kwargs: 0)
 
 
 def _clear_read_env(monkeypatch):
@@ -285,7 +303,12 @@ def test_list_success_excludes_result_json(monkeypatch):
     body = response.json()
     assert body["limit"] == 20
     assert body["offset"] == 0
-    assert body["total"] is None
+    # total is now a real count (feature/history-server-side-search-
+    # pagination) — 0 here because repository_count_analysis_runs()
+    # defaults to that for every test in this file (see the
+    # _default_count_analysis_runs autouse fixture above) unless a
+    # test specifically overrides it.
+    assert body["total"] == 0
     assert len(body["items"]) == 1
     item = body["items"][0]
     assert item["brandName"] == "サイボウズ"
@@ -423,7 +446,18 @@ def test_list_success_default_query_params(monkeypatch):
     response = client.get("/analysis-runs", headers=_auth_headers())
 
     assert response.status_code == 200
-    assert calls[0] == {"limit": 20, "offset": 0, "brand": None, "status": None}
+    assert calls[0] == {
+        "limit": 20,
+        "offset": 0,
+        "brand": None,
+        "status": None,
+        "search": None,
+        "important": None,
+        "started_from": None,
+        "started_to": None,
+        "sort": "newest",
+        "project_ids": None,
+    }
 
 
 def test_list_invalid_limit_is_rejected_before_read_history_check(monkeypatch):
@@ -437,6 +471,166 @@ def test_list_invalid_limit_is_rejected_before_read_history_check(monkeypatch):
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid request body"}
+
+
+# --- GET /analysis-runs: search/important/date-range/sort/total
+# (feature/history-server-side-search-pagination) ---------------------------
+
+
+def test_list_passes_search_important_and_sort_through_to_the_repository(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get(
+        "/analysis-runs?search=cybozu&important=true&sort=oldest", headers=_auth_headers()
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["search"] == "cybozu"
+    assert calls[0]["important"] is True
+    assert calls[0]["sort"] == "oldest"
+
+
+def test_list_unrecognized_sort_value_falls_back_to_newest(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get("/analysis-runs?sort=sideways", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert calls[0]["sort"] == "newest"
+
+
+def test_list_accepts_valid_started_from_and_started_to(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get(
+        "/analysis-runs?startedFrom=2026-10-01T00:00:00%2B09:00"
+        "&startedTo=2026-10-02T00:00:00%2B09:00",
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    started_from = calls[0]["started_from"]
+    started_to = calls[0]["started_to"]
+    assert started_from.isoformat() == "2026-10-01T00:00:00+09:00"
+    assert started_to.isoformat() == "2026-10-02T00:00:00+09:00"
+
+
+def test_list_rejects_started_from_without_a_timezone_offset(monkeypatch):
+    """A naive (no-offset) datetime is rejected rather than guessed at
+    — assuming either UTC or JST here could silently shift the
+    caller's intended day boundary by 9 hours."""
+    _enable_read_env(monkeypatch)
+
+    response = client.get(
+        "/analysis-runs?startedFrom=2026-10-01T00:00:00", headers=_auth_headers()
+    )
+
+    assert response.status_code == 400
+    assert "startedFrom" in response.json()["error"]
+
+
+def test_list_rejects_an_unparseable_started_to(monkeypatch):
+    _enable_read_env(monkeypatch)
+
+    response = client.get("/analysis-runs?startedTo=not-a-date", headers=_auth_headers())
+
+    assert response.status_code == 400
+    assert "startedTo" in response.json()["error"]
+
+
+def test_list_invalid_started_from_is_rejected_before_touching_the_repository(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", _never_called)
+
+    response = client.get(
+        "/analysis-runs?startedFrom=2026-10-01T00:00:00", headers=_auth_headers()
+    )
+
+    assert response.status_code == 400
+
+
+def test_list_response_includes_the_total_count_from_the_repository(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", lambda **kwargs: [])
+    monkeypatch.setattr(main, "repository_count_analysis_runs", lambda **kwargs: 123)
+
+    response = client.get("/analysis-runs", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 123
+
+
+def test_list_count_receives_the_same_filters_as_list_including_project_ids(monkeypatch):
+    """The count call must see exactly the same project_ids/search/
+    important/date filters the list call does — a mismatch here would
+    let `total` disagree with (or leak beyond) what `items` can ever
+    actually show across pages."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+    _mock_jwt_dependencies(monkeypatch, project_ids=["project-1", "project-2"])
+    list_calls = []
+    count_calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: list_calls.append(kwargs) or []
+    )
+    monkeypatch.setattr(
+        main,
+        "repository_count_analysis_runs",
+        lambda **kwargs: count_calls.append(kwargs) or 0,
+    )
+
+    response = client.get("/analysis-runs?search=cybozu&important=true", headers=_jwt_headers())
+
+    assert response.status_code == 200
+    # Same filter-relevant keys on both calls (list carries limit/
+    # offset/sort too, which count() doesn't take at all).
+    for key in ("project_ids", "search", "important", "brand", "status"):
+        assert list_calls[0][key] == count_calls[0][key]
+
+
+def test_list_count_short_circuits_with_list_when_no_accessible_projects(monkeypatch):
+    """main.py always calls both repository functions unconditionally
+    — the "no accessible projects" short-circuit (return []/0 without
+    touching the DB at all) lives inside
+    list_analysis_runs()/count_analysis_runs() themselves (see
+    tests/test_analysis_history_repository.py's dedicated tests for
+    that), not in main.py. This only verifies the two calls still
+    agree on `project_ids=[]` and that the resulting response is a
+    well-formed empty page, not a 503/error."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+    _mock_jwt_dependencies(monkeypatch, project_ids=[])
+    list_calls = []
+    count_calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: list_calls.append(kwargs) or []
+    )
+    monkeypatch.setattr(
+        main,
+        "repository_count_analysis_runs",
+        lambda **kwargs: count_calls.append(kwargs) or 0,
+    )
+
+    response = client.get("/analysis-runs", headers=_jwt_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == []
+    assert body["total"] == 0
+    assert list_calls[0]["project_ids"] == []
+    assert count_calls[0]["project_ids"] == []
 
 
 def test_detail_success_includes_result(monkeypatch):
@@ -786,9 +980,24 @@ def test_list_history_token_mode_when_auth_jwt_enabled_but_no_authorization_head
 
     assert response.status_code == 200
     assert verify_calls == []
-    # No project_ids key at all — identical call shape to the existing
-    # history_token path (see test_list_success_default_query_params).
-    assert calls[0] == {"limit": 20, "offset": 0, "brand": None, "status": None}
+    # project_ids=None (not omitted) — the endpoint now always passes
+    # this key explicitly (None in history_token mode, the caller's
+    # accessible-project list in jwt mode) so the same filter-kwargs
+    # dict can be shared between the list and count calls; identical
+    # call shape to the existing history_token path either way (see
+    # test_list_success_default_query_params).
+    assert calls[0] == {
+        "limit": 20,
+        "offset": 0,
+        "brand": None,
+        "status": None,
+        "search": None,
+        "important": None,
+        "started_from": None,
+        "started_to": None,
+        "sort": "newest",
+        "project_ids": None,
+    }
 
 
 def test_list_returns_403_when_auth_jwt_enabled_and_no_credentials_at_all(monkeypatch):

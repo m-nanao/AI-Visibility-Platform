@@ -142,6 +142,7 @@ from services.analysis_history_repository import (
     AnalysisJobCreateConflictError,
     AnalysisJobLimitExceededError,
     cancel_queued_analysis_run,
+    count_analysis_runs as repository_count_analysis_runs,
     create_queued_analysis_run,
     get_analysis_job_result,
     get_analysis_job_status,
@@ -1127,6 +1128,36 @@ def _resolve_history_access(request: Request) -> HistoryAccessContext | JSONResp
     return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
 
 
+def _parse_history_list_boundary(
+    raw: str | None, *, field_name: str
+) -> datetime | str | None:
+    """Parses one of GET /analysis-runs's `startedFrom`/`startedTo`
+    query params into a timezone-aware datetime for
+    list_analysis_runs()/count_analysis_runs(), or returns an error
+    message string on failure (never raises) — see
+    feature/history-server-side-search-pagination's "日付境界と
+    timezoneを明確に定義する". `raw` is expected to be a full ISO-8601
+    instant *with* an explicit UTC offset (e.g.
+    "2026-10-01T00:00:00+09:00") — the frontend is responsible for
+    converting a JST calendar-date boundary into this exact shape (see
+    app/lib/analysis-history.ts's jstDateStringToRangeBoundary()) so
+    this backend function only ever compares already-unambiguous
+    instants, never a bare date it would have to guess a timezone for.
+    A naive (no-offset) string is deliberately rejected rather than
+    assumed to be UTC or JST — guessing either way here could silently
+    shift a day boundary by 9 hours from what the caller intended.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return f"{field_name} must be a valid ISO-8601 datetime"
+    if parsed.tzinfo is None:
+        return f"{field_name} must include a UTC offset"
+    return parsed
+
+
 @app.get("/analysis-runs", response_model=AnalysisRunListResponse)
 def list_analysis_runs(
     request: Request,
@@ -1134,29 +1165,48 @@ def list_analysis_runs(
     offset: int = Query(default=0, ge=0),
     brand: str | None = None,
     status: str | None = None,
+    search: str | None = None,
+    important: bool | None = None,
+    startedFrom: str | None = None,
+    startedTo: str | None = None,
+    sort: str = "newest",
 ):
     access = _resolve_history_access(request)
     if isinstance(access, JSONResponse):
         return access
 
+    started_from = _parse_history_list_boundary(startedFrom, field_name="startedFrom")
+    if isinstance(started_from, str):
+        return error_response(started_from)
+    started_to = _parse_history_list_boundary(startedTo, field_name="startedTo")
+    if isinstance(started_to, str):
+        return error_response(started_to)
+    sort_order = "oldest" if sort == "oldest" else "newest"
+
+    # project_ids is always passed explicitly in JWT mode (never
+    # omitted) — an empty list means "no accessible projects" and
+    # list_analysis_runs()/count_analysis_runs() short-circuit to
+    # []/0 without touching the DB, rather than either ever falling
+    # back to the unrestricted call below. Shared between the list
+    # and count calls so the two can never see a different set of
+    # accessible projects than each other.
+    project_ids = access.project_ids if access.mode == "jwt" else None
+
+    shared_filter_kwargs = dict(
+        brand=brand,
+        status=status,
+        project_ids=project_ids,
+        search=search,
+        important=important,
+        started_from=started_from,
+        started_to=started_to,
+    )
+
     try:
-        if access.mode == "jwt":
-            # project_ids is always passed explicitly here (never
-            # omitted) — an empty list means "no accessible projects"
-            # and list_analysis_runs() short-circuits to [] without
-            # touching the DB, rather than this ever falling back to
-            # the unrestricted call below.
-            items = repository_list_analysis_runs(
-                limit=limit,
-                offset=offset,
-                brand=brand,
-                status=status,
-                project_ids=access.project_ids,
-            )
-        else:
-            items = repository_list_analysis_runs(
-                limit=limit, offset=offset, brand=brand, status=status
-            )
+        items = repository_list_analysis_runs(
+            limit=limit, offset=offset, sort=sort_order, **shared_filter_kwargs
+        )
+        total = repository_count_analysis_runs(**shared_filter_kwargs)
     except AnalysisHistoryReadError:
         return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
 
@@ -1164,6 +1214,7 @@ def list_analysis_runs(
         items=[AnalysisRunListItem(**item) for item in items],
         limit=limit,
         offset=offset,
+        total=total,
     )
 
 

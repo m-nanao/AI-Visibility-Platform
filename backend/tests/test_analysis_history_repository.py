@@ -630,6 +630,239 @@ def test_list_analysis_runs_project_ids_combines_with_other_filters(monkeypatch)
     assert params[1] == "project-1"
 
 
+# --- list_analysis_runs/count_analysis_runs: search/important/date-range/
+# sort (feature/history-server-side-search-pagination) ---------------------
+
+
+def test_list_analysis_runs_search_matches_brand_domain_and_urls(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(search="cybozu")
+
+    query, params = fake_cursor.executed[0]
+    assert "b.name ilike %s" in query
+    assert "b.canonical_domain ilike %s" in query
+    assert "ar.input_snapshot->>'urls') ilike %s" in query
+    assert params[0] == params[1] == params[2] == "%cybozu%"
+
+
+def test_list_analysis_runs_search_escapes_like_metacharacters(monkeypatch):
+    """A literal `%`/`_` in the search term must be escaped so it
+    matches literally rather than behaving as a LIKE wildcard — a
+    separate, LIKE-specific correctness concern from SQL injection
+    (which parameterized queries already prevent regardless)."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(search="100%_off")
+
+    query, params = fake_cursor.executed[0]
+    assert "escape '\\'" in query
+    assert params[0] == "%100\\%\\_off%"
+
+
+def test_list_analysis_runs_blank_search_is_ignored(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(search="   ")
+
+    query, params = fake_cursor.executed[0]
+    assert "ilike" not in query.lower()
+    assert len(params) == 2  # limit/offset only
+
+
+def test_list_analysis_runs_important_true_adds_condition(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(important=True)
+
+    query, params = fake_cursor.executed[0]
+    assert "and ar.is_important" in query.lower()
+    assert len(params) == 2  # no extra bound param for a boolean column check
+
+
+def test_list_analysis_runs_important_false_or_none_adds_no_condition(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(important=False)
+    repo.list_analysis_runs(important=None)
+
+    for query, params in fake_cursor.executed:
+        # `ar.is_important` always appears once, in the SELECT list
+        # (it's a returned column) — this checks it was never *also*
+        # added as a WHERE condition, and that no extra param was
+        # bound for it either.
+        assert "and ar.is_important" not in query.lower()
+        assert "where ar.is_important" not in query.lower()
+        assert len(params) == 2
+
+
+def test_list_analysis_runs_date_range_filters_on_coalesced_started_at(monkeypatch):
+    """started_from/started_to filter on coalesce(started_at,
+    created_at) — the exact same NULL-started_at fallback the existing
+    display layer already uses."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+    started_from = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    started_to = datetime(2026, 10, 2, tzinfo=timezone.utc)
+
+    repo.list_analysis_runs(started_from=started_from, started_to=started_to)
+
+    query, params = fake_cursor.executed[0]
+    assert "coalesce(ar.started_at, ar.created_at) >= %s" in query
+    assert "coalesce(ar.started_at, ar.created_at) < %s" in query
+    assert params[0] == started_from
+    assert params[1] == started_to
+
+
+def test_list_analysis_runs_sort_newest_is_default(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs()
+
+    query, _ = fake_cursor.executed[0]
+    assert "order by coalesce(ar.started_at, ar.created_at) desc, ar.id desc" in query
+
+
+def test_list_analysis_runs_sort_oldest_reverses_both_keys(monkeypatch):
+    """Both the primary and the tie-breaking secondary key must flip
+    together — a same-direction secondary key is what keeps pagination
+    stable for rows that share an identical timestamp (this task's
+    "同日時の場合の安定ソート")."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(sort="oldest")
+
+    query, _ = fake_cursor.executed[0]
+    assert "order by coalesce(ar.started_at, ar.created_at) asc, ar.id asc" in query
+
+
+def test_list_analysis_runs_combines_search_important_and_dates_as_and(monkeypatch):
+    """Multiple filters combine as AND, and setting one never clears
+    another (this task's "複数条件のAND検索")."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+    started_from = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+    repo.list_analysis_runs(search="cybozu", important=True, started_from=started_from)
+
+    query, params = fake_cursor.executed[0]
+    assert " and " in query.lower()
+    assert "ilike" in query
+    assert "and ar.is_important" in query.lower()
+    assert "coalesce(ar.started_at, ar.created_at) >= %s" in query
+    # search's 3 params, then the date param, then limit/offset.
+    assert params[0] == params[1] == params[2] == "%cybozu%"
+    assert params[3] == started_from
+    assert params[-2:] == [repo.DEFAULT_LIST_LIMIT, 0]
+
+
+# --- count_analysis_runs ----------------------------------------------------
+
+
+def test_count_analysis_runs_raises_when_driver_not_installed(monkeypatch):
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", None)
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.count_analysis_runs()
+
+
+def test_count_analysis_runs_raises_when_database_url_missing(monkeypatch):
+    _configure_read_env(monkeypatch, url=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(_FakeReadCursor()))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.count_analysis_runs()
+
+
+def test_count_analysis_runs_raises_on_query_failure(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(raise_on_execute=RuntimeError("boom"))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.count_analysis_runs()
+
+
+def test_count_analysis_runs_returns_the_scalar_count(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(42,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    assert repo.count_analysis_runs() == 42
+
+
+def test_count_analysis_runs_project_ids_empty_list_short_circuits(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeReadPsycopg(_FakeReadCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    assert repo.count_analysis_runs(project_ids=[]) == 0
+    assert fake_psycopg.connect_calls == []
+
+
+def test_count_analysis_runs_never_joins_analysis_results(monkeypatch):
+    """The count query is deliberately lighter than the list query — no
+    `left join analysis_results`, since nothing in a count needs
+    visibility_score/meta_json (this task's "件数取得による過度なDB
+    負荷を避ける")."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs()
+
+    query, _ = fake_cursor.executed[0]
+    assert "analysis_results" not in query.lower()
+    assert "select count(*)" in query.lower()
+
+
+def test_count_analysis_runs_applies_the_same_filters_as_list(monkeypatch):
+    """list_analysis_runs() and count_analysis_runs() share
+    _build_history_filter_conditions() — this asserts the count query
+    actually gets the same conditions a corresponding list call would,
+    so the two can never disagree about what matches."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+    started_to = datetime(2026, 10, 2, tzinfo=timezone.utc)
+
+    repo.count_analysis_runs(
+        brand="サイボウズ",
+        status="completed",
+        project_ids=["project-1"],
+        search="cybozu",
+        important=True,
+        started_to=started_to,
+    )
+
+    query, params = fake_cursor.executed[0]
+    assert "b.name = %s" in query
+    assert "ar.status = %s" in query
+    assert "ar.project_id in (%s)" in query
+    assert "ilike" in query
+    assert "and ar.is_important" in query.lower()
+    assert "coalesce(ar.started_at, ar.created_at) < %s" in query
+    assert "ar.deleted_at is null" in query.lower()
+    assert params[-1] == started_to
+
+
 # --- get_analysis_run: invalid id / not found -----------------------------
 
 

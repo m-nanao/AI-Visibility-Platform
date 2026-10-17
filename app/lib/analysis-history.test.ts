@@ -94,6 +94,11 @@ import {
   resolveHistoryListEmptyText,
   getAiGapComparisonButtonLabel,
   resolveAiGapComparisonOutcome,
+  buildHistoryListRequestUrl,
+  formatHistoryPaginationLabel,
+  isHistoryListQueryFiltered,
+  jstDateStringToRangeBoundary,
+  resolveServerFilteredEmptyText,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
@@ -830,34 +835,181 @@ describe("resolveHistoryFetchOutcome", () => {
     expect(outcome).toEqual({ kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE });
   });
 
+  it("returns an error view for a 400 (invalid startedFrom/startedTo etc.)", async () => {
+    const outcome = await resolveHistoryFetchOutcome(
+      jsonResponse({ error: "startedFrom must be a timezone-aware ISO-8601 datetime" }, 400),
+    );
+
+    expect(outcome).toEqual({ kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE });
+  });
+
   it("returns an error view when the body fails schema validation", async () => {
     const outcome = await resolveHistoryFetchOutcome(jsonResponse({ not: "valid" }, 200));
 
     expect(outcome).toEqual({ kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE });
   });
 
-  it("returns an empty view when items is an empty array", async () => {
+  it("returns an items view (now always, even for 0 items) carrying total/limit/offset", async () => {
     const outcome = await resolveHistoryFetchOutcome(
-      jsonResponse({ items: [], limit: 20, offset: 0, total: null }, 200),
+      jsonResponse({ items: [], limit: 20, offset: 0, total: 0 }, 200),
     );
 
-    expect(outcome).toEqual({ kind: "empty" });
+    expect(outcome).toEqual({ kind: "items", items: [], total: 0, limit: 20, offset: 0 });
   });
 
   it("returns an items view with the parsed items when items is non-empty", async () => {
     const outcome = await resolveHistoryFetchOutcome(
-      jsonResponse({ items: [SAMPLE_ITEM], limit: 20, offset: 0, total: null }, 200),
+      jsonResponse({ items: [SAMPLE_ITEM], limit: 20, offset: 0, total: 1 }, 200),
     );
 
     expect(outcome.kind).toBe("items");
     if (outcome.kind === "items") {
       expect(outcome.items).toHaveLength(1);
       expect(outcome.items[0].brandName).toBe("サイボウズ");
+      expect(outcome.total).toBe(1);
+      expect(outcome.limit).toBe(20);
+      expect(outcome.offset).toBe(0);
+    }
+  });
+
+  it("falls back total to the page's own item count when total is null (older backend)", async () => {
+    const outcome = await resolveHistoryFetchOutcome(
+      jsonResponse({ items: [SAMPLE_ITEM], limit: 20, offset: 0, total: null }, 200),
+    );
+
+    expect(outcome.kind).toBe("items");
+    if (outcome.kind === "items") {
+      expect(outcome.total).toBe(1);
     }
   });
 
   it("empty-state text is distinct from the disabled message (0 items vs. read API off)", () => {
     expect(HISTORY_EMPTY_STATE_TEXT).not.toBe(HISTORY_DISABLED_MESSAGE);
+  });
+});
+
+describe("jstDateStringToRangeBoundary", () => {
+  it("returns the calendar day's first instant in JST for \"start\"", () => {
+    expect(jstDateStringToRangeBoundary("2026-03-05", "start")).toBe(
+      "2026-03-05T00:00:00+09:00",
+    );
+  });
+
+  it("returns the next calendar day's first instant in JST for \"endExclusive\"", () => {
+    expect(jstDateStringToRangeBoundary("2026-03-05", "endExclusive")).toBe(
+      "2026-03-06T00:00:00+09:00",
+    );
+  });
+
+  it("rolls over the month boundary correctly", () => {
+    expect(jstDateStringToRangeBoundary("2026-01-31", "endExclusive")).toBe(
+      "2026-02-01T00:00:00+09:00",
+    );
+  });
+
+  it("rolls over the year boundary correctly", () => {
+    expect(jstDateStringToRangeBoundary("2025-12-31", "endExclusive")).toBe(
+      "2026-01-01T00:00:00+09:00",
+    );
+  });
+});
+
+describe("buildHistoryListRequestUrl", () => {
+  it("builds the default query (no filters, page 1, newest)", () => {
+    const url = buildHistoryListRequestUrl({ sort: "newest", page: 1 });
+
+    expect(url).toBe("/api/analysis-runs?limit=20&offset=0&sort=newest");
+  });
+
+  it("computes offset from page (1-indexed)", () => {
+    const url = buildHistoryListRequestUrl({ sort: "newest", page: 3 });
+
+    expect(url).toContain("offset=40");
+    expect(url).toContain("limit=20");
+  });
+
+  it("clamps page below 1 to page 1 (offset 0)", () => {
+    const url = buildHistoryListRequestUrl({ sort: "newest", page: 0 });
+
+    expect(url).toContain("offset=0");
+  });
+
+  it("includes a trimmed search param only when non-blank", () => {
+    const withSearch = buildHistoryListRequestUrl({ sort: "newest", page: 1, search: "  cybozu  " });
+    expect(withSearch).toContain("search=cybozu");
+
+    const blankSearch = buildHistoryListRequestUrl({ sort: "newest", page: 1, search: "   " });
+    expect(blankSearch).not.toContain("search=");
+  });
+
+  it("includes important=true only when important is truthy", () => {
+    const important = buildHistoryListRequestUrl({ sort: "newest", page: 1, important: true });
+    expect(important).toContain("important=true");
+
+    const notImportant = buildHistoryListRequestUrl({ sort: "newest", page: 1, important: false });
+    expect(notImportant).not.toContain("important=");
+  });
+
+  it("converts startedFrom/startedTo to JST instants", () => {
+    const url = buildHistoryListRequestUrl({
+      sort: "oldest",
+      page: 1,
+      startedFrom: "2026-03-01",
+      startedTo: "2026-03-05",
+    });
+
+    expect(url).toContain(encodeURIComponent("2026-03-01T00:00:00+09:00"));
+    expect(url).toContain(encodeURIComponent("2026-03-06T00:00:00+09:00"));
+    expect(url).toContain("sort=oldest");
+  });
+});
+
+describe("isHistoryListQueryFiltered", () => {
+  it("is false when nothing is set", () => {
+    expect(isHistoryListQueryFiltered({})).toBe(false);
+  });
+
+  it("is true when search/important/startedFrom/startedTo is set", () => {
+    expect(isHistoryListQueryFiltered({ search: "cybozu" })).toBe(true);
+    expect(isHistoryListQueryFiltered({ important: true })).toBe(true);
+    expect(isHistoryListQueryFiltered({ startedFrom: "2026-03-01" })).toBe(true);
+    expect(isHistoryListQueryFiltered({ startedTo: "2026-03-05" })).toBe(true);
+  });
+
+  it("is false for a blank search string", () => {
+    expect(isHistoryListQueryFiltered({ search: "   " })).toBe(false);
+  });
+});
+
+describe("resolveServerFilteredEmptyText", () => {
+  it("returns the generic empty-history text when no filter is active", () => {
+    expect(resolveServerFilteredEmptyText(false)).toBe(HISTORY_EMPTY_STATE_TEXT);
+  });
+
+  it("returns the no-matches text when a filter is active", () => {
+    expect(resolveServerFilteredEmptyText(true)).toBe(HISTORY_SEARCH_NO_RESULTS_TEXT);
+  });
+});
+
+describe("formatHistoryPaginationLabel", () => {
+  it("returns a plain 0件 for total === 0", () => {
+    expect(formatHistoryPaginationLabel(0, 1)).toBe("0件");
+  });
+
+  it("formats the first page of a multi-page result", () => {
+    expect(formatHistoryPaginationLabel(123, 1)).toBe("123件中 1〜20件を表示（1 / 7ページ）");
+  });
+
+  it("formats a middle page", () => {
+    expect(formatHistoryPaginationLabel(123, 2)).toBe("123件中 21〜40件を表示（2 / 7ページ）");
+  });
+
+  it("clamps the end index to total on the last (partial) page", () => {
+    expect(formatHistoryPaginationLabel(123, 7)).toBe("123件中 121〜123件を表示（7 / 7ページ）");
+  });
+
+  it("clamps an out-of-range page into [1, totalPages]", () => {
+    expect(formatHistoryPaginationLabel(123, 99)).toBe("123件中 121〜123件を表示（7 / 7ページ）");
   });
 });
 

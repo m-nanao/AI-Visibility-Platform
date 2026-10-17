@@ -447,12 +447,167 @@ export function sortAnalysisRunListItems(
 /** "12件の履歴" when showing everything, "12件中 3件を表示" once a
  * search narrows the list — `totalCount`/`visibleCount` are passed in
  * rather than computed here so the caller decides what "total" means
- * (e.g. before vs. after a future server-side page size). */
+ * (e.g. before vs. after a future server-side page size). Kept for
+ * the existing tests/callers of the original frontend-only
+ * search/sort/important-filter trio above; the history list page
+ * itself now uses formatHistoryPaginationLabel() below instead (see
+ * feature/history-server-side-search-pagination) — this function is
+ * not deleted, since it's still a correct, independently-useful,
+ * tested piece of display logic, and removing it would be an
+ * unrelated cleanup this task doesn't call for. */
 export function formatHistoryCountLabel(totalCount: number, visibleCount: number): string {
   if (visibleCount === totalCount) {
     return `${totalCount}件の履歴`;
   }
   return `${totalCount}件中 ${visibleCount}件を表示`;
+}
+
+// --- Server-side search / important filter / date range / sort /
+// pagination (feature/history-server-side-search-pagination) --------------
+//
+// Supersedes the frontend-only filtering above as the history list
+// page's actual data source: the previous approach only ever
+// filtered/sorted the single page GET /analysis-runs?limit=20&offset=0
+// already returned, so a match on (what would be) page 2+ could never
+// be found at all. All filtering/sorting/counting now happens in
+// PostgreSQL itself (see backend/services/analysis_history_repository.py's
+// list_analysis_runs()/count_analysis_runs()) — this section is purely
+// about building the right query string and interpreting the response,
+// still as plain, unit-testable functions.
+
+/** Matches the backend's own DEFAULT_LIST_LIMIT
+ * (services/analysis_history_repository.py) — kept as a separate
+ * frontend constant rather than imported (there is no shared
+ * constants module between the two languages) so both sides document
+ * their agreement on "20 per page" explicitly. */
+export const HISTORY_LIST_PAGE_SIZE = 20;
+
+/**
+ * Converts one JST calendar-date boundary (`"YYYY-MM-DD"`, exactly
+ * the value an `<input type="date">` produces, which is always this
+ * exact format regardless of the browser's display locale) into the
+ * precise, unambiguous instant GET /analysis-runs's `startedFrom`/
+ * `startedTo` expect — a full ISO-8601 string with an explicit
+ * `+09:00` offset, never a bare date the backend would otherwise have
+ * to guess a timezone for (see backend/main.py's
+ * _parse_history_list_boundary(), which deliberately rejects a
+ * naive/offset-less string rather than assuming one).
+ *
+ * `"start"` returns that calendar day's first instant in JST.
+ * `"endExclusive"` returns the *next* calendar day's first instant in
+ * JST — callers wanting an inclusive "through end of this day" range
+ * pass this as the upper bound, matching the backend's own
+ * inclusive-from/exclusive-to convention. The day/month/year rollover
+ * (e.g. the last day of a month, or of December) is computed via
+ * `Date.UTC` purely as calendar arithmetic on the Y/M/D integers —
+ * never as a real moment in time — so it is correct regardless of any
+ * local timezone/DST the code actually executes under.
+ */
+export function jstDateStringToRangeBoundary(
+  dateString: string,
+  boundary: "start" | "endExclusive",
+): string {
+  if (boundary === "start") {
+    return `${dateString}T00:00:00+09:00`;
+  }
+
+  const [year, month, day] = dateString.split("-").map((part) => Number(part));
+  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+  const nextDateString = [
+    nextDay.getUTCFullYear(),
+    String(nextDay.getUTCMonth() + 1).padStart(2, "0"),
+    String(nextDay.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+  return `${nextDateString}T00:00:00+09:00`;
+}
+
+/** One page request's worth of filter/sort/pagination state — the
+ * history list page keeps exactly this shape as its own controlled
+ * state and passes it straight to buildHistoryListRequestUrl() below
+ * on every fetch. `startedFrom`/`startedTo` are plain `"YYYY-MM-DD"`
+ * JST calendar dates (both inclusive from the caller's point of view —
+ * see jstDateStringToRangeBoundary() for how `startedTo` becomes an
+ * exclusive upper bound under the hood), `page` is 1-indexed. */
+export type HistoryListQuery = {
+  search?: string;
+  important?: boolean;
+  startedFrom?: string;
+  startedTo?: string;
+  sort: HistorySortOrder;
+  page: number;
+};
+
+/** Builds the full `/api/analysis-runs?...` URL for one
+ * HistoryListQuery — the one place that knows how each filter field
+ * maps to a query parameter (and, for the date fields, to the
+ * precise JST-instant conversion above), so the page component itself
+ * never constructs a query string by hand. */
+export function buildHistoryListRequestUrl(query: HistoryListQuery): string {
+  const page = Math.max(1, query.page);
+  const offset = (page - 1) * HISTORY_LIST_PAGE_SIZE;
+
+  const params = new URLSearchParams();
+  params.set("limit", String(HISTORY_LIST_PAGE_SIZE));
+  params.set("offset", String(offset));
+  params.set("sort", query.sort);
+  if (query.search && query.search.trim()) {
+    params.set("search", query.search.trim());
+  }
+  if (query.important) {
+    params.set("important", "true");
+  }
+  if (query.startedFrom) {
+    params.set("startedFrom", jstDateStringToRangeBoundary(query.startedFrom, "start"));
+  }
+  if (query.startedTo) {
+    params.set("startedTo", jstDateStringToRangeBoundary(query.startedTo, "endExclusive"));
+  }
+
+  return `/api/analysis-runs?${params.toString()}`;
+}
+
+/** True when any of search/important/date-range is actually
+ * narrowing the result set — used only to pick the right "0件"
+ * message (see resolveServerFilteredEmptyText() below), never to
+ * decide whether to fetch (every page request goes through
+ * buildHistoryListRequestUrl() regardless). */
+export function isHistoryListQueryFiltered(
+  query: Pick<HistoryListQuery, "search" | "important" | "startedFrom" | "startedTo">,
+): boolean {
+  return Boolean(
+    (query.search && query.search.trim()) ||
+      query.important ||
+      query.startedFrom ||
+      query.startedTo,
+  );
+}
+
+/** The "0件" message for the (now server-side) history list — a
+ * single unified message regardless of *which* filter(s) narrowed the
+ * result to nothing, since search/important/date-range can now
+ * combine freely (this task's "複数条件のAND検索") and a dedicated
+ * message for every combination would no longer be maintainable (see
+ * resolveHistoryListEmptyText() above, which predates date-range
+ * filtering and is kept only for its own existing callers/tests).
+ * Reuses the existing HISTORY_SEARCH_NO_RESULTS_TEXT wording — it was
+ * already filter-agnostic ("条件に一致する履歴がありません。"). When
+ * no filter is active at all, `total === 0` instead means "this
+ * project genuinely has no saved history yet", so
+ * HISTORY_EMPTY_STATE_TEXT is used instead. */
+export function resolveServerFilteredEmptyText(hasAnyFilterActive: boolean): string {
+  return hasAnyFilterActive ? HISTORY_SEARCH_NO_RESULTS_TEXT : HISTORY_EMPTY_STATE_TEXT;
+}
+
+/** "123件中 21〜40件を表示（2 / 7ページ）" — the history list page's
+ * pagination/total-count label. `total === 0` short-circuits to a
+ * plain "0件" (there is no "1〜0件" page to describe). */
+export function formatHistoryPaginationLabel(total: number, page: number): string {
+  if (total === 0) return "0件";
+  const totalPages = Math.max(1, Math.ceil(total / HISTORY_LIST_PAGE_SIZE));
+  const clampedPage = Math.min(Math.max(1, page), totalPages);
+  const startIndex = (clampedPage - 1) * HISTORY_LIST_PAGE_SIZE + 1;
+  const endIndex = Math.min(clampedPage * HISTORY_LIST_PAGE_SIZE, total);
+  return `${total}件中 ${startIndex}〜${endIndex}件を表示（${clampedPage} / ${totalPages}ページ）`;
 }
 
 // --- Delete (DELETE /analysis-runs/{id}, feature/history-delete-and-mode-badges) ---
@@ -584,8 +739,14 @@ export type HistoryViewState =
   | { kind: "disabled"; message: string; detail: string }
   | { kind: "forbidden"; message: string }
   | { kind: "error"; message: string }
-  | { kind: "empty" }
-  | { kind: "items"; items: AnalysisRunListItem[] };
+  // Always used now, even for a 0-item page (feature/history-server-
+  // side-search-pagination) — `total`/`limit`/`offset` are what the
+  // page needs to render "総件数"/"現在ページ"/pagination controls
+  // and to pick the right "0件" message (see
+  // resolveServerFilteredEmptyText() above); the previous dedicated
+  // `{ kind: "empty" }` variant carried none of that, which is why it
+  // no longer exists as a separate case.
+  | { kind: "items"; items: AnalysisRunListItem[]; total: number; limit: number; offset: number };
 
 /**
  * Turns a fetch() Response (or null, on a network-level failure) from
@@ -613,6 +774,10 @@ export async function resolveHistoryFetchOutcome(
     return { kind: "forbidden", message: HISTORY_FORBIDDEN_MESSAGE };
   }
 
+  if (response.status === 400) {
+    return { kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE };
+  }
+
   if (!response.ok) {
     return { kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE };
   }
@@ -623,11 +788,19 @@ export async function resolveHistoryFetchOutcome(
     return { kind: "error", message: HISTORY_GENERIC_ERROR_MESSAGE };
   }
 
-  if (parsed.data.items.length === 0) {
-    return { kind: "empty" };
-  }
-
-  return { kind: "items", items: parsed.data.items };
+  return {
+    kind: "items",
+    items: parsed.data.items,
+    // `total` is only ever null for a backend older than
+    // feature/history-server-side-search-pagination (see
+    // backend/models.py's AnalysisRunListResponse.total docstring) —
+    // falling back to the current page's own item count keeps this
+    // resolver correct (if not precisely paginated) against such a
+    // backend rather than showing a misleading "0件".
+    total: parsed.data.total ?? parsed.data.items.length,
+    limit: parsed.data.limit,
+    offset: parsed.data.offset,
+  };
 }
 
 /** Link text for a list row's "view detail" link — replaces the

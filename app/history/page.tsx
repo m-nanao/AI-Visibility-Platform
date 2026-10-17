@@ -13,36 +13,45 @@ import {
   HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL,
   HISTORY_PAGE_TITLE,
   HISTORY_PAGE_DESCRIPTION,
-  HISTORY_EMPTY_STATE_TEXT,
   HISTORY_LOADING_TEXT,
   HISTORY_LIST_DETAIL_LINK_TEXT,
   HISTORY_SEARCH_PLACEHOLDER,
   HISTORY_SORT_DEFAULT_ORDER,
   HISTORY_SORT_NEWEST_LABEL,
   HISTORY_SORT_OLDEST_LABEL,
+  HISTORY_LIST_PAGE_SIZE,
+  buildHistoryListRequestUrl,
   canManageHistoryListItem,
-  filterAnalysisRunListItems,
-  filterAnalysisRunListItemsByImportance,
   formatAnalysisRunListItem,
-  formatHistoryCountLabel,
+  formatHistoryPaginationLabel,
   getImportantToggleLabel,
+  isHistoryListQueryFiltered,
   resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
-  resolveHistoryListEmptyText,
   resolveHistoryListItemDetailPath,
+  resolveServerFilteredEmptyText,
   resolveSetAnalysisRunImportantOutcome,
-  sortAnalysisRunListItems,
 } from "../lib/analysis-history";
 import type {
   HistoryImportantFilter,
+  HistoryListQuery,
   HistorySortOrder,
   HistoryViewState,
 } from "../lib/analysis-history";
 
+// Debounce delay for the search input — long enough to avoid firing a
+// request per keystroke, short enough to still feel responsive. The
+// debounced value (not the raw input) is what the fetch effect below
+// depends on.
+const SEARCH_DEBOUNCE_MS = 300;
+
 // Client component fetching this Next.js app's own Route Handler
 // (app/api/analysis-runs/route.ts), same pattern as app/page.tsx
-// fetching /api/analyze. Detail pages (/history/[id]) are implemented
-// in app/history/[id]/page.tsx — see
+// fetching /api/analyze. Search/important-filter/date-range/sort/
+// pagination are all server-side (feature/history-server-side-search-
+// pagination) — this page only builds the query string and renders
+// the response, it never filters/sorts the items itself. Detail pages
+// (/history/[id]) are implemented in app/history/[id]/page.tsx — see
 // docs/22_analysis_history_detail_ui_design.md.
 export default function HistoryPage() {
   const [view, setView] = useState<HistoryViewState>({ kind: "loading" });
@@ -56,26 +65,71 @@ export default function HistoryPage() {
   // optimistically straight to `view.items` (see handleToggleImportant
   // below) rather than waiting for the PATCH to resolve.
   const [importantErrors, setImportantErrors] = useState<Record<string, string>>({});
-  // Search/sort are purely client-side over the already-fetched page of
-  // items (no new backend search API, no re-fetch) — see
-  // app/lib/analysis-history.ts's filterAnalysisRunListItems()/
-  // sortAnalysisRunListItems().
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortOrder, setSortOrder] = useState<HistorySortOrder>(HISTORY_SORT_DEFAULT_ORDER);
-  // "重要のみ表示" toggle (feature/history-important-filter) — same
-  // frontend-only composition as search/sort: applied to `allItems`
-  // before the search filter, see visibleItems below.
+
+  const [page, setPage] = useState(1);
+  // `searchInput` is the raw, every-keystroke value shown in the text
+  // box; `debouncedSearch` is what actually goes into the server
+  // query (see the debounce effect below) — keeping them separate is
+  // what lets the input feel instant while still only firing one
+  // fetch per pause in typing.
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [importantFilter, setImportantFilter] = useState<HistoryImportantFilter>(
     HISTORY_IMPORTANT_FILTER_DEFAULT,
+  );
+  const [sortOrder, setSortOrder] = useState<HistorySortOrder>(HISTORY_SORT_DEFAULT_ORDER);
+  // Plain "YYYY-MM-DD" from <input type="date">, or "" when unset —
+  // see buildHistoryListRequestUrl()'s JST conversion.
+  const [startedFrom, setStartedFrom] = useState("");
+  const [startedTo, setStartedTo] = useState("");
+
+  // Debounces `searchInput` into `debouncedSearch`, and resets to page
+  // 1 in the same tick so a search doesn't fetch twice (once for the
+  // new search, once for the page reset) — this task's "フィルタ変更
+  //時はページ1にリセットする".
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchInput);
+      setPage(1);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const handleImportantFilterChange = (next: HistoryImportantFilter) => {
+    setImportantFilter(next);
+    setPage(1);
+  };
+  const handleSortOrderChange = (next: HistorySortOrder) => {
+    setSortOrder(next);
+    setPage(1);
+  };
+  const handleStartedFromChange = (value: string) => {
+    setStartedFrom(value);
+    setPage(1);
+  };
+  const handleStartedToChange = (value: string) => {
+    setStartedTo(value);
+    setPage(1);
+  };
+
+  const query: HistoryListQuery = useMemo(
+    () => ({
+      search: debouncedSearch,
+      important: importantFilter === "importantOnly",
+      startedFrom: startedFrom || undefined,
+      startedTo: startedTo || undefined,
+      sort: sortOrder,
+      page,
+    }),
+    [debouncedSearch, importantFilter, startedFrom, startedTo, sortOrder, page],
   );
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
-      const response = await fetch("/api/analysis-runs?limit=20&offset=0").catch(
-        () => null,
-      );
+      setView({ kind: "loading" });
+      const response = await fetch(buildHistoryListRequestUrl(query)).catch(() => null);
       if (cancelled) return;
 
       const outcome = await resolveHistoryFetchOutcome(response);
@@ -87,13 +141,13 @@ export default function HistoryPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [query]);
 
   // Confirms, calls DELETE /api/analysis-runs/{id}, and on success
-  // removes the row from the current list view immediately (switching
-  // to the empty view when it was the last one) rather than
-  // re-fetching the whole list. A failed delete never removes the row
-  // — the error is shown inline on that same row instead.
+  // removes the row from the current list view immediately (adjusting
+  // `total` down by one) rather than re-fetching the whole list. A
+  // failed delete never removes the row — the error is shown inline
+  // on that same row instead.
   const handleDelete = async (id: string) => {
     if (!window.confirm(HISTORY_DELETE_CONFIRM_MESSAGE)) return;
 
@@ -122,8 +176,13 @@ export default function HistoryPage() {
 
     setView((prev) => {
       if (prev.kind !== "items") return prev;
-      const remaining = prev.items.filter((item) => item.id !== id);
-      return remaining.length === 0 ? { kind: "empty" } : { kind: "items", items: remaining };
+      return {
+        kind: "items",
+        items: prev.items.filter((item) => item.id !== id),
+        total: Math.max(0, prev.total - 1),
+        limit: prev.limit,
+        offset: prev.offset,
+      };
     });
   };
 
@@ -134,6 +193,11 @@ export default function HistoryPage() {
   // state never silently disagree past that point. No confirmation
   // dialog (unlike handleDelete above): toggling is reversible with
   // another click, so a confirm would only add friction.
+  //
+  // Note: while "重要のみ" is active, toggling a row off no longer
+  // live-removes it from view (filtering now happens server-side, on
+  // the next fetch) — it stays visible, now unchecked, until the next
+  // page load. Acceptable trade-off for this task's scope.
   const handleToggleImportant = async (id: string, currentIsImportant: boolean) => {
     const nextIsImportant = !currentIsImportant;
 
@@ -145,7 +209,7 @@ export default function HistoryPage() {
     setView((prev) => {
       if (prev.kind !== "items") return prev;
       return {
-        kind: "items",
+        ...prev,
         items: prev.items.map((item) =>
           item.id === id ? { ...item, isImportant: nextIsImportant } : item,
         ),
@@ -164,7 +228,7 @@ export default function HistoryPage() {
       setView((prev) => {
         if (prev.kind !== "items") return prev;
         return {
-          kind: "items",
+          ...prev,
           items: prev.items.map((item) =>
             item.id === id ? { ...item, isImportant: currentIsImportant } : item,
           ),
@@ -173,32 +237,11 @@ export default function HistoryPage() {
     }
   };
 
-  // Recomputed from `view.items` on every render — cheap at this list's
-  // scale (a single fetched page, see the limit=20 query below) and
-  // keeps search/sort entirely derived state rather than something
-  // that could drift from `view` after a delete.
-  const allItems = useMemo(() => (view.kind === "items" ? view.items : []), [view]);
-  // Composition order per docs/38_history_marking_design.md「9」/this
-  // task's "2. 既存検索・並び替えと組み合わせる": 重要のみフィルタ →
-  // 検索フィルタ → 並び替え。`totalCount` passed to
-  // formatHistoryCountLabel() below stays the *full* unfiltered
-  // `allItems.length`, not the importantOnly-filtered count — so
-  // "12件中 2件を表示" reflects both filters combined against the
-  // original total, matching this task's example.
-  const importantFilteredItems = useMemo(
-    () => filterAnalysisRunListItemsByImportance(allItems, importantFilter),
-    [allItems, importantFilter],
-  );
-  const visibleItems = useMemo(
-    () =>
-      sortAnalysisRunListItems(
-        filterAnalysisRunListItems(importantFilteredItems, searchQuery),
-        sortOrder,
-      ),
-    [importantFilteredItems, searchQuery, sortOrder],
-  );
-  const countLabel = formatHistoryCountLabel(allItems.length, visibleItems.length);
-  const emptyResultsText = resolveHistoryListEmptyText(importantFilter, searchQuery);
+  const items = view.kind === "items" ? view.items : [];
+  const total = view.kind === "items" ? view.total : 0;
+  const totalPages = Math.max(1, Math.ceil(total / HISTORY_LIST_PAGE_SIZE));
+  const paginationLabel = formatHistoryPaginationLabel(total, page);
+  const emptyResultsText = resolveServerFilteredEmptyText(isHistoryListQueryFiltered(query));
 
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
@@ -215,7 +258,7 @@ export default function HistoryPage() {
       </div>
 
       <main className="mx-auto max-w-5xl px-6 py-8">
-        {view.kind === "loading" && (
+        {view.kind === "loading" && items.length === 0 && (
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             {HISTORY_LOADING_TEXT}
           </p>
@@ -234,13 +277,7 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {view.kind === "empty" && (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            {HISTORY_EMPTY_STATE_TEXT}
-          </p>
-        )}
-
-        {view.kind === "items" && (
+        {(view.kind === "items" || (view.kind === "loading" && items.length > 0)) && (
           <>
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div className="sm:max-w-xs sm:flex-1">
@@ -250,17 +287,16 @@ export default function HistoryPage() {
                 <input
                   id="historySearch"
                   type="text"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
                   placeholder={HISTORY_SEARCH_PLACEHOLDER}
                   className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                {/* 「重要のみ表示」フィルタ（feature/history-important-filter）
-                    — すべて/重要のみの2択トグル。検索欄・並び替えの近く
-                    に配置する（design: docs/38_history_marking_design.md
-                    「9」）。 */}
+                {/* 「重要のみ表示」フィルタ — すべて/重要のみの2択トグル。
+                    検索欄・並び替えの近くに配置する（design:
+                    docs/38_history_marking_design.md「9」）。 */}
                 <div
                   role="group"
                   aria-label="重要のみ表示"
@@ -268,7 +304,7 @@ export default function HistoryPage() {
                 >
                   <button
                     type="button"
-                    onClick={() => setImportantFilter("all")}
+                    onClick={() => handleImportantFilterChange("all")}
                     aria-pressed={importantFilter === "all"}
                     className={`rounded-l-md px-3 py-1.5 font-medium transition-colors ${
                       importantFilter === "all"
@@ -280,7 +316,7 @@ export default function HistoryPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setImportantFilter("importantOnly")}
+                    onClick={() => handleImportantFilterChange("importantOnly")}
                     aria-pressed={importantFilter === "importantOnly"}
                     className={`rounded-r-md border-l border-zinc-300 px-3 py-1.5 font-medium transition-colors dark:border-zinc-700 ${
                       importantFilter === "importantOnly"
@@ -299,7 +335,9 @@ export default function HistoryPage() {
                   <select
                     id="historySortOrder"
                     value={sortOrder}
-                    onChange={(event) => setSortOrder(event.target.value as HistorySortOrder)}
+                    onChange={(event) =>
+                      handleSortOrderChange(event.target.value as HistorySortOrder)
+                    }
                     className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
                   >
                     <option value="newest">{HISTORY_SORT_NEWEST_LABEL}</option>
@@ -308,16 +346,46 @@ export default function HistoryPage() {
                 </div>
               </div>
             </div>
-            <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">{countLabel}</p>
 
-            {visibleItems.length === 0 && (
+            <div className="mb-4 flex flex-wrap items-end gap-3">
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyStartedFrom" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  開始日
+                </label>
+                <input
+                  id="historyStartedFrom"
+                  type="date"
+                  value={startedFrom}
+                  max={startedTo || undefined}
+                  onChange={(event) => handleStartedFromChange(event.target.value)}
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyStartedTo" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  終了日
+                </label>
+                <input
+                  id="historyStartedTo"
+                  type="date"
+                  value={startedTo}
+                  min={startedFrom || undefined}
+                  onChange={(event) => handleStartedToChange(event.target.value)}
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+            </div>
+
+            <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">{paginationLabel}</p>
+
+            {items.length === 0 && (
               <p className="text-sm text-zinc-500 dark:text-zinc-400">
                 {emptyResultsText}
               </p>
             )}
 
             <ul className="space-y-3">
-            {visibleItems.map((item) => {
+            {items.map((item) => {
               const display = formatAnalysisRunListItem(item);
               const isDeleting = deletingIds.has(item.id);
               const deleteError = deleteErrors[item.id];
@@ -430,6 +498,30 @@ export default function HistoryPage() {
               );
             })}
             </ul>
+
+            {total > 0 && (
+              <div className="mt-6 flex items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                  disabled={page <= 1}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                >
+                  前へ
+                </button>
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {page} / {totalPages}ページ
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={page >= totalPages}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                >
+                  次へ
+                </button>
+              </div>
+            )}
           </>
         )}
       </main>
