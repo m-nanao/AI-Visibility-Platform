@@ -306,4 +306,38 @@ describe("GET /api/analysis-runs", () => {
     expect(forwardedParams.has("claudeObservation")).toBe(false);
     expect(forwardedParams.has("geminiObservation")).toBe(false);
   });
+
+  // --- favorite forwarding (feature/history-favorite-flag) ---
+
+  it("forwards favorite=true when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest("?favorite=true"));
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.get("favorite")).toBe("true");
+  });
+
+  it("omits favorite entirely when the caller didn't set it", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest());
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.has("favorite")).toBe(false);
+  });
 });

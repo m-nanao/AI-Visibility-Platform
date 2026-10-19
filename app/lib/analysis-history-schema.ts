@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   AnalysisRunComparisonResponse,
   AnalysisRunDetailResponse,
+  AnalysisRunFavoriteResponse,
   AnalysisRunImportantResponse,
   AnalysisRunListResponse,
   GeminiRerunResponse,
@@ -69,6 +70,11 @@ const analysisRunListItemSchema = z.object({
   // 004 was applied). See backend/migrations/
   // 004_add_is_important_to_analysis_runs.sql.
   isImportant: z.boolean().default(false),
+  // backend/models.py declares this as `isFavorite: bool = False`
+  // (not `X | None`) — same reasoning as isImportant above, independent
+  // column (feature/history-favorite-flag, backend/migrations/
+  // 007_add_is_favorite_to_analysis_runs.sql).
+  isFavorite: z.boolean().default(false),
 });
 
 export const analysisRunListResponseSchema = z.object({
@@ -138,6 +144,8 @@ export const analysisRunDetailResponseSchema = z.object({
   meta: optionalFromPython(z.record(z.string(), z.unknown())),
   // Same field/default as analysisRunListItemSchema.isImportant above.
   isImportant: z.boolean().default(false),
+  // Same field/default as analysisRunListItemSchema.isFavorite above.
+  isFavorite: z.boolean().default(false),
   // backend/models.py's AnalysisRunDetailResponse.projectId — added for
   // feature/async-job-failure-display-and-retry's "re-run this
   // analysis" action, which needs the original project id to submit a
@@ -317,6 +325,35 @@ export function parseAnalysisRunImportantResponse(
   const result = analysisRunImportantResponseSchema.safeParse(input);
   if (result.success) {
     return { success: true, data: result.data as AnalysisRunImportantResponse };
+  }
+
+  const reason = result.error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+
+  return { success: false, reason };
+}
+
+/**
+ * Mirrors backend/models.py's AnalysisRunFavoriteResponse (PATCH
+ * /analysis-runs/{id}/favorite) — feature/history-favorite-flag,
+ * independent of AnalysisRunImportantResponse above.
+ */
+export const analysisRunFavoriteResponseSchema = z.object({
+  analysisRunId: z.string(),
+  isFavorite: z.boolean(),
+});
+
+export type AnalysisRunFavoriteParseResult =
+  | { success: true; data: AnalysisRunFavoriteResponse }
+  | { success: false; reason: string };
+
+export function parseAnalysisRunFavoriteResponse(
+  input: unknown,
+): AnalysisRunFavoriteParseResult {
+  const result = analysisRunFavoriteResponseSchema.safeParse(input);
+  if (result.success) {
+    return { success: true, data: result.data as AnalysisRunFavoriteResponse };
   }
 
   const reason = result.error.issues

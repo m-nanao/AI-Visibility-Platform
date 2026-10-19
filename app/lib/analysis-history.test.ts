@@ -99,6 +99,12 @@ import {
   isHistoryListQueryFiltered,
   jstDateStringToRangeBoundary,
   resolveServerFilteredEmptyText,
+  getFavoriteToggleLabel,
+  resolveSetAnalysisRunFavoriteOutcome,
+  HISTORY_FAVORITE_ERROR_MESSAGE,
+  HISTORY_FAVORITE_MARK_LABEL,
+  HISTORY_FAVORITE_NOT_FOUND_MESSAGE,
+  HISTORY_FAVORITE_UNMARK_LABEL,
 } from "./analysis-history";
 import type {
   AnalysisRunComparisonResponse,
@@ -801,6 +807,84 @@ describe("resolveSetAnalysisRunImportantOutcome (feature/history-important-flag)
   });
 });
 
+describe("getFavoriteToggleLabel (feature/history-favorite-flag)", () => {
+  it("returns the mark label when not currently a favorite", () => {
+    expect(getFavoriteToggleLabel(false)).toBe(HISTORY_FAVORITE_MARK_LABEL);
+  });
+
+  it("returns the unmark label when currently a favorite", () => {
+    expect(getFavoriteToggleLabel(true)).toBe(HISTORY_FAVORITE_UNMARK_LABEL);
+  });
+});
+
+describe("resolveSetAnalysisRunFavoriteOutcome (feature/history-favorite-flag)", () => {
+  it("returns success with the updated isFavorite for a 200 response", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id, isFavorite: true }, 200),
+    );
+
+    expect(outcome).toEqual({ success: true, isFavorite: true });
+  });
+
+  it("returns success with isFavorite: false when unfavoriting", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id, isFavorite: false }, 200),
+    );
+
+    expect(outcome).toEqual({ success: true, isFavorite: false });
+  });
+
+  it("returns a forbidden message for a 403 response", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ error: "analysis history read access denied" }, 403),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FORBIDDEN_MESSAGE });
+  });
+
+  it("returns a not-found message for a 404 response", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ error: "analysis run not found" }, 404),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FAVORITE_NOT_FOUND_MESSAGE });
+  });
+
+  it("returns a generic error message when the response is null (network failure)", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(null);
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FAVORITE_ERROR_MESSAGE });
+  });
+
+  it("returns a generic error message for any other failure status", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ error: "something went wrong" }, 502),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FAVORITE_ERROR_MESSAGE });
+  });
+
+  it("returns a generic error message when the success body fails schema validation", async () => {
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id }, 200),
+    );
+
+    expect(outcome).toEqual({ success: false, message: HISTORY_FAVORITE_ERROR_MESSAGE });
+  });
+
+  it("is independent of the important-flag outcome type (no shared mutable state)", async () => {
+    const favoriteOutcome = await resolveSetAnalysisRunFavoriteOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id, isFavorite: true }, 200),
+    );
+    const importantOutcome = await resolveSetAnalysisRunImportantOutcome(
+      jsonResponse({ analysisRunId: SAMPLE_ITEM.id, isImportant: false }, 200),
+    );
+
+    expect(favoriteOutcome).toEqual({ success: true, isFavorite: true });
+    expect(importantOutcome).toEqual({ success: true, isImportant: false });
+  });
+});
+
 describe("resolveHistoryFetchOutcome", () => {
   it("returns a disabled view when the response is 503 (READ_HISTORY_ENABLED=false etc.)", async () => {
     const outcome = await resolveHistoryFetchOutcome(
@@ -980,6 +1064,14 @@ describe("buildHistoryListRequestUrl", () => {
     const withoutFilters = buildHistoryListRequestUrl({ sort: "newest", page: 1 });
     expect(withoutFilters).not.toContain("Observation=");
   });
+
+  it("includes favorite=true only when favorite is truthy", () => {
+    const favorite = buildHistoryListRequestUrl({ sort: "newest", page: 1, favorite: true });
+    expect(favorite).toContain("favorite=true");
+
+    const notFavorite = buildHistoryListRequestUrl({ sort: "newest", page: 1, favorite: false });
+    expect(notFavorite).not.toContain("favorite=");
+  });
 });
 
 describe("isHistoryListQueryFiltered", () => {
@@ -1003,6 +1095,14 @@ describe("isHistoryListQueryFiltered", () => {
     expect(isHistoryListQueryFiltered({ chatgptObservation: "off" })).toBe(true);
     expect(isHistoryListQueryFiltered({ claudeObservation: "unavailable" })).toBe(true);
     expect(isHistoryListQueryFiltered({ geminiObservation: "unknown" })).toBe(true);
+  });
+
+  it("is true when favorite is set", () => {
+    expect(isHistoryListQueryFiltered({ favorite: true })).toBe(true);
+  });
+
+  it("is false when favorite is false", () => {
+    expect(isHistoryListQueryFiltered({ favorite: false })).toBe(false);
   });
 });
 

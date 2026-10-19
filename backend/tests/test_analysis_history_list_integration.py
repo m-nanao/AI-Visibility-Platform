@@ -81,6 +81,7 @@ def db_connection():
                 error_message text,
                 deleted_at timestamptz,
                 is_important boolean not null default false,
+                is_favorite boolean not null default false,
                 created_at timestamptz not null default now()
             )
             """
@@ -131,6 +132,7 @@ def _insert_run(
     started_at=None,
     created_at=None,
     is_important=False,
+    is_favorite=False,
     deleted_at=None,
     result_json=None,
     meta_json=None,
@@ -150,9 +152,18 @@ def _insert_run(
             "status",
             "input_snapshot",
             "is_important",
+            "is_favorite",
             "deleted_at",
         ]
-        values = [brand_id, project_id, status, _jsonb(input_snapshot), is_important, deleted_at]
+        values = [
+            brand_id,
+            project_id,
+            status,
+            _jsonb(input_snapshot),
+            is_important,
+            is_favorite,
+            deleted_at,
+        ]
         if started_at is not None:
             columns.append("started_at")
             values.append(started_at)
@@ -861,5 +872,191 @@ def test_observation_filter_survives_duplicate_platform_entries(db_connection):
         mentioned = repo.list_analysis_runs(chatgpt_observation="mentioned")
 
         assert [item["brandName"] for item in mentioned] == ["DuplicatePlatform"]
+    finally:
+        repo.load_db_settings = original
+
+
+# --- Favorite flag (feature/history-favorite-flag) -----------------------
+
+
+def test_favorite_filter_matches_only_favorited_rows(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(conn, schema, brand_name="Favorited", is_favorite=True)
+        _insert_run(conn, schema, brand_name="NotFavorited", is_favorite=False)
+
+        items = repo.list_analysis_runs(favorite=True)
+        total = repo.count_analysis_runs(favorite=True)
+
+        assert [item["brandName"] for item in items] == ["Favorited"]
+        assert total == 1
+    finally:
+        repo.load_db_settings = original
+
+
+def test_favorite_is_independent_of_important(monkeypatch, db_connection):
+    """A row can be favorited without being important, important
+    without being favorited, both, or neither — the two columns never
+    influence each other's filter."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(conn, schema, brand_name="Neither", is_important=False, is_favorite=False)
+        _insert_run(conn, schema, brand_name="ImportantOnly", is_important=True, is_favorite=False)
+        _insert_run(conn, schema, brand_name="FavoriteOnly", is_important=False, is_favorite=True)
+        _insert_run(conn, schema, brand_name="Both", is_important=True, is_favorite=True)
+
+        favorite_only = repo.list_analysis_runs(favorite=True)
+        important_only = repo.list_analysis_runs(important=True)
+        both = repo.list_analysis_runs(favorite=True, important=True)
+
+        assert {item["brandName"] for item in favorite_only} == {"FavoriteOnly", "Both"}
+        assert {item["brandName"] for item in important_only} == {"ImportantOnly", "Both"}
+        assert {item["brandName"] for item in both} == {"Both"}
+    finally:
+        repo.load_db_settings = original
+
+
+def test_favorite_filter_works_past_the_first_page_of_more_than_20_rows(db_connection):
+    """Mirrors test_search_finds_a_match_past_the_first_page above —
+    favorite is applied in SQL before LIMIT/OFFSET, so a match on what
+    would be page 2 must still be found, and total must match."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        for i in range(25):
+            _insert_run(conn, schema, brand_name=f"ブランド{i:02d}", is_favorite=False)
+        _insert_run(conn, schema, brand_name="FavoritedPastFirstPage", is_favorite=True)
+
+        items = repo.list_analysis_runs(favorite=True, limit=20, offset=0)
+        total = repo.count_analysis_runs(favorite=True)
+
+        assert total == 1
+        assert [item["brandName"] for item in items] == ["FavoritedPastFirstPage"]
+    finally:
+        repo.load_db_settings = original
+
+
+def test_favorite_combines_with_search_and_date_range_as_and(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        started_in_range = datetime(2026, 3, 2, tzinfo=timezone.utc)
+        started_out_of_range = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        _insert_run(
+            conn,
+            schema,
+            brand_name="サイボウズ",
+            is_favorite=True,
+            started_at=started_in_range,
+        )
+        _insert_run(
+            conn,
+            schema,
+            brand_name="サイボウズ",
+            is_favorite=True,
+            started_at=started_out_of_range,
+        )
+        _insert_run(conn, schema, brand_name="サイボウズ", is_favorite=False, started_at=started_in_range)
+
+        items = repo.list_analysis_runs(
+            search="サイボウズ",
+            favorite=True,
+            started_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        )
+        total = repo.count_analysis_runs(
+            search="サイボウズ",
+            favorite=True,
+            started_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        )
+
+        assert len(items) == 1
+        assert total == 1
+    finally:
+        repo.load_db_settings = original
+
+
+def test_favorite_filter_excludes_soft_deleted_and_other_projects(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(
+            conn,
+            schema,
+            brand_name="VisibleFavorite",
+            is_favorite=True,
+            project_id="11111111-1111-1111-1111-111111111111",
+        )
+        _insert_run(
+            conn,
+            schema,
+            brand_name="DeletedFavorite",
+            is_favorite=True,
+            deleted_at=datetime.now(timezone.utc),
+            project_id="11111111-1111-1111-1111-111111111111",
+        )
+        _insert_run(
+            conn,
+            schema,
+            brand_name="OtherProjectFavorite",
+            is_favorite=True,
+            project_id="22222222-2222-2222-2222-222222222222",
+        )
+
+        items = repo.list_analysis_runs(
+            favorite=True, project_ids=["11111111-1111-1111-1111-111111111111"]
+        )
+        total = repo.count_analysis_runs(
+            favorite=True, project_ids=["11111111-1111-1111-1111-111111111111"]
+        )
+
+        assert [item["brandName"] for item in items] == ["VisibleFavorite"]
+        assert total == 1
+    finally:
+        repo.load_db_settings = original
+
+
+def test_set_analysis_run_favorite_against_real_postgres(db_connection):
+    """End-to-end: set_analysis_run_favorite() actually persists
+    is_favorite in a real database, independently of is_important, and
+    is reflected by a subsequent list_analysis_runs(favorite=True)."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        run_id = _insert_run(conn, schema, brand_name="ToggleMe", is_favorite=False)
+
+        updated = repo.set_analysis_run_favorite(run_id, is_favorite=True)
+        items_after_favoriting = repo.list_analysis_runs(favorite=True)
+
+        unfavorited = repo.set_analysis_run_favorite(run_id, is_favorite=False)
+        items_after_unfavoriting = repo.list_analysis_runs(favorite=True)
+
+        assert updated is True
+        assert [item["brandName"] for item in items_after_favoriting] == ["ToggleMe"]
+        assert unfavorited is True
+        assert items_after_unfavoriting == []
+    finally:
+        repo.load_db_settings = original
+
+
+def test_set_analysis_run_favorite_against_real_postgres_excludes_soft_deleted(db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        run_id = _insert_run(
+            conn, schema, brand_name="Deleted", deleted_at=datetime.now(timezone.utc)
+        )
+
+        updated = repo.set_analysis_run_favorite(run_id, is_favorite=True)
+
+        assert updated is False
     finally:
         repo.load_db_settings = original

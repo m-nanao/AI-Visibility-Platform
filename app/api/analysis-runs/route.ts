@@ -82,6 +82,7 @@ export async function GET(request: Request) {
     "chatgptObservation",
     "claudeObservation",
     "geminiObservation",
+    "favorite",
   ]) {
     const value = searchParams.get(key);
     if (value !== null) {
