@@ -1158,6 +1158,36 @@ def _parse_history_list_boundary(
     return parsed
 
 
+# GET /analysis-runs's aiOverviewObservation/chatgptObservation/
+# claudeObservation/geminiObservation query params — see
+# services/analysis_history_repository.py's "AI観測状態フィルター"
+# section for what each of these 5 values means and how they're
+# computed. Kept here (not imported from that module) since it's
+# purely an API-input-validation concern, same as
+# _parse_history_list_boundary() above.
+_OBSERVATION_FILTER_VALUES = ("mentioned", "not_mentioned", "off", "unavailable", "unknown")
+
+
+def _parse_observation_filter(
+    raw: str | None, *, field_name: str
+) -> tuple[str | None, str | None]:
+    """Validates one of the 4 AI-observation filter query params.
+    Returns `(value, error_message)` — exactly one of the two is
+    non-None, unlike _parse_history_list_boundary() above, since here
+    both the "no filter" and "valid filter" outcomes are themselves
+    `str | None`, so a single return value couldn't tell them apart
+    from an error message the way that function's `datetime | str`
+    return type could. `raw is None` (the param omitted) always means
+    "no filter" and returns `(None, None)` directly, without checking
+    it against _OBSERVATION_FILTER_VALUES.
+    """
+    if raw is None:
+        return None, None
+    if raw not in _OBSERVATION_FILTER_VALUES:
+        return None, f"{field_name} must be one of {list(_OBSERVATION_FILTER_VALUES)}"
+    return raw, None
+
+
 @app.get("/analysis-runs", response_model=AnalysisRunListResponse)
 def list_analysis_runs(
     request: Request,
@@ -1169,6 +1199,10 @@ def list_analysis_runs(
     important: bool | None = None,
     startedFrom: str | None = None,
     startedTo: str | None = None,
+    aiOverviewObservation: str | None = None,
+    chatgptObservation: str | None = None,
+    claudeObservation: str | None = None,
+    geminiObservation: str | None = None,
     sort: str = "newest",
 ):
     access = _resolve_history_access(request)
@@ -1181,6 +1215,28 @@ def list_analysis_runs(
     started_to = _parse_history_list_boundary(startedTo, field_name="startedTo")
     if isinstance(started_to, str):
         return error_response(started_to)
+
+    ai_overview_observation, err = _parse_observation_filter(
+        aiOverviewObservation, field_name="aiOverviewObservation"
+    )
+    if err:
+        return error_response(err)
+    chatgpt_observation, err = _parse_observation_filter(
+        chatgptObservation, field_name="chatgptObservation"
+    )
+    if err:
+        return error_response(err)
+    claude_observation, err = _parse_observation_filter(
+        claudeObservation, field_name="claudeObservation"
+    )
+    if err:
+        return error_response(err)
+    gemini_observation, err = _parse_observation_filter(
+        geminiObservation, field_name="geminiObservation"
+    )
+    if err:
+        return error_response(err)
+
     sort_order = "oldest" if sort == "oldest" else "newest"
 
     # project_ids is always passed explicitly in JWT mode (never
@@ -1200,6 +1256,10 @@ def list_analysis_runs(
         important=important,
         started_from=started_from,
         started_to=started_to,
+        ai_overview_observation=ai_overview_observation,
+        chatgpt_observation=chatgpt_observation,
+        claude_observation=claude_observation,
+        gemini_observation=gemini_observation,
     )
 
     try:

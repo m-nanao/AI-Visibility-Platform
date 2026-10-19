@@ -72,7 +72,17 @@ export async function GET(request: Request) {
   const forwardedParams = new URLSearchParams();
   forwardedParams.set("limit", limit);
   forwardedParams.set("offset", offset);
-  for (const key of ["search", "important", "startedFrom", "startedTo", "sort"]) {
+  for (const key of [
+    "search",
+    "important",
+    "startedFrom",
+    "startedTo",
+    "sort",
+    "aiOverviewObservation",
+    "chatgptObservation",
+    "claudeObservation",
+    "geminiObservation",
+  ]) {
     const value = searchParams.get(key);
     if (value !== null) {
       forwardedParams.set(key, value);

@@ -5,6 +5,11 @@ import Link from "next/link";
 import AppHeader from "../components/AppHeader";
 import { DETAIL_LINK_BUTTON_CLASSNAME } from "../lib/link-button-styles";
 import {
+  AI_OVERVIEW_OBSERVATION_FILTER_LABELS,
+  AI_OVERVIEW_OBSERVATION_FILTER_LABEL_TEXT,
+  CHATGPT_OBSERVATION_FILTER_LABEL_TEXT,
+  CLAUDE_OBSERVATION_FILTER_LABEL_TEXT,
+  GEMINI_OBSERVATION_FILTER_LABEL_TEXT,
   HISTORY_DELETE_BUTTON_LABEL,
   HISTORY_DELETE_CONFIRM_MESSAGE,
   HISTORY_IMPORTANT_BADGE_LABEL,
@@ -20,6 +25,8 @@ import {
   HISTORY_SORT_NEWEST_LABEL,
   HISTORY_SORT_OLDEST_LABEL,
   HISTORY_LIST_PAGE_SIZE,
+  OBSERVATION_FILTER_DEFAULT,
+  SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS,
   buildHistoryListRequestUrl,
   canManageHistoryListItem,
   formatAnalysisRunListItem,
@@ -37,7 +44,13 @@ import type {
   HistoryListQuery,
   HistorySortOrder,
   HistoryViewState,
+  ObservationFilterValue,
 } from "../lib/analysis-history";
+
+// Select-box value type for the 4 AI observation filters — "all" (no
+// filter) plus the 5 ObservationFilterValue states, matching this
+// task's "4. UI"'s "すべて" + 5-state list.
+type ObservationFilterSelectValue = "all" | ObservationFilterValue;
 
 // Debounce delay for the search input — long enough to avoid firing a
 // request per keystroke, short enough to still feel responsive. The
@@ -82,6 +95,16 @@ export default function HistoryPage() {
   // see buildHistoryListRequestUrl()'s JST conversion.
   const [startedFrom, setStartedFrom] = useState("");
   const [startedTo, setStartedTo] = useState("");
+  // AI観測状態フィルター (feature/history-ai-observation-filter) — 4
+  // independent selects, each defaulting to "すべて" (no filter).
+  const [aiOverviewObservation, setAiOverviewObservation] =
+    useState<ObservationFilterSelectValue>(OBSERVATION_FILTER_DEFAULT);
+  const [chatgptObservation, setChatgptObservation] =
+    useState<ObservationFilterSelectValue>(OBSERVATION_FILTER_DEFAULT);
+  const [claudeObservation, setClaudeObservation] =
+    useState<ObservationFilterSelectValue>(OBSERVATION_FILTER_DEFAULT);
+  const [geminiObservation, setGeminiObservation] =
+    useState<ObservationFilterSelectValue>(OBSERVATION_FILTER_DEFAULT);
 
   // Debounces `searchInput` into `debouncedSearch`, and resets to page
   // 1 in the same tick so a search doesn't fetch twice (once for the
@@ -111,6 +134,22 @@ export default function HistoryPage() {
     setStartedTo(value);
     setPage(1);
   };
+  const handleAiOverviewObservationChange = (value: ObservationFilterSelectValue) => {
+    setAiOverviewObservation(value);
+    setPage(1);
+  };
+  const handleChatgptObservationChange = (value: ObservationFilterSelectValue) => {
+    setChatgptObservation(value);
+    setPage(1);
+  };
+  const handleClaudeObservationChange = (value: ObservationFilterSelectValue) => {
+    setClaudeObservation(value);
+    setPage(1);
+  };
+  const handleGeminiObservationChange = (value: ObservationFilterSelectValue) => {
+    setGeminiObservation(value);
+    setPage(1);
+  };
 
   const query: HistoryListQuery = useMemo(
     () => ({
@@ -118,10 +157,26 @@ export default function HistoryPage() {
       important: importantFilter === "importantOnly",
       startedFrom: startedFrom || undefined,
       startedTo: startedTo || undefined,
+      aiOverviewObservation:
+        aiOverviewObservation === "all" ? undefined : aiOverviewObservation,
+      chatgptObservation: chatgptObservation === "all" ? undefined : chatgptObservation,
+      claudeObservation: claudeObservation === "all" ? undefined : claudeObservation,
+      geminiObservation: geminiObservation === "all" ? undefined : geminiObservation,
       sort: sortOrder,
       page,
     }),
-    [debouncedSearch, importantFilter, startedFrom, startedTo, sortOrder, page],
+    [
+      debouncedSearch,
+      importantFilter,
+      startedFrom,
+      startedTo,
+      aiOverviewObservation,
+      chatgptObservation,
+      claudeObservation,
+      geminiObservation,
+      sortOrder,
+      page,
+    ],
   );
 
   useEffect(() => {
@@ -373,6 +428,96 @@ export default function HistoryPage() {
                   onChange={(event) => handleStartedToChange(event.target.value)}
                   className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
                 />
+              </div>
+            </div>
+
+            {/* AI観測状態フィルター（feature/history-ai-observation-filter）
+                — 4つの独立したセレクトボックス。各変更でページ1に戻し、
+                既存の検索・重要フラグ・日付範囲とAND条件で組み合わせる。 */}
+            <div className="mb-4 flex flex-wrap items-end gap-3">
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyAiOverviewObservation" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {AI_OVERVIEW_OBSERVATION_FILTER_LABEL_TEXT}
+                </label>
+                <select
+                  id="historyAiOverviewObservation"
+                  value={aiOverviewObservation}
+                  onChange={(event) =>
+                    handleAiOverviewObservationChange(
+                      event.target.value as ObservationFilterSelectValue,
+                    )
+                  }
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                >
+                  {Object.entries(AI_OVERVIEW_OBSERVATION_FILTER_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyChatgptObservation" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {CHATGPT_OBSERVATION_FILTER_LABEL_TEXT}
+                </label>
+                <select
+                  id="historyChatgptObservation"
+                  value={chatgptObservation}
+                  onChange={(event) =>
+                    handleChatgptObservationChange(
+                      event.target.value as ObservationFilterSelectValue,
+                    )
+                  }
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                >
+                  {Object.entries(SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyClaudeObservation" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {CLAUDE_OBSERVATION_FILTER_LABEL_TEXT}
+                </label>
+                <select
+                  id="historyClaudeObservation"
+                  value={claudeObservation}
+                  onChange={(event) =>
+                    handleClaudeObservationChange(
+                      event.target.value as ObservationFilterSelectValue,
+                    )
+                  }
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                >
+                  {Object.entries(SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyGeminiObservation" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {GEMINI_OBSERVATION_FILTER_LABEL_TEXT}
+                </label>
+                <select
+                  id="historyGeminiObservation"
+                  value={geminiObservation}
+                  onChange={(event) =>
+                    handleGeminiObservationChange(
+                      event.target.value as ObservationFilterSelectValue,
+                    )
+                  }
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                >
+                  {Object.entries(SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

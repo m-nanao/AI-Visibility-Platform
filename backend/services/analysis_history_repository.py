@@ -332,6 +332,199 @@ def _escape_like_pattern(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# --- AI観測状態フィルター (feature/history-ai-observation-filter) -------
+#
+# Lets GET /analysis-runs filter by whether each of the 4 AI
+# providers (Google AI Overview, ChatGPT, Claude, Gemini) actually
+# *mentioned* the brand — distinct from (and computed independently
+# of) services/history_mode_summary.py's modeSummary, which only ever
+# reports whether a provider *ran* (real/off/unavailable/unknown),
+# never whether it mentioned the brand. Implemented entirely as SQL
+# `case` expressions over the already-saved `analysis_results.
+# meta_json`/`result_json` columns (Option 1 of this task's "判定元の
+# データ" investigation) — no new column, no new table, no migration,
+# no backfill. Evaluated inside PostgreSQL itself as part of the
+# existing WHERE clause (before LIMIT/OFFSET), so this never pulls a
+# full result_json back to the application layer just to filter — the
+# per-page SELECT list below is unchanged.
+#
+# Every value embedded in the `case` expressions below (meta_json
+# field names, platform label strings) is a hardcoded program
+# constant — never user input — so it is safe to build these SQL
+# fragments directly, without needing a bound parameter for each one
+# (only the caller-supplied filter *value* being compared against is
+# ever passed as a parameter, exactly like every other condition in
+# this module).
+#
+# Five possible states per provider, mirroring this task's "1. 判定
+# 仕様" exactly:
+# - "mentioned": a real observation ran and the brand was mentioned.
+# - "not_mentioned": a real observation ran and the brand was not
+#   mentioned.
+# - "off": the provider was not run at all this request.
+# - "unavailable": the provider was run but the observation failed
+#   (missing credentials, API error, etc.).
+# - "unknown": can't be determined from this saved run's data — a
+#   genuinely old saved run predating a given provider/field, a
+#   missing/None meta_json, or (AI Overview only) mock data, which is
+#   deliberately never treated as a real "mentioned"/"not_mentioned"
+#   signal (this task's "AI Overviewについては、mockデータを実際の掲載
+#   あり・なしとして扱わない").
+
+_CHATGPT_PLATFORM_LABEL = "ChatGPT (OpenAI API)"
+_CLAUDE_PLATFORM_LABEL = "Claude (Anthropic API)"
+_GEMINI_PLATFORM_LABEL = "Gemini (Google API)"
+
+# Matches either "Google AI Mode (DataForSEO Sandbox)" or "...Live)" —
+# see services/ai_overview_provider.py's _ENVIRONMENT_PLATFORM_LABELS.
+# Deliberately distinct from (and never matches) the mock fixture's
+# "Google AI Overview" platform label (see
+# services/ai_overview_provider.py's build_mock_ai_overview_comparison())
+# — the whole point of this LIKE pattern is to only ever match a *real*
+# DataForSEO-backed card, never the mock one.
+_AI_OVERVIEW_PLATFORM_LIKE_PATTERN = "Google AI Mode (DataForSEO%"
+
+_OBSERVATION_FILTER_VALUES = frozenset(
+    {"mentioned", "not_mentioned", "off", "unavailable", "unknown"}
+)
+
+# Guards `jsonb_array_elements(res.result_json->'aiOverviewComparison')`
+# against a hard SQL error on corrupted/unexpected data. A missing key
+# or an actual JSON `null` already makes `jsonb_array_elements()`
+# return zero rows on its own (no guard needed there) — but a
+# *present*, non-null, non-array value (an object, string, number, or
+# boolean; never written by this backend itself, but not something a
+# raw database value can be trusted to rule out) makes
+# `jsonb_array_elements()` raise `cannot extract elements from an
+# object`/`...a scalar`, which aborts the *entire* query (every row,
+# not just the malformed one) — confirmed by direct reproduction
+# against a real PostgreSQL instance during this filter's review (see
+# feature/history-ai-observation-filter's post-merge verification).
+# Falling back to `'[]'::jsonb` for anything that isn't actually a
+# JSON array keeps such a row landing in "unknown" (nothing readable
+# matches an empty array) exactly like any other unreadable data,
+# instead of 500ing the whole history list over one bad row.
+_SAFE_AI_OVERVIEW_COMPARISON_ARRAY_SQL = (
+    "case when jsonb_typeof(res.result_json->'aiOverviewComparison') = 'array' "
+    "then res.result_json->'aiOverviewComparison' else '[]'::jsonb end"
+)
+
+
+def _mentioned_exists_clause(platform_match_sql: str, mentioned_literal: str) -> str:
+    """Builds one `exists (...)` branch shared by
+    _simple_provider_observation_state_sql()/
+    _AI_OVERVIEW_OBSERVATION_STATE_SQL below. `platform_match_sql` is a
+    complete `elem->>'platform' = '...'`/`... like '...'` condition;
+    `mentioned_literal` is the literal text `'true'`/`'false'` to
+    compare `elem->>'mentioned'` against *as text* — deliberately never
+    `(elem->>'mentioned')::boolean`, which raises a hard SQL error
+    (`invalid input syntax for type boolean`) for any saved value that
+    isn't literally the string "true"/"false" (e.g. a missing field —
+    `->>'mentioned'` on a dict with no such key is already NULL, which
+    a text `=` comparison safely treats as "no match" instead of
+    throwing — or, in principle, some other unexpected type on a
+    corrupted row); confirmed by direct reproduction against a real
+    PostgreSQL instance. A text comparison can never raise this error
+    regardless of what's actually stored there.
+    """
+    return f"""exists (
+                    select 1 from jsonb_array_elements({_SAFE_AI_OVERVIEW_COMPARISON_ARRAY_SQL}) elem
+                    where {platform_match_sql} and elem->>'mentioned' = {mentioned_literal}
+                )"""
+
+
+def _simple_provider_observation_state_sql(meta_key: str, platform_label: str) -> str:
+    """Builds the `case` expression for chatgpt/claude/gemini (all
+    three share the same ChatGptStatus/ClaudeStatus/GeminiStatus
+    vocabulary — exactly "real"/"off"/"unavailable", see
+    backend/models.py) — `meta_key` is the AnalysisMeta field holding
+    this provider's info dict (e.g. "chatgptProvider"); `platform_label`
+    is the exact string services/<provider>_provider.py uses as that
+    provider's `AIOverviewComparisonItem.platform` when it actually
+    appends a card (see e.g. services/chatgpt_provider.py's
+    CHATGPT_PLATFORM_LABEL).
+
+    `status == "real"` is only ever recorded when the provider's own
+    module actually appended a matching card to
+    result_json.aiOverviewComparison (see e.g.
+    services/chatgpt_provider.py's build_chatgpt_observation() —
+    `item` is non-None exactly when status is "real") — so the inner
+    `mentioned`/`not_mentioned` lookup below is expected to always find
+    that card whenever `status = 'real'`; its own "unknown" fallback
+    exists only to keep this expression total (defined for every row)
+    in the rare case a saved run's result_json and meta_json disagree.
+    A missing/None meta_json, or one predating this provider, leaves
+    `status` NULL and falls through to the final "unknown" branch.
+    """
+    platform_match_sql = f"elem->>'platform' = '{platform_label}'"
+    return f"""case
+        when res.meta_json->'{meta_key}'->>'status' = 'off' then 'off'
+        when res.meta_json->'{meta_key}'->>'status' = 'unavailable' then 'unavailable'
+        when res.meta_json->'{meta_key}'->>'status' = 'real' then
+            case
+                when {_mentioned_exists_clause(platform_match_sql, "'true'")} then 'mentioned'
+                when {_mentioned_exists_clause(platform_match_sql, "'false'")} then 'not_mentioned'
+                else 'unknown'
+            end
+        else 'unknown'
+    end"""
+
+
+# AI Overview's own `case` expression is written out separately rather
+# than reusing _simple_provider_observation_state_sql() above — unlike
+# chatgpt/claude/gemini, its environment vocabulary includes "mock"
+# (which must map to "unknown", never "mentioned"/"not_mentioned" —
+# see this module's "AI観測状態フィルター" comment above) and its
+# platform label varies by environment (Sandbox vs. Live), matched via
+# _AI_OVERVIEW_PLATFORM_LIKE_PATTERN's `like` rather than `=`.
+#
+# `.replace('%', '%%')` below escapes the LIKE pattern's literal `%`
+# for psycopg's own placeholder parser, which otherwise mistakes a
+# lone `%` anywhere in the query text (not just actual `%s`-style
+# placeholders) for a malformed one, regardless of it being inside a
+# SQL string literal — this has nothing to do with the `_escape_like_pattern()`
+# used elsewhere in this module for a *caller-supplied* search term;
+# `_AI_OVERVIEW_PLATFORM_LIKE_PATTERN` is a fixed program constant.
+#
+# `environment` (added after `mode`/`status` — see backend/models.py's
+# AIOverviewProviderInfo docstring) is preferred when present; a
+# legacy saved run with no `environment` field but `mode = 'off'`
+# falls back to "off" (the one case that can still be read
+# unambiguously without it), and anything else with no `environment`
+# falls back to "unknown" — a narrower fallback than
+# services/history_mode_summary.py's own `_resolve_ai_overview_value()`,
+# which is acceptable here: this task's "過去履歴の形式差異にも対応し、
+# 判定できないデータはunknownとする" explicitly sanctions "unknown" for
+# ambiguous legacy data.
+_AI_OVERVIEW_PLATFORM_MATCH_SQL = (
+    f"elem->>'platform' like '{_AI_OVERVIEW_PLATFORM_LIKE_PATTERN.replace('%', '%%')}'"
+)
+
+_AI_OVERVIEW_OBSERVATION_STATE_SQL = f"""case
+    when res.meta_json->'aiOverviewProvider'->>'environment' = 'off' then 'off'
+    when res.meta_json->'aiOverviewProvider'->>'environment' = 'unavailable' then 'unavailable'
+    when res.meta_json->'aiOverviewProvider'->>'environment' = 'mock' then 'unknown'
+    when res.meta_json->'aiOverviewProvider'->>'environment' in ('sandbox', 'live') then
+        case
+            when {_mentioned_exists_clause(_AI_OVERVIEW_PLATFORM_MATCH_SQL, "'true'")} then 'mentioned'
+            when {_mentioned_exists_clause(_AI_OVERVIEW_PLATFORM_MATCH_SQL, "'false'")} then 'not_mentioned'
+            else 'unknown'
+        end
+    when res.meta_json->'aiOverviewProvider'->>'mode' = 'off' then 'off'
+    else 'unknown'
+end"""
+
+_CHATGPT_OBSERVATION_STATE_SQL = _simple_provider_observation_state_sql(
+    "chatgptProvider", _CHATGPT_PLATFORM_LABEL
+)
+_CLAUDE_OBSERVATION_STATE_SQL = _simple_provider_observation_state_sql(
+    "claudeProvider", _CLAUDE_PLATFORM_LABEL
+)
+_GEMINI_OBSERVATION_STATE_SQL = _simple_provider_observation_state_sql(
+    "geminiProvider", _GEMINI_PLATFORM_LABEL
+)
+
+
 def _build_history_filter_conditions(
     *,
     brand: str | None,
@@ -341,7 +534,11 @@ def _build_history_filter_conditions(
     important: bool | None,
     started_from: datetime | None,
     started_to: datetime | None,
-) -> tuple[list[str], list[Any]]:
+    ai_overview_observation: str | None = None,
+    chatgpt_observation: str | None = None,
+    claude_observation: str | None = None,
+    gemini_observation: str | None = None,
+) -> tuple[list[str], list[Any], bool]:
     """Builds the shared WHERE-clause conditions/params for both
     list_analysis_runs() and count_analysis_runs() below, so the two
     can never drift apart (the count must reflect exactly the same
@@ -377,9 +574,23 @@ def _build_history_filter_conditions(
     on the frontend side, which is where the JST calendar-date ->
     precise instant conversion happens; this function only ever
     compares already-resolved, timezone-aware instants).
+
+    `ai_overview_observation`/`chatgpt_observation`/
+    `claude_observation`/`gemini_observation` each filter on one of
+    "mentioned"/"not_mentioned"/"off"/"unavailable"/"unknown" (see this
+    module's "AI観測状態フィルター" section above) — independent of each
+    other and combined with every other condition here as AND, exactly
+    like `important`/the date range. Each references `res.meta_json`/
+    `res.result_json` (the `analysis_results` row joined in as `res`),
+    so the third return value is `True` whenever at least one of these
+    four is set — callers (count_analysis_runs() below) use it to
+    decide whether they need to join `analysis_results` at all, to
+    avoid that extra join's cost on every call that doesn't use this
+    feature.
     """
     conditions: list[str] = ["ar.deleted_at is null"]
     params: list[Any] = []
+    needs_results_join = False
 
     if brand is not None:
         conditions.append("b.name = %s")
@@ -407,8 +618,24 @@ def _build_history_filter_conditions(
     if started_to is not None:
         conditions.append("coalesce(ar.started_at, ar.created_at) < %s")
         params.append(started_to)
+    if ai_overview_observation is not None:
+        conditions.append(f"({_AI_OVERVIEW_OBSERVATION_STATE_SQL}) = %s")
+        params.append(ai_overview_observation)
+        needs_results_join = True
+    if chatgpt_observation is not None:
+        conditions.append(f"({_CHATGPT_OBSERVATION_STATE_SQL}) = %s")
+        params.append(chatgpt_observation)
+        needs_results_join = True
+    if claude_observation is not None:
+        conditions.append(f"({_CLAUDE_OBSERVATION_STATE_SQL}) = %s")
+        params.append(claude_observation)
+        needs_results_join = True
+    if gemini_observation is not None:
+        conditions.append(f"({_GEMINI_OBSERVATION_STATE_SQL}) = %s")
+        params.append(gemini_observation)
+        needs_results_join = True
 
-    return conditions, params
+    return conditions, params, needs_results_join
 
 
 def count_analysis_runs(
@@ -420,16 +647,26 @@ def count_analysis_runs(
     important: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
+    ai_overview_observation: str | None = None,
+    chatgpt_observation: str | None = None,
+    claude_observation: str | None = None,
+    gemini_observation: str | None = None,
 ) -> int:
     """Counts how many rows list_analysis_runs() would return across
     *every* page for the exact same filter (same parameters, minus
     limit/offset/sort, which don't affect a count) — backs
     AnalysisRunListResponse.total. Deliberately a single lightweight
     `count(*)` query, joined only to `brands` (needed for the `search`/
-    `brand` conditions), never to `analysis_results` — the per-page
-    query's heavier `left join` to fetch `visibility_score`/`meta_json`
-    is unnecessary for a count and would cost more without changing
-    the result (see this task's "件数取得による過度なDB負荷を避ける").
+    `brand` conditions) by default, never to `analysis_results` — the
+    per-page query's heavier `left join` to fetch `visibility_score`/
+    `meta_json` is unnecessary for a count and would cost more without
+    changing the result (see this task's "件数取得による過度なDB負荷を
+    避ける"). `analysis_results` is joined in too, but *only* when at
+    least one of `ai_overview_observation`/`chatgpt_observation`/
+    `claude_observation`/`gemini_observation` is actually set (see
+    _build_history_filter_conditions()'s third return value) — every
+    existing caller that doesn't use this feature keeps the original,
+    lighter query unchanged.
 
     Raises AnalysisHistoryReadError on any connection/query failure.
     Does not itself check READ_HISTORY_ENABLED — same contract as
@@ -440,7 +677,7 @@ def count_analysis_runs(
 
     database_url = _require_connectable()
 
-    conditions, params = _build_history_filter_conditions(
+    conditions, params, needs_results_join = _build_history_filter_conditions(
         brand=brand,
         status=status,
         project_ids=project_ids,
@@ -448,12 +685,22 @@ def count_analysis_runs(
         important=important,
         started_from=started_from,
         started_to=started_to,
+        ai_overview_observation=ai_overview_observation,
+        chatgpt_observation=chatgpt_observation,
+        claude_observation=claude_observation,
+        gemini_observation=gemini_observation,
     )
     where_clause = f"where {' and '.join(conditions)}"
+    results_join = (
+        "left join analysis_results res on res.analysis_run_id = ar.id"
+        if needs_results_join
+        else ""
+    )
     query = f"""
         select count(*)
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
+        {results_join}
         {where_clause}
     """
 
@@ -480,6 +727,10 @@ def list_analysis_runs(
     important: bool | None = None,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
+    ai_overview_observation: str | None = None,
+    chatgpt_observation: str | None = None,
+    claude_observation: str | None = None,
+    gemini_observation: str | None = None,
     sort: Literal["newest", "oldest"] = "newest",
 ) -> list[dict[str, Any]]:
     """Returns saved analysis run summaries (brands ⋈ analysis_runs ⋈
@@ -519,7 +770,9 @@ def list_analysis_runs(
     own parameterized placeholder (never interpolated into the query
     string).
 
-    `search`/`important`/`started_from`/`started_to` are documented on
+    `search`/`important`/`started_from`/`started_to`/
+    `ai_overview_observation`/`chatgpt_observation`/`claude_observation`/
+    `gemini_observation` are documented on
     _build_history_filter_conditions() above, which this function
     shares verbatim with count_analysis_runs() so the two can never
     disagree about what matches.
@@ -545,7 +798,7 @@ def list_analysis_runs(
     limit = max(1, min(limit, MAX_LIST_LIMIT))
     offset = max(0, offset)
 
-    conditions, params = _build_history_filter_conditions(
+    conditions, params, _ = _build_history_filter_conditions(
         brand=brand,
         status=status,
         project_ids=project_ids,
@@ -553,6 +806,10 @@ def list_analysis_runs(
         important=important,
         started_from=started_from,
         started_to=started_to,
+        ai_overview_observation=ai_overview_observation,
+        chatgpt_observation=chatgpt_observation,
+        claude_observation=claude_observation,
+        gemini_observation=gemini_observation,
     )
     where_clause = f"where {' and '.join(conditions)}"
     order_direction = "asc" if sort == "oldest" else "desc"

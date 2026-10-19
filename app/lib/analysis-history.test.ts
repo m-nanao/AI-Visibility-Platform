@@ -962,6 +962,24 @@ describe("buildHistoryListRequestUrl", () => {
     expect(url).toContain(encodeURIComponent("2026-03-06T00:00:00+09:00"));
     expect(url).toContain("sort=oldest");
   });
+
+  it("includes aiOverviewObservation/chatgptObservation/claudeObservation/geminiObservation only when set", () => {
+    const withFilters = buildHistoryListRequestUrl({
+      sort: "newest",
+      page: 1,
+      aiOverviewObservation: "mentioned",
+      chatgptObservation: "not_mentioned",
+      claudeObservation: "off",
+      geminiObservation: "unavailable",
+    });
+    expect(withFilters).toContain("aiOverviewObservation=mentioned");
+    expect(withFilters).toContain("chatgptObservation=not_mentioned");
+    expect(withFilters).toContain("claudeObservation=off");
+    expect(withFilters).toContain("geminiObservation=unavailable");
+
+    const withoutFilters = buildHistoryListRequestUrl({ sort: "newest", page: 1 });
+    expect(withoutFilters).not.toContain("Observation=");
+  });
 });
 
 describe("isHistoryListQueryFiltered", () => {
@@ -978,6 +996,13 @@ describe("isHistoryListQueryFiltered", () => {
 
   it("is false for a blank search string", () => {
     expect(isHistoryListQueryFiltered({ search: "   " })).toBe(false);
+  });
+
+  it("is true when any of the 4 AI observation filters is set", () => {
+    expect(isHistoryListQueryFiltered({ aiOverviewObservation: "mentioned" })).toBe(true);
+    expect(isHistoryListQueryFiltered({ chatgptObservation: "off" })).toBe(true);
+    expect(isHistoryListQueryFiltered({ claudeObservation: "unavailable" })).toBe(true);
+    expect(isHistoryListQueryFiltered({ geminiObservation: "unknown" })).toBe(true);
   });
 });
 
