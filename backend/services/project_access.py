@@ -151,6 +151,81 @@ def can_user_cancel_analysis_run(conn: Any, user_id: str, analysis_run_id: str) 
     return row is not None
 
 
+def can_user_access_tag(conn: Any, user_id: str, tag_id: str) -> bool:
+    """True only if `user_id` is a member of the organization that owns
+    the project `tag_id` belongs to — mirrors
+    can_user_access_analysis_run() above exactly, one table swapped
+    (feature/history-tags-categories). Returns False (never raises)
+    for an empty user_id/tag_id, a nonexistent tag_id, or a malformed
+    (non-UUID) tag_id — a bad UUID literal makes the `=` comparison
+    below simply match no row rather than raising, so no separate
+    `uuid.UUID(...)` pre-check is needed here.
+
+    Deliberately gives the same False/403 outcome whether `tag_id`
+    doesn't exist at all or exists in a project `user_id` can't
+    access — same existence-leak avoidance as
+    can_user_access_analysis_run().
+
+    Raises ProjectAccessError on a connection/query failure.
+    """
+    if not user_id or not tag_id:
+        return False
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select 1
+                from tags t
+                join projects p on p.id = t.project_id
+                join organization_members om on om.organization_id = p.organization_id
+                where t.id = %s
+                  and om.user_id = %s
+                limit 1
+                """,
+                (tag_id, user_id),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to check tag access")
+        raise ProjectAccessError("failed to check tag access") from exc
+
+    return row is not None
+
+
+def can_user_access_category(conn: Any, user_id: str, category_id: str) -> bool:
+    """True only if `user_id` is a member of the organization that owns
+    the project `category_id` belongs to — mirrors
+    can_user_access_tag() above exactly, one table swapped
+    (feature/history-tags-categories).
+
+    Raises ProjectAccessError on a connection/query failure.
+    """
+    if not user_id or not category_id:
+        return False
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select 1
+                from categories c
+                join projects p on p.id = c.project_id
+                join organization_members om on om.organization_id = p.organization_id
+                where c.id = %s
+                  and om.user_id = %s
+                limit 1
+                """,
+                (category_id, user_id),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("Failed to check category access")
+        raise ProjectAccessError("failed to check category access") from exc
+
+    return row is not None
+
+
 def get_accessible_project_ids(conn: Any, user_id: str) -> list[str]:
     """Returns the id of every project `user_id` can access (every
     project belonging to an organization `user_id` is a member of),

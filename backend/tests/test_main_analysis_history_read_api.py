@@ -460,6 +460,9 @@ def test_list_success_default_query_params(monkeypatch):
         "claude_observation": None,
         "gemini_observation": None,
         "favorite": None,
+        "tag_ids": None,
+        "category_id": None,
+        "uncategorized_only": False,
         "sort": "newest",
         "project_ids": None,
     }
@@ -510,6 +513,76 @@ def test_list_passes_favorite_through_to_the_repository(monkeypatch):
 
     assert response.status_code == 200
     assert calls[0]["favorite"] is True
+
+
+def test_list_passes_tag_ids_category_id_through_to_the_repository(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get(
+        "/analysis-runs?tagIds=tag-1,tag-2&categoryId=category-1", headers=_auth_headers()
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["tag_ids"] == ["tag-1", "tag-2"]
+    assert calls[0]["category_id"] == "category-1"
+    assert calls[0]["uncategorized_only"] is False
+
+
+def test_list_tag_ids_blank_entries_are_dropped(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get("/analysis-runs?tagIds=tag-1,,%20,tag-2", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert calls[0]["tag_ids"] == ["tag-1", "tag-2"]
+
+
+def test_list_tag_ids_omitted_is_none(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get("/analysis-runs", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert calls[0]["tag_ids"] is None
+    assert calls[0]["category_id"] is None
+    assert calls[0]["uncategorized_only"] is False
+
+
+def test_list_uncategorized_only_passed_through(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get("/analysis-runs?uncategorizedOnly=true", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert calls[0]["uncategorized_only"] is True
+    assert calls[0]["category_id"] is None
+
+
+def test_list_rejects_category_id_and_uncategorized_only_together(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "repository_list_analysis_runs", _never_called)
+
+    response = client.get(
+        "/analysis-runs?categoryId=category-1&uncategorizedOnly=true", headers=_auth_headers()
+    )
+
+    assert response.status_code == 400
 
 
 def test_list_unrecognized_sort_value_falls_back_to_newest(monkeypatch):
@@ -1081,6 +1154,9 @@ def test_list_history_token_mode_when_auth_jwt_enabled_but_no_authorization_head
         "claude_observation": None,
         "gemini_observation": None,
         "favorite": None,
+        "tag_ids": None,
+        "category_id": None,
+        "uncategorized_only": False,
         "sort": "newest",
         "project_ids": None,
     }

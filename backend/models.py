@@ -838,6 +838,77 @@ class AnalysisRunModeSummary(BaseModel):
     commonCrawl: str
 
 
+# --- Tags / categories (feature/history-tags-categories) ---
+#
+# project-shared, independent of each other and of
+# isImportant/isFavorite — see backend/migrations/
+# 008_add_tags_and_categories.sql. A history run may have any number
+# of tags (many-to-many, via analysis_run_tags) and at most one
+# category (analysis_runs.category_id, nullable — "未分類" when null).
+
+
+class TagItem(BaseModel):
+    """One row of `tags`, or one entry of a run's `tags` list — same
+    shape either way, no separate "summary" projection needed since a
+    tag has nothing beyond id/projectId/name."""
+
+    id: str
+    projectId: str
+    name: str
+
+
+class TagListResponse(BaseModel):
+    tags: list[TagItem]
+
+
+class TagCreateRequest(BaseModel):
+    """POST /tags body — `projectId` is required (unlike the
+    history-read endpoints, there is no implicit "current project" for
+    a write; see main.py's _resolve_jwt_only_project_write_access())."""
+
+    projectId: str
+    name: str
+
+
+class TagRenameRequest(BaseModel):
+    """PATCH /tags/{id} body — renaming never touches projectId; a tag
+    cannot be moved to a different project."""
+
+    name: str
+
+
+class CategoryItem(BaseModel):
+    id: str
+    projectId: str
+    name: str
+
+
+class CategoryListResponse(BaseModel):
+    categories: list[CategoryItem]
+
+
+class CategoryCreateRequest(BaseModel):
+    projectId: str
+    name: str
+
+
+class CategoryRenameRequest(BaseModel):
+    name: str
+
+
+class AnalysisRunTagAttachRequest(BaseModel):
+    """POST /analysis-runs/{id}/tags body."""
+
+    tagId: str
+
+
+class AnalysisRunCategorySetRequest(BaseModel):
+    """PUT /analysis-runs/{id}/category body — `categoryId: null`
+    clears the run's category back to "未分類"."""
+
+    categoryId: str | None
+
+
 class AnalysisRunListItem(BaseModel):
     """One row of GET /analysis-runs's `items` — see
     docs/20_analysis_history_read_api_design.md "5. GET /analysis-runs
@@ -885,6 +956,15 @@ class AnalysisRunListItem(BaseModel):
     # False for the same "migration not yet applied / legacy row"
     # reason as isImportant.
     isFavorite: bool = False
+    # Every tag currently attached to this run (feature/history-tags-
+    # categories) — defaults to `[]`, never omitted, same "legacy row
+    # / migration not yet applied" reasoning as sourceUrls above.
+    tags: list[TagItem] = []
+    # This run's category, or None for "未分類" (including a legacy
+    # row from before migration 008, or one whose category was
+    # deleted — ON DELETE SET NULL already makes those indistinguishable
+    # at the DB level, which is the intended behavior).
+    category: CategoryItem | None = None
 
 
 class AnalysisRunListResponse(BaseModel):
@@ -947,6 +1027,10 @@ class AnalysisRunDetailResponse(BaseModel):
     # only as "which project to ask the real check about"). `None` for
     # a legacy run saved before 002_add_organizations_projects.sql.
     projectId: str | None = None
+    # Same field/default as AnalysisRunListItem.tags/category above
+    # (feature/history-tags-categories).
+    tags: list[TagItem] = []
+    category: CategoryItem | None = None
 
 
 class AnalysisRunImportantRequest(BaseModel):

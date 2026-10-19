@@ -98,6 +98,46 @@ def db_connection():
             )
             """
         )
+        # feature/history-tags-categories: list_analysis_runs()'s
+        # SELECT now unconditionally joins `categories`/references
+        # `tags`/`analysis_run_tags` (for the tags/category display
+        # columns, not just when actually filtering by either) — these
+        # three tables must exist for ANY call to that function to
+        # succeed against this schema, even though none of this file's
+        # own tests (predating feature/history-tags-categories) ever
+        # populate or filter by them. See
+        # tests/test_tags_categories_list_integration.py for the
+        # dedicated schema that actually exercises the real
+        # constraints migration 008 adds.
+        cur.execute(
+            """
+            create table categories (
+                id uuid primary key default gen_random_uuid(),
+                project_id uuid not null,
+                name text not null
+            )
+            """
+        )
+        cur.execute("alter table analysis_runs add column category_id uuid")
+        cur.execute(
+            """
+            create table tags (
+                id uuid primary key default gen_random_uuid(),
+                project_id uuid not null,
+                name text not null
+            )
+            """
+        )
+        cur.execute(
+            """
+            create table analysis_run_tags (
+                analysis_run_id uuid not null references analysis_runs(id),
+                tag_id uuid not null references tags(id),
+                project_id uuid not null,
+                primary key (analysis_run_id, tag_id)
+            )
+            """
+        )
     try:
         yield conn, schema
     finally:
