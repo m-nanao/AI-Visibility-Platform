@@ -687,3 +687,179 @@ def test_observation_filter_works_past_the_first_page_of_more_than_20_rows(db_co
         assert [item["brandName"] for item in items] == ["ClaudeMentioned"]
     finally:
         repo.load_db_settings = original
+
+
+# --- Robustness against malformed JSON data (post-merge verification) ---
+#
+# Added after confirming, via a direct psql reproduction, that
+# `jsonb_array_elements()` raises a hard error (aborting the entire
+# query, not just the offending row) when `aiOverviewComparison` is
+# present but isn't actually a JSON array, and that casting
+# `elem->>'mentioned'` to `::boolean` raises a hard error for any
+# value other than the literal text "true"/"false". These tests would
+# have failed (with an AnalysisHistoryReadError, from the underlying
+# psycopg.errors.InvalidTextRepresentation / CannotCoerce being caught
+# by list_analysis_runs()'s broad except) before the fix in
+# _mentioned_exists_clause()/_SAFE_AI_OVERVIEW_COMPARISON_ARRAY_SQL.
+
+
+def test_observation_filter_survives_non_array_ai_overview_comparison(db_connection):
+    """aiOverviewComparison present but not an array (e.g. an object)
+    — must resolve to "unknown" for that row, never raise."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(
+            conn,
+            schema,
+            brand_name="MalformedObject",
+            meta_json=_chatgpt_meta("real"),
+            result_json={"aiOverviewComparison": {"platform": "ChatGPT (OpenAI API)"}},
+        )
+        _insert_run(
+            conn,
+            schema,
+            brand_name="MalformedScalar",
+            meta_json=_chatgpt_meta("real"),
+            result_json={"aiOverviewComparison": "oops"},
+        )
+
+        # Must not raise, and neither row satisfies mentioned/not_mentioned.
+        mentioned = repo.list_analysis_runs(chatgpt_observation="mentioned")
+        unknown = repo.list_analysis_runs(chatgpt_observation="unknown")
+        total_unknown = repo.count_analysis_runs(chatgpt_observation="unknown")
+
+        assert mentioned == []
+        assert {item["brandName"] for item in unknown} == {"MalformedObject", "MalformedScalar"}
+        assert total_unknown == 2
+    finally:
+        repo.load_db_settings = original
+
+
+def test_observation_filter_survives_non_boolean_mentioned_value(db_connection):
+    """`mentioned` present but not a real boolean — must resolve to
+    "unknown" for that row, never raise."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(
+            conn,
+            schema,
+            brand_name="NonBooleanMentioned",
+            meta_json=_chatgpt_meta("real"),
+            result_json={
+                "aiOverviewComparison": [
+                    {"platform": "ChatGPT (OpenAI API)", "mentioned": "banana"}
+                ]
+            },
+        )
+        _insert_run(
+            conn,
+            schema,
+            brand_name="MissingMentionedField",
+            meta_json=_chatgpt_meta("real"),
+            result_json={"aiOverviewComparison": [{"platform": "ChatGPT (OpenAI API)"}]},
+        )
+
+        mentioned = repo.list_analysis_runs(chatgpt_observation="mentioned")
+        not_mentioned = repo.list_analysis_runs(chatgpt_observation="not_mentioned")
+        unknown = repo.list_analysis_runs(chatgpt_observation="unknown")
+
+        assert mentioned == []
+        assert not_mentioned == []
+        assert {item["brandName"] for item in unknown} == {
+            "NonBooleanMentioned",
+            "MissingMentionedField",
+        }
+    finally:
+        repo.load_db_settings = original
+
+
+def test_observation_filter_survives_null_result_json_and_meta_json(db_connection):
+    """A row with no analysis_results row at all (res.result_json/
+    res.meta_json both NULL via the left join) must resolve to
+    "unknown", never raise — distinct from the "present but
+    malformed" cases above."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"set search_path to {schema}")
+            cur.execute(
+                "insert into brands (name, project_id) values (%s, %s) returning id",
+                ("NoResultsRowAtAll", None),
+            )
+            (brand_id,) = cur.fetchone()
+            cur.execute(
+                "insert into analysis_runs (brand_id, status, input_snapshot) "
+                "values (%s, 'completed', %s)",
+                (brand_id, _jsonb({"brandName": "NoResultsRowAtAll", "urls": []})),
+            )
+            # Deliberately no corresponding analysis_results insert.
+
+        items = repo.list_analysis_runs(gemini_observation="unknown")
+
+        assert [item["brandName"] for item in items] == ["NoResultsRowAtAll"]
+    finally:
+        repo.load_db_settings = original
+
+
+def test_ai_overview_observation_filter_survives_non_array_ai_overview_comparison(
+    db_connection,
+):
+    """Same robustness check as
+    test_observation_filter_survives_non_array_ai_overview_comparison
+    above, but through the AI Overview `like`-pattern match path
+    (distinct code path from chatgpt/claude/gemini's `=` match) —
+    exercises _AI_OVERVIEW_OBSERVATION_STATE_SQL specifically."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(
+            conn,
+            schema,
+            brand_name="MalformedAiOverview",
+            meta_json={"aiOverviewProvider": {"mode": "dataforseo", "status": "real", "reason": "", "environment": "sandbox"}},
+            result_json={"aiOverviewComparison": {"not": "an array"}},
+        )
+
+        mentioned = repo.list_analysis_runs(ai_overview_observation="mentioned")
+        unknown = repo.list_analysis_runs(ai_overview_observation="unknown")
+
+        assert mentioned == []
+        assert [item["brandName"] for item in unknown] == ["MalformedAiOverview"]
+    finally:
+        repo.load_db_settings = original
+
+
+def test_observation_filter_survives_duplicate_platform_entries(db_connection):
+    """Two cards sharing the same platform label (never produced by
+    this backend's own save paths, but not something a raw database
+    row can be trusted to rule out) — the filter must still resolve to
+    a single, defined state and must not raise."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    repo, original = _patched_repo(database_url)
+    try:
+        _insert_run(
+            conn,
+            schema,
+            brand_name="DuplicatePlatform",
+            meta_json=_chatgpt_meta("real"),
+            result_json={
+                "aiOverviewComparison": [
+                    {"platform": "ChatGPT (OpenAI API)", "mentioned": True},
+                    {"platform": "ChatGPT (OpenAI API)", "mentioned": True},
+                ]
+            },
+        )
+
+        mentioned = repo.list_analysis_runs(chatgpt_observation="mentioned")
+
+        assert [item["brandName"] for item in mentioned] == ["DuplicatePlatform"]
+    finally:
+        repo.load_db_settings = original

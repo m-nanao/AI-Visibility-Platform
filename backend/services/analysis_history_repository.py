@@ -388,6 +388,50 @@ _OBSERVATION_FILTER_VALUES = frozenset(
     {"mentioned", "not_mentioned", "off", "unavailable", "unknown"}
 )
 
+# Guards `jsonb_array_elements(res.result_json->'aiOverviewComparison')`
+# against a hard SQL error on corrupted/unexpected data. A missing key
+# or an actual JSON `null` already makes `jsonb_array_elements()`
+# return zero rows on its own (no guard needed there) — but a
+# *present*, non-null, non-array value (an object, string, number, or
+# boolean; never written by this backend itself, but not something a
+# raw database value can be trusted to rule out) makes
+# `jsonb_array_elements()` raise `cannot extract elements from an
+# object`/`...a scalar`, which aborts the *entire* query (every row,
+# not just the malformed one) — confirmed by direct reproduction
+# against a real PostgreSQL instance during this filter's review (see
+# feature/history-ai-observation-filter's post-merge verification).
+# Falling back to `'[]'::jsonb` for anything that isn't actually a
+# JSON array keeps such a row landing in "unknown" (nothing readable
+# matches an empty array) exactly like any other unreadable data,
+# instead of 500ing the whole history list over one bad row.
+_SAFE_AI_OVERVIEW_COMPARISON_ARRAY_SQL = (
+    "case when jsonb_typeof(res.result_json->'aiOverviewComparison') = 'array' "
+    "then res.result_json->'aiOverviewComparison' else '[]'::jsonb end"
+)
+
+
+def _mentioned_exists_clause(platform_match_sql: str, mentioned_literal: str) -> str:
+    """Builds one `exists (...)` branch shared by
+    _simple_provider_observation_state_sql()/
+    _AI_OVERVIEW_OBSERVATION_STATE_SQL below. `platform_match_sql` is a
+    complete `elem->>'platform' = '...'`/`... like '...'` condition;
+    `mentioned_literal` is the literal text `'true'`/`'false'` to
+    compare `elem->>'mentioned'` against *as text* — deliberately never
+    `(elem->>'mentioned')::boolean`, which raises a hard SQL error
+    (`invalid input syntax for type boolean`) for any saved value that
+    isn't literally the string "true"/"false" (e.g. a missing field —
+    `->>'mentioned'` on a dict with no such key is already NULL, which
+    a text `=` comparison safely treats as "no match" instead of
+    throwing — or, in principle, some other unexpected type on a
+    corrupted row); confirmed by direct reproduction against a real
+    PostgreSQL instance. A text comparison can never raise this error
+    regardless of what's actually stored there.
+    """
+    return f"""exists (
+                    select 1 from jsonb_array_elements({_SAFE_AI_OVERVIEW_COMPARISON_ARRAY_SQL}) elem
+                    where {platform_match_sql} and elem->>'mentioned' = {mentioned_literal}
+                )"""
+
 
 def _simple_provider_observation_state_sql(meta_key: str, platform_label: str) -> str:
     """Builds the `case` expression for chatgpt/claude/gemini (all
@@ -412,19 +456,14 @@ def _simple_provider_observation_state_sql(meta_key: str, platform_label: str) -
     A missing/None meta_json, or one predating this provider, leaves
     `status` NULL and falls through to the final "unknown" branch.
     """
+    platform_match_sql = f"elem->>'platform' = '{platform_label}'"
     return f"""case
         when res.meta_json->'{meta_key}'->>'status' = 'off' then 'off'
         when res.meta_json->'{meta_key}'->>'status' = 'unavailable' then 'unavailable'
         when res.meta_json->'{meta_key}'->>'status' = 'real' then
             case
-                when exists (
-                    select 1 from jsonb_array_elements(res.result_json->'aiOverviewComparison') elem
-                    where elem->>'platform' = '{platform_label}' and (elem->>'mentioned')::boolean = true
-                ) then 'mentioned'
-                when exists (
-                    select 1 from jsonb_array_elements(res.result_json->'aiOverviewComparison') elem
-                    where elem->>'platform' = '{platform_label}' and (elem->>'mentioned')::boolean = false
-                ) then 'not_mentioned'
+                when {_mentioned_exists_clause(platform_match_sql, "'true'")} then 'mentioned'
+                when {_mentioned_exists_clause(platform_match_sql, "'false'")} then 'not_mentioned'
                 else 'unknown'
             end
         else 'unknown'
@@ -457,20 +496,18 @@ def _simple_provider_observation_state_sql(meta_key: str, platform_label: str) -
 # which is acceptable here: this task's "過去履歴の形式差異にも対応し、
 # 判定できないデータはunknownとする" explicitly sanctions "unknown" for
 # ambiguous legacy data.
+_AI_OVERVIEW_PLATFORM_MATCH_SQL = (
+    f"elem->>'platform' like '{_AI_OVERVIEW_PLATFORM_LIKE_PATTERN.replace('%', '%%')}'"
+)
+
 _AI_OVERVIEW_OBSERVATION_STATE_SQL = f"""case
     when res.meta_json->'aiOverviewProvider'->>'environment' = 'off' then 'off'
     when res.meta_json->'aiOverviewProvider'->>'environment' = 'unavailable' then 'unavailable'
     when res.meta_json->'aiOverviewProvider'->>'environment' = 'mock' then 'unknown'
     when res.meta_json->'aiOverviewProvider'->>'environment' in ('sandbox', 'live') then
         case
-            when exists (
-                select 1 from jsonb_array_elements(res.result_json->'aiOverviewComparison') elem
-                where elem->>'platform' like '{_AI_OVERVIEW_PLATFORM_LIKE_PATTERN.replace('%', '%%')}' and (elem->>'mentioned')::boolean = true
-            ) then 'mentioned'
-            when exists (
-                select 1 from jsonb_array_elements(res.result_json->'aiOverviewComparison') elem
-                where elem->>'platform' like '{_AI_OVERVIEW_PLATFORM_LIKE_PATTERN.replace('%', '%%')}' and (elem->>'mentioned')::boolean = false
-            ) then 'not_mentioned'
+            when {_mentioned_exists_clause(_AI_OVERVIEW_PLATFORM_MATCH_SQL, "'true'")} then 'mentioned'
+            when {_mentioned_exists_clause(_AI_OVERVIEW_PLATFORM_MATCH_SQL, "'false'")} then 'not_mentioned'
             else 'unknown'
         end
     when res.meta_json->'aiOverviewProvider'->>'mode' = 'off' then 'off'
