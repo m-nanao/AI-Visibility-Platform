@@ -878,6 +878,13 @@ class AnalysisRunListItem(BaseModel):
     # read before this migration is applied (or any future legacy row)
     # still round-trips cleanly rather than raising.
     isImportant: bool = False
+    # Whether this run has been marked a favorite
+    # (analysis_runs.is_favorite, backend/migrations/
+    # 007_add_is_favorite_to_analysis_runs.sql) — independent of
+    # isImportant above (feature/history-favorite-flag). Defaults to
+    # False for the same "migration not yet applied / legacy row"
+    # reason as isImportant.
+    isFavorite: bool = False
 
 
 class AnalysisRunListResponse(BaseModel):
@@ -924,6 +931,9 @@ class AnalysisRunDetailResponse(BaseModel):
     # Same field/default as AnalysisRunListItem.isImportant above — see
     # that field's docstring and docs/38_history_marking_design.md.
     isImportant: bool = False
+    # Same field/default as AnalysisRunListItem.isFavorite above
+    # (feature/history-favorite-flag).
+    isFavorite: bool = False
     # Exposes `analysis_runs.project_id` to a caller who has, by
     # definition, already passed this same run's access check (JWT
     # mode: can_user_access_analysis_run(); history_token mode:
@@ -954,6 +964,24 @@ class AnalysisRunImportantResponse(BaseModel):
 
     analysisRunId: str
     isImportant: bool
+
+
+class AnalysisRunFavoriteRequest(BaseModel):
+    """PATCH /analysis-runs/{id}/favorite request body
+    (feature/history-favorite-flag) — mirrors
+    AnalysisRunImportantRequest above exactly; the favorite flag is
+    stored/toggled entirely independently of isImportant."""
+
+    isFavorite: bool
+
+
+class AnalysisRunFavoriteResponse(BaseModel):
+    """PATCH /analysis-runs/{id}/favorite response
+    (feature/history-favorite-flag) — mirrors
+    AnalysisRunImportantResponse above exactly."""
+
+    analysisRunId: str
+    isFavorite: bool
 
 
 class GeminiRerunResponse(BaseModel):

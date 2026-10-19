@@ -114,6 +114,8 @@ from models import (
     AnalysisRunComparisonResponse,
     AnalysisRunDetailResponse,
     AnalysisRunInfo,
+    AnalysisRunFavoriteRequest,
+    AnalysisRunFavoriteResponse,
     AnalysisRunImportantRequest,
     AnalysisRunImportantResponse,
     AnalysisRunListItem,
@@ -151,6 +153,7 @@ from services.analysis_history_repository import (
     get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
     list_analysis_runs as repository_list_analysis_runs,
     save_analysis_history,
+    set_analysis_run_favorite as repository_set_analysis_run_favorite,
     set_analysis_run_important as repository_set_analysis_run_important,
     soft_delete_analysis_run as repository_soft_delete_analysis_run,
     update_analysis_result as repository_update_analysis_result,
@@ -1203,6 +1206,7 @@ def list_analysis_runs(
     chatgptObservation: str | None = None,
     claudeObservation: str | None = None,
     geminiObservation: str | None = None,
+    favorite: bool | None = None,
     sort: str = "newest",
 ):
     access = _resolve_history_access(request)
@@ -1260,6 +1264,7 @@ def list_analysis_runs(
         chatgpt_observation=chatgpt_observation,
         claude_observation=claude_observation,
         gemini_observation=gemini_observation,
+        favorite=favorite,
     )
 
     try:
@@ -1387,6 +1392,7 @@ def get_analysis_run(analysis_run_id: str, request: Request):
         result=detail["result"],
         meta=detail["meta"],
         isImportant=detail.get("isImportant", False),
+        isFavorite=detail.get("isFavorite", False),
         projectId=detail.get("projectId"),
     )
 
@@ -1497,6 +1503,68 @@ def set_analysis_run_important(
 
     return AnalysisRunImportantResponse(
         analysisRunId=analysis_run_id, isImportant=body.isImportant
+    )
+
+
+FAVORITE_UPDATE_FAILED_MESSAGE = "failed to update analysis history"
+
+
+@app.patch(
+    "/analysis-runs/{analysis_run_id}/favorite",
+    response_model=AnalysisRunFavoriteResponse,
+)
+def set_analysis_run_favorite(
+    analysis_run_id: str, body: AnalysisRunFavoriteRequest, request: Request
+):
+    """Marks (or unmarks) one saved analysis run as a favorite —
+    feature/history-favorite-flag, independent of the existing
+    important flag above. Backed by
+    services.analysis_history_repository.set_analysis_run_favorite(),
+    which sets `analysis_runs.is_favorite` directly (backend/migrations/
+    007_add_is_favorite_to_analysis_runs.sql).
+
+    Mirrors set_analysis_run_important() above exactly: the same
+    `_resolve_history_access()` gate and JWT-mode authorization
+    pattern (access is checked against `analysis_run_id` itself before
+    anything is written, so a caller who can't see this run gets 403
+    without it being touched), the same queued/running restriction
+    policy — there is deliberately no status check here either; like
+    the important flag, this endpoint itself never blocks on
+    `analysis_runs.status`, and a queued/running job's favorite toggle
+    is instead kept out of reach by the frontend never rendering the
+    button for those statuses (see app/lib/analysis-history.ts's
+    canManageHistoryListItem(), reused unchanged for favorite).
+    """
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    if access.mode == "jwt":
+        try:
+            with open_history_db_connection() as conn:
+                allowed = can_user_access_analysis_run(
+                    conn, access.user_id, analysis_run_id
+                )
+        except Exception:
+            logger.exception(
+                "Failed to check analysis run access for JWT-authenticated request"
+            )
+            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+        if not allowed:
+            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        updated = repository_set_analysis_run_favorite(
+            analysis_run_id, is_favorite=body.isFavorite
+        )
+    except AnalysisHistoryReadError:
+        return error_response(FAVORITE_UPDATE_FAILED_MESSAGE, status_code=503)
+
+    if not updated:
+        return error_response("analysis run not found", status_code=404)
+
+    return AnalysisRunFavoriteResponse(
+        analysisRunId=analysis_run_id, isFavorite=body.isFavorite
     )
 
 

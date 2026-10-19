@@ -538,6 +538,7 @@ def _build_history_filter_conditions(
     chatgpt_observation: str | None = None,
     claude_observation: str | None = None,
     gemini_observation: str | None = None,
+    favorite: bool | None = None,
 ) -> tuple[list[str], list[Any], bool]:
     """Builds the shared WHERE-clause conditions/params for both
     list_analysis_runs() and count_analysis_runs() below, so the two
@@ -563,6 +564,13 @@ def _build_history_filter_conditions(
     default, "all") adds no condition at all — there is deliberately
     no "important=False" filter mode, matching the existing
     frontend's "すべて/重要のみ" 2-way toggle (not a 3-way one).
+
+    `favorite` behaves identically to `important` above but on the
+    independent `ar.is_favorite` column (backend/migrations/
+    007_add_is_favorite_to_analysis_runs.sql,
+    feature/history-favorite-flag) — same `True`-only-adds-a-condition
+    2-way-toggle semantics, combined with every other filter here
+    (including `important` itself) as AND.
 
     `started_from`/`started_to` filter on `coalesce(ar.started_at,
     ar.created_at)` — the exact same fallback the existing display
@@ -612,6 +620,8 @@ def _build_history_filter_conditions(
         params.extend([pattern, pattern, pattern])
     if important:
         conditions.append("ar.is_important")
+    if favorite:
+        conditions.append("ar.is_favorite")
     if started_from is not None:
         conditions.append("coalesce(ar.started_at, ar.created_at) >= %s")
         params.append(started_from)
@@ -651,6 +661,7 @@ def count_analysis_runs(
     chatgpt_observation: str | None = None,
     claude_observation: str | None = None,
     gemini_observation: str | None = None,
+    favorite: bool | None = None,
 ) -> int:
     """Counts how many rows list_analysis_runs() would return across
     *every* page for the exact same filter (same parameters, minus
@@ -689,6 +700,7 @@ def count_analysis_runs(
         chatgpt_observation=chatgpt_observation,
         claude_observation=claude_observation,
         gemini_observation=gemini_observation,
+        favorite=favorite,
     )
     where_clause = f"where {' and '.join(conditions)}"
     results_join = (
@@ -731,6 +743,7 @@ def list_analysis_runs(
     chatgpt_observation: str | None = None,
     claude_observation: str | None = None,
     gemini_observation: str | None = None,
+    favorite: bool | None = None,
     sort: Literal["newest", "oldest"] = "newest",
 ) -> list[dict[str, Any]]:
     """Returns saved analysis run summaries (brands ⋈ analysis_runs ⋈
@@ -772,7 +785,7 @@ def list_analysis_runs(
 
     `search`/`important`/`started_from`/`started_to`/
     `ai_overview_observation`/`chatgpt_observation`/`claude_observation`/
-    `gemini_observation` are documented on
+    `gemini_observation`/`favorite` are documented on
     _build_history_filter_conditions() above, which this function
     shares verbatim with count_analysis_runs() so the two can never
     disagree about what matches.
@@ -810,6 +823,7 @@ def list_analysis_runs(
         chatgpt_observation=chatgpt_observation,
         claude_observation=claude_observation,
         gemini_observation=gemini_observation,
+        favorite=favorite,
     )
     where_clause = f"where {' and '.join(conditions)}"
     order_direction = "asc" if sort == "oldest" else "desc"
@@ -827,7 +841,8 @@ def list_analysis_runs(
             ar.created_at,
             res.meta_json,
             ar.input_snapshot,
-            ar.is_important
+            ar.is_important,
+            ar.is_favorite
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -873,6 +888,10 @@ def list_analysis_runs(
             # 004_add_is_important_to_analysis_runs.sql) — see
             # docs/38_history_marking_design.md 案A.
             "isImportant": bool(row[11]),
+            # analysis_runs.is_favorite (backend/migrations/
+            # 007_add_is_favorite_to_analysis_runs.sql) — independent
+            # of isImportant above (feature/history-favorite-flag).
+            "isFavorite": bool(row[12]),
         }
         for row in rows
     ]
@@ -929,7 +948,8 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
             res.result_json,
             res.meta_json,
             ar.project_id,
-            ar.is_important
+            ar.is_important,
+            ar.is_favorite
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
@@ -971,6 +991,10 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
         # 004_add_is_important_to_analysis_runs.sql) — see
         # docs/38_history_marking_design.md 案A.
         "isImportant": bool(row[12]),
+        # analysis_runs.is_favorite (backend/migrations/
+        # 007_add_is_favorite_to_analysis_runs.sql) — independent of
+        # isImportant above (feature/history-favorite-flag).
+        "isFavorite": bool(row[13]),
     }
 
 
@@ -1182,6 +1206,59 @@ def set_analysis_run_important(analysis_run_id: str, *, is_important: bool) -> b
             conn.commit()
     except Exception as exc:
         logger.exception("Failed to update analysis run important flag")
+        raise AnalysisHistoryReadError("failed to update analysis history") from exc
+
+    return updated
+
+
+def set_analysis_run_favorite(analysis_run_id: str, *, is_favorite: bool) -> bool:
+    """Sets one analysis_runs row's `is_favorite` flag — see
+    backend/migrations/007_add_is_favorite_to_analysis_runs.sql. Backs
+    PATCH /analysis-runs/{id}/favorite. Mirrors
+    set_analysis_run_important() above exactly (same soft-delete
+    handling, same unscoped-by-project contract, same error handling)
+    — `is_favorite` and `is_important` are independent columns, each
+    toggled by its own endpoint without touching the other.
+
+    Returns True when a row was updated, False when `analysis_run_id`
+    doesn't exist, is malformed, or is soft-deleted (`deleted_at is not
+    null`) — main.py turns False into a 404, same as
+    set_analysis_run_important().
+
+    Deliberately unscoped by project, exactly like
+    set_analysis_run_important() above — main.py's PATCH endpoint is
+    responsible for authorizing the caller against `analysis_run_id`
+    *before* calling this.
+
+    Raises AnalysisHistoryReadError on any connection/query failure —
+    reuses this module's existing read-error type. This includes the
+    case where migration 007 hasn't been applied yet (the
+    `is_favorite` column doesn't exist) — surfaces to the API caller
+    as the same 503 every other DB failure does.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update analysis_runs
+                    set is_favorite = %s
+                    where id = %s and deleted_at is null
+                    returning id
+                    """,
+                    (is_favorite, analysis_run_id),
+                )
+                updated = cur.fetchone() is not None
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to update analysis run favorite flag")
         raise AnalysisHistoryReadError("failed to update analysis history") from exc
 
     return updated

@@ -12,6 +12,10 @@ import {
   GEMINI_OBSERVATION_FILTER_LABEL_TEXT,
   HISTORY_DELETE_BUTTON_LABEL,
   HISTORY_DELETE_CONFIRM_MESSAGE,
+  HISTORY_FAVORITE_BADGE_LABEL,
+  HISTORY_FAVORITE_FILTER_ALL_LABEL,
+  HISTORY_FAVORITE_FILTER_DEFAULT,
+  HISTORY_FAVORITE_FILTER_FAVORITE_ONLY_LABEL,
   HISTORY_IMPORTANT_BADGE_LABEL,
   HISTORY_IMPORTANT_FILTER_ALL_LABEL,
   HISTORY_IMPORTANT_FILTER_DEFAULT,
@@ -31,15 +35,18 @@ import {
   canManageHistoryListItem,
   formatAnalysisRunListItem,
   formatHistoryPaginationLabel,
+  getFavoriteToggleLabel,
   getImportantToggleLabel,
   isHistoryListQueryFiltered,
   resolveDeleteAnalysisRunOutcome,
   resolveHistoryFetchOutcome,
   resolveHistoryListItemDetailPath,
   resolveServerFilteredEmptyText,
+  resolveSetAnalysisRunFavoriteOutcome,
   resolveSetAnalysisRunImportantOutcome,
 } from "../lib/analysis-history";
 import type {
+  HistoryFavoriteFilter,
   HistoryImportantFilter,
   HistoryListQuery,
   HistorySortOrder,
@@ -78,6 +85,14 @@ export default function HistoryPage() {
   // optimistically straight to `view.items` (see handleToggleImportant
   // below) rather than waiting for the PATCH to resolve.
   const [importantErrors, setImportantErrors] = useState<Record<string, string>>({});
+  // Tracks per-row favorite-toggle-in-progress/error state, keyed by
+  // analysis run id (feature/history-favorite-flag) — unlike
+  // handleToggleImportant above, this one *is* double-click-guarded
+  // (favoriteTogglingIds also disables the button while a request is
+  // in flight), per this task's explicit "二重クリック対策"
+  // requirement.
+  const [favoriteTogglingIds, setFavoriteTogglingIds] = useState<Set<string>>(new Set());
+  const [favoriteErrors, setFavoriteErrors] = useState<Record<string, string>>({});
 
   const [page, setPage] = useState(1);
   // `searchInput` is the raw, every-keystroke value shown in the text
@@ -105,6 +120,11 @@ export default function HistoryPage() {
     useState<ObservationFilterSelectValue>(OBSERVATION_FILTER_DEFAULT);
   const [geminiObservation, setGeminiObservation] =
     useState<ObservationFilterSelectValue>(OBSERVATION_FILTER_DEFAULT);
+  // 「お気に入りのみ表示」フィルタ (feature/history-favorite-flag) —
+  // すべて/お気に入りのみの2択トグル、重要フラグとは完全に独立した状態。
+  const [favoriteFilter, setFavoriteFilter] = useState<HistoryFavoriteFilter>(
+    HISTORY_FAVORITE_FILTER_DEFAULT,
+  );
 
   // Debounces `searchInput` into `debouncedSearch`, and resets to page
   // 1 in the same tick so a search doesn't fetch twice (once for the
@@ -150,6 +170,10 @@ export default function HistoryPage() {
     setGeminiObservation(value);
     setPage(1);
   };
+  const handleFavoriteFilterChange = (next: HistoryFavoriteFilter) => {
+    setFavoriteFilter(next);
+    setPage(1);
+  };
 
   const query: HistoryListQuery = useMemo(
     () => ({
@@ -162,6 +186,7 @@ export default function HistoryPage() {
       chatgptObservation: chatgptObservation === "all" ? undefined : chatgptObservation,
       claudeObservation: claudeObservation === "all" ? undefined : claudeObservation,
       geminiObservation: geminiObservation === "all" ? undefined : geminiObservation,
+      favorite: favoriteFilter === "favoriteOnly",
       sort: sortOrder,
       page,
     }),
@@ -174,6 +199,7 @@ export default function HistoryPage() {
       chatgptObservation,
       claudeObservation,
       geminiObservation,
+      favoriteFilter,
       sortOrder,
       page,
     ],
@@ -292,6 +318,64 @@ export default function HistoryPage() {
     }
   };
 
+  // Flips `isFavorite` on the matching row (optimistic update), then
+  // calls PATCH /api/analysis-runs/{id}/favorite — mirrors
+  // handleToggleImportant above, with one deliberate addition: this
+  // task's "二重クリック対策" requires guarding against a second click
+  // while the first request is still in flight, so `favoriteTogglingIds`
+  // both disables the button (see the JSX below) and short-circuits
+  // here as a second line of defense. On failure, rolls back to the
+  // pre-click value and shows an inline error on that row, same as
+  // handleToggleImportant. Entirely independent of isImportant — never
+  // reads or writes it.
+  const handleToggleFavorite = async (id: string, currentIsFavorite: boolean) => {
+    if (favoriteTogglingIds.has(id)) return;
+
+    const nextIsFavorite = !currentIsFavorite;
+
+    setFavoriteTogglingIds((prev) => new Set(prev).add(id));
+    setFavoriteErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setView((prev) => {
+      if (prev.kind !== "items") return prev;
+      return {
+        ...prev,
+        items: prev.items.map((item) =>
+          item.id === id ? { ...item, isFavorite: nextIsFavorite } : item,
+        ),
+      };
+    });
+
+    const response = await fetch(`/api/analysis-runs/${encodeURIComponent(id)}/favorite`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isFavorite: nextIsFavorite }),
+    }).catch(() => null);
+    const outcome = await resolveSetAnalysisRunFavoriteOutcome(response);
+
+    setFavoriteTogglingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+    if (!outcome.success) {
+      setFavoriteErrors((prev) => ({ ...prev, [id]: outcome.message }));
+      setView((prev) => {
+        if (prev.kind !== "items") return prev;
+        return {
+          ...prev,
+          items: prev.items.map((item) =>
+            item.id === id ? { ...item, isFavorite: currentIsFavorite } : item,
+          ),
+        };
+      });
+    }
+  };
+
   const items = view.kind === "items" ? view.items : [];
   const total = view.kind === "items" ? view.total : 0;
   const totalPages = Math.max(1, Math.ceil(total / HISTORY_LIST_PAGE_SIZE));
@@ -381,6 +465,39 @@ export default function HistoryPage() {
                   >
                     <span aria-hidden="true">★ </span>
                     {HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL}
+                  </button>
+                </div>
+                {/* 「お気に入りのみ表示」フィルタ (feature/history-favorite-flag)
+                    — 重要フラグのトグルと同じ構造、完全に独立した状態。 */}
+                <div
+                  role="group"
+                  aria-label="お気に入りのみ表示"
+                  className="inline-flex rounded-md border border-zinc-300 text-xs dark:border-zinc-700"
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleFavoriteFilterChange("all")}
+                    aria-pressed={favoriteFilter === "all"}
+                    className={`rounded-l-md px-3 py-1.5 font-medium transition-colors ${
+                      favoriteFilter === "all"
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    {HISTORY_FAVORITE_FILTER_ALL_LABEL}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleFavoriteFilterChange("favoriteOnly")}
+                    aria-pressed={favoriteFilter === "favoriteOnly"}
+                    className={`rounded-r-md border-l border-zinc-300 px-3 py-1.5 font-medium transition-colors dark:border-zinc-700 ${
+                      favoriteFilter === "favoriteOnly"
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    <span aria-hidden="true">♥ </span>
+                    {HISTORY_FAVORITE_FILTER_FAVORITE_ONLY_LABEL}
                   </button>
                 </div>
                 <div className="flex items-center gap-2">
@@ -536,6 +653,9 @@ export default function HistoryPage() {
               const deleteError = deleteErrors[item.id];
               const isImportant = item.isImportant ?? false;
               const importantError = importantErrors[item.id];
+              const isFavorite = item.isFavorite ?? false;
+              const isFavoriteToggling = favoriteTogglingIds.has(item.id);
+              const favoriteError = favoriteErrors[item.id];
               return (
                 <li
                   key={item.id}
@@ -554,6 +674,14 @@ export default function HistoryPage() {
                       {isImportant && (
                         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
                           ★ {HISTORY_IMPORTANT_BADGE_LABEL}
+                        </span>
+                      )}
+                      {/* お気に入りbadge — ♥/☆と視覚的に区別するため♥を使用
+                          (feature/history-favorite-flag)。重要フラグとは
+                          独立して表示/非表示が決まる。 */}
+                      {isFavorite && (
+                        <span className="rounded bg-rose-100 px-1.5 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                          ♥ {HISTORY_FAVORITE_BADGE_LABEL}
                         </span>
                       )}
                     </div>
@@ -620,6 +748,16 @@ export default function HistoryPage() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => handleToggleFavorite(item.id, isFavorite)}
+                          aria-pressed={isFavorite}
+                          disabled={isFavoriteToggling}
+                          className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                        >
+                          <span aria-hidden="true">{isFavorite ? "♥" : "♡"} </span>
+                          {getFavoriteToggleLabel(isFavorite)}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => handleDelete(item.id)}
                           disabled={isDeleting}
                           className="rounded-md border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
@@ -632,6 +770,11 @@ export default function HistoryPage() {
                   {importantError && (
                     <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
                       {importantError}
+                    </p>
+                  )}
+                  {favoriteError && (
+                    <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
+                      {favoriteError}
                     </p>
                   )}
                   {deleteError && (

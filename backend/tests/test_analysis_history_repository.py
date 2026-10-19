@@ -477,6 +477,7 @@ def test_list_analysis_runs_success(monkeypatch):
         meta_json,
         input_snapshot,
         True,
+        False,
     )
     fake_cursor = _FakeReadCursor(fetchall_result=[row])
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -504,6 +505,7 @@ def test_list_analysis_runs_success(monkeypatch):
             },
             "sourceUrls": ["https://cybozu.co.jp/"],
             "isImportant": True,
+            "isFavorite": False,
         }
     ]
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
@@ -686,6 +688,50 @@ def test_list_analysis_runs_important_true_adds_condition(monkeypatch):
     query, params = fake_cursor.executed[0]
     assert "and ar.is_important" in query.lower()
     assert len(params) == 2  # no extra bound param for a boolean column check
+
+
+def test_list_analysis_runs_favorite_true_adds_condition(monkeypatch):
+    """favorite behaves identically to important — same 2-way-toggle,
+    no extra bound param — but on the independent is_favorite column
+    (feature/history-favorite-flag)."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(favorite=True)
+
+    query, params = fake_cursor.executed[0]
+    assert "and ar.is_favorite" in query.lower()
+    assert len(params) == 2
+
+
+def test_list_analysis_runs_favorite_false_or_none_adds_no_condition(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(favorite=False)
+    repo.list_analysis_runs(favorite=None)
+
+    for query, params in fake_cursor.executed:
+        assert "and ar.is_favorite" not in query.lower()
+        assert "where ar.is_favorite" not in query.lower()
+        assert len(params) == 2
+
+
+def test_list_analysis_runs_favorite_and_important_are_independent(monkeypatch):
+    """Setting favorite must never imply/clear important, and vice
+    versa — both conditions can be present together (AND), or either
+    alone."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(favorite=True, important=True)
+
+    query, _ = fake_cursor.executed[0]
+    assert "and ar.is_favorite" in query.lower()
+    assert "and ar.is_important" in query.lower()
 
 
 def test_list_analysis_runs_important_false_or_none_adds_no_condition(monkeypatch):
@@ -951,6 +997,20 @@ def test_count_analysis_runs_applies_the_same_filters_as_list(monkeypatch):
     assert params[-1] == started_to
 
 
+def test_count_analysis_runs_applies_the_same_favorite_filter_as_list(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs(favorite=True)
+
+    query, _ = fake_cursor.executed[0]
+    assert "and ar.is_favorite" in query.lower()
+    # favorite=True never needs the analysis_results join (unlike the
+    # AI observation filters) — it's a plain column on analysis_runs.
+    assert "analysis_results" not in query.lower()
+
+
 def test_count_analysis_runs_joins_analysis_results_only_when_an_observation_filter_is_set(
     monkeypatch,
 ):
@@ -1074,6 +1134,7 @@ def test_get_analysis_run_success(monkeypatch):
         {"documentsSource": "web_fetch"},
         project_id,
         True,
+        False,
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -1099,6 +1160,7 @@ def test_get_analysis_run_success(monkeypatch):
         "meta": {"documentsSource": "web_fetch"},
         "projectId": project_id,
         "isImportant": True,
+        "isFavorite": False,
     }
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
 
@@ -1122,6 +1184,7 @@ def test_get_analysis_run_project_id_is_none_for_legacy_row(monkeypatch):
         {"brandName": "サイボウズ", "meta": {}},
         {"documentsSource": "web_fetch"},
         None,
+        False,
         False,
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
@@ -1526,6 +1589,102 @@ def test_set_analysis_run_important_returns_false_when_not_found_or_deleted(monk
     result = repo.set_analysis_run_important(VALID_RUN_ID, is_important=True)
 
     assert result is False
+
+
+# --- set_analysis_run_favorite (feature/history-favorite-flag) ----------
+#
+# Reuses the generic _FakeImportantCursor/_FakeImportantConnection/
+# _FakeImportantPsycopg fixtures above — they're not actually specific
+# to the important flag's query shape, just to the
+# execute-then-fetchone-then-maybe-commit pattern both functions share.
+
+
+def test_set_analysis_run_favorite_returns_false_for_invalid_uuid(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_psycopg = _FakeImportantPsycopg(_FakeImportantCursor())
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.set_analysis_run_favorite("not-a-uuid", is_favorite=True)
+
+    assert result is False
+    assert fake_psycopg.connect_calls == []
+
+
+def test_set_analysis_run_favorite_raises_when_driver_not_installed(monkeypatch):
+    _configure_read_env(monkeypatch)
+    monkeypatch.setattr(repo, "psycopg", None)
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=True)
+
+
+def test_set_analysis_run_favorite_raises_when_database_url_missing(monkeypatch):
+    _configure_read_env(monkeypatch, url=None)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(_FakeImportantCursor()))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=True)
+
+
+def test_set_analysis_run_favorite_raises_on_query_failure(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(raise_on_execute=RuntimeError("column does not exist"))
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    with pytest.raises(repo.AnalysisHistoryReadError):
+        repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=True)
+
+
+def test_set_analysis_run_favorite_marks_true_commits_and_passes_params(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=True)
+    fake_psycopg = _FakeImportantPsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+
+    result = repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=True)
+
+    assert result is True
+    assert fake_psycopg.last_connection.committed is True
+    query, params = fake_cursor.executed[0]
+    assert "set is_favorite = %s" in query.lower()
+    assert "where id = %s and deleted_at is null" in query.lower()
+    assert params == (True, VALID_RUN_ID)
+
+
+def test_set_analysis_run_favorite_marks_false_passes_params(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=True)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    result = repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=False)
+
+    assert result is True
+    query, params = fake_cursor.executed[0]
+    assert params == (False, VALID_RUN_ID)
+
+
+def test_set_analysis_run_favorite_returns_false_when_not_found_or_deleted(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=False)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    result = repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=True)
+
+    assert result is False
+
+
+def test_set_analysis_run_favorite_is_independent_of_important(monkeypatch):
+    """Toggling favorite must never touch is_important's column in the
+    generated SQL — the two flags are separate UPDATE statements, not
+    one shared write path."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeImportantCursor(update_returns_row=True)
+    monkeypatch.setattr(repo, "psycopg", _FakeImportantPsycopg(fake_cursor))
+
+    repo.set_analysis_run_favorite(VALID_RUN_ID, is_favorite=True)
+
+    query, _ = fake_cursor.executed[0]
+    assert "is_important" not in query.lower()
 
 
 # --- update_analysis_result (Gemini-only rerun) --------------------------

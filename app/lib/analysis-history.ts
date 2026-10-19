@@ -9,6 +9,7 @@
 import {
   parseAnalysisRunComparisonResponse,
   parseAnalysisRunDetailResponse,
+  parseAnalysisRunFavoriteResponse,
   parseAnalysisRunImportantResponse,
   parseAnalysisRunListResponse,
   parseGeminiRerunResponse,
@@ -78,6 +79,12 @@ export type AnalysisRunListItem = {
   // boolean once parsed — callers should read it as
   // `item.isImportant ?? false` for defense in depth.
   isImportant?: boolean;
+  // analysis_runs.is_favorite (backend/migrations/
+  // 007_add_is_favorite_to_analysis_runs.sql) — independent of
+  // isImportant above (feature/history-favorite-flag). Same
+  // optionality/defense-in-depth reasoning as isImportant: read as
+  // `item.isFavorite ?? false`.
+  isFavorite?: boolean;
 };
 
 export type AnalysisRunListResponse = {
@@ -599,6 +606,11 @@ export type HistoryListQuery = {
   chatgptObservation?: ObservationFilterValue;
   claudeObservation?: ObservationFilterValue;
   geminiObservation?: ObservationFilterValue;
+  // GET /analysis-runs's `favorite=true` query param
+  // (feature/history-favorite-flag) — independent of `important`
+  // above, same 2-way-toggle semantics (undefined/false = "all", no
+  // "favorite=false" mode).
+  favorite?: boolean;
   sort: HistorySortOrder;
   page: number;
 };
@@ -640,13 +652,16 @@ export function buildHistoryListRequestUrl(query: HistoryListQuery): string {
   if (query.geminiObservation) {
     params.set("geminiObservation", query.geminiObservation);
   }
+  if (query.favorite) {
+    params.set("favorite", "true");
+  }
 
   return `/api/analysis-runs?${params.toString()}`;
 }
 
 /** True when any of search/important/date-range/the 4 AI observation
- * filters is actually narrowing the result set — used only to pick
- * the right "0件" message (see resolveServerFilteredEmptyText()
+ * filters/favorite is actually narrowing the result set — used only
+ * to pick the right "0件" message (see resolveServerFilteredEmptyText()
  * below), never to decide whether to fetch (every page request goes
  * through buildHistoryListRequestUrl() regardless). */
 export function isHistoryListQueryFiltered(
@@ -660,6 +675,7 @@ export function isHistoryListQueryFiltered(
     | "chatgptObservation"
     | "claudeObservation"
     | "geminiObservation"
+    | "favorite"
   >,
 ): boolean {
   return Boolean(
@@ -670,6 +686,7 @@ export function isHistoryListQueryFiltered(
       query.aiOverviewObservation ||
       query.chatgptObservation ||
       query.claudeObservation ||
+      query.favorite ||
       query.geminiObservation,
   );
 }
@@ -825,6 +842,94 @@ export async function resolveSetAnalysisRunImportantOutcome(
 
   return { success: true, isImportant: parsed.data.isImportant };
 }
+
+/** PATCH /analysis-runs/{id}/favorite — mirrors backend/models.py's
+ * AnalysisRunFavoriteResponse. */
+export type AnalysisRunFavoriteResponse = {
+  analysisRunId: string;
+  isFavorite: boolean;
+};
+
+// --- Favorite flag (PATCH /analysis-runs/{id}/favorite,
+// feature/history-favorite-flag) ---
+//
+// Independent of the important flag above — a saved run can be
+// favorited, important, both, or neither; toggling one never affects
+// the other, on either the backend (separate columns, separate
+// endpoints) or here (separate state/outcome types).
+
+/** Small badge shown on a history list card when `isFavorite` is true
+ * — see app/history/page.tsx. Uses a different icon (♥/♡) from the
+ * important flag's ★/☆ so the two independent marks are never visually
+ * confused with each other. No equivalent badge is shown when false,
+ * same convention as HISTORY_IMPORTANT_BADGE_LABEL above. */
+export const HISTORY_FAVORITE_BADGE_LABEL = "お気に入り";
+
+export const HISTORY_FAVORITE_MARK_LABEL = "お気に入りに追加";
+export const HISTORY_FAVORITE_UNMARK_LABEL = "お気に入りを解除";
+
+/** Button label for the favorite toggle, reflecting the *current*
+ * state — mirrors getImportantToggleLabel() exactly. */
+export function getFavoriteToggleLabel(isFavorite: boolean): string {
+  return isFavorite ? HISTORY_FAVORITE_UNMARK_LABEL : HISTORY_FAVORITE_MARK_LABEL;
+}
+
+export const HISTORY_FAVORITE_NOT_FOUND_MESSAGE = "この分析履歴は見つかりませんでした。";
+export const HISTORY_FAVORITE_ERROR_MESSAGE =
+  "お気に入りの更新に失敗しました。時間をおいて再度お試しください。";
+
+export type SetAnalysisRunFavoriteOutcome =
+  | { success: true; isFavorite: boolean }
+  | { success: false; message: string };
+
+/**
+ * Turns a fetch() Response (or null, on a network-level failure) from
+ * PATCH /api/analysis-runs/{id}/favorite into an outcome the page can
+ * act on — mirrors resolveSetAnalysisRunImportantOutcome() above
+ * exactly.
+ */
+export async function resolveSetAnalysisRunFavoriteOutcome(
+  response: Response | null,
+): Promise<SetAnalysisRunFavoriteOutcome> {
+  if (!response) {
+    return { success: false, message: HISTORY_FAVORITE_ERROR_MESSAGE };
+  }
+
+  if (response.status === 403) {
+    return { success: false, message: HISTORY_FORBIDDEN_MESSAGE };
+  }
+
+  if (response.status === 404) {
+    return { success: false, message: HISTORY_FAVORITE_NOT_FOUND_MESSAGE };
+  }
+
+  if (!response.ok) {
+    return { success: false, message: HISTORY_FAVORITE_ERROR_MESSAGE };
+  }
+
+  const json = await response.json().catch(() => null);
+  const parsed = parseAnalysisRunFavoriteResponse(json);
+  if (!parsed.success) {
+    return { success: false, message: HISTORY_FAVORITE_ERROR_MESSAGE };
+  }
+
+  return { success: true, isFavorite: parsed.data.isFavorite };
+}
+
+// --- "お気に入りのみ表示" select (feature/history-favorite-flag) ---
+//
+// Server-side-only from day one (unlike HistoryImportantFilter above,
+// which started as a frontend-only filter before
+// feature/history-server-side-search-pagination moved filtering to
+// the backend) — this type exists purely as the history list page's
+// own select-box state, converted straight into
+// HistoryListQuery.favorite by buildHistoryListRequestUrl() above.
+
+export type HistoryFavoriteFilter = "all" | "favoriteOnly";
+
+export const HISTORY_FAVORITE_FILTER_DEFAULT: HistoryFavoriteFilter = "all";
+export const HISTORY_FAVORITE_FILTER_ALL_LABEL = "すべて";
+export const HISTORY_FAVORITE_FILTER_FAVORITE_ONLY_LABEL = "お気に入りのみ";
 
 export type HistoryViewState =
   | { kind: "loading" }
@@ -1032,6 +1137,11 @@ export type AnalysisRunDetailResponse = {
   // Same field/default as AnalysisRunListItem.isImportant above — see
   // that field's comment and docs/38_history_marking_design.md.
   isImportant?: boolean;
+  // Same field/default as AnalysisRunListItem.isFavorite above
+  // (feature/history-favorite-flag). Not yet surfaced by the detail
+  // page's own UI — this task's "履歴一覧に" scopes the favorite button
+  // to the list page only.
+  isFavorite?: boolean;
   // backend/models.py's AnalysisRunDetailResponse.projectId — see that
   // field's docstring. undefined for a legacy run saved before
   // 002_add_organizations_projects.sql.

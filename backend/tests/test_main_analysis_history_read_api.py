@@ -459,6 +459,7 @@ def test_list_success_default_query_params(monkeypatch):
         "chatgpt_observation": None,
         "claude_observation": None,
         "gemini_observation": None,
+        "favorite": None,
         "sort": "newest",
         "project_ids": None,
     }
@@ -496,6 +497,19 @@ def test_list_passes_search_important_and_sort_through_to_the_repository(monkeyp
     assert calls[0]["search"] == "cybozu"
     assert calls[0]["important"] is True
     assert calls[0]["sort"] == "oldest"
+
+
+def test_list_passes_favorite_through_to_the_repository(monkeypatch):
+    _enable_read_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        main, "repository_list_analysis_runs", lambda **kwargs: calls.append(kwargs) or []
+    )
+
+    response = client.get("/analysis-runs?favorite=true", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert calls[0]["favorite"] is True
 
 
 def test_list_unrecognized_sort_value_falls_back_to_newest(monkeypatch):
@@ -662,6 +676,7 @@ def test_list_count_receives_the_same_filters_as_list_including_project_ids(monk
         "chatgpt_observation",
         "claude_observation",
         "gemini_observation",
+        "favorite",
     ):
         assert list_calls[0][key] == count_calls[0][key]
 
@@ -1065,6 +1080,7 @@ def test_list_history_token_mode_when_auth_jwt_enabled_but_no_authorization_head
         "chatgpt_observation": None,
         "claude_observation": None,
         "gemini_observation": None,
+        "favorite": None,
         "sort": "newest",
         "project_ids": None,
     }
