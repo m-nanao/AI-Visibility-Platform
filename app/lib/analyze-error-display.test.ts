@@ -123,10 +123,29 @@ describe("resolveAnalyzeErrorDisplay — 503", () => {
   });
 
   it("never shows internal env var names or config details in any 503 message", () => {
-    for (const code of ["auth_unavailable", "quota_enforcement_required", null]) {
+    for (const code of [
+      "auth_unavailable",
+      "quota_enforcement_required",
+      "analysis_run_failed",
+      null,
+    ]) {
       const display = resolveAnalyzeErrorDisplay(503, code, "x");
       expect(display.message).not.toMatch(/ANALYZE_|_ENABLED|_REQUIRED=|env/i);
     }
+  });
+
+  it("maps analysis_run_failed (Task 6-B audit fix P1-1) to the generic serviceUnavailable copy, never the raw backend message or internal DB error text", () => {
+    const display = resolveAnalyzeErrorDisplay(
+      503,
+      "analysis_run_failed",
+      "failed to create synchronous analysis run",
+    );
+    expect(display.kind).toBe("serviceUnavailable");
+    // Never shows the backend's own prose (which could, in principle,
+    // end up containing internal detail) — only this fixed message.
+    expect(display.message).not.toContain("failed to create synchronous analysis run");
+    expect(display.showLoginLink).toBe(false);
+    expect(display.showProjectReselect).toBe(false);
   });
 });
 

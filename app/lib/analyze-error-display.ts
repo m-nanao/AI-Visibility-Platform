@@ -73,6 +73,16 @@ export const ANALYZE_ERROR_CODE_AUTH_UNAVAILABLE = "auth_unavailable";
 /** Must match backend/main.py's ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE
  * (Task 6-B4). */
 export const ANALYZE_ERROR_CODE_QUOTA_ENFORCEMENT_REQUIRED = "quota_enforcement_required";
+/** Must match backend/main.py's ANALYZE_RUN_FAILED_CODE (Task 6-B
+ * audit fix P1-1) — the reservation attempt itself failed (e.g. a DB
+ * connectivity issue) before any analysis ever ran. Shown as a
+ * generic service-unavailable message, same as an unrecognized 503 —
+ * this is not an auth or quota problem, just a backend failure, so it
+ * gets its own `kind` only to the extent of being excluded from the
+ * auth/quota-specific copy, not a more specific message (this app has
+ * no more detail to offer the user here than "something went wrong,
+ * try again later"). */
+export const ANALYZE_ERROR_CODE_RUN_FAILED = "analysis_run_failed";
 
 /**
  * Resolves a non-2xx, non-429 POST /api/analyze response into display
@@ -227,6 +237,16 @@ export function resolveAnalyzeErrorDisplay(
         showProjectReselect: false,
       };
     }
+    // ANALYZE_ERROR_CODE_RUN_FAILED (Task 6-B audit fix P1-1): the
+    // reservation itself failed before any analysis ran (e.g. a DB
+    // connectivity issue) — explicitly routed to the same generic
+    // "serviceUnavailable" copy the unrecognized-code case below
+    // already uses, kept as its own `if` (rather than silently
+    // relying on the fallthrough) so a future change to the
+    // fallthrough's wording doesn't accidentally change this
+    // specific, regression-tested cause too without it being obvious.
+    // Never shows internal DB error text or env var names — only this
+    // fixed, generic message.
     return {
       kind: "serviceUnavailable",
       title: "サービスに一時的な問題が発生しています",

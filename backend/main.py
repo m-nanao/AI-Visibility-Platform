@@ -1015,6 +1015,18 @@ ANALYZE_REQUEST_CANCELLED_MESSAGE = (
 )
 ANALYZE_REQUEST_CANCELLED_CODE = "analysis_request_cancelled"
 ANALYZE_RUN_FAILED_MESSAGE = "failed to run the analysis"
+# Task 6-B audit fix (P1-1, feature/sync-analyze-jwt-project-auth):
+# added so this one specific 503 (create_running_analysis_run() itself
+# raised AnalysisHistoryReadError — a DB failure during the
+# reservation attempt, before run_analysis_pipeline() is ever called)
+# can be told apart from every other, unrelated 503 cause by a stable
+# `code` rather than falling through un-coded. Without this, the
+# Next.js proxy (app/api/analyze/route.ts) could not distinguish it
+# from "Python API not configured"/"DB unreachable for an unrelated
+# reason" and converted it into a 200 dummy-fallback response — making
+# a reservation that never even started look like a successful
+# analysis. See that route's ANALYZE_RUN_FAILED_CODE check.
+ANALYZE_RUN_FAILED_CODE = "analysis_run_failed"
 
 # Task 6-B4 (feature/sync-analyze-jwt-project-auth) usage-quota
 # responses.
@@ -1464,7 +1476,18 @@ def _analyze_authenticated_idempotent(
             },
         )
     except AnalysisHistoryReadError:
-        return error_response(ANALYZE_RUN_FAILED_MESSAGE, status_code=503)
+        # The reservation attempt itself failed (e.g. a DB connectivity
+        # issue, or — if ANALYZE_QUOTA_ENFORCEMENT_ENABLED=true were
+        # ever turned on before migration 009 is applied —
+        # analysis_usage_counters simply not existing yet) —
+        # run_analysis_pipeline() is never reached in this branch, so
+        # no external provider call happens either. `code` (Task 6-B
+        # audit fix P1-1) lets the Next.js proxy tell this apart from
+        # every other, unrelated 503 cause and report it as a real
+        # failure instead of silently falling back to dummy data.
+        return error_response(
+            ANALYZE_RUN_FAILED_MESSAGE, status_code=503, code=ANALYZE_RUN_FAILED_CODE
+        )
 
     if not reservation.created:
         # Replay: a 'completed'/'partial' run for this exact requestId
@@ -1571,7 +1594,22 @@ def _analyze_authenticated_idempotent(
             result.analysisRunId = None
             return result
     except AnalysisHistoryReadError:
+        # Task 6-B audit fix (P1-2): whether complete_analysis_job()'s
+        # write actually reached the DB is unknown here (a connection
+        # failure mid-UPDATE could mean nothing was written, or that
+        # the write succeeded but the response was lost) — this is
+        # *less* certain than the `not completed` branch above, which
+        # at least got a definitive answer, so it must be treated at
+        # least as conservatively: never report `analysisRunId` as if
+        # the save were confirmed. Falling through to the unconditional
+        # `result.analysisRunId = reservation.analysis_run_id` below
+        # would claim a save that was never confirmed — exactly the
+        # gap this fix closes, for the same reasons as the
+        # `not completed` branch's own Task 6-B3 audit fix comment
+        # above.
         logger.exception("Failed to save synchronous analysis result")
+        result.analysisRunId = None
+        return result
 
     result.analysisRunId = reservation.analysis_run_id
     return result

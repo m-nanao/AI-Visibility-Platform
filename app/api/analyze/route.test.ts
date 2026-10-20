@@ -1650,6 +1650,35 @@ describe("POST /api/analyze", () => {
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
+  it("returns 503 (never a dummy-data fallback) with code: analysis_run_failed (Task 6-B audit fix P1-1)", async () => {
+    // Regression guard for the audit finding: a code-less 503 from
+    // this exact cause (create_running_analysis_run() itself failed,
+    // e.g. a DB connectivity issue, or analysis_usage_counters not
+    // existing yet because migration 009 hasn't been applied) used to
+    // fall through to the generic "unavailable" bucket below and
+    // become a 200 dummy-fallback response — making a reservation
+    // that never started look like a successful analysis.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "failed to run the analysis",
+          code: "analysis_run_failed",
+        }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.code).toBe("analysis_run_failed");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
   // --- requestId idempotency conflicts (Task 6-B3,
   // feature/sync-analyze-jwt-project-auth) -------------------------------
 

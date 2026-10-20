@@ -265,6 +265,49 @@ def test_completed_completion_still_returns_the_real_analysis_run_id(monkeypatch
     assert response.json()["analysisRunId"] == RUN_ID
 
 
+def test_completion_save_exception_omits_analysis_run_id_from_response(monkeypatch):
+    """Task 6-B audit fix (P1-2): when complete_analysis_job() RAISES
+    AnalysisHistoryReadError (e.g. a DB connectivity failure during
+    the completion write) — rather than cleanly returning False —
+    whether the row was actually finalized is *less* certain than the
+    False case, not more, so analysisRunId must be omitted here too.
+    Before this fix, this exact branch fell through to
+    `result.analysisRunId = reservation.analysis_run_id`, claiming a
+    save that was never confirmed."""
+    _mock_authenticated(monkeypatch)
+
+    monkeypatch.setattr(
+        main,
+        "create_running_analysis_run",
+        lambda **kwargs: SyncAnalysisRunReservation(
+            analysis_run_id=RUN_ID, created=True, status="running", locked_by="sync:tok"
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "run_analysis_pipeline",
+        lambda **kwargs: main.AnalysisPipelineOutcome(
+            result=main.build_dummy_analysis(kwargs["brand_name"]),
+            cooccurrence_status="real",
+            source_summary={},
+        ),
+    )
+
+    def raising_complete(run_id, **kwargs):
+        raise AnalysisHistoryReadError("simulated DB connectivity failure during completion save")
+
+    monkeypatch.setattr(main, "complete_analysis_job", raising_complete)
+
+    response = _post({"brandName": "サイボウズ", "projectId": "p1", "requestId": "req-1"})
+
+    assert response.status_code == 200
+    body = response.json()
+    # The real result is still returned — never silently swapped for
+    # dummy/empty data just because persistence is unconfirmed.
+    assert body["brandName"] == "サイボウズ"
+    assert body["analysisRunId"] is None
+
+
 def test_unavailable_cooccurrence_completes_as_partial(monkeypatch):
     _mock_authenticated(monkeypatch)
     complete_calls = []
@@ -454,16 +497,29 @@ def test_cancelled_request_id_returns_409(monkeypatch):
 
 
 def test_reservation_db_failure_returns_503(monkeypatch):
+    """Task 6-B audit fix (P1-1): this 503 now carries a stable `code`
+    (analysis_run_failed) distinguishing it from every other 503
+    cause, specifically so app/api/analyze/route.ts can tell it apart
+    from "Python API not configured"/"unrelated DB issue" and never
+    convert it into a 200 dummy-fallback response — a reservation
+    failure means run_analysis_pipeline() was never even reached, so
+    no external provider call happened either."""
     _mock_authenticated(monkeypatch)
+    pipeline_calls = []
 
     def raising_create(**kwargs):
         raise AnalysisHistoryReadError("db unreachable")
 
     monkeypatch.setattr(main, "create_running_analysis_run", raising_create)
+    monkeypatch.setattr(
+        main, "run_analysis_pipeline", lambda **kwargs: pipeline_calls.append(kwargs)
+    )
 
     response = _post({"brandName": "サイボウズ", "projectId": "p1", "requestId": "req-1"})
 
     assert response.status_code == 503
+    assert response.json()["code"] == "analysis_run_failed"
+    assert pipeline_calls == []
 
 
 # --- separation from different users/projects (end-to-end through the

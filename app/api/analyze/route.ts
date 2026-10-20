@@ -150,6 +150,17 @@ const ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable";
 // override isn't set either). Also never dummy-fallback-worthy, same
 // reasoning as ANALYZE_AUTH_UNAVAILABLE_CODE above.
 const ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE = "quota_enforcement_required";
+// Must match backend/main.py's ANALYZE_RUN_FAILED_CODE exactly (Task
+// 6-B audit fix P1-1) — the 503 a caller gets when
+// create_running_analysis_run() itself failed (e.g. a DB connectivity
+// issue, or analysis_usage_counters not existing yet because
+// migration 009 hasn't been applied) before run_analysis_pipeline()
+// was ever reached. Also never dummy-fallback-worthy, same reasoning
+// as the two codes above — without this, this cause was
+// indistinguishable from "Python API not configured"/"unrelated DB
+// issue" and silently became a 200 dummy-fallback response, making a
+// reservation that never started look like a successful analysis.
+const ANALYZE_RUN_FAILED_CODE = "analysis_run_failed";
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
@@ -323,17 +334,24 @@ async function fetchFromPythonApi(
       }
       if (response.status === 503) {
         // Distinguishes "JWT verification/project-access check is
-        // misconfigured" (auth_unavailable) and "quota enforcement
-        // isn't enabled in authenticated mode" (quota_enforcement_required,
-        // Task 6-B4) — both authErrors, same reasoning as above — from
-        // every other, unrelated 503 cause this route has always
+        // misconfigured" (auth_unavailable), "quota enforcement isn't
+        // enabled in authenticated mode" (quota_enforcement_required,
+        // Task 6-B4), and "the sync-analysis reservation itself failed
+        // before any analysis ran" (analysis_run_failed, Task 6-B audit
+        // fix P1-1) — all three authErrors, same reasoning as above —
+        // from every other, unrelated 503 cause this route has always
         // treated as a dummy-fallback-worthy "unavailable" outcome
-        // (Python API not configured, DB unreachable, etc.) — via the
-        // stable `code` field, never by matching the response's
-        // human-readable `error` text.
+        // (Python API not configured, DB unreachable for a reason
+        // outside the reservation step, etc.) — via the stable `code`
+        // field, never by matching the response's human-readable
+        // `error` text.
         const errorBody = await response.json().catch(() => null);
         const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
-        if (code === ANALYZE_AUTH_UNAVAILABLE_CODE || code === ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE) {
+        if (
+          code === ANALYZE_AUTH_UNAVAILABLE_CODE ||
+          code === ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE ||
+          code === ANALYZE_RUN_FAILED_CODE
+        ) {
           return { kind: "authError", status: 503, code };
         }
       }
@@ -491,13 +509,14 @@ export async function POST(request: Request) {
 
   if (outcome.kind === "authError") {
     // Never falls back to dummy data — see PythonApiOutcome's
-    // "authError" doc above for why. `code` (Task 6-B5) is forwarded
-    // as-is so app/lib/analyze-error-display.ts can distinguish each
-    // exact cause (auth_required/invalid_token/project_access_denied/
-    // auth_unavailable/quota_enforcement_required) rather than this
-    // route collapsing everything into one message per status code.
-    // A generic per-status fallback text is still sent in `error` for
-    // any consumer that only reads that field.
+    // "authError" doc above for why. `code` (Task 6-B5/6-B audit fix
+    // P1-1) is forwarded as-is so app/lib/analyze-error-display.ts
+    // can distinguish each exact cause (auth_required/invalid_token/
+    // project_access_denied/auth_unavailable/quota_enforcement_required/
+    // analysis_run_failed) rather than this route collapsing
+    // everything into one message per status code. A generic
+    // per-status fallback text is still sent in `error` for any
+    // consumer that only reads that field.
     const message =
       outcome.status === 401
         ? ANALYZE_AUTH_REQUIRED_MESSAGE
