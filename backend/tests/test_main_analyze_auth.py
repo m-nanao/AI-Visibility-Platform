@@ -157,6 +157,7 @@ def test_analyze_flag_on_rejects_missing_authorization(monkeypatch):
     response = client.post("/analyze", json={"brandName": "サイボウズ", "projectId": "p1"})
 
     assert response.status_code == 401
+    assert response.json()["code"] == "auth_required"
     assert pipeline_calls == []
     assert save_calls == []
 
@@ -178,6 +179,7 @@ def test_analyze_flag_on_rejects_invalid_jwt(monkeypatch):
     )
 
     assert response.status_code == 401
+    assert response.json()["code"] == "invalid_token"
     assert pipeline_calls == []
     assert save_calls == []
 
@@ -186,7 +188,9 @@ def test_analyze_flag_on_rejects_when_jwt_verification_not_configured(monkeypatc
     """A misconfigured server (AUTH_JWT_ENABLED=false or no
     SUPABASE_JWKS_URL) must fail closed with 503 — never silently fall
     back to the anonymous path just because ANALYZE_AUTH_REQUIRED is
-    true."""
+    true. Also carries the stable `code: "auth_unavailable"` (Task 7)
+    so a caller never has to match this response's exact English
+    `error` prose to tell it apart from an unrelated 503."""
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: False)
     pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
@@ -198,6 +202,7 @@ def test_analyze_flag_on_rejects_when_jwt_verification_not_configured(monkeypatc
     )
 
     assert response.status_code == 503
+    assert response.json()["code"] == "auth_unavailable"
     assert pipeline_calls == []
     assert save_calls == []
 
@@ -212,6 +217,7 @@ def test_analyze_flag_on_rejects_missing_project_id(monkeypatch):
     )
 
     assert response.status_code == 400
+    assert response.json()["code"] == "project_id_required"
     assert pipeline_calls == []
     assert save_calls == []
 
@@ -248,11 +254,16 @@ def test_analyze_flag_on_rejects_inaccessible_project(monkeypatch):
     )
 
     assert response.status_code == 403
+    assert response.json()["code"] == "project_access_denied"
     assert pipeline_calls == []
     assert save_calls == []
 
 
 def test_analyze_flag_on_returns_503_when_project_access_check_fails(monkeypatch):
+    """Also carries `code: "auth_unavailable"` (Task 7) — the same
+    stable code as the JWT-not-configured 503 above, since from a
+    caller's point of view both mean the same thing: an auth-layer
+    problem, not the caller's fault, distinct from an unrelated 503."""
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
     monkeypatch.setattr(
@@ -273,6 +284,7 @@ def test_analyze_flag_on_returns_503_when_project_access_check_fails(monkeypatch
     )
 
     assert response.status_code == 503
+    assert response.json()["code"] == "auth_unavailable"
     assert pipeline_calls == []
     assert save_calls == []
 

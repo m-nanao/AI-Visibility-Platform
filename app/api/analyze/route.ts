@@ -88,29 +88,32 @@ type PythonApiOutcome =
   // Only reachable once the Python API's ANALYZE_AUTH_REQUIRED=true
   // (Task 6-B2, feature/sync-analyze-jwt-project-auth) — missing/
   // invalid JWT (401), inaccessible project (403), or the one specific
-  // 503 shape that means "JWT verification itself is misconfigured"
-  // (see ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES below). Reported
-  // back as a real error, exactly like validationError above — this
-  // must NEVER fall through to the dummy-data fallback below, since an
-  // auth/authorization failure silently rendered as a successful
-  // "mock" analysis would be actively misleading.
+  // 503 shape that means "JWT verification/project-access check
+  // itself is misconfigured" (see ANALYZE_AUTH_UNAVAILABLE_CODE
+  // below). Reported back as a real error, exactly like
+  // validationError above — this must NEVER fall through to the
+  // dummy-data fallback below, since an auth/authorization failure
+  // silently rendered as a successful "mock" analysis would be
+  // actively misleading.
   | { kind: "authError"; status: 401 | 403 | 503 }
   // Unset URL, network error, timeout, non-2xx (other than 400/401/403,
   // and 503 only when it isn't the auth-config case above), invalid
   // JSON, or a response that doesn't match AnalysisResult.
   | { kind: "unavailable"; reason: PythonApiUnavailableReason };
 
-// Must match backend/main.py's ANALYZE_JWT_NOT_CONFIGURED_MESSAGE /
-// ANALYZE_PROJECT_CHECK_FAILED_MESSAGE exactly — the only way to tell
-// "JWT verification/project-access check is misconfigured" (an
-// authError, never dummy-fallback-worthy) apart from the Python API's
-// own, unrelated 503 causes (not configured / DB unreachable — the
-// existing "unavailable" fallback path, unchanged). Both are fixed,
-// hardcoded strings on the backend, never derived from user input.
-const ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES = new Set([
-  "analyze JWT verification is not configured",
-  "failed to verify project access",
-]);
+// Must match backend/main.py's ANALYZE_AUTH_UNAVAILABLE_CODE exactly —
+// the stable, machine-readable `code` (see that file's error_response())
+// a 503 carries when it specifically means "JWT verification/
+// project-access check is misconfigured" (an authError, never
+// dummy-fallback-worthy), as opposed to the Python API's own,
+// unrelated 503 causes (not configured / DB unreachable — the
+// existing "unavailable" fallback path, unchanged). Checking this
+// fixed `code` field (added by Task 7,
+// feature/sync-analyze-jwt-project-auth, "エラーメッセージの完全一致に
+// 依存する実装を改善する") rather than matching the human-readable
+// `error` prose means a future reword of that backend message can
+// never silently break this distinction.
+const ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable";
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
@@ -246,12 +249,13 @@ async function fetchFromPythonApi(
         // misconfigured" (also an authError, same reasoning as above)
         // from every other, unrelated 503 cause this route has always
         // treated as a dummy-fallback-worthy "unavailable" outcome
-        // (Python API not configured, DB unreachable, etc.) — see
-        // ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES above.
+        // (Python API not configured, DB unreachable, etc.) — via the
+        // stable `code` field (see ANALYZE_AUTH_UNAVAILABLE_CODE
+        // above), never by matching the response's human-readable
+        // `error` text.
         const errorBody = await response.json().catch(() => null);
-        const rawMessage =
-          errorBody && typeof errorBody.error === "string" ? errorBody.error : null;
-        if (rawMessage && ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES.has(rawMessage)) {
+        const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+        if (code === ANALYZE_AUTH_UNAVAILABLE_CODE) {
           return { kind: "authError", status: 503 };
         }
       }

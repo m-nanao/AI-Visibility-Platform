@@ -296,8 +296,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LLMO Analysis API", lifespan=lifespan)
 
 
-def error_response(message: str, status_code: int = 400) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"error": message})
+def error_response(
+    message: str, status_code: int = 400, *, code: str | None = None
+) -> JSONResponse:
+    """`code`, added for Task 7 (feature/sync-analyze-jwt-project-auth,
+    "認証エラーの処理改善"), is an optional stable, machine-readable
+    identifier alongside the existing human-readable `message` — only
+    included in the body when a caller actually passes one (every
+    pre-existing call site in this file omits it, so their response
+    shape is completely unchanged). Added specifically so a caller
+    like the Next.js proxy (app/api/analyze/route.ts) can distinguish
+    error *causes* that happen to share the same HTTP status code
+    (e.g. two different reasons for a 503) without matching this
+    function's prose `message` text, which is free to be reworded
+    later without silently breaking that check.
+    """
+    content: dict[str, str] = {"error": message}
+    if code is not None:
+        content["code"] = code
+    return JSONResponse(status_code=status_code, content=content)
 
 
 @app.exception_handler(RequestValidationError)
@@ -921,6 +938,26 @@ ANALYZE_ACCESS_DENIED_MESSAGE = "access denied to the specified project"
 ANALYZE_PROJECT_ID_REQUIRED_MESSAGE = "projectId is required"
 ANALYZE_PROJECT_CHECK_FAILED_MESSAGE = "failed to verify project access"
 
+# Stable, machine-readable companions to the prose messages above
+# (Task 7, feature/sync-analyze-jwt-project-auth "認証エラーの処理改善")
+# — exposed in each error response's `code` field (see
+# error_response()) so a caller like the Next.js proxy
+# (app/api/analyze/route.ts) never has to match this file's exact
+# English prose to tell these failures apart from an unrelated 503
+# (e.g. PYTHON_ANALYSIS_API_URL misconfigured on the Next.js side, or
+# a genuinely unreachable Python API) that this same endpoint's
+# generic failure paths can also produce. "auth_unavailable" is
+# deliberately shared by both 503 causes below (JWT verification
+# itself unconfigured, and the project-access check failing) — from
+# the caller's point of view both mean the same thing: retry later,
+# this isn't the caller's fault, and it is specifically an auth-layer
+# problem.
+ANALYZE_AUTH_REQUIRED_CODE = "auth_required"
+ANALYZE_INVALID_TOKEN_CODE = "invalid_token"
+ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable"
+ANALYZE_ACCESS_DENIED_CODE = "project_access_denied"
+ANALYZE_PROJECT_ID_REQUIRED_CODE = "project_id_required"
+
 
 def _resolve_analyze_project_auth(
     request: Request, payload: AnalyzeRequest
@@ -960,23 +997,36 @@ def _resolve_analyze_project_auth(
         auth_required_message=ANALYZE_AUTH_REQUIRED_MESSAGE,
         invalid_token_message=ANALYZE_INVALID_TOKEN_MESSAGE,
         jwt_not_configured_message=ANALYZE_JWT_NOT_CONFIGURED_MESSAGE,
+        auth_required_code=ANALYZE_AUTH_REQUIRED_CODE,
+        invalid_token_code=ANALYZE_INVALID_TOKEN_CODE,
+        jwt_not_configured_code=ANALYZE_AUTH_UNAVAILABLE_CODE,
     )
     if isinstance(auth_result, JSONResponse):
         return auth_result
 
     project_id = (payload.projectId or "").strip()
     if not project_id:
-        return error_response(ANALYZE_PROJECT_ID_REQUIRED_MESSAGE, status_code=400)
+        return error_response(
+            ANALYZE_PROJECT_ID_REQUIRED_MESSAGE,
+            status_code=400,
+            code=ANALYZE_PROJECT_ID_REQUIRED_CODE,
+        )
 
     try:
         with open_history_db_connection() as conn:
             allowed = can_user_access_project(conn, auth_result.user_id, project_id)
     except Exception:
         logger.exception("Failed to check project access for POST /analyze")
-        return error_response(ANALYZE_PROJECT_CHECK_FAILED_MESSAGE, status_code=503)
+        return error_response(
+            ANALYZE_PROJECT_CHECK_FAILED_MESSAGE,
+            status_code=503,
+            code=ANALYZE_AUTH_UNAVAILABLE_CODE,
+        )
 
     if not allowed:
-        return error_response(ANALYZE_ACCESS_DENIED_MESSAGE, status_code=403)
+        return error_response(
+            ANALYZE_ACCESS_DENIED_MESSAGE, status_code=403, code=ANALYZE_ACCESS_DENIED_CODE
+        )
 
     return project_id
 
@@ -1246,6 +1296,9 @@ def _verify_jwt_bearer(
     auth_required_message: str,
     invalid_token_message: str,
     jwt_not_configured_message: str,
+    auth_required_code: str | None = None,
+    invalid_token_code: str | None = None,
+    jwt_not_configured_code: str | None = None,
 ) -> AuthenticatedUser | JSONResponse:
     """Verifies a Supabase Auth JWT from the Authorization header, with
     no HISTORY_READ_TOKEN fallback of any kind — the one piece of
@@ -1256,10 +1309,24 @@ def _verify_jwt_bearer(
     so each gate keeps its own wording, while the verification logic
     itself — and the _JWT_UNAVAILABLE_REASONS classification — lives
     in exactly one place (fix/history-read-token-write-isolation).
+
+    The `*_code` parameters (added for Task 7,
+    feature/sync-analyze-jwt-project-auth) are optional stable,
+    machine-readable identifiers passed straight through to
+    error_response()'s own `code` field — see that function's
+    docstring. None of this function's pre-existing callers pass them,
+    so their response body shape is completely unchanged; only
+    callers that need a caller-side disambiguation more robust than
+    matching `message`'s exact prose (e.g. _resolve_analyze_project_auth()
+    below, whose 503 shares a status code with an unrelated,
+    pre-existing "Python API misconfigured" 503 from a different code
+    path) need to pass one.
     """
     auth_settings = load_auth_settings()
     if not is_jwt_verification_configured(auth_settings):
-        return error_response(jwt_not_configured_message, status_code=503)
+        return error_response(
+            jwt_not_configured_message, status_code=503, code=jwt_not_configured_code
+        )
 
     authorization_header = request.headers.get(AUTHORIZATION_HEADER)
     try:
@@ -1267,10 +1334,14 @@ def _verify_jwt_bearer(
         return verify_supabase_jwt(token, auth_settings)
     except JWTAuthError as exc:
         if exc.reason in _JWT_UNAVAILABLE_REASONS:
-            return error_response(jwt_not_configured_message, status_code=503)
+            return error_response(
+                jwt_not_configured_message, status_code=503, code=jwt_not_configured_code
+            )
         if exc.reason in {"missing_header", "invalid_header"}:
-            return error_response(auth_required_message, status_code=401)
-        return error_response(invalid_token_message, status_code=401)
+            return error_response(
+                auth_required_message, status_code=401, code=auth_required_code
+            )
+        return error_response(invalid_token_message, status_code=401, code=invalid_token_code)
 
 
 HISTORY_WRITE_AUTH_REQUIRED_MESSAGE = "authentication required"

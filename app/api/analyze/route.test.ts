@@ -1450,6 +1450,31 @@ describe("POST /api/analyze", () => {
     expect(sentBody).not.toHaveProperty("projectId");
   });
 
+  it("fails safely (never a dummy-data fallback) when the Frontend's own flag is off but the Backend's ANALYZE_AUTH_REQUIRED is on", async () => {
+    // Frontend/Backendのフラグ不一致 (Task 7): a caller running with
+    // NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED=false never sends projectId —
+    // this route doesn't need to know the Backend's flag state at all,
+    // it just forwards whatever it has and surfaces whatever the
+    // Backend decides. Here the Backend (ANALYZE_AUTH_REQUIRED=true)
+    // rejects the missing projectId with its existing 400
+    // validationError shape — already handled, and already never
+    // falls back to dummy data.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "projectId is required", code: "project_id_required" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({ error: "projectId is required" });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
   it("returns 401 (never a dummy-data fallback) when the Python API rejects with 401", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(
@@ -1481,11 +1506,16 @@ describe("POST /api/analyze", () => {
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
-  it("returns 503 (never a dummy-data fallback) when the Python API's 503 means JWT verification is misconfigured", async () => {
+  it("returns 503 (never a dummy-data fallback) when the Python API's 503 carries code: auth_unavailable (JWT verification misconfigured)", async () => {
+    // Task 7 fix: disambiguated via the stable `code` field, never by
+    // matching the `error` prose text.
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
-        JSON.stringify({ error: "analyze JWT verification is not configured" }),
+        JSON.stringify({
+          error: "analyze JWT verification is not configured",
+          code: "auth_unavailable",
+        }),
         { status: 503 },
       ),
     );
@@ -1498,10 +1528,13 @@ describe("POST /api/analyze", () => {
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
-  it("returns 503 (never a dummy-data fallback) when the Python API's 503 means the project-access check itself failed", async () => {
+  it("returns 503 (never a dummy-data fallback) when the Python API's 503 carries code: auth_unavailable (project-access check itself failed)", async () => {
     process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
     global.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: "failed to verify project access" }), { status: 503 }),
+      new Response(
+        JSON.stringify({ error: "failed to verify project access", code: "auth_unavailable" }),
+        { status: 503 },
+      ),
     );
 
     const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
@@ -1510,6 +1543,23 @@ describe("POST /api/analyze", () => {
     expect(response.status).toBe(503);
     expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE });
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("falls back to dummy data for a 503 with a differently-worded auth-sounding message but no matching code", async () => {
+    // Proves the check is code-based, not prose-based: this message
+    // text alone must never accidentally trip the authError path.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "authentication is currently not configured" }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
   });
 
   it("still falls back to dummy data for an unrelated 503 (Python API not configured/DB unreachable)", async () => {

@@ -230,8 +230,7 @@ def save_analysis_history(
                         )
                         brand_id = cur.fetchone()[0]
                 else:
-                    # Legacy/anonymous path — unchanged from before
-                    # this parameter existed. default project
+                    # Legacy/anonymous path. default project
                     # (organizations/projects with slug='default', see
                     # backend/migrations/002_add_organizations_projects.sql)
                     # is required for the project_id columns below. If
@@ -250,18 +249,39 @@ def save_analysis_history(
                         )
                         return None
 
-                    # Brand: reuse an existing row by exact name match
-                    # if one exists (simple get), otherwise create one
-                    # — see docs/19_minimum_db_migration_design.md "5.
-                    # brands テーブル案", which explicitly says not to
-                    # enforce strict dedup here. An existing brand that
-                    # already has a project_id is left untouched; one
-                    # with project_id still null (e.g. from before
-                    # this backfill existed) is assigned the default
-                    # project.
+                    # Brand: reuse an existing row scoped to the
+                    # default project (or a legacy project_id IS NULL
+                    # row, which gets backfilled below) if one exists,
+                    # otherwise create one — see
+                    # docs/19_minimum_db_migration_design.md "5. brands
+                    # テーブル案", which explicitly says not to enforce
+                    # strict dedup here.
+                    #
+                    # Fixed by Task 7 (feature/sync-analyze-jwt-project-auth,
+                    # "匿名モードのbrand/project整合性修正"): this lookup
+                    # used to match on `name` alone, with no project
+                    # scoping at all — a same-named brand already
+                    # belonging to a *different*, non-default project
+                    # (e.g. one created via the authenticated path
+                    # above) could be silently reused here, while the
+                    # new analysis_runs row was still stamped with
+                    # `target_project_id` (the default project) —
+                    # leaving the run's own brand pointing at a
+                    # different project than the run itself. The fixed
+                    # WHERE clause mirrors the authenticated path's own
+                    # project-isolation guarantee: only a brand already
+                    # in the default project, or one not yet claimed by
+                    # any project, is ever reused here. Existing rows
+                    # are never deleted or moved by this fix — a brand
+                    # already (incorrectly) shared this way before this
+                    # fix shipped is left exactly as it is; see this
+                    # task's completion report for what that means for
+                    # already-saved data.
                     cur.execute(
-                        "select id, project_id from brands where name = %s order by created_at desc limit 1",
-                        (brand_name,),
+                        "select id, project_id from brands where name = %s "
+                        "and (project_id = %s or project_id is null) "
+                        "order by created_at desc limit 1",
+                        (brand_name, target_project_id),
                     )
                     row = cur.fetchone()
                     if row is not None:
