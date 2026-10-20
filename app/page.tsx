@@ -7,10 +7,13 @@ import AppHeader from "./components/AppHeader";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
 import {
+  ANALYZE_AUTH_REQUIRED_MESSAGE,
   ANALYZE_FALLBACK_HEADER,
   ANALYZE_FALLBACK_REASON_HEADER,
+  ANALYZE_PROJECT_ID_REQUIRED_MESSAGE,
   buildAnalyzeRequestBody,
   getAnalyzeFallbackMessage,
+  isAnalyzeAuthRequiredEnabled,
 } from "./lib/analysis-request";
 import {
   ANALYSIS_RESULT_PREVIEW_NOTE,
@@ -56,6 +59,12 @@ export default function Home() {
   // resolution/job creation is simply never reached — the component
   // behaves exactly as it did before this flag existed.
   const asyncAnalysisEnabled = isAsyncAnalysisEnabled();
+  // Task 6-B2 (feature/sync-analyze-jwt-project-auth) — a separate
+  // flag from asyncAnalysisEnabled above (see
+  // isAnalyzeAuthRequiredEnabled()'s doc for why), false by default so
+  // this page behaves exactly as before this task for as long as it
+  // stays false (the production default as of this task).
+  const analyzeAuthRequired = isAnalyzeAuthRequiredEnabled();
   // Only consulted for its email (used to scope the idempotency key
   // below so one signed-in user's pending-submission record is never
   // reused by a different signed-in user sharing the same browser tab
@@ -83,16 +92,19 @@ export default function Home() {
   // willing to wait). null on a real result.
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
 
-  // Project resolution for the async-job flow only (docs/40
-  // Phase 3 task "1"/"4") — POST /analysis-jobs requires an explicit
-  // `projectId` that nothing before this task ever had to resolve.
-  // Entirely unused, and never fetched, when asyncAnalysisEnabled is
+  // Project resolution — originally added for the async-job flow only
+  // (docs/40 Phase 3 task "1"/"4", POST /analysis-jobs requires an
+  // explicit `projectId`), and reused as-is by Task 6-B2
+  // (feature/sync-analyze-jwt-project-auth) for the sync flow's own
+  // projectId requirement once analyzeAuthRequired is true — same
+  // shape, same GET /api/me/projects call, same auto-select-when-one
+  // behavior. Entirely unused, and never fetched, when both flags are
   // false.
   const [projectsOutcome, setProjectsOutcome] = useState<MeProjectsOutcome>({ kind: "loading" });
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!asyncAnalysisEnabled) return;
+    if (!asyncAnalysisEnabled && !analyzeAuthRequired) return;
     let cancelled = false;
 
     async function loadProjects() {
@@ -110,7 +122,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [asyncAnalysisEnabled]);
+  }, [asyncAnalysisEnabled, analyzeAuthRequired]);
 
   const handleAsyncAnalyze = async (
     brandName: string,
@@ -194,6 +206,27 @@ export default function Home() {
       return;
     }
 
+    // Task 6-B2 (feature/sync-analyze-jwt-project-auth): mirrors
+    // handleAsyncAnalyze's own early-return guard above — the submit
+    // button is already disabled in this state (see isLoading's
+    // wiring below), so this is defense in depth, never the only
+    // thing standing between an unauthenticated/project-less caller
+    // and a submission. Entirely skipped when analyzeAuthRequired is
+    // false (today's production default), so this can never fire in
+    // production as of this task.
+    if (analyzeAuthRequired) {
+      if (sessionState.status !== "signed-in") {
+        setError(ANALYZE_AUTH_REQUIRED_MESSAGE);
+        setStatus("error");
+        return;
+      }
+      if (!selectedProjectId) {
+        setError(ANALYZE_PROJECT_ID_REQUIRED_MESSAGE);
+        setStatus("error");
+        return;
+      }
+    }
+
     setStatus("loading");
     setError(null);
     setFallbackMessage(null);
@@ -207,7 +240,9 @@ export default function Home() {
       // geminiMode are only present when BrandInputForm's
       // dev/verification-only mode selectors are shown (see
       // app/lib/analysis-request.ts) — otherwise they're undefined and
-      // omitted here too, same as before.
+      // omitted here too, same as before. projectId is only present
+      // when analyzeAuthRequired is true (Task 6-B2) — otherwise
+      // omitted exactly as before this field existed.
       const requestBody = buildAnalyzeRequestBody(
         brandName,
         urls,
@@ -217,6 +252,7 @@ export default function Home() {
         commonCrawlDomain,
         claudeMode,
         geminiMode,
+        analyzeAuthRequired ? selectedProjectId ?? undefined : undefined,
       );
 
       const response = await fetch("/api/analyze", {
@@ -271,7 +307,7 @@ export default function Home() {
       </div>
 
       <main className="mx-auto max-w-5xl px-6 py-8">
-        {asyncAnalysisEnabled && (
+        {(asyncAnalysisEnabled || analyzeAuthRequired) && (
           <AsyncProjectNotice
             outcome={projectsOutcome}
             selectedProjectId={selectedProjectId}
@@ -283,7 +319,8 @@ export default function Home() {
           <BrandInputForm
             onSubmit={handleAnalyze}
             isLoading={
-              status === "loading" || (asyncAnalysisEnabled && !selectedProjectId)
+              status === "loading" ||
+              ((asyncAnalysisEnabled || analyzeAuthRequired) && !selectedProjectId)
             }
             initialValue={result?.brandName ?? ""}
           />
@@ -409,9 +446,20 @@ function AsyncProjectNotice({
 
   if (outcome.kind === "unauthorized" || outcome.kind === "error") {
     return (
-      <p className="mb-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-400">
-        {outcome.message}
-      </p>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-400">
+        <p>{outcome.message}</p>
+        {/* ログイン導線（Task 6-B2「JWT認証エラー時はログイン導線を示す」）
+            — unauthorizedのみ（errorはDB/サーバー障害等、ログインでは解決
+            しない別の問題のため導線を出さない）。 */}
+        {outcome.kind === "unauthorized" && (
+          <Link
+            href="/login"
+            className="shrink-0 text-xs font-medium underline-offset-2 hover:underline"
+          >
+            ログインする
+          </Link>
+        )}
+      </div>
     );
   }
 

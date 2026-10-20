@@ -798,6 +798,16 @@ class AnalyzeRequest(BaseModel):
     # services/common_crawl_index.py before any HTTP request is made —
     # this field is not trusted as-is.
     commonCrawlDomain: str | None = None
+    # The project this analysis should be saved under — required only
+    # when ANALYZE_AUTH_REQUIRED=true (see main.py's analyze(), Task
+    # 6-B2). Ignored entirely when that flag is false: the legacy
+    # anonymous path always saves to the fixed default project
+    # regardless of what (if anything) is sent here, exactly as before
+    # this field existed. When the flag is true, this value is never
+    # trusted as-is — main.py verifies the caller's JWT and checks
+    # can_user_access_project() before it is ever passed to
+    # save_analysis_history().
+    projectId: str | None = None
 
 
 class ErrorResponse(BaseModel):

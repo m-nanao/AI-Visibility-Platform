@@ -190,6 +190,7 @@ from services.analysis_history_repository import (
 from services.ai_gap_comparison import generate_ai_gap_comparison
 from services.gemini_rerun import rerun_gemini_for_analysis_run
 from services.analysis_jobs_settings import load_analysis_jobs_settings
+from services.analyze_auth_settings import load_analyze_auth_settings
 from services.auth_settings import is_jwt_verification_configured, load_auth_settings
 from services.jwt_auth import (
     AuthenticatedUser,
@@ -913,8 +914,75 @@ def run_analysis_pipeline(
     )
 
 
+ANALYZE_AUTH_REQUIRED_MESSAGE = "authentication required"
+ANALYZE_INVALID_TOKEN_MESSAGE = "invalid or expired authentication token"
+ANALYZE_JWT_NOT_CONFIGURED_MESSAGE = "analyze JWT verification is not configured"
+ANALYZE_ACCESS_DENIED_MESSAGE = "access denied to the specified project"
+ANALYZE_PROJECT_ID_REQUIRED_MESSAGE = "projectId is required"
+ANALYZE_PROJECT_CHECK_FAILED_MESSAGE = "failed to verify project access"
+
+
+def _resolve_analyze_project_auth(
+    request: Request, payload: AnalyzeRequest
+) -> str | None | JSONResponse:
+    """Resolves POST /analyze's authorization requirement (Task 6-B2,
+    feature/sync-analyze-jwt-project-auth).
+
+    - ANALYZE_AUTH_REQUIRED=false (the default): returns None
+      immediately, without even looking at the Authorization header or
+      `payload.projectId` — analyze() then falls through to the
+      existing anonymous/default-project path, completely unchanged
+      from before this task.
+    - ANALYZE_AUTH_REQUIRED=true: requires a verified Supabase JWT (via
+      the shared _verify_jwt_bearer() helper added in Task 6-A — no new
+      JWT-verification logic is duplicated here) and a `projectId` the
+      caller can access (via the existing can_user_access_project(),
+      the same helper POST /tags and POST /categories already use for
+      exactly this check). On success, returns the verified project id
+      (a plain str) for analyze() to pass into save_analysis_history().
+      On any failure, returns a JSONResponse to return immediately —
+      the caller must never proceed to run_analysis_pipeline() or
+      save_analysis_history() in that case, so no external provider is
+      ever called and nothing is ever saved for an unauthorized
+      request.
+
+    A failed/misconfigured JWT or project check never falls back to
+    the anonymous default-project path merely because this flag
+    happens to be true — it only skips authorization entirely when the
+    flag itself is false.
+    """
+    analyze_auth_settings = load_analyze_auth_settings()
+    if not analyze_auth_settings.auth_required:
+        return None
+
+    auth_result = _verify_jwt_bearer(
+        request,
+        auth_required_message=ANALYZE_AUTH_REQUIRED_MESSAGE,
+        invalid_token_message=ANALYZE_INVALID_TOKEN_MESSAGE,
+        jwt_not_configured_message=ANALYZE_JWT_NOT_CONFIGURED_MESSAGE,
+    )
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    project_id = (payload.projectId or "").strip()
+    if not project_id:
+        return error_response(ANALYZE_PROJECT_ID_REQUIRED_MESSAGE, status_code=400)
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_project(conn, auth_result.user_id, project_id)
+    except Exception:
+        logger.exception("Failed to check project access for POST /analyze")
+        return error_response(ANALYZE_PROJECT_CHECK_FAILED_MESSAGE, status_code=503)
+
+    if not allowed:
+        return error_response(ANALYZE_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    return project_id
+
+
 @app.post("/analyze", response_model=AnalysisResult)
-def analyze(payload: AnalyzeRequest):
+def analyze(payload: AnalyzeRequest, request: Request):
     brand_name = (payload.brandName or "").strip()
 
     if not brand_name:
@@ -924,6 +992,15 @@ def analyze(payload: AnalyzeRequest):
         return error_response(
             f"brandName must be {MAX_BRAND_NAME_LENGTH} characters or fewer"
         )
+
+    auth_outcome = _resolve_analyze_project_auth(request, payload)
+    if isinstance(auth_outcome, JSONResponse):
+        return auth_outcome
+    # None when ANALYZE_AUTH_REQUIRED=false (legacy/anonymous path,
+    # save_analysis_history() below resolves the default project
+    # itself exactly as before); otherwise the caller's own, already
+    # access-checked project id.
+    verified_project_id = auth_outcome
 
     # Minimal diagnostic logging around each stage of /analyze — added
     # to narrow down where a Render free-tier request was dying (past
@@ -979,6 +1056,7 @@ def analyze(payload: AnalyzeRequest):
             visibility_score=result.summary.visibilityScore,
             meta_json=result.meta.model_dump(),
             status="partial" if cooccurrence_status == "unavailable" else "completed",
+            project_id=verified_project_id,
         )
     except Exception:
         logger.exception("Unexpected error while saving analysis history")

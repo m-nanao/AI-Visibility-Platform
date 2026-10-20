@@ -18,6 +18,32 @@ export function isAiOverviewModeSelectorEnabled(): boolean {
   return process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR === "true";
 }
 
+// Frontend-side counterpart to the backend's ANALYZE_AUTH_REQUIRED
+// (Task 6-B2, feature/sync-analyze-jwt-project-auth) — deliberately a
+// *separate* flag, not read from the backend's own setting: this one
+// only controls whether app/page.tsx's sync analysis screen resolves/
+// shows a project selector and gates submission on being signed in,
+// exactly like NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS already does for the
+// async flow. The actual JWT/project forwarding in
+// app/api/analyze/route.ts happens unconditionally regardless of this
+// flag (see that file), so the two flags can safely be flipped in
+// either order without ever breaking the sync analysis screen:
+//
+// - Both false (this task's shipped default): today's anonymous
+//   screen, unchanged.
+// - This flag true, backend's ANALYZE_AUTH_REQUIRED still false: the
+//   screen requires sign-in/project selection in the UI, but the
+//   backend still accepts (and would still accept) an anonymous
+//   request too — a stricter UI than the backend requires, never the
+//   reverse, so this ordering is always safe to ship first.
+// - Backend's ANALYZE_AUTH_REQUIRED turned on only *after* this flag
+//   has shipped and been verified — never the other way around, or a
+//   signed-out/no-project visitor would hit a confusing 401/403 with
+//   no corresponding UI to explain it.
+export function isAnalyzeAuthRequiredEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED === "true";
+}
+
 // Same idea as isAiOverviewModeSelectorEnabled(), for the dev/
 // verification-only "ChatGPT観測モード" selector. This flag only
 // controls whether the select renders — it cannot make the Python API
@@ -77,6 +103,14 @@ export interface AnalyzeRequestBody {
   commonCrawlDomain?: string;
   claudeMode?: ClaudeProviderMode;
   geminiMode?: GeminiProviderMode;
+  // The project to save this analysis under — only meaningful once
+  // app/api/analyze/route.ts's backend counterpart
+  // (ANALYZE_AUTH_REQUIRED=true) actually requires it; omitted
+  // entirely when the caller has no project to send (e.g. the
+  // existing anonymous flow, or ANALYZE_AUTH_REQUIRED=false in
+  // production today) — see Task 6-B2
+  // (feature/sync-analyze-jwt-project-auth).
+  projectId?: string;
 }
 
 /**
@@ -104,6 +138,7 @@ export function buildAnalyzeRequestBody(
   commonCrawlDomain?: string,
   claudeMode?: ClaudeProviderMode,
   geminiMode?: GeminiProviderMode,
+  projectId?: string,
 ): AnalyzeRequestBody {
   const body: AnalyzeRequestBody = { brandName };
   if (urls.length > 0) body.urls = urls;
@@ -115,8 +150,28 @@ export function buildAnalyzeRequestBody(
   }
   if (claudeMode) body.claudeMode = claudeMode;
   if (geminiMode) body.geminiMode = geminiMode;
+  if (projectId && projectId.trim()) body.projectId = projectId.trim();
   return body;
 }
+
+// --- POST /api/analyze auth errors (Task 6-B2,
+// feature/sync-analyze-jwt-project-auth) --------------------------------
+//
+// Only reachable once ANALYZE_AUTH_REQUIRED=true on the backend (still
+// false in production as of this task) — app/api/analyze/route.ts
+// forwards these as real 401/403 responses rather than ever folding
+// them into the dummy-data fallback (see that file's PythonApiOutcome
+// "authError" kind) — an auth/authorization failure must never look
+// like a successful (if "mock") analysis.
+
+export const ANALYZE_AUTH_REQUIRED_MESSAGE = "ログインが必要です。";
+export const ANALYZE_ACCESS_DENIED_MESSAGE = "このprojectで分析を実行する権限がありません。";
+// Shown by the Frontend input screen itself (before even submitting)
+// when GET /api/me/projects resolves to zero accessible projects.
+export const ANALYZE_PROJECT_ID_REQUIRED_MESSAGE =
+  "分析を実行するprojectを選択してください。";
+export const ANALYZE_AUTH_CONFIG_ERROR_MESSAGE =
+  "認証の設定に問題があるため、分析を実行できません。時間をおいて再度お試しください。";
 
 // --- POST /api/analyze dummy-fallback signaling (shared between
 // app/api/analyze/route.ts and app/page.tsx, since a Next.js route

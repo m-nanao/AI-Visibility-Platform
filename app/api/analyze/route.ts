@@ -2,9 +2,13 @@ import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
 import {
+  ANALYZE_ACCESS_DENIED_MESSAGE,
+  ANALYZE_AUTH_CONFIG_ERROR_MESSAGE,
+  ANALYZE_AUTH_REQUIRED_MESSAGE,
   ANALYZE_FALLBACK_HEADER,
   ANALYZE_FALLBACK_REASON_HEADER,
 } from "../../lib/analysis-request";
+import { getServerSupabaseAccessToken } from "../../lib/supabase/server";
 import type {
   AiOverviewProviderMode,
   AnalysisResult,
@@ -81,9 +85,32 @@ type PythonApiOutcome =
   // failure, so it must be reported back rather than silently
   // papered over with dummy data.
   | { kind: "validationError"; message: string }
-  // Unset URL, network error, timeout, non-2xx (other than 400),
-  // invalid JSON, or a response that doesn't match AnalysisResult.
+  // Only reachable once the Python API's ANALYZE_AUTH_REQUIRED=true
+  // (Task 6-B2, feature/sync-analyze-jwt-project-auth) — missing/
+  // invalid JWT (401), inaccessible project (403), or the one specific
+  // 503 shape that means "JWT verification itself is misconfigured"
+  // (see ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES below). Reported
+  // back as a real error, exactly like validationError above — this
+  // must NEVER fall through to the dummy-data fallback below, since an
+  // auth/authorization failure silently rendered as a successful
+  // "mock" analysis would be actively misleading.
+  | { kind: "authError"; status: 401 | 403 | 503 }
+  // Unset URL, network error, timeout, non-2xx (other than 400/401/403,
+  // and 503 only when it isn't the auth-config case above), invalid
+  // JSON, or a response that doesn't match AnalysisResult.
   | { kind: "unavailable"; reason: PythonApiUnavailableReason };
+
+// Must match backend/main.py's ANALYZE_JWT_NOT_CONFIGURED_MESSAGE /
+// ANALYZE_PROJECT_CHECK_FAILED_MESSAGE exactly — the only way to tell
+// "JWT verification/project-access check is misconfigured" (an
+// authError, never dummy-fallback-worthy) apart from the Python API's
+// own, unrelated 503 causes (not configured / DB unreachable — the
+// existing "unavailable" fallback path, unchanged). Both are fixed,
+// hardcoded strings on the backend, never derived from user input.
+const ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES = new Set([
+  "analyze JWT verification is not configured",
+  "failed to verify project access",
+]);
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
@@ -100,6 +127,17 @@ async function fetchFromPythonApi(
   commonCrawlDomain?: string,
   claudeMode?: ClaudeProviderMode,
   geminiMode?: GeminiProviderMode,
+  // Task 6-B2 (feature/sync-analyze-jwt-project-auth) additions —
+  // both are always forwarded whenever present, regardless of this
+  // app's own knowledge of ANALYZE_AUTH_REQUIRED: the Python API's own
+  // flag is what actually decides whether either is required, so
+  // sending them unconditionally keeps this route correct whichever
+  // way that flag is set, without the two ever needing to agree on a
+  // deploy order. When the flag is false (production default as of
+  // this task), the Python API ignores both exactly as before they
+  // existed.
+  projectId?: string,
+  accessToken?: string | null,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable", reason: "not_configured" };
@@ -120,9 +158,11 @@ async function fetchFromPythonApi(
     commonCrawlDomain?: string;
     claudeMode?: ClaudeProviderMode;
     geminiMode?: GeminiProviderMode;
+    projectId?: string;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
+  if (projectId) requestBody.projectId = projectId;
   // Forwarded as-is; the Python API decides whether to actually honor
   // it (ALLOW_AI_OVERVIEW_MODE_OVERRIDE) or ignore it in favor of its
   // own AI_OVERVIEW_PROVIDER_MODE default. Next.js does not gate this
@@ -156,10 +196,21 @@ async function fetchFromPythonApi(
   // Next.js does not gate this itself.
   if (geminiMode) requestBody.geminiMode = geminiMode;
 
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+    // Always attached whenever a session is present, regardless of
+    // this app's own knowledge of ANALYZE_AUTH_REQUIRED — see this
+    // function's `accessToken` parameter doc above. Never attaching
+    // this only because a local flag is false would otherwise create
+    // exactly the "Frontend/Backendのフラグ設定が異なる期間" gap this
+    // task was asked to avoid.
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
+
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
@@ -182,6 +233,28 @@ async function fetchFromPythonApi(
     }
 
     if (!response.ok) {
+      // Task 6-B2: a 401/403 (ANALYZE_AUTH_REQUIRED=true only — never
+      // sent by the Python API otherwise) must never fall through to
+      // the dummy-data fallback below — an auth/authorization failure
+      // silently rendered as a successful "mock" analysis would be
+      // actively misleading (this task's explicit requirement).
+      if (response.status === 401 || response.status === 403) {
+        return { kind: "authError", status: response.status };
+      }
+      if (response.status === 503) {
+        // Distinguishes "JWT verification/project-access check is
+        // misconfigured" (also an authError, same reasoning as above)
+        // from every other, unrelated 503 cause this route has always
+        // treated as a dummy-fallback-worthy "unavailable" outcome
+        // (Python API not configured, DB unreachable, etc.) — see
+        // ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES above.
+        const errorBody = await response.json().catch(() => null);
+        const rawMessage =
+          errorBody && typeof errorBody.error === "string" ? errorBody.error : null;
+        if (rawMessage && ANALYZE_AUTH_CONFIG_ERROR_BACKEND_MESSAGES.has(rawMessage)) {
+          return { kind: "authError", status: 503 };
+        }
+      }
       console.warn(
         `[analyze] Python API returned HTTP ${response.status}; falling back to dummy data`,
       );
@@ -284,6 +357,21 @@ export async function POST(request: Request) {
   const geminiMode = GEMINI_MODES.includes(body?.geminiMode)
     ? (body.geminiMode as GeminiProviderMode)
     : undefined;
+  // Task 6-B2 (feature/sync-analyze-jwt-project-auth): forwarded as-is
+  // whenever present — never trusted by this route itself (it does no
+  // access check of its own); the Python API is the one that verifies
+  // the caller's JWT actually has access to this exact project before
+  // ever using it (see backend/main.py's _resolve_analyze_project_auth()).
+  const projectId =
+    typeof body?.projectId === "string" && body.projectId.trim()
+      ? body.projectId.trim()
+      : undefined;
+  // Always resolved and forwarded regardless of whether this app knows
+  // ANALYZE_AUTH_REQUIRED's current value — see fetchFromPythonApi()'s
+  // `accessToken` parameter doc. null when there's no session (an
+  // anonymous caller), exactly like every other proxy route in this
+  // app that forwards a Supabase access token.
+  const accessToken = await getServerSupabaseAccessToken(request);
 
   const outcome = await fetchFromPythonApi(
     trimmedBrandName,
@@ -295,6 +383,8 @@ export async function POST(request: Request) {
     commonCrawlDomain,
     claudeMode,
     geminiMode,
+    projectId,
+    accessToken,
   );
 
   if (outcome.kind === "success") {
@@ -303,6 +393,18 @@ export async function POST(request: Request) {
 
   if (outcome.kind === "validationError") {
     return NextResponse.json({ error: outcome.message }, { status: 400 });
+  }
+
+  if (outcome.kind === "authError") {
+    // Never falls back to dummy data — see PythonApiOutcome's
+    // "authError" doc above for why.
+    const message =
+      outcome.status === 401
+        ? ANALYZE_AUTH_REQUIRED_MESSAGE
+        : outcome.status === 403
+          ? ANALYZE_ACCESS_DENIED_MESSAGE
+          : ANALYZE_AUTH_CONFIG_ERROR_MESSAGE;
+    return NextResponse.json({ error: message }, { status: outcome.status });
   }
 
   await new Promise((resolve) =>

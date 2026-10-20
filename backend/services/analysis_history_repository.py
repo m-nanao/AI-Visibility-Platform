@@ -151,13 +151,38 @@ def save_analysis_history(
     visibility_score: int | None,
     meta_json: dict[str, Any] | None,
     status: str,
+    project_id: str | None = None,
 ) -> AnalysisHistorySaveResult | None:
     """Best-effort save of one analysis run to Postgres.
+
+    `project_id`, added by Task 6-B2
+    (feature/sync-analyze-jwt-project-auth), is the caller's **already
+    verified** project id — main.py's analyze() only ever passes one
+    after confirming (via can_user_access_project()) that the caller's
+    JWT actually belongs to that project. This function trusts it
+    as-is and never re-derives or re-checks it; it must never be a raw,
+    unverified value from the request body.
+
+    - `project_id=None` (the default, used by every caller before this
+      task and by the legacy/ANALYZE_AUTH_REQUIRED=false path):
+      unchanged behavior — always resolves and saves to the fixed
+      default project (organizations.slug='default',
+      projects.slug='default'), exactly as before this parameter
+      existed.
+    - `project_id=<uuid>`: saves brand/analysis_run under that project
+      instead. Brand lookup is scoped to `(name, project_id)` rather
+      than name alone, so a same-named brand belonging to a *different*
+      project is never silently reused across projects — this is the
+      authenticated path's own project-isolation guarantee, independent
+      of (and in addition to) the caller-side can_user_access_project()
+      check.
 
     Returns None when:
     - DB persistence is not configured (DB_SAVE_ENABLED/DATABASE_URL —
       see services/db_settings.py); no connection is attempted.
     - The psycopg driver is not installed.
+    - `project_id` is None and the default project doesn't exist yet
+      (unchanged from before this parameter existed).
     - Anything about the connection/query fails (logged here via
       logger.exception before returning).
 
@@ -178,54 +203,84 @@ def save_analysis_history(
     try:
         with psycopg.connect(settings.database_url, connect_timeout=5) as conn:
             with conn.cursor() as cur:
-                # default project (organizations/projects with
-                # slug='default', see backend/migrations/002_add_organizations_projects.sql)
-                # is required for the project_id columns below. If it
-                # doesn't exist yet (e.g. migration 002 hasn't been
-                # applied to this database), skip the save entirely
-                # rather than writing new brands/analysis_runs rows
-                # with no project_id — see
-                # docs/28_supabase_auth_rls_migration_design.md "21.
-                # 本番適用状況" for why this is preferred over saving
-                # without a project_id.
-                default_project_id = get_default_project_id(cur)
-                if default_project_id is None:
-                    logger.warning(
-                        "default project (organizations.slug='default', "
-                        "projects.slug='default') not found; skipping analysis history save"
-                    )
-                    return None
-
-                # Brand: reuse an existing row by exact name match if
-                # one exists (simple get), otherwise create one — see
-                # docs/19_minimum_db_migration_design.md "5. brands
-                # テーブル案", which explicitly says not to enforce
-                # strict dedup here. An existing brand that already has
-                # a project_id is left untouched; one with project_id
-                # still null (e.g. from before this backfill existed)
-                # is assigned the default project.
-                cur.execute(
-                    "select id, project_id from brands where name = %s order by created_at desc limit 1",
-                    (brand_name,),
-                )
-                row = cur.fetchone()
-                if row is not None:
-                    brand_id, brand_project_id = row
-                    if brand_project_id is None:
-                        cur.execute(
-                            "update brands set project_id = %s where id = %s",
-                            (default_project_id, brand_id),
-                        )
-                else:
+                if project_id is not None:
+                    # Authenticated path (Task 6-B2): the caller
+                    # already verified this exact project_id via
+                    # can_user_access_project() — use it as-is, and
+                    # scope the brand lookup to this project so a
+                    # same-named brand from a different project is
+                    # never silently reused.
+                    target_project_id = project_id
                     cur.execute(
-                        """
-                        insert into brands (name, canonical_domain, project_id)
-                        values (%s, %s, %s)
-                        returning id
-                        """,
-                        (brand_name, canonical_domain, default_project_id),
+                        "select id from brands where name = %s and project_id = %s "
+                        "order by created_at desc limit 1",
+                        (brand_name, target_project_id),
                     )
-                    brand_id = cur.fetchone()[0]
+                    row = cur.fetchone()
+                    if row is not None:
+                        brand_id = row[0]
+                    else:
+                        cur.execute(
+                            """
+                            insert into brands (name, canonical_domain, project_id)
+                            values (%s, %s, %s)
+                            returning id
+                            """,
+                            (brand_name, canonical_domain, target_project_id),
+                        )
+                        brand_id = cur.fetchone()[0]
+                else:
+                    # Legacy/anonymous path — unchanged from before
+                    # this parameter existed. default project
+                    # (organizations/projects with slug='default', see
+                    # backend/migrations/002_add_organizations_projects.sql)
+                    # is required for the project_id columns below. If
+                    # it doesn't exist yet (e.g. migration 002 hasn't
+                    # been applied to this database), skip the save
+                    # entirely rather than writing new brands/
+                    # analysis_runs rows with no project_id — see
+                    # docs/28_supabase_auth_rls_migration_design.md
+                    # "21. 本番適用状況" for why this is preferred over
+                    # saving without a project_id.
+                    target_project_id = get_default_project_id(cur)
+                    if target_project_id is None:
+                        logger.warning(
+                            "default project (organizations.slug='default', "
+                            "projects.slug='default') not found; skipping analysis history save"
+                        )
+                        return None
+
+                    # Brand: reuse an existing row by exact name match
+                    # if one exists (simple get), otherwise create one
+                    # — see docs/19_minimum_db_migration_design.md "5.
+                    # brands テーブル案", which explicitly says not to
+                    # enforce strict dedup here. An existing brand that
+                    # already has a project_id is left untouched; one
+                    # with project_id still null (e.g. from before
+                    # this backfill existed) is assigned the default
+                    # project.
+                    cur.execute(
+                        "select id, project_id from brands where name = %s order by created_at desc limit 1",
+                        (brand_name,),
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        brand_id, brand_project_id = row
+                        if brand_project_id is None:
+                            cur.execute(
+                                "update brands set project_id = %s where id = %s",
+                                (target_project_id, brand_id),
+                            )
+                    else:
+                        cur.execute(
+                            """
+                            insert into brands (name, canonical_domain, project_id)
+                            values (%s, %s, %s)
+                            returning id
+                            """,
+                            (brand_name, canonical_domain, target_project_id),
+                        )
+                        brand_id = cur.fetchone()[0]
 
                 cur.execute(
                     """
@@ -236,7 +291,7 @@ def save_analysis_history(
                     """,
                     (
                         brand_id,
-                        default_project_id,
+                        target_project_id,
                         status,
                         Jsonb(input_snapshot),
                         _maybe_jsonb(source_summary),

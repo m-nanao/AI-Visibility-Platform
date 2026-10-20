@@ -27,10 +27,17 @@ class _FakeCursor:
         existing_brand_id=None,
         existing_brand_project_id=None,
         default_project_id="default-project-id",
+        # Task 6-B2: the authenticated path's own project-scoped brand
+        # lookup (`select id from brands where name = %s and
+        # project_id = %s`) — distinct from the legacy unscoped lookup
+        # above, since it's a different query shape with a different
+        # fetchone() result (no project_id column in the SELECT list).
+        existing_scoped_brand_id=None,
     ):
         self.existing_brand_id = existing_brand_id
         self.existing_brand_project_id = existing_brand_project_id
         self.default_project_id = default_project_id
+        self.existing_scoped_brand_id = existing_scoped_brand_id
         self.queries = []
         self._last_query = ""
 
@@ -54,6 +61,8 @@ class _FakeCursor:
                 if self.existing_brand_id
                 else None
             )
+        if q.startswith("select id from brands"):
+            return (self.existing_scoped_brand_id,) if self.existing_scoped_brand_id else None
         if "insert into brands" in q:
             return ("new-brand-id",)
         if "insert into analysis_runs" in q:
@@ -253,6 +262,96 @@ def test_skips_when_default_project_is_missing(monkeypatch):
         if "insert into brands" in q.lower() or "insert into analysis_runs" in q.lower()
     ]
     assert insert_queries == []
+
+
+# --- Authenticated path: explicit project_id (Task 6-B2,
+# feature/sync-analyze-jwt-project-auth) ------------------------------------
+#
+# save_analysis_history(project_id=...) is only ever called with an
+# already access-checked project id (see main.py's
+# _resolve_analyze_project_auth()) — these tests verify this module's
+# own handling of that value, not the access check itself (covered by
+# tests/test_main_analyze_auth.py).
+
+
+def test_explicit_project_id_creates_new_brand_under_that_project(monkeypatch):
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(existing_scoped_brand_id=None)
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save(project_id="explicit-project-id")
+
+    assert result is not None
+    assert result.brand_id == "new-brand-id"
+    _, brand_params = next(
+        (q, p) for q, p in fake_cursor.queries if "insert into brands" in q.lower()
+    )
+    assert brand_params == ("サイボウズ", None, "explicit-project-id")
+    _, run_params = next(
+        (q, p) for q, p in fake_cursor.queries if "insert into analysis_runs" in q.lower()
+    )
+    assert run_params[1] == "explicit-project-id"
+    # The legacy default-project lookup must never even be attempted on
+    # this path.
+    assert not any("from projects p" in q.lower() for q, _ in fake_cursor.queries)
+
+
+def test_explicit_project_id_reuses_brand_scoped_to_that_exact_project(monkeypatch):
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(existing_scoped_brand_id="scoped-brand-id")
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save(project_id="explicit-project-id")
+
+    assert result is not None
+    assert result.brand_id == "scoped-brand-id"
+    insert_brand_queries = [q for q, _ in fake_cursor.queries if "insert into brands" in q.lower()]
+    assert insert_brand_queries == []
+
+
+def test_explicit_project_id_lookup_is_scoped_by_project_not_name_alone(monkeypatch):
+    """A same-named brand existing under a *different* project (as the
+    legacy unscoped `existing_brand_id` fixture param would represent)
+    must never be reused here — only `existing_scoped_brand_id`
+    (matching this exact project) counts."""
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(
+        existing_brand_id="brand-in-some-other-project",
+        existing_scoped_brand_id=None,
+    )
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save(project_id="explicit-project-id")
+
+    assert result is not None
+    assert result.brand_id == "new-brand-id"
+    _, brand_params = next(
+        (q, p) for q, p in fake_cursor.queries if "insert into brands" in q.lower()
+    )
+    assert brand_params == ("サイボウズ", None, "explicit-project-id")
+
+
+def test_explicit_project_id_never_consults_or_requires_default_project(monkeypatch):
+    """Even when the default project doesn't exist at all
+    (default_project_id=None), an explicit project_id must still save
+    successfully — the authenticated path has no dependency on the
+    default project's existence."""
+    _configure_env(monkeypatch, enabled="true")
+    fake_cursor = _FakeCursor(existing_scoped_brand_id=None, default_project_id=None)
+    fake_psycopg = _FakePsycopg(fake_cursor)
+    monkeypatch.setattr(repo, "psycopg", fake_psycopg)
+    monkeypatch.setattr(repo, "Jsonb", _FakeJsonb)
+
+    result = _call_save(project_id="explicit-project-id")
+
+    assert result is not None
+    assert result.analysis_run_id == "new-run-id"
 
 
 # --- get_default_project_id() ----------------------------------------------

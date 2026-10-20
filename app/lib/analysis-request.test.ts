@@ -3,6 +3,7 @@ import {
   buildAnalyzeRequestBody,
   getAnalyzeFallbackMessage,
   isAiOverviewModeSelectorEnabled,
+  isAnalyzeAuthRequiredEnabled,
   isChatGptModeSelectorEnabled,
   isClaudeModeSelectorEnabled,
   isCommonCrawlModeSelectorEnabled,
@@ -38,6 +39,38 @@ describe("isAiOverviewModeSelectorEnabled", () => {
   it("is enabled only when the env var is exactly \"true\"", () => {
     process.env.NEXT_PUBLIC_ENABLE_AI_OVERVIEW_MODE_SELECTOR = "true";
     expect(isAiOverviewModeSelectorEnabled()).toBe(true);
+  });
+});
+
+describe("isAnalyzeAuthRequiredEnabled", () => {
+  const originalValue = process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED;
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED;
+    } else {
+      process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED = originalValue;
+    }
+  });
+
+  it("is disabled when the env var is unset", () => {
+    delete process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED;
+    expect(isAnalyzeAuthRequiredEnabled()).toBe(false);
+  });
+
+  it("is disabled when the env var is \"false\"", () => {
+    process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED = "false";
+    expect(isAnalyzeAuthRequiredEnabled()).toBe(false);
+  });
+
+  it("is disabled for any value other than the exact string \"true\"", () => {
+    process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED = "TRUE";
+    expect(isAnalyzeAuthRequiredEnabled()).toBe(false);
+  });
+
+  it("is enabled only when the env var is exactly \"true\"", () => {
+    process.env.NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED = "true";
+    expect(isAnalyzeAuthRequiredEnabled()).toBe(true);
   });
 });
 
@@ -502,6 +535,61 @@ describe("buildAnalyzeRequestBody", () => {
       claudeMode: "anthropic",
       geminiMode: "google",
     });
+  });
+
+  // --- projectId (Task 6-B2, feature/sync-analyze-jwt-project-auth) ---
+
+  it("omits projectId when not passed (analyzeAuthRequired disabled)", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    expect(body.projectId).toBeUndefined();
+    expect("projectId" in body).toBe(false);
+  });
+
+  it("includes projectId when passed", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "project-123",
+      ),
+    ).toEqual({ brandName: "Acme", projectId: "project-123" });
+  });
+
+  it("trims projectId before including it", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "  project-123  ",
+      ),
+    ).toEqual({ brandName: "Acme", projectId: "project-123" });
+  });
+
+  it("omits a blank/whitespace-only projectId", () => {
+    const body = buildAnalyzeRequestBody(
+      "Acme",
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "   ",
+    );
+    expect("projectId" in body).toBe(false);
   });
 });
 
