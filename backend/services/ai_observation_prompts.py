@@ -1,18 +1,19 @@
-"""Shared system/user prompt and summarization logic for the Claude and
-Gemini observation providers (services/claude_client.py,
-services/gemini_client.py) — kept in one place so both ask the exact
-same question about a brand and can be meaningfully compared
-side-by-side, per docs/36_multi_ai_comparison_design.md.
+"""Shared system/user prompt and summarization logic for all three
+single-call AI brand-observation providers (services/chatgpt_client.py,
+services/claude_client.py, services/gemini_client.py) — kept in one
+place so all three ask the exact same question about a brand and can
+be meaningfully compared side-by-side (Task 6-C Review Prep 1,
+feature/unify-ai-observation-prompts).
 
-Deliberately not shared with services/chatgpt_client.py: that module's
-existing prompt predates this one and is already in production
-(feature/chatgpt-observation-provider) — changing it now would be a
-behavioral change to an existing, already-verified feature, which is
-out of scope for adding the Claude/Gemini foundation. Claude and
-Gemini instead use this newer, explicitly comparison-oriented prompt;
-all three observation providers still share the same underlying
-caveat (a single non-browsing text-generation call, not a
-representation of the AI service's full behavior).
+Historically, Claude/Gemini shared this module while ChatGPT kept its
+own, differently-worded prompt (predating this module) — see
+docs/36_multi_ai_comparison_design.md for that original design. Task
+6-C Review Prep 1 unified all three onto this single definition so a
+依頼者 comparing the three answers is comparing responses to the
+*same* question, not three subtly different ones. All three
+observation providers still share the same underlying caveat (a
+single non-browsing text-generation call, not a representation of the
+AI service's full behavior).
 """
 
 SYSTEM_PROMPT = (
@@ -23,22 +24,31 @@ SYSTEM_PROMPT = (
 
 
 def build_user_prompt(brand_name: str) -> str:
-    """The same question asked of every multi-AI observation provider
-    (Claude, Gemini), so their answers can be compared on identical
-    observation points for the same brand — see
-    docs/36_multi_ai_comparison_design.md "3.2 比較観点".
+    """The same question asked of every single-call AI brand-observation
+    provider (ChatGPT, Claude, Gemini), so their answers can be
+    compared on identical observation points for the same brand (Task
+    6-C Review Prep 1). Deliberately a neutral "how is this brand
+    generally perceived" question — no comparison-shopping/competitor
+    framing (that wording was removed in this task per the project's
+    confirmed policy of not adding search-demand-research framing such
+    as "おすすめ"/"選び方").
     """
     return (
-        f"対象ブランド「{brand_name}」について、Web検索ユーザーが比較検討する場面を想定し、"
-        "以下を日本語で簡潔に回答してください。\n"
+        "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを"
+        "日本語で説明してください。\n"
         "\n"
-        "- どのようなブランド/サービスとして説明されるか\n"
-        "- どのカテゴリ・用途で言及されやすいか\n"
-        "- 強みとして説明されそうな点\n"
-        "- 注意点や不足しそうな情報\n"
-        "- 競合や比較対象がある場合の文脈\n"
+        f"ブランド名：{brand_name}\n"
         "\n"
-        "この回答は観測用です。事実確認済みレポートではなく、モデル回答傾向の確認として扱います。"
+        "以下の観点について回答してください。\n"
+        "\n"
+        "1. どのような企業・ブランド・サービスとして認識されるか\n"
+        "2. 主な事業・提供サービス\n"
+        "3. 想定される利用者や用途\n"
+        "4. 代表的な特徴・強み\n"
+        "5. 不明な点や認識が曖昧な点\n"
+        "\n"
+        "Web検索は行わず、モデルが持つ知識に基づいて回答してください。\n"
+        "確信できない情報は推測で補わず、不明であることを明示してください。"
     )
 
 

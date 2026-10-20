@@ -6,10 +6,12 @@ in `aiOverviewComparison`.
 
 **This is not a re-creation of what the ChatGPT app itself "knows" or
 does.** It is a single, non-browsing text-generation request to an
-OpenAI API model — see the system prompt in `_build_request_body()`,
-which explicitly instructs the model not to browse the web. No
-references/citations are requested or parsed; this module never
-touches OpenAI's web-search tool.
+OpenAI API model — see `services/ai_observation_prompts.py`'s
+`SYSTEM_PROMPT` (shared with services/claude_client.py/
+services/gemini_client.py as of Task 6-C Review Prep 1, so all three
+ask the exact same question), which explicitly instructs the model
+not to browse the web. No references/citations are requested or
+parsed; this module never touches OpenAI's web-search tool.
 
 **This module never decides *whether* to call OpenAI — only *how*.**
 All gating (default mode, per-request override, credentials, request
@@ -37,6 +39,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from services.ai_observation_prompts import SYSTEM_PROMPT, build_user_prompt
 from services.chatgpt_settings import ChatGptCredentials
 
 logger = logging.getLogger(__name__)
@@ -53,13 +56,6 @@ _SUMMARY_MAX_CHARS = 200
 # than _SUMMARY_MAX_CHARS, matching services/dataforseo_client.py's
 # fullSummary sizing (see that module's _FULL_SUMMARY_MAX_CHARS).
 _FULL_SUMMARY_MAX_CHARS = 2500
-
-_SYSTEM_PROMPT = (
-    "あなたは、AIがブランドをどのように説明するかを観測するための評価用アシスタントです。"
-    "Web検索は行わず、一般的な知識に基づいて日本語で回答してください。"
-    "不確かな点は断定しすぎず、簡潔に述べてください。"
-)
-
 
 @dataclass(frozen=True)
 class ChatGptObservationResult:
@@ -98,32 +94,14 @@ def should_send_temperature(model: str) -> bool:
     return not normalized.startswith(_NO_TEMPERATURE_MODEL_PREFIXES)
 
 
-_USER_PROMPT_TEMPLATE = (
-    "次のブランドについて、一般的にどのような企業・サービスとして認識されるかを"
-    "日本語で説明してください。\n"
-    "\n"
-    "ブランド名: {brand_name}\n"
-    "\n"
-    "回答は以下の観点を含め、全体で3〜5文程度にしてください。\n"
-    "- 何を提供しているか\n"
-    "- 主な利用者または用途\n"
-    "- 代表的な特徴や強み\n"
-    "\n"
-    "注意:\n"
-    "- 箇条書きではなく自然文で回答してください\n"
-    "- 参照元やURLは挙げないでください\n"
-    "- 分からない場合は「一般的には十分な情報を確認できません」と述べてください"
-)
-
-
 def _build_request_body(
     brand_name: str, model: str, max_output_tokens: int, temperature: float
 ) -> dict:
-    user_prompt = _USER_PROMPT_TEMPLATE.format(brand_name=brand_name)
+    user_prompt = build_user_prompt(brand_name)
     body: dict = {
         "model": model,
         "input": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         "max_output_tokens": max_output_tokens,

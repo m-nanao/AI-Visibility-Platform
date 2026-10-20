@@ -1,6 +1,7 @@
 import httpx
 
 from services import chatgpt_client
+from services.ai_observation_prompts import build_user_prompt
 from services.chatgpt_client import RESPONSES_API_URL, fetch_chatgpt_observation
 from services.chatgpt_settings import ChatGptCredentials
 
@@ -234,7 +235,11 @@ def test_fetch_system_prompt_forbids_browsing(monkeypatch):
     assert "Web検索は行わず" in system_content
 
 
-def test_fetch_user_prompt_asks_for_three_to_five_sentences_and_no_references(monkeypatch):
+def test_fetch_user_prompt_uses_the_shared_unified_prompt(monkeypatch):
+    """Task 6-C Review Prep 1: ChatGPT now uses the exact same user
+    prompt as Claude/Gemini (services/ai_observation_prompts.py's
+    build_user_prompt()), so all three providers ask the same
+    question about the brand."""
     seen_bodies = []
 
     def fake_post(url, **kwargs):
@@ -246,8 +251,9 @@ def test_fetch_user_prompt_asks_for_three_to_five_sentences_and_no_references(mo
     fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
     user_content = seen_bodies[0]["input"][1]["content"]
-    assert "3〜5文程度" in user_content
-    assert "参照元やURLは挙げないでください" in user_content
+    assert user_content == build_user_prompt("Acme")
+    assert "どのような企業・ブランド・サービスとして認識されるか" in user_content
+    assert "確信できない情報は推測で補わず、不明であることを明示してください。" in user_content
     assert "Acme" in user_content
 
 
