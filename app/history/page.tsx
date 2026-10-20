@@ -10,12 +10,19 @@ import {
   CHATGPT_OBSERVATION_FILTER_LABEL_TEXT,
   CLAUDE_OBSERVATION_FILTER_LABEL_TEXT,
   GEMINI_OBSERVATION_FILTER_LABEL_TEXT,
+  HISTORY_CATEGORY_FILTER_ALL_VALUE,
+  HISTORY_CATEGORY_FILTER_LABEL_TEXT,
+  HISTORY_CATEGORY_FILTER_UNCATEGORIZED_VALUE,
+  HISTORY_CLEAR_FILTERS_BUTTON_LABEL,
+  HISTORY_CLEAR_FILTERS_RESETS_SORT,
   HISTORY_DELETE_BUTTON_LABEL,
   HISTORY_DELETE_CONFIRM_MESSAGE,
   HISTORY_FAVORITE_BADGE_LABEL,
   HISTORY_FAVORITE_FILTER_ALL_LABEL,
   HISTORY_FAVORITE_FILTER_DEFAULT,
   HISTORY_FAVORITE_FILTER_FAVORITE_ONLY_LABEL,
+  HISTORY_FILTERS_PANEL_HIDE_LABEL,
+  HISTORY_FILTERS_PANEL_SHOW_LABEL,
   HISTORY_IMPORTANT_BADGE_LABEL,
   HISTORY_IMPORTANT_FILTER_ALL_LABEL,
   HISTORY_IMPORTANT_FILTER_DEFAULT,
@@ -29,10 +36,12 @@ import {
   HISTORY_SORT_NEWEST_LABEL,
   HISTORY_SORT_OLDEST_LABEL,
   HISTORY_LIST_PAGE_SIZE,
+  HISTORY_TAG_FILTER_LABEL_TEXT,
   OBSERVATION_FILTER_DEFAULT,
   SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS,
   buildHistoryListRequestUrl,
   canManageHistoryListItem,
+  describeActiveHistoryFilters,
   formatAnalysisRunListItem,
   formatHistoryPaginationLabel,
   getFavoriteToggleLabel,
@@ -46,6 +55,7 @@ import {
   resolveSetAnalysisRunImportantOutcome,
 } from "../lib/analysis-history";
 import type {
+  HistoryCategoryFilterValue,
   HistoryFavoriteFilter,
   HistoryImportantFilter,
   HistoryListQuery,
@@ -53,6 +63,12 @@ import type {
   HistoryViewState,
   ObservationFilterValue,
 } from "../lib/analysis-history";
+import {
+  UNCATEGORIZED_LABEL,
+  resolveCategoryListFetchOutcome,
+  resolveTagListFetchOutcome,
+} from "../lib/tags-categories";
+import type { CategoryItem, TagItem } from "../lib/tags-categories";
 
 // Select-box value type for the 4 AI observation filters — "all" (no
 // filter) plus the 5 ObservationFilterValue states, matching this
@@ -125,6 +141,23 @@ export default function HistoryPage() {
   const [favoriteFilter, setFavoriteFilter] = useState<HistoryFavoriteFilter>(
     HISTORY_FAVORITE_FILTER_DEFAULT,
   );
+  // カテゴリ/タグフィルタ (feature/history-tags-categories, Task 5-C) —
+  // 既存フィルタと同じ「選択したら page を1に戻す」規約。
+  // categoryFilter は "all"/"uncategorized"/実際のカテゴリid のいずれか
+  // (HistoryCategoryFilterValue)。selectedTagIds は複数選択可・OR条件。
+  const [categoryFilter, setCategoryFilter] = useState<HistoryCategoryFilterValue>(
+    HISTORY_CATEGORY_FILTER_ALL_VALUE,
+  );
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  // フィルタパネルの開閉状態 — 既存フィルタ・新規フィルタをまとめて
+  // collapsible panel に入れる（Task 5-C「4. UI」）。デフォルトは閉じた
+  // 状態で、フィルタが実際に効いていれば自動的に開く（下のuseEffect）。
+  const [filtersPanelOpen, setFiltersPanelOpen] = useState(false);
+  // タグ/カテゴリの選択肢一覧 — フィルタのセレクト/複数選択用。一覧
+  // ページそのものの読み込み失敗とは独立させ、taking最小限の非ブロッキ
+  // ング表示にする（一覧の表示自体は壊さない）。
+  const [availableTags, setAvailableTags] = useState<TagItem[]>([]);
+  const [availableCategories, setAvailableCategories] = useState<CategoryItem[]>([]);
 
   // Debounces `searchInput` into `debouncedSearch`, and resets to page
   // 1 in the same tick so a search doesn't fetch twice (once for the
@@ -174,6 +207,38 @@ export default function HistoryPage() {
     setFavoriteFilter(next);
     setPage(1);
   };
+  const handleCategoryFilterChange = (next: HistoryCategoryFilterValue) => {
+    setCategoryFilter(next);
+    setPage(1);
+  };
+  const handleTagFilterToggle = (tagId: string) => {
+    setSelectedTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
+    );
+    setPage(1);
+  };
+  // 「条件をクリア」— すべてのフィルタを初期値に戻す。並び替えも対象に
+  // 含める（HISTORY_CLEAR_FILTERS_RESETS_SORTのコメント参照）。検索欄
+  // は searchInput/debouncedSearch の両方をクリアする必要がある —
+  // debouncedSearchだけ戻すとsearchInputが古い値を表示したまま残る。
+  const handleClearFilters = () => {
+    setSearchInput("");
+    setDebouncedSearch("");
+    setImportantFilter(HISTORY_IMPORTANT_FILTER_DEFAULT);
+    setFavoriteFilter(HISTORY_FAVORITE_FILTER_DEFAULT);
+    setStartedFrom("");
+    setStartedTo("");
+    setAiOverviewObservation(OBSERVATION_FILTER_DEFAULT);
+    setChatgptObservation(OBSERVATION_FILTER_DEFAULT);
+    setClaudeObservation(OBSERVATION_FILTER_DEFAULT);
+    setGeminiObservation(OBSERVATION_FILTER_DEFAULT);
+    setCategoryFilter(HISTORY_CATEGORY_FILTER_ALL_VALUE);
+    setSelectedTagIds([]);
+    if (HISTORY_CLEAR_FILTERS_RESETS_SORT) {
+      setSortOrder(HISTORY_SORT_DEFAULT_ORDER);
+    }
+    setPage(1);
+  };
 
   const query: HistoryListQuery = useMemo(
     () => ({
@@ -187,6 +252,13 @@ export default function HistoryPage() {
       claudeObservation: claudeObservation === "all" ? undefined : claudeObservation,
       geminiObservation: geminiObservation === "all" ? undefined : geminiObservation,
       favorite: favoriteFilter === "favoriteOnly",
+      uncategorizedOnly: categoryFilter === HISTORY_CATEGORY_FILTER_UNCATEGORIZED_VALUE,
+      categoryId:
+        categoryFilter !== HISTORY_CATEGORY_FILTER_ALL_VALUE &&
+        categoryFilter !== HISTORY_CATEGORY_FILTER_UNCATEGORIZED_VALUE
+          ? categoryFilter
+          : undefined,
+      tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
       sort: sortOrder,
       page,
     }),
@@ -200,6 +272,8 @@ export default function HistoryPage() {
       claudeObservation,
       geminiObservation,
       favoriteFilter,
+      categoryFilter,
+      selectedTagIds,
       sortOrder,
       page,
     ],
@@ -223,6 +297,34 @@ export default function HistoryPage() {
       cancelled = true;
     };
   }, [query]);
+
+  // タグ/カテゴリの選択肢一覧を一度だけ取得 — 失敗してもフィルタUIが
+  // 「選択肢なし」で表示されるだけで、履歴一覧本体の表示は妨げない
+  // （Task 5-C「3. 操作性」のnever-show-false-success方針と同じく、
+  // ここでも読み込み失敗を握りつぶさず、単に選択肢を空のままにする）。
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadOptions() {
+      const [tagsResponse, categoriesResponse] = await Promise.all([
+        fetch("/api/tags").catch(() => null),
+        fetch("/api/categories").catch(() => null),
+      ]);
+      if (cancelled) return;
+
+      const tagsOutcome = await resolveTagListFetchOutcome(tagsResponse);
+      const categoriesOutcome = await resolveCategoryListFetchOutcome(categoriesResponse);
+      if (cancelled) return;
+
+      if (tagsOutcome.success) setAvailableTags(tagsOutcome.tags);
+      if (categoriesOutcome.success) setAvailableCategories(categoriesOutcome.categories);
+    }
+
+    loadOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Confirms, calls DELETE /api/analysis-runs/{id}, and on success
   // removes the row from the current list view immediately (adjusting
@@ -381,6 +483,14 @@ export default function HistoryPage() {
   const totalPages = Math.max(1, Math.ceil(total / HISTORY_LIST_PAGE_SIZE));
   const paginationLabel = formatHistoryPaginationLabel(total, page);
   const emptyResultsText = resolveServerFilteredEmptyText(isHistoryListQueryFiltered(query));
+  const selectedCategoryName = availableCategories.find((c) => c.id === categoryFilter)?.name;
+  const selectedTagNames = availableTags
+    .filter((tag) => selectedTagIds.includes(tag.id))
+    .map((tag) => tag.name);
+  const activeFilterLines = describeActiveHistoryFilters(query, {
+    categoryName: selectedCategoryName,
+    tagNames: selectedTagNames,
+  });
 
   return (
     <div className="min-h-full flex-1 bg-zinc-50 dark:bg-zinc-950">
@@ -418,6 +528,44 @@ export default function HistoryPage() {
 
         {(view.kind === "items" || (view.kind === "loading" && items.length > 0)) && (
           <>
+            {/* フィルタパネルの開閉トグル + 現在の条件サマリー
+                （Task 5-C「4. UI」— 検索・重要/お気に入り・日付範囲・4つ
+                のAI観測状態 + 新規のカテゴリ/タグを1つの collapsible
+                panelにまとめ、現在有効な条件を一覧できるようにする）。 */}
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setFiltersPanelOpen((prev) => !prev)}
+                aria-expanded={filtersPanelOpen}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                {filtersPanelOpen ? HISTORY_FILTERS_PANEL_HIDE_LABEL : HISTORY_FILTERS_PANEL_SHOW_LABEL}
+              </button>
+              {activeFilterLines.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                >
+                  {HISTORY_CLEAR_FILTERS_BUTTON_LABEL}
+                </button>
+              )}
+            </div>
+            {activeFilterLines.length > 0 && (
+              <div className="mb-4 flex flex-wrap gap-1.5">
+                {activeFilterLines.map((line) => (
+                  <span
+                    key={line}
+                    className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                  >
+                    {line}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {filtersPanelOpen && (
+              <>
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div className="sm:max-w-xs sm:flex-1">
                 <label htmlFor="historySearch" className="sr-only">
@@ -638,6 +786,65 @@ export default function HistoryPage() {
               </div>
             </div>
 
+            {/* カテゴリ/タグフィルタ（feature/history-tags-categories,
+                Task 5-C）— 既存フィルタとAND条件で組み合わせる。カテゴリ
+                は単一選択（すべて/未分類/各カテゴリ）、タグは複数選択
+                可・OR条件（いずれかのタグを持つ履歴に一致）。 */}
+            <div className="mb-4 flex flex-wrap items-start gap-4">
+              <div className="flex items-center gap-2">
+                <label htmlFor="historyCategoryFilter" className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {HISTORY_CATEGORY_FILTER_LABEL_TEXT}
+                </label>
+                <select
+                  id="historyCategoryFilter"
+                  value={categoryFilter}
+                  onChange={(event) =>
+                    handleCategoryFilterChange(event.target.value as HistoryCategoryFilterValue)
+                  }
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                >
+                  <option value={HISTORY_CATEGORY_FILTER_ALL_VALUE}>すべて</option>
+                  <option value={HISTORY_CATEGORY_FILTER_UNCATEGORIZED_VALUE}>
+                    {UNCATEGORIZED_LABEL}
+                  </option>
+                  {availableCategories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {availableTags.length > 0 && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    {HISTORY_TAG_FILTER_LABEL_TEXT}
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {availableTags.map((tag) => {
+                      const selected = selectedTagIds.includes(tag.id);
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={() => handleTagFilterToggle(tag.id)}
+                          aria-pressed={selected}
+                          className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                            selected
+                              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                              : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                          }`}
+                        >
+                          {tag.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+              </>
+            )}
+
             <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">{paginationLabel}</p>
 
             {items.length === 0 && (
@@ -715,6 +922,23 @@ export default function HistoryPage() {
                         className="max-w-full rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] break-words text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
                       >
                         {badge.label}: {badge.value}
+                      </span>
+                    ))}
+                  </div>
+                  {/* カテゴリ名 + タグbadge（feature/history-tags-
+                      categories）— カテゴリは常に1つ表示（未分類含む）、
+                      タグは0件のときは何も表示しない。狭い画面でも
+                      flex-wrapで折り返すため崩れない。 */}
+                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+                    <span className="max-w-full rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] break-words text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                      {display.categoryLabel}
+                    </span>
+                    {(item.tags ?? []).map((tag) => (
+                      <span
+                        key={tag.id}
+                        className="max-w-full rounded bg-sky-100 px-1.5 py-0.5 text-[10px] break-words text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+                      >
+                        {tag.name}
                       </span>
                     ))}
                   </div>

@@ -7,6 +7,7 @@ import AnalysisDashboard from "../../components/AnalysisDashboard";
 import AppHeader from "../../components/AppHeader";
 import Breadcrumb from "../../components/Breadcrumb";
 import RetryAnalysisControls from "../../components/RetryAnalysisControls";
+import TagsCategoriesManager from "../../components/TagsCategoriesManager";
 import { REPORT_LINK_BUTTON_CLASSNAME } from "../../lib/link-button-styles";
 import {
   AI_GAP_COMPARISON_CONFIRM_MESSAGE,
@@ -28,6 +29,7 @@ import {
   HISTORY_LOADING_TEXT,
   REPORT_LINK_TEXT,
   buildHistoryReportPath,
+  canManageHistoryListItem,
   formatAnalysisRunDetailBasicInfo,
   formatComparisonImprovementsLabel,
   formatComparisonVisibilityScoreLabel,
@@ -42,6 +44,7 @@ import {
   resolveHistoryDetailFetchOutcome,
   resolveSetAnalysisRunImportantOutcome,
 } from "../../lib/analysis-history";
+import type { CategoryItem, TagItem } from "../../lib/tags-categories";
 import {
   RETRY_CONFIRM_MESSAGE,
   buildAnalysisJobPath,
@@ -345,6 +348,29 @@ export default function HistoryDetailPage() {
                 isRetrying={isRetrying}
                 retryError={retryError}
                 onRetry={handleRetry}
+              />
+            </div>
+            <div className="mt-6">
+              <TagsCategoriesManager
+                analysisRunId={view.detail.id}
+                projectId={view.detail.projectId}
+                canEdit={canManageHistoryListItem(view.detail.run.status)}
+                category={view.detail.category}
+                tags={view.detail.tags}
+                onCategoryChange={(nextCategory: CategoryItem | null) =>
+                  setView((prev) =>
+                    prev.kind === "success"
+                      ? { ...prev, detail: { ...prev.detail, category: nextCategory } }
+                      : prev,
+                  )
+                }
+                onTagsChange={(nextTags: TagItem[]) =>
+                  setView((prev) =>
+                    prev.kind === "success"
+                      ? { ...prev, detail: { ...prev.detail, tags: nextTags } }
+                      : prev,
+                  )
+                }
               />
             </div>
             <div className="mt-6">

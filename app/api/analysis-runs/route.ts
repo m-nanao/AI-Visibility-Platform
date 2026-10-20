@@ -83,6 +83,9 @@ export async function GET(request: Request) {
     "claudeObservation",
     "geminiObservation",
     "favorite",
+    "tagIds",
+    "categoryId",
+    "uncategorizedOnly",
   ]) {
     const value = searchParams.get(key);
     if (value !== null) {

@@ -303,6 +303,59 @@ describe("parseAnalysisRunListResponse", () => {
       expect(result.data.items[0].isImportant).toBe(false);
     }
   });
+
+  // --- tags/category (feature/history-tags-categories, Task 5-C) ---
+
+  it("accepts an item with tags and a category", () => {
+    const withTagsAndCategory = {
+      ...validListResponse(),
+      items: [
+        {
+          ...validListResponse().items[0],
+          tags: [{ id: "tag-1", projectId: "project-1", name: "重要顧客" }],
+          category: { id: "cat-1", projectId: "project-1", name: "キャンペーンA" },
+        },
+      ],
+    };
+
+    const result = parseAnalysisRunListResponse(withTagsAndCategory);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].tags).toEqual([
+        { id: "tag-1", projectId: "project-1", name: "重要顧客" },
+      ]);
+      expect(result.data.items[0].category).toEqual({
+        id: "cat-1",
+        projectId: "project-1",
+        name: "キャンペーンA",
+      });
+    }
+  });
+
+  it("defaults tags to [] and category to undefined when absent (backend predating this field)", () => {
+    const result = parseAnalysisRunListResponse(validListResponse());
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].tags).toEqual([]);
+      expect(result.data.items[0].category).toBeUndefined();
+    }
+  });
+
+  it("accepts an item with category: null (未分類) and normalizes it to undefined", () => {
+    const withNullCategory = {
+      ...validListResponse(),
+      items: [{ ...validListResponse().items[0], category: null }],
+    };
+
+    const result = parseAnalysisRunListResponse(withNullCategory);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0].category).toBeUndefined();
+    }
+  });
 });
 
 describe("parseAnalysisRunDetailResponse", () => {
