@@ -487,6 +487,48 @@ def _call_dataforseo_serp(
     return items, "real", result.reason, api_env
 
 
+def resolve_dataforseo_environment(
+    mode: AiOverviewProviderMode, settings: DataForSEOSettings
+) -> DataForSEOApiEnv | None:
+    """Pure decision of which DataForSEO host (if any) `mode` will
+    actually be called against, given the process's current
+    DataForSEOSettings — extracted as the single source of truth for
+    both the real call path (`_run_dataforseo_mode()` /
+    `_run_dataforseo_sandbox_mode()` / `_run_dataforseo_live_mode()`
+    below, each of which now delegates its own host selection to this
+    function) and Task 6-B4's pre-flight usage-quota check
+    (backend/main.py), so the two can never drift out of sync — see
+    that task's design report for why a duplicated copy of this logic
+    in two places was rejected as a latent "quota bypass" risk.
+
+    Returns None whenever no HTTP request would be made at all: `mode`
+    isn't a dataforseo-family mode, credentials aren't configured, or
+    (for "dataforseo"/"dataforseo_live") the Live gate isn't satisfied
+    — deliberately never a Sandbox fallback for an explicit
+    "dataforseo_live" request whose gate failed (see
+    `_run_dataforseo_live_mode()`'s own docstring for why). Does not
+    itself produce any reason string — callers keep their own
+    existing, slightly different wording for *why* no call is being
+    made (generic "dataforseo" vs explicit "dataforseo_live" phrase
+    their gate-rejection reasons differently; this function only
+    decides whether/where a call happens).
+    """
+    if mode == "dataforseo_sandbox":
+        return "sandbox" if settings.is_configured else None
+
+    if mode == "dataforseo_live":
+        return "live" if settings.is_live_allowed_for_manual_check else None
+
+    if mode == "dataforseo":
+        if not settings.is_configured:
+            return None
+        if settings.is_live_env:
+            return "live" if settings.is_live_allowed_for_manual_check else None
+        return "sandbox"
+
+    return None
+
+
 def _run_dataforseo_mode(
     brand_name: str, settings: DataForSEOSettings, input_urls: list[str] | None = None
 ) -> tuple[list[AIOverviewComparisonItem], SectionStatus, str, AiOverviewEnvironment]:
@@ -504,28 +546,28 @@ def _run_dataforseo_mode(
     constructing a request against the Live host (see
     services/dataforseo_client.py's module docstring for why the
     client itself has no gating logic of its own — this function is
-    the one and only place that decision is made).
+    the one and only place that decision is made, via
+    resolve_dataforseo_environment() above).
 
     `input_urls` (the request's `urls`, if any) is only used to decide
     AIOverviewComparisonItem.ownDomainReferenced — it never affects
     which environment/gates are checked above.
     """
-    if not settings.is_configured:
-        return (
-            [],
-            "unavailable",
-            "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
-            "unavailable",
-        )
+    environment = resolve_dataforseo_environment("dataforseo", settings)
+    if environment is None:
+        if not settings.is_configured:
+            return (
+                [],
+                "unavailable",
+                "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
+                "unavailable",
+            )
+        # Configured, but settings.is_live_env is true and the Live
+        # gate isn't fully satisfied (the only remaining case
+        # resolve_dataforseo_environment() returns None for here).
+        return ([], "unavailable", _live_gate_rejection_reason(settings), "unavailable")
 
-    if settings.is_live_env:
-        if not settings.is_live_allowed_for_manual_check:
-            return ([], "unavailable", _live_gate_rejection_reason(settings), "unavailable")
-        return _call_dataforseo_serp(brand_name, settings, api_env="live", input_urls=input_urls)
-
-    # settings.is_sandbox_env and credentials are configured — the
-    # default, always-safe path.
-    return _call_dataforseo_serp(brand_name, settings, api_env="sandbox", input_urls=input_urls)
+    return _call_dataforseo_serp(brand_name, settings, api_env=environment, input_urls=input_urls)
 
 
 def _run_dataforseo_sandbox_mode(
@@ -536,14 +578,15 @@ def _run_dataforseo_sandbox_mode(
     is consulted at all, since Sandbox is never billed. The only
     requirement is that credentials are configured.
     """
-    if not settings.is_configured:
+    environment = resolve_dataforseo_environment("dataforseo_sandbox", settings)
+    if environment is None:
         return (
             [],
             "unavailable",
             "DataForSEO credentials are not configured (DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD).",
             "unavailable",
         )
-    return _call_dataforseo_serp(brand_name, settings, api_env="sandbox", input_urls=input_urls)
+    return _call_dataforseo_serp(brand_name, settings, api_env=environment, input_urls=input_urls)
 
 
 def _run_dataforseo_live_mode(
@@ -558,14 +601,15 @@ def _run_dataforseo_live_mode(
     against the Live host; see _explicit_live_gate_rejection_reason for
     the (gate-specific, credential-free) reason text.
     """
-    if not settings.is_live_allowed_for_manual_check:
+    environment = resolve_dataforseo_environment("dataforseo_live", settings)
+    if environment is None:
         return (
             [],
             "unavailable",
             _explicit_live_gate_rejection_reason(settings, settings.is_configured),
             "unavailable",
         )
-    return _call_dataforseo_serp(brand_name, settings, api_env="live", input_urls=input_urls)
+    return _call_dataforseo_serp(brand_name, settings, api_env=environment, input_urls=input_urls)
 
 
 def build_ai_overview_comparison(

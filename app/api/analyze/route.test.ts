@@ -6,9 +6,19 @@ import {
   it,
   vi,
 } from "vitest";
+
+const getServerSupabaseAccessTokenMock = vi.fn<() => Promise<string | null>>();
+
+vi.mock("../../lib/supabase/server", () => ({
+  getServerSupabaseAccessToken: () => getServerSupabaseAccessTokenMock(),
+}));
+
 import { POST } from "./route";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import {
+  ANALYZE_ACCESS_DENIED_MESSAGE,
+  ANALYZE_AUTH_CONFIG_ERROR_MESSAGE,
+  ANALYZE_AUTH_REQUIRED_MESSAGE,
   ANALYZE_FALLBACK_HEADER,
   ANALYZE_FALLBACK_REASON_HEADER,
 } from "../../lib/analysis-request";
@@ -38,6 +48,7 @@ describe("POST /api/analyze", () => {
 
   beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    getServerSupabaseAccessTokenMock.mockReset().mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -1256,7 +1267,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "urls must not be empty" });
+    expect(data).toEqual({ error: "urls must not be empty", code: null });
   });
 
   it("forwards a generic safe message when the Python API's 400 body is unexpected", async () => {
@@ -1269,7 +1280,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "入力内容を確認してください" });
+    expect(data).toEqual({ error: "入力内容を確認してください", code: null });
   });
 
   it("treats a 422 from the Python API the same as a 400 (own {error} shape forwarded)", async () => {
@@ -1284,7 +1295,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "brandName is required" });
+    expect(data).toEqual({ error: "brandName is required", code: null });
   });
 
   it("never exposes FastAPI's raw detail array from a 422 response", async () => {
@@ -1307,7 +1318,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "入力内容を確認してください" });
+    expect(data).toEqual({ error: "入力内容を確認してください", code: null });
     expect(JSON.stringify(data)).not.toContain("type_error");
   });
 
@@ -1371,6 +1382,446 @@ describe("POST /api/analyze", () => {
     expect(data.webAiGap.status).toBe("real");
     expect(data.webAiGap.gapSummary).toContain("料金・契約条件");
     expect(data.aiOverviewComparison[0].isTruncated).toBe(true);
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  // --- Task 6-B2 (feature/sync-analyze-jwt-project-auth): JWT/projectId
+  // forwarding and auth-error handling. ANALYZE_AUTH_REQUIRED itself is
+  // a Python-API-side flag this route has no knowledge of — these
+  // tests only verify that (a) a JWT/projectId are forwarded whenever
+  // present, regardless of this app's own state, and (b) a 401/403/
+  // auth-config 503 from the Python API is surfaced as a real error
+  // rather than ever becoming a dummy-data "success".
+
+  it("forwards the caller's Supabase access token as Authorization: Bearer when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    getServerSupabaseAccessTokenMock.mockResolvedValue("user-access-token");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.get("Authorization")).toBe("Bearer user-access-token");
+  });
+
+  it("sends no Authorization header when there is no session", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    expect(headers.has("Authorization")).toBe(false);
+  });
+
+  it("forwards a valid projectId to the Python API when provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", projectId: "project-123" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(requestInit.body as string);
+    expect(sentBody.projectId).toBe("project-123");
+  });
+
+  it("omits projectId from the Python API request when not provided", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(requestInit.body as string);
+    expect(sentBody).not.toHaveProperty("projectId");
+  });
+
+  it("fails safely (never a dummy-data fallback) when the Frontend's own flag is off but the Backend's ANALYZE_AUTH_REQUIRED is on", async () => {
+    // Frontend/Backendのフラグ不一致 (Task 7): a caller running with
+    // NEXT_PUBLIC_ANALYZE_AUTH_REQUIRED=false never sends projectId —
+    // this route doesn't need to know the Backend's flag state at all,
+    // it just forwards whatever it has and surfaces whatever the
+    // Backend decides. Here the Backend (ANALYZE_AUTH_REQUIRED=true)
+    // rejects the missing projectId with its existing 400
+    // validationError shape — already handled, and already never
+    // falls back to dummy data.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "projectId is required", code: "project_id_required" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({ error: "projectId is required", code: "project_id_required" });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 401 (never a dummy-data fallback) when the Python API rejects with 401", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "authentication required" }), { status: 401 }),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(body).toEqual({ error: ANALYZE_AUTH_REQUIRED_MESSAGE, code: null });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 403 (never a dummy-data fallback) when the Python API rejects with 403", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "access denied to the specified project" }),
+        { status: 403 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "not-mine" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toEqual({ error: ANALYZE_ACCESS_DENIED_MESSAGE, code: null });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 503 (never a dummy-data fallback) when the Python API's 503 carries code: auth_unavailable (JWT verification misconfigured)", async () => {
+    // Task 7 fix: disambiguated via the stable `code` field, never by
+    // matching the `error` prose text.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "analyze JWT verification is not configured",
+          code: "auth_unavailable",
+        }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE, code: "auth_unavailable" });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 503 (never a dummy-data fallback) when the Python API's 503 carries code: auth_unavailable (project-access check itself failed)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "failed to verify project access", code: "auth_unavailable" }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE, code: "auth_unavailable" });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("falls back to dummy data for a 503 with a differently-worded auth-sounding message but no matching code", async () => {
+    // Proves the check is code-based, not prose-based: this message
+    // text alone must never accidentally trip the authError path.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "authentication is currently not configured" }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
+  });
+
+  it("still falls back to dummy data for an unrelated 503 (Python API not configured/DB unreachable)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "analysis history read API is not configured" }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
+  });
+
+  // --- Task 6-B5 (feature/sync-analyze-jwt-project-auth): `code` is
+  // now forwarded on every 400/401/403/503 outcome, not just 409/429 —
+  // so Frontend code can distinguish each exact cause.
+
+  it("returns 401 with code: invalid_token distinct from code: auth_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "invalid or expired token", code: "invalid_token" }),
+        { status: 401 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(body.code).toBe("invalid_token");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 400 with code: project_id_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "projectId is required", code: "project_id_required" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("project_id_required");
+  });
+
+  it("returns 400 with code: request_id_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "requestId is required", code: "request_id_required" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("request_id_required");
+  });
+
+  it("returns 503 (never a dummy-data fallback) with code: quota_enforcement_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "quota enforcement is not enabled",
+          code: "quota_enforcement_required",
+        }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.code).toBe("quota_enforcement_required");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 503 (never a dummy-data fallback) with code: analysis_run_failed (Task 6-B audit fix P1-1)", async () => {
+    // Regression guard for the audit finding: a code-less 503 from
+    // this exact cause (create_running_analysis_run() itself failed,
+    // e.g. a DB connectivity issue, or analysis_usage_counters not
+    // existing yet because migration 009 hasn't been applied) used to
+    // fall through to the generic "unavailable" bucket below and
+    // become a 200 dummy-fallback response — making a reservation
+    // that never started look like a successful analysis.
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "failed to run the analysis",
+          code: "analysis_run_failed",
+        }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.code).toBe("analysis_run_failed");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  // --- requestId idempotency conflicts (Task 6-B3,
+  // feature/sync-analyze-jwt-project-auth) -------------------------------
+
+  it("forwards requestId to the Python API when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(requestInit.body as string);
+    expect(sentBody.requestId).toBe("req-1");
+  });
+
+  it("omits requestId entirely when not sent (anonymous flow, unchanged)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(requestInit.body as string);
+    expect("requestId" in sentBody).toBe(false);
+  });
+
+  it("returns 409 (never a dummy-data fallback) with code analysis_still_running", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "an analysis for this requestId is still running",
+          code: "analysis_still_running",
+        }),
+        { status: 409 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: "an analysis for this requestId is still running",
+      code: "analysis_still_running",
+    });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 409 (never a dummy-data fallback) with code analysis_previously_failed", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "the previous analysis for this requestId failed",
+          code: "analysis_previously_failed",
+        }),
+        { status: 409 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("analysis_previously_failed");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 409 with a generic message when the response body has no recognizable error/code", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(new Response("not json", { status: 409 }));
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBeNull();
+    expect(typeof body.error).toBe("string");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  // --- usage-quota exceeded (Task 6-B4,
+  // feature/sync-analyze-jwt-project-auth) -------------------------------
+
+  it("returns 429 (never a dummy-data fallback) with scope/metric/period/availableAt", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "利用上限に達しているため、分析を開始できません。",
+          code: "analysis_quota_exceeded",
+          quota: {
+            scope: "project",
+            metric: "all_analyses",
+            period: "daily",
+            availableAt: "2026-03-06T00:00:00+00:00",
+          },
+        }),
+        { status: 429 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.code).toBe("analysis_quota_exceeded");
+    expect(body.quota).toEqual({
+      scope: "project",
+      metric: "all_analyses",
+      period: "daily",
+      availableAt: "2026-03-06T00:00:00+00:00",
+    });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 429 with a generic message and null quota when the response body has no recognizable shape", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(new Response("not json", { status: 429 }));
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.code).toBeNull();
+    expect(body.quota).toBeNull();
+    expect(typeof body.error).toBe("string");
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 });

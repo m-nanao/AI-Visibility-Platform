@@ -6,8 +6,10 @@ from services.ai_overview_provider import (
     _classify_reference_category,
     build_ai_overview_comparison,
     resolve_ai_overview_mode,
+    resolve_dataforseo_environment,
 )
 from services.dataforseo_client import DataForSEOSerpReference
+from services.dataforseo_settings import get_dataforseo_settings
 
 _LIVE_CONFIRM_TEXT = "ALLOW_DATAFORSEO_LIVE_ONCE"
 
@@ -98,6 +100,75 @@ def _set_all_live_gates(monkeypatch):
     monkeypatch.setenv("DATAFORSEO_LIVE_API_ENABLED", "true")
     monkeypatch.setenv("DATAFORSEO_LIVE_CONFIRM_TEXT", _LIVE_CONFIRM_TEXT)
     monkeypatch.setenv("DATAFORSEO_REQUEST_LIMIT_PER_ANALYZE", "1")
+
+
+# --- resolve_dataforseo_environment() (Task 6-B4,
+# feature/sync-analyze-jwt-project-auth) — the shared pure decision
+# used both by _run_dataforseo_mode()/_run_dataforseo_sandbox_mode()/
+# _run_dataforseo_live_mode() above and by main.py's pre-flight
+# usage-quota check, so the two can never drift out of sync. Every
+# case here mirrors one of the existing _run_dataforseo_*_mode()
+# behavior tests above/below — this just asserts the shared decision
+# function's own return value directly.
+
+
+def test_resolve_dataforseo_environment_non_dataforseo_mode_returns_none(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    assert resolve_dataforseo_environment("mock", get_dataforseo_settings()) is None
+    assert resolve_dataforseo_environment("off", get_dataforseo_settings()) is None
+
+
+def test_resolve_dataforseo_environment_dataforseo_mode_without_credentials_returns_none(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    assert resolve_dataforseo_environment("dataforseo", get_dataforseo_settings()) is None
+
+
+def test_resolve_dataforseo_environment_dataforseo_mode_sandbox_env_returns_sandbox(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "sandbox")
+    assert resolve_dataforseo_environment("dataforseo", get_dataforseo_settings()) == "sandbox"
+
+
+def test_resolve_dataforseo_environment_dataforseo_mode_live_env_without_gates_returns_none(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("DATAFORSEO_API_ENV", "live")
+    # live_api_enabled/confirm_text/request_limit gates deliberately
+    # left unset — this must never silently fall back to Sandbox.
+    assert resolve_dataforseo_environment("dataforseo", get_dataforseo_settings()) is None
+
+
+def test_resolve_dataforseo_environment_dataforseo_mode_live_env_with_all_gates_returns_live(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+    assert resolve_dataforseo_environment("dataforseo", get_dataforseo_settings()) == "live"
+
+
+def test_resolve_dataforseo_environment_sandbox_mode_forces_sandbox_even_with_live_env(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)  # DATAFORSEO_API_ENV=live, all gates satisfied
+    assert resolve_dataforseo_environment("dataforseo_sandbox", get_dataforseo_settings()) == "sandbox"
+
+
+def test_resolve_dataforseo_environment_sandbox_mode_without_credentials_returns_none(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    assert resolve_dataforseo_environment("dataforseo_sandbox", get_dataforseo_settings()) is None
+
+
+def test_resolve_dataforseo_environment_live_mode_without_gates_returns_none(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    # DATAFORSEO_API_ENV left at its "sandbox" default — "dataforseo_live"
+    # must never silently fall back to Sandbox.
+    assert resolve_dataforseo_environment("dataforseo_live", get_dataforseo_settings()) is None
+
+
+def test_resolve_dataforseo_environment_live_mode_with_all_gates_returns_live(monkeypatch):
+    _clear_dataforseo_env(monkeypatch)
+    _set_all_live_gates(monkeypatch)
+    assert resolve_dataforseo_environment("dataforseo_live", get_dataforseo_settings()) == "live"
 
 
 def test_build_ai_overview_comparison_dataforseo_mode_returns_empty_and_unavailable_without_credentials(

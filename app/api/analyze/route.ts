@@ -2,9 +2,13 @@ import { NextResponse } from "next/server";
 import { buildDummyAnalysis } from "../../lib/dummy-data";
 import { parseAnalysisResult } from "../../lib/analysis-result-schema";
 import {
+  ANALYZE_ACCESS_DENIED_MESSAGE,
+  ANALYZE_AUTH_CONFIG_ERROR_MESSAGE,
+  ANALYZE_AUTH_REQUIRED_MESSAGE,
   ANALYZE_FALLBACK_HEADER,
   ANALYZE_FALLBACK_REASON_HEADER,
 } from "../../lib/analysis-request";
+import { getServerSupabaseAccessToken } from "../../lib/supabase/server";
 import type {
   AiOverviewProviderMode,
   AnalysisResult,
@@ -80,10 +84,83 @@ type PythonApiOutcome =
   // urls: []) — this is the caller's mistake, not a Python API
   // failure, so it must be reported back rather than silently
   // papered over with dummy data.
-  | { kind: "validationError"; message: string }
-  // Unset URL, network error, timeout, non-2xx (other than 400),
+  // `code` (Task 6-B5) distinguishes project_id_required/
+  // request_id_required/request_id_invalid (Task 6-B2/6-B3) from a
+  // generic pre-existing validation error (e.g. urls: [], which has
+  // no code) — forwarded faithfully, never guessed from `message`.
+  | { kind: "validationError"; message: string; code: string | null }
+  // Only reachable once the Python API's ANALYZE_AUTH_REQUIRED=true
+  // (Task 6-B2, feature/sync-analyze-jwt-project-auth) — missing/
+  // invalid JWT (401), inaccessible project (403), or the one specific
+  // 503 shape that means "JWT verification/project-access check
+  // itself is misconfigured" (see ANALYZE_AUTH_UNAVAILABLE_CODE
+  // below). Reported back as a real error, exactly like
+  // validationError above — this must NEVER fall through to the
+  // dummy-data fallback below, since an auth/authorization failure
+  // silently rendered as a successful "mock" analysis would be
+  // actively misleading.
+  // `code` (Task 6-B5, feature/sync-analyze-jwt-project-auth) is the
+  // Python API's stable, machine-readable code whenever present
+  // (auth_required / invalid_token / project_access_denied /
+  // auth_unavailable / quota_enforcement_required) — forwarded
+  // faithfully so app/lib/analyze-error-display.ts can distinguish
+  // each cause precisely (e.g. "not logged in" vs "session expired",
+  // both 401) rather than this route collapsing every 401/403/503
+  // into one generic message per status code the way it used to.
+  | { kind: "authError"; status: 401 | 403 | 503; code: string | null }
+  // Task 6-B3 (feature/sync-analyze-jwt-project-auth): the Python
+  // API's requestId-based idempotency judgment rejected this
+  // submission (still running / previously failed / different input
+  // reusing the same requestId / requestId belongs to a deleted run).
+  // Reported back as a real 409, exactly like authError above — must
+  // NEVER fall through to the dummy-data fallback below, since a
+  // "please wait" or "start over" signal silently rendered as a
+  // successful "mock" analysis would be actively misleading.
+  | { kind: "conflict"; message: string; code: string | null }
+  // Task 6-B4 (feature/sync-analyze-jwt-project-auth): the Python
+  // API's usage-quota check rejected this submission — reported back
+  // as a real 409, exactly like authError/conflict above — must NEVER
+  // fall through to the dummy-data fallback below, since a "you've hit
+  // your usage limit" signal silently rendered as a successful "mock"
+  // analysis would be actively misleading (and would hide the fact
+  // that no real analysis ran at all).
+  | { kind: "quotaExceeded"; message: string; code: string | null; quota: unknown }
+  // Unset URL, network error, timeout, non-2xx (other than 400/401/403/
+  // 409/429, and 503 only when it isn't the auth-config case above),
   // invalid JSON, or a response that doesn't match AnalysisResult.
   | { kind: "unavailable"; reason: PythonApiUnavailableReason };
+
+// Must match backend/main.py's ANALYZE_AUTH_UNAVAILABLE_CODE exactly —
+// the stable, machine-readable `code` (see that file's error_response())
+// a 503 carries when it specifically means "JWT verification/
+// project-access check is misconfigured" (an authError, never
+// dummy-fallback-worthy), as opposed to the Python API's own,
+// unrelated 503 causes (not configured / DB unreachable — the
+// existing "unavailable" fallback path, unchanged). Checking this
+// fixed `code` field (added by Task 7,
+// feature/sync-analyze-jwt-project-auth, "エラーメッセージの完全一致に
+// 依存する実装を改善する") rather than matching the human-readable
+// `error` prose means a future reword of that backend message can
+// never silently break this distinction.
+const ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable";
+// Must match backend/main.py's ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE
+// exactly (Task 6-B4/6-B5) — the 503 a caller gets when
+// ANALYZE_AUTH_REQUIRED=true but usage-quota enforcement isn't
+// enabled (and the dev/test-only ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA
+// override isn't set either). Also never dummy-fallback-worthy, same
+// reasoning as ANALYZE_AUTH_UNAVAILABLE_CODE above.
+const ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE = "quota_enforcement_required";
+// Must match backend/main.py's ANALYZE_RUN_FAILED_CODE exactly (Task
+// 6-B audit fix P1-1) — the 503 a caller gets when
+// create_running_analysis_run() itself failed (e.g. a DB connectivity
+// issue, or analysis_usage_counters not existing yet because
+// migration 009 hasn't been applied) before run_analysis_pipeline()
+// was ever reached. Also never dummy-fallback-worthy, same reasoning
+// as the two codes above — without this, this cause was
+// indistinguishable from "Python API not configured"/"unrelated DB
+// issue" and silently became a 200 dummy-fallback response, making a
+// reservation that never started look like a successful analysis.
+const ANALYZE_RUN_FAILED_CODE = "analysis_run_failed";
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
@@ -100,6 +177,24 @@ async function fetchFromPythonApi(
   commonCrawlDomain?: string,
   claudeMode?: ClaudeProviderMode,
   geminiMode?: GeminiProviderMode,
+  // Task 6-B2 (feature/sync-analyze-jwt-project-auth) additions —
+  // both are always forwarded whenever present, regardless of this
+  // app's own knowledge of ANALYZE_AUTH_REQUIRED: the Python API's own
+  // flag is what actually decides whether either is required, so
+  // sending them unconditionally keeps this route correct whichever
+  // way that flag is set, without the two ever needing to agree on a
+  // deploy order. When the flag is false (production default as of
+  // this task), the Python API ignores both exactly as before they
+  // existed.
+  projectId?: string,
+  accessToken?: string | null,
+  // Task 6-B3 (feature/sync-analyze-jwt-project-auth): forwarded as-is
+  // whenever present — like projectId above, only ever sent by
+  // app/page.tsx once analyzeAuthRequired is true, since the Python
+  // API's idempotency enforcement is scoped to the authenticated path
+  // only. Omitted entirely for the anonymous flow, same as before this
+  // field existed.
+  requestId?: string,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable", reason: "not_configured" };
@@ -120,9 +215,13 @@ async function fetchFromPythonApi(
     commonCrawlDomain?: string;
     claudeMode?: ClaudeProviderMode;
     geminiMode?: GeminiProviderMode;
+    projectId?: string;
+    requestId?: string;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
+  if (projectId) requestBody.projectId = projectId;
+  if (requestId) requestBody.requestId = requestId;
   // Forwarded as-is; the Python API decides whether to actually honor
   // it (ALLOW_AI_OVERVIEW_MODE_OVERRIDE) or ignore it in favor of its
   // own AI_OVERVIEW_PROVIDER_MODE default. Next.js does not gate this
@@ -156,10 +255,21 @@ async function fetchFromPythonApi(
   // Next.js does not gate this itself.
   if (geminiMode) requestBody.geminiMode = geminiMode;
 
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+    // Always attached whenever a session is present, regardless of
+    // this app's own knowledge of ANALYZE_AUTH_REQUIRED — see this
+    // function's `accessToken` parameter doc above. Never attaching
+    // this only because a local flag is false would otherwise create
+    // exactly the "Frontend/Backendのフラグ設定が異なる期間" gap this
+    // task was asked to avoid.
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
+
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/analyze`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
@@ -178,10 +288,73 @@ async function fetchFromPythonApi(
         errorBody && typeof errorBody.error === "string"
           ? errorBody.error
           : "入力内容を確認してください";
-      return { kind: "validationError", message };
+      const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+      return { kind: "validationError", message, code };
+    }
+
+    if (response.status === 409) {
+      // Task 6-B3: requestId-based idempotency conflict
+      // (ANALYZE_AUTH_REQUIRED=true only — never sent by the Python
+      // API otherwise). Must never fall through to the dummy-data
+      // fallback below, same reasoning as the 401/403 authError case.
+      const errorBody = await response.json().catch(() => null);
+      const message =
+        errorBody && typeof errorBody.error === "string"
+          ? errorBody.error
+          : "分析を開始できませんでした";
+      const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+      return { kind: "conflict", message, code };
+    }
+
+    if (response.status === 429) {
+      // Task 6-B4: usage-quota exceeded (ANALYZE_AUTH_REQUIRED=true
+      // *and* ANALYZE_QUOTA_ENFORCEMENT_ENABLED=true only — never sent
+      // otherwise). Must never fall through to the dummy-data fallback
+      // below, same reasoning as the 409 conflict case above.
+      const errorBody = await response.json().catch(() => null);
+      const message =
+        errorBody && typeof errorBody.error === "string"
+          ? errorBody.error
+          : "利用上限に達しているため、分析を開始できません。";
+      const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+      const quota = errorBody && typeof errorBody.quota === "object" ? errorBody.quota : null;
+      return { kind: "quotaExceeded", message, code, quota };
     }
 
     if (!response.ok) {
+      // Task 6-B2: a 401/403 (ANALYZE_AUTH_REQUIRED=true only — never
+      // sent by the Python API otherwise) must never fall through to
+      // the dummy-data fallback below — an auth/authorization failure
+      // silently rendered as a successful "mock" analysis would be
+      // actively misleading (this task's explicit requirement).
+      if (response.status === 401 || response.status === 403) {
+        const errorBody = await response.json().catch(() => null);
+        const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+        return { kind: "authError", status: response.status, code };
+      }
+      if (response.status === 503) {
+        // Distinguishes "JWT verification/project-access check is
+        // misconfigured" (auth_unavailable), "quota enforcement isn't
+        // enabled in authenticated mode" (quota_enforcement_required,
+        // Task 6-B4), and "the sync-analysis reservation itself failed
+        // before any analysis ran" (analysis_run_failed, Task 6-B audit
+        // fix P1-1) — all three authErrors, same reasoning as above —
+        // from every other, unrelated 503 cause this route has always
+        // treated as a dummy-fallback-worthy "unavailable" outcome
+        // (Python API not configured, DB unreachable for a reason
+        // outside the reservation step, etc.) — via the stable `code`
+        // field, never by matching the response's human-readable
+        // `error` text.
+        const errorBody = await response.json().catch(() => null);
+        const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+        if (
+          code === ANALYZE_AUTH_UNAVAILABLE_CODE ||
+          code === ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE ||
+          code === ANALYZE_RUN_FAILED_CODE
+        ) {
+          return { kind: "authError", status: 503, code };
+        }
+      }
       console.warn(
         `[analyze] Python API returned HTTP ${response.status}; falling back to dummy data`,
       );
@@ -284,6 +457,29 @@ export async function POST(request: Request) {
   const geminiMode = GEMINI_MODES.includes(body?.geminiMode)
     ? (body.geminiMode as GeminiProviderMode)
     : undefined;
+  // Task 6-B2 (feature/sync-analyze-jwt-project-auth): forwarded as-is
+  // whenever present — never trusted by this route itself (it does no
+  // access check of its own); the Python API is the one that verifies
+  // the caller's JWT actually has access to this exact project before
+  // ever using it (see backend/main.py's _resolve_analyze_project_auth()).
+  const projectId =
+    typeof body?.projectId === "string" && body.projectId.trim()
+      ? body.projectId.trim()
+      : undefined;
+  // Task 6-B3 (feature/sync-analyze-jwt-project-auth): forwarded as-is
+  // whenever present — this route does no validation of its own (the
+  // Python API validates format/length and does the actual idempotency
+  // judgment); see backend/main.py's _validate_request_id().
+  const requestId =
+    typeof body?.requestId === "string" && body.requestId.trim()
+      ? body.requestId.trim()
+      : undefined;
+  // Always resolved and forwarded regardless of whether this app knows
+  // ANALYZE_AUTH_REQUIRED's current value — see fetchFromPythonApi()'s
+  // `accessToken` parameter doc. null when there's no session (an
+  // anonymous caller), exactly like every other proxy route in this
+  // app that forwards a Supabase access token.
+  const accessToken = await getServerSupabaseAccessToken(request);
 
   const outcome = await fetchFromPythonApi(
     trimmedBrandName,
@@ -295,6 +491,9 @@ export async function POST(request: Request) {
     commonCrawlDomain,
     claudeMode,
     geminiMode,
+    projectId,
+    accessToken,
+    requestId,
   );
 
   if (outcome.kind === "success") {
@@ -302,7 +501,50 @@ export async function POST(request: Request) {
   }
 
   if (outcome.kind === "validationError") {
-    return NextResponse.json({ error: outcome.message }, { status: 400 });
+    return NextResponse.json(
+      { error: outcome.message, code: outcome.code },
+      { status: 400 },
+    );
+  }
+
+  if (outcome.kind === "authError") {
+    // Never falls back to dummy data — see PythonApiOutcome's
+    // "authError" doc above for why. `code` (Task 6-B5/6-B audit fix
+    // P1-1) is forwarded as-is so app/lib/analyze-error-display.ts
+    // can distinguish each exact cause (auth_required/invalid_token/
+    // project_access_denied/auth_unavailable/quota_enforcement_required/
+    // analysis_run_failed) rather than this route collapsing
+    // everything into one message per status code. A generic
+    // per-status fallback text is still sent in `error` for any
+    // consumer that only reads that field.
+    const message =
+      outcome.status === 401
+        ? ANALYZE_AUTH_REQUIRED_MESSAGE
+        : outcome.status === 403
+          ? ANALYZE_ACCESS_DENIED_MESSAGE
+          : ANALYZE_AUTH_CONFIG_ERROR_MESSAGE;
+    return NextResponse.json(
+      { error: message, code: outcome.code },
+      { status: outcome.status },
+    );
+  }
+
+  if (outcome.kind === "conflict") {
+    // Never falls back to dummy data — see PythonApiOutcome's
+    // "conflict" doc above for why.
+    return NextResponse.json(
+      { error: outcome.message, code: outcome.code },
+      { status: 409 },
+    );
+  }
+
+  if (outcome.kind === "quotaExceeded") {
+    // Never falls back to dummy data — see PythonApiOutcome's
+    // "quotaExceeded" doc above for why.
+    return NextResponse.json(
+      { error: outcome.message, code: outcome.code, quota: outcome.quota },
+      { status: 429 },
+    );
   }
 
   await new Promise((resolve) =>

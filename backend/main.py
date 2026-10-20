@@ -85,11 +85,12 @@ POST body.
 
 import hmac
 import logging
+import re
 from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -146,27 +147,40 @@ from models import (
     UrlFetchResult,
     WebAiGapAiComparisonResponse,
 )
-from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
+from services.ai_overview_provider import (
+    build_ai_overview_comparison,
+    resolve_ai_overview_mode,
+    resolve_dataforseo_environment,
+)
+from services.analyze_quota_settings import load_analyze_quota_settings
+from services.dataforseo_settings import get_dataforseo_settings
 from services.analysis_history_comparison import build_comparison_response
 from services.analysis_history_repository import (
     AnalysisHistoryReadError,
     AnalysisJobCancelledConflictError,
     AnalysisJobCreateConflictError,
     AnalysisJobLimitExceededError,
+    AnalysisQuotaExceededError,
     AnalysisRunStatusConflictError,
     CategoryNameConflictError,
     CategoryNameInvalidError,
     CategoryNotAssignableError,
     CategoryRequiresProjectError,
+    SyncAnalysisPreviouslyFailedError,
+    SyncAnalysisStillRunningError,
     TagNameConflictError,
     TagNameInvalidError,
     TagNotAssignableError,
+    UsageCounterRequirement,
     attach_tag_to_analysis_run,
     cancel_queued_analysis_run,
+    complete_analysis_job,
     count_analysis_runs as repository_count_analysis_runs,
     create_category,
     create_queued_analysis_run,
+    create_running_analysis_run,
     create_tag,
+    daily_period_start,
     delete_category,
     delete_tag,
     detach_tag_from_analysis_run,
@@ -178,6 +192,7 @@ from services.analysis_history_repository import (
     list_analysis_runs as repository_list_analysis_runs,
     list_categories,
     list_tags,
+    monthly_period_start,
     rename_category,
     rename_tag,
     save_analysis_history,
@@ -190,6 +205,7 @@ from services.analysis_history_repository import (
 from services.ai_gap_comparison import generate_ai_gap_comparison
 from services.gemini_rerun import rerun_gemini_for_analysis_run
 from services.analysis_jobs_settings import load_analysis_jobs_settings
+from services.analyze_auth_settings import load_analyze_auth_settings
 from services.auth_settings import is_jwt_verification_configured, load_auth_settings
 from services.jwt_auth import (
     AuthenticatedUser,
@@ -295,8 +311,40 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LLMO Analysis API", lifespan=lifespan)
 
 
-def error_response(message: str, status_code: int = 400) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"error": message})
+def error_response(
+    message: str,
+    status_code: int = 400,
+    *,
+    code: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """`code`, added for Task 7 (feature/sync-analyze-jwt-project-auth,
+    "認証エラーの処理改善"), is an optional stable, machine-readable
+    identifier alongside the existing human-readable `message` — only
+    included in the body when a caller actually passes one (every
+    pre-existing call site in this file omits it, so their response
+    shape is completely unchanged). Added specifically so a caller
+    like the Next.js proxy (app/api/analyze/route.ts) can distinguish
+    error *causes* that happen to share the same HTTP status code
+    (e.g. two different reasons for a 503) without matching this
+    function's prose `message` text, which is free to be reworded
+    later without silently breaking that check.
+
+    `extra`, added for Task 6-B4's HTTP 429 usage-quota response, is
+    an optional dict of additional top-level fields merged into the
+    body (e.g. `{"quota": {...}}`) — never overwrites `error`/`code`
+    even if a caller's `extra` happens to reuse those keys (this
+    function always sets `error`/`code` last). Omitted (no `extra`
+    passed) by every pre-existing call site, so their response shape
+    is unchanged.
+    """
+    content: dict[str, Any] = {}
+    if extra:
+        content.update(extra)
+    content["error"] = message
+    if code is not None:
+        content["code"] = code
+    return JSONResponse(status_code=status_code, content=content)
 
 
 @app.exception_handler(RequestValidationError)
@@ -913,8 +961,196 @@ def run_analysis_pipeline(
     )
 
 
+ANALYZE_AUTH_REQUIRED_MESSAGE = "authentication required"
+ANALYZE_INVALID_TOKEN_MESSAGE = "invalid or expired authentication token"
+ANALYZE_JWT_NOT_CONFIGURED_MESSAGE = "analyze JWT verification is not configured"
+ANALYZE_ACCESS_DENIED_MESSAGE = "access denied to the specified project"
+ANALYZE_PROJECT_ID_REQUIRED_MESSAGE = "projectId is required"
+ANALYZE_PROJECT_CHECK_FAILED_MESSAGE = "failed to verify project access"
+
+# Stable, machine-readable companions to the prose messages above
+# (Task 7, feature/sync-analyze-jwt-project-auth "認証エラーの処理改善")
+# — exposed in each error response's `code` field (see
+# error_response()) so a caller like the Next.js proxy
+# (app/api/analyze/route.ts) never has to match this file's exact
+# English prose to tell these failures apart from an unrelated 503
+# (e.g. PYTHON_ANALYSIS_API_URL misconfigured on the Next.js side, or
+# a genuinely unreachable Python API) that this same endpoint's
+# generic failure paths can also produce. "auth_unavailable" is
+# deliberately shared by both 503 causes below (JWT verification
+# itself unconfigured, and the project-access check failing) — from
+# the caller's point of view both mean the same thing: retry later,
+# this isn't the caller's fault, and it is specifically an auth-layer
+# problem.
+ANALYZE_AUTH_REQUIRED_CODE = "auth_required"
+ANALYZE_INVALID_TOKEN_CODE = "invalid_token"
+ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable"
+ANALYZE_ACCESS_DENIED_CODE = "project_access_denied"
+ANALYZE_PROJECT_ID_REQUIRED_CODE = "project_id_required"
+
+# --- Synchronous analysis idempotency (Task 6-B3,
+# feature/sync-analyze-jwt-project-auth) — only reachable once
+# ANALYZE_AUTH_REQUIRED=true (see analyze() below); the anonymous path
+# never looks at `requestId` at all. See
+# services/analysis_history_repository.py's "Synchronous analysis
+# idempotency" section for the full mechanism this backs.
+
+ANALYZE_REQUEST_ID_REQUIRED_MESSAGE = "requestId is required"
+ANALYZE_REQUEST_ID_REQUIRED_CODE = "request_id_required"
+ANALYZE_REQUEST_ID_INVALID_MESSAGE = (
+    "requestId must be 1-200 characters, using only letters, digits, '-' or '_'"
+)
+ANALYZE_REQUEST_ID_INVALID_CODE = "request_id_invalid"
+ANALYZE_STILL_RUNNING_MESSAGE = "an analysis for this requestId is still running"
+ANALYZE_STILL_RUNNING_CODE = "analysis_still_running"
+ANALYZE_PREVIOUSLY_FAILED_MESSAGE = (
+    "the previous analysis for this requestId failed; start a new analysis "
+    "with a new requestId"
+)
+ANALYZE_PREVIOUSLY_FAILED_CODE = "analysis_previously_failed"
+ANALYZE_REQUEST_CONFLICT_MESSAGE = "requestId reused with a different request body"
+ANALYZE_REQUEST_CONFLICT_CODE = "analysis_request_conflict"
+ANALYZE_REQUEST_CANCELLED_MESSAGE = (
+    "this requestId's analysis was deleted and cannot be reused"
+)
+ANALYZE_REQUEST_CANCELLED_CODE = "analysis_request_cancelled"
+ANALYZE_RUN_FAILED_MESSAGE = "failed to run the analysis"
+# Task 6-B audit fix (P1-1, feature/sync-analyze-jwt-project-auth):
+# added so this one specific 503 (create_running_analysis_run() itself
+# raised AnalysisHistoryReadError — a DB failure during the
+# reservation attempt, before run_analysis_pipeline() is ever called)
+# can be told apart from every other, unrelated 503 cause by a stable
+# `code` rather than falling through un-coded. Without this, the
+# Next.js proxy (app/api/analyze/route.ts) could not distinguish it
+# from "Python API not configured"/"DB unreachable for an unrelated
+# reason" and converted it into a 200 dummy-fallback response — making
+# a reservation that never even started look like a successful
+# analysis. See that route's ANALYZE_RUN_FAILED_CODE check.
+ANALYZE_RUN_FAILED_CODE = "analysis_run_failed"
+
+# Task 6-B4 (feature/sync-analyze-jwt-project-auth) usage-quota
+# responses.
+ANALYZE_QUOTA_EXCEEDED_MESSAGE = "利用上限に達しているため、分析を開始できません。"
+ANALYZE_QUOTA_EXCEEDED_CODE = "analysis_quota_exceeded"
+# Returned when ANALYZE_AUTH_REQUIRED=true but
+# AnalyzeQuotaSettings.enforcement_enabled is false and the narrow
+# ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA dev/test override isn't set either
+# — see services/analyze_quota_settings.py's module docstring and
+# Task 6-B4's design report "6" for why this combination is refused by
+# default rather than silently running the authenticated (and
+# therefore potentially paid) path with no cost protection at all.
+ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_MESSAGE = (
+    "利用枠保護が有効化されていないため、認証必須モードでの分析を安全に実行できません。"
+)
+ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE = "quota_enforcement_required"
+
+# Task 6-B4 metric names — must match services/analyze_quota_settings.py's
+# _METRIC_ENV_SUFFIXES keys and migration 009's analysis_usage_counters.metric
+# values exactly.
+ANALYZE_QUOTA_METRIC_ALL_ANALYSES = "all_analyses"
+
+# Generous relative to the ~100s worst-case full-ON pipeline duration
+# documented in app/api/analyze/route.ts's PYTHON_API_TIMEOUT_MS
+# comment — this lease only needs to outlive a single synchronous
+# request's own pipeline execution, never a worker's poll cycle.
+SYNC_ANALYSIS_LEASE_SECONDS = 180
+
+MAX_REQUEST_ID_LENGTH = 200
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_request_id(raw: str | None) -> str | None:
+    """Returns the trimmed, validated requestId, or None if it's
+    missing/malformed — the caller decides the exact 400 response
+    (missing vs. invalid get distinct messages/codes). Deliberately
+    restrictive (letters/digits/hyphen/underscore only, matching a
+    typical UUID's own character set) since this value is stored
+    verbatim as `analysis_runs.idempotency_key` and never needs to be
+    anything fancier than an opaque client-generated token."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > MAX_REQUEST_ID_LENGTH:
+        return None
+    if not _REQUEST_ID_PATTERN.match(value):
+        return None
+    return value
+
+
+def _resolve_analyze_project_auth(
+    request: Request, payload: AnalyzeRequest
+) -> tuple[str, str] | None | JSONResponse:
+    """Resolves POST /analyze's authorization requirement (Task 6-B2,
+    feature/sync-analyze-jwt-project-auth).
+
+    - ANALYZE_AUTH_REQUIRED=false (the default): returns None
+      immediately, without even looking at the Authorization header or
+      `payload.projectId` — analyze() then falls through to the
+      existing anonymous/default-project path, completely unchanged
+      from before this task.
+    - ANALYZE_AUTH_REQUIRED=true: requires a verified Supabase JWT (via
+      the shared _verify_jwt_bearer() helper added in Task 6-A — no new
+      JWT-verification logic is duplicated here) and a `projectId` the
+      caller can access (via the existing can_user_access_project(),
+      the same helper POST /tags and POST /categories already use for
+      exactly this check). On success, returns `(user_id, project_id)`
+      — both already verified — for analyze() to pass into Task 6-B3's
+      idempotency reservation. On any failure, returns a JSONResponse
+      to return immediately — the caller must never proceed to
+      run_analysis_pipeline() or any save path in that case, so no
+      external provider is ever called and nothing is ever saved for
+      an unauthorized request.
+
+    A failed/misconfigured JWT or project check never falls back to
+    the anonymous default-project path merely because this flag
+    happens to be true — it only skips authorization entirely when the
+    flag itself is false.
+    """
+    analyze_auth_settings = load_analyze_auth_settings()
+    if not analyze_auth_settings.auth_required:
+        return None
+
+    auth_result = _verify_jwt_bearer(
+        request,
+        auth_required_message=ANALYZE_AUTH_REQUIRED_MESSAGE,
+        invalid_token_message=ANALYZE_INVALID_TOKEN_MESSAGE,
+        jwt_not_configured_message=ANALYZE_JWT_NOT_CONFIGURED_MESSAGE,
+        auth_required_code=ANALYZE_AUTH_REQUIRED_CODE,
+        invalid_token_code=ANALYZE_INVALID_TOKEN_CODE,
+        jwt_not_configured_code=ANALYZE_AUTH_UNAVAILABLE_CODE,
+    )
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    project_id = (payload.projectId or "").strip()
+    if not project_id:
+        return error_response(
+            ANALYZE_PROJECT_ID_REQUIRED_MESSAGE,
+            status_code=400,
+            code=ANALYZE_PROJECT_ID_REQUIRED_CODE,
+        )
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_project(conn, auth_result.user_id, project_id)
+    except Exception:
+        logger.exception("Failed to check project access for POST /analyze")
+        return error_response(
+            ANALYZE_PROJECT_CHECK_FAILED_MESSAGE,
+            status_code=503,
+            code=ANALYZE_AUTH_UNAVAILABLE_CODE,
+        )
+
+    if not allowed:
+        return error_response(
+            ANALYZE_ACCESS_DENIED_MESSAGE, status_code=403, code=ANALYZE_ACCESS_DENIED_CODE
+        )
+
+    return auth_result.user_id, project_id
+
+
 @app.post("/analyze", response_model=AnalysisResult)
-def analyze(payload: AnalyzeRequest):
+def analyze(payload: AnalyzeRequest, request: Request):
     brand_name = (payload.brandName or "").strip()
 
     if not brand_name:
@@ -925,6 +1161,32 @@ def analyze(payload: AnalyzeRequest):
             f"brandName must be {MAX_BRAND_NAME_LENGTH} characters or fewer"
         )
 
+    auth_outcome = _resolve_analyze_project_auth(request, payload)
+    if isinstance(auth_outcome, JSONResponse):
+        return auth_outcome
+    # None when ANALYZE_AUTH_REQUIRED=false (legacy/anonymous path,
+    # handled by _analyze_anonymous() below, completely unchanged);
+    # otherwise the caller's own, already JWT-verified user id and
+    # access-checked project id, handled by
+    # _analyze_authenticated_idempotent() (Task 6-B3).
+    if auth_outcome is None:
+        return _analyze_anonymous(payload, brand_name)
+
+    verified_user_id, verified_project_id = auth_outcome
+    return _analyze_authenticated_idempotent(
+        payload, brand_name, user_id=verified_user_id, project_id=verified_project_id
+    )
+
+
+def _analyze_anonymous(payload: AnalyzeRequest, brand_name: str):
+    """ANALYZE_AUTH_REQUIRED=false path — byte-for-byte the same
+    behavior as before Task 6-B2/6-B3 existed: no idempotency, no
+    JWT/project concept, always saves (best-effort) to the fixed
+    default project. `payload.requestId`, even if sent, is never read
+    here — see services/analysis_history_repository.py's "Synchronous
+    analysis idempotency" section for why this path is deliberately
+    left alone rather than extended to cover it too.
+    """
     # Minimal diagnostic logging around each stage of /analyze — added
     # to narrow down where a Render free-tier request was dying (past
     # url fetch, but before any "POST /analyze ... 200/500" completion
@@ -991,6 +1253,365 @@ def analyze(payload: AnalyzeRequest):
         history_result.analysis_run_id if history_result is not None else None
     )
 
+    return result
+
+
+def _resolve_required_usage_counters(
+    payload: AnalyzeRequest, *, user_id: str, project_id: str
+) -> list[UsageCounterRequirement]:
+    """Task 6-B4: builds the list of usage-quota counters this request
+    must atomically reserve, using each provider's *resolved* mode
+    (ALLOW_*_MODE_OVERRIDE already applied) — never the raw per-request
+    override alone, so a provider that's actually off (either by its
+    own env default or because override isn't allowed) never consumes
+    its paid-provider counter. Deliberately mirrors
+    run_analysis_pipeline()'s own mode resolution exactly (same inputs,
+    same pure functions, same "ai_overview_mode==mock skips chatgpt"
+    rule) so the two can never disagree within one request — see this
+    task's design report "5"/"6" for why that's a structural guarantee
+    here (same process, same env, same payload, no time gap) rather
+    than something that needs its own synchronization.
+
+    Always includes the three "all_analyses" counters (user daily,
+    project daily, project monthly) — these apply even to a pure
+    mock/off analysis. Only adds a paid-provider counter (daily +
+    monthly) for a provider whose resolved mode indicates it will
+    actually be called.
+    """
+    quota_settings = load_analyze_quota_settings()
+    now = datetime.now(timezone.utc)
+    daily_start = daily_period_start(now)
+    monthly_start = monthly_period_start(now)
+
+    counters = [
+        UsageCounterRequirement(
+            scope_type="user",
+            scope_id=user_id,
+            metric=ANALYZE_QUOTA_METRIC_ALL_ANALYSES,
+            period_type="daily",
+            period_start=daily_start,
+            limit=quota_settings.max_user_daily,
+        ),
+        UsageCounterRequirement(
+            scope_type="project",
+            scope_id=project_id,
+            metric=ANALYZE_QUOTA_METRIC_ALL_ANALYSES,
+            period_type="daily",
+            period_start=daily_start,
+            limit=quota_settings.max_project_daily,
+        ),
+        UsageCounterRequirement(
+            scope_type="project",
+            scope_id=project_id,
+            metric=ANALYZE_QUOTA_METRIC_ALL_ANALYSES,
+            period_type="monthly",
+            period_start=monthly_start,
+            limit=quota_settings.max_project_monthly,
+        ),
+    ]
+
+    def _add_provider_counter(metric: str) -> None:
+        counters.append(
+            UsageCounterRequirement(
+                scope_type="project",
+                scope_id=project_id,
+                metric=metric,
+                period_type="daily",
+                period_start=daily_start,
+                limit=quota_settings.max_project_daily_by_metric[metric],
+            )
+        )
+        counters.append(
+            UsageCounterRequirement(
+                scope_type="project",
+                scope_id=project_id,
+                metric=metric,
+                period_type="monthly",
+                period_start=monthly_start,
+                limit=quota_settings.max_project_monthly_by_metric[metric],
+            )
+        )
+
+    resolved_ai_overview_mode = resolve_ai_overview_mode(payload.aiOverviewMode)
+    dataforseo_environment = resolve_dataforseo_environment(
+        resolved_ai_overview_mode, get_dataforseo_settings()
+    )
+    if dataforseo_environment is not None:
+        _add_provider_counter(f"dataforseo_{dataforseo_environment}")
+
+    # Mirrors run_analysis_pipeline()'s own exact rule: ChatGPT is
+    # skipped entirely (never resolved/called) when aiOverviewMode is
+    # "mock", to avoid duplicating the mock fixture's own ChatGPT card.
+    resolved_chatgpt_mode = (
+        "off" if resolved_ai_overview_mode == "mock" else resolve_chatgpt_mode(payload.chatgptMode)
+    )
+    if resolved_chatgpt_mode == "openai":
+        _add_provider_counter("openai")
+
+    if resolve_claude_mode(payload.claudeMode) == "anthropic":
+        _add_provider_counter("anthropic")
+
+    if resolve_gemini_mode(payload.geminiMode) == "google":
+        _add_provider_counter("google")
+
+    return counters
+
+
+def _analyze_authenticated_idempotent(
+    payload: AnalyzeRequest, brand_name: str, *, user_id: str, project_id: str
+):
+    """ANALYZE_AUTH_REQUIRED=true path (Task 6-B3/6-B4) — requires a
+    valid `requestId`, then atomically reserves this request's
+    execution slot (and, when quota enforcement is enabled, every
+    usage-quota counter it needs) via create_running_analysis_run()
+    *before* ever calling run_analysis_pipeline() (processing order
+    mandated by Task 6-B3's "6. 二重課金防止" / Task 6-B4's "3.
+    原子的な利用枠確保": JWT/project auth -> requestId validation -> DB
+    idempotency + quota reservation -> only then the actual analysis).
+
+    A replay (already completed/partial) returns the saved result
+    immediately, without calling run_analysis_pipeline() or any save
+    function again — no new external provider call, no new row, no
+    new counter increment.
+    """
+    quota_settings = load_analyze_quota_settings()
+    if not quota_settings.enforcement_enabled and not quota_settings.allow_auth_without_quota:
+        # Task 6-B4 "6": AUTH ON / QUOTA OFF is refused by default —
+        # running the authenticated (and therefore potentially paid)
+        # path with no cost protection at all is never a safe implicit
+        # state. The only way around this is the narrow, explicitly
+        # named dev/test-only ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA
+        # override (see services/analyze_quota_settings.py).
+        return error_response(
+            ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_MESSAGE,
+            status_code=503,
+            code=ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE,
+        )
+    if not quota_settings.enforcement_enabled and quota_settings.allow_auth_without_quota:
+        logger.warning(
+            "ANALYZE_AUTH_REQUIRED=true but ANALYZE_QUOTA_ENFORCEMENT_ENABLED=false; "
+            "proceeding UNMETERED because ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA=true "
+            "(dev/test override only — this must never be set in production)"
+        )
+
+    request_id = _validate_request_id(payload.requestId)
+    if request_id is None:
+        if not payload.requestId:
+            return error_response(
+                ANALYZE_REQUEST_ID_REQUIRED_MESSAGE,
+                status_code=400,
+                code=ANALYZE_REQUEST_ID_REQUIRED_CODE,
+            )
+        return error_response(
+            ANALYZE_REQUEST_ID_INVALID_MESSAGE,
+            status_code=400,
+            code=ANALYZE_REQUEST_ID_INVALID_CODE,
+        )
+
+    required_counters = (
+        _resolve_required_usage_counters(payload, user_id=user_id, project_id=project_id)
+        if quota_settings.enforcement_enabled
+        else []
+    )
+
+    try:
+        reservation = create_running_analysis_run(
+            project_id=project_id,
+            created_by_user_id=user_id,
+            idempotency_key=request_id,
+            brand_name=brand_name,
+            documents=payload.documents,
+            urls=payload.urls,
+            common_crawl_mode=payload.commonCrawlMode,
+            common_crawl_domain=payload.commonCrawlDomain,
+            ai_overview_mode=payload.aiOverviewMode,
+            chatgpt_mode=payload.chatgptMode,
+            claude_mode=payload.claudeMode,
+            gemini_mode=payload.geminiMode,
+            lease_seconds=SYNC_ANALYSIS_LEASE_SECONDS,
+            required_counters=required_counters,
+        )
+    except SyncAnalysisStillRunningError:
+        return error_response(
+            ANALYZE_STILL_RUNNING_MESSAGE, status_code=409, code=ANALYZE_STILL_RUNNING_CODE
+        )
+    except SyncAnalysisPreviouslyFailedError:
+        return error_response(
+            ANALYZE_PREVIOUSLY_FAILED_MESSAGE,
+            status_code=409,
+            code=ANALYZE_PREVIOUSLY_FAILED_CODE,
+        )
+    except AnalysisJobCreateConflictError:
+        return error_response(
+            ANALYZE_REQUEST_CONFLICT_MESSAGE,
+            status_code=409,
+            code=ANALYZE_REQUEST_CONFLICT_CODE,
+        )
+    except AnalysisJobCancelledConflictError:
+        return error_response(
+            ANALYZE_REQUEST_CANCELLED_MESSAGE,
+            status_code=409,
+            code=ANALYZE_REQUEST_CANCELLED_CODE,
+        )
+    except AnalysisQuotaExceededError as exc:
+        period_length_days = 1 if exc.period_type == "daily" else None
+        if period_length_days is not None:
+            next_period_start = exc.period_start + timedelta(days=period_length_days)
+        else:
+            # monthly — advance to the 1st of the next calendar month.
+            year = exc.period_start.year + (1 if exc.period_start.month == 12 else 0)
+            month = 1 if exc.period_start.month == 12 else exc.period_start.month + 1
+            next_period_start = exc.period_start.replace(year=year, month=month)
+        return error_response(
+            ANALYZE_QUOTA_EXCEEDED_MESSAGE,
+            status_code=429,
+            code=ANALYZE_QUOTA_EXCEEDED_CODE,
+            extra={
+                "quota": {
+                    "scope": exc.scope_type,
+                    "metric": exc.metric,
+                    "period": exc.period_type,
+                    "availableAt": next_period_start.isoformat(),
+                }
+            },
+        )
+    except AnalysisHistoryReadError:
+        # The reservation attempt itself failed (e.g. a DB connectivity
+        # issue, or — if ANALYZE_QUOTA_ENFORCEMENT_ENABLED=true were
+        # ever turned on before migration 009 is applied —
+        # analysis_usage_counters simply not existing yet) —
+        # run_analysis_pipeline() is never reached in this branch, so
+        # no external provider call happens either. `code` (Task 6-B
+        # audit fix P1-1) lets the Next.js proxy tell this apart from
+        # every other, unrelated 503 cause and report it as a real
+        # failure instead of silently falling back to dummy data.
+        return error_response(
+            ANALYZE_RUN_FAILED_MESSAGE, status_code=503, code=ANALYZE_RUN_FAILED_CODE
+        )
+
+    if not reservation.created:
+        # Replay: a 'completed'/'partial' run for this exact requestId
+        # (same input) already exists — return its saved result as-is,
+        # never re-running the pipeline or writing anything new.
+        result = AnalysisResult(**reservation.result_json)
+        result.analysisRunId = reservation.analysis_run_id
+        return result
+
+    # Newly reserved as 'running' — this request now owns it exclusively
+    # (via reservation.locked_by) until SYNC_ANALYSIS_LEASE_SECONDS
+    # elapses. Any exception below is caught so the row is always
+    # finalized (never left dangling as 'running' longer than
+    # necessary) before this function returns or re-raises.
+    try:
+        outcome = run_analysis_pipeline(
+            brand_name=brand_name,
+            documents=payload.documents,
+            urls=payload.urls,
+            common_crawl_mode=payload.commonCrawlMode,
+            common_crawl_domain=payload.commonCrawlDomain,
+            ai_overview_mode_override=payload.aiOverviewMode,
+            chatgpt_mode_override=payload.chatgptMode,
+            claude_mode_override=payload.claudeMode,
+            gemini_mode_override=payload.geminiMode,
+        )
+    except AnalysisPipelineInputError as exc:
+        try:
+            complete_analysis_job(
+                reservation.analysis_run_id,
+                worker_id=reservation.locked_by,
+                status="failed",
+                result_json=None,
+                meta_json=None,
+                error_message=str(exc),
+            )
+        except AnalysisHistoryReadError:
+            logger.exception(
+                "Failed to mark synchronous analysis run as failed after input error"
+            )
+        return error_response(str(exc))
+    except Exception:
+        logger.exception("Unexpected error while running synchronous analysis pipeline")
+        try:
+            complete_analysis_job(
+                reservation.analysis_run_id,
+                worker_id=reservation.locked_by,
+                status="failed",
+                result_json=None,
+                meta_json=None,
+                error_message="unexpected error during analysis pipeline execution",
+            )
+        except AnalysisHistoryReadError:
+            logger.exception(
+                "Failed to mark synchronous analysis run as failed after unexpected error"
+            )
+        raise
+
+    result = outcome.result
+    cooccurrence_status = outcome.cooccurrence_status
+    final_status = "partial" if cooccurrence_status == "unavailable" else "completed"
+
+    try:
+        completed = complete_analysis_job(
+            reservation.analysis_run_id,
+            worker_id=reservation.locked_by,
+            status=final_status,
+            result_json=result.model_dump(),
+            meta_json=result.meta.model_dump(),
+            error_message=None,
+        )
+        if not completed:
+            # The lease already expired (e.g. this request ran longer
+            # than SYNC_ANALYSIS_LEASE_SECONDS, or Render stopped/
+            # restarted this process and another request's lazy-expiry
+            # check already swept this row to 'failed') — the row's
+            # own state already reflects that; this result is simply
+            # discarded, never force-written over whatever the row
+            # already says, and never retried automatically.
+            #
+            # Task 6-B3 audit fix (不具合B): `reservation.analysis_run_id`
+            # now unambiguously identifies a 'failed' run with no saved
+            # result (complete_analysis_job()'s own WHERE clause
+            # guarantees this row was never overwritten back to
+            # completed/partial — see that function's docstring). The
+            # caller here still received a real, successfully computed
+            # `result`, so it is still returned as-is — only
+            # `analysisRunId` is cleared, mirroring the anonymous
+            # path's own existing convention of only ever setting it
+            # when the save actually succeeded (see _analyze_anonymous()
+            # above). This prevents the history detail screen (which
+            # correctly reports this run as "failed", per
+            # resolveHistoryDetailFetchOutcome()'s status check) from
+            # ever being reachable from what looks like a successful
+            # on-screen result — the screen simply shows no "view in
+            # history" link for this response (see
+            # app/lib/analysis-history.ts's resolvePostAnalyzeHistoryLink(),
+            # which already treats a null analysisRunId as "no link").
+            logger.warning(
+                "Synchronous analysis run %s's lease expired before completion; "
+                "result discarded, analysisRunId omitted from the response",
+                reservation.analysis_run_id,
+            )
+            result.analysisRunId = None
+            return result
+    except AnalysisHistoryReadError:
+        # Task 6-B audit fix (P1-2): whether complete_analysis_job()'s
+        # write actually reached the DB is unknown here (a connection
+        # failure mid-UPDATE could mean nothing was written, or that
+        # the write succeeded but the response was lost) — this is
+        # *less* certain than the `not completed` branch above, which
+        # at least got a definitive answer, so it must be treated at
+        # least as conservatively: never report `analysisRunId` as if
+        # the save were confirmed. Falling through to the unconditional
+        # `result.analysisRunId = reservation.analysis_run_id` below
+        # would claim a save that was never confirmed — exactly the
+        # gap this fix closes, for the same reasons as the
+        # `not completed` branch's own Task 6-B3 audit fix comment
+        # above.
+        logger.exception("Failed to save synchronous analysis result")
+        result.analysisRunId = None
+        return result
+
+    result.analysisRunId = reservation.analysis_run_id
     return result
 
 
@@ -1168,6 +1789,9 @@ def _verify_jwt_bearer(
     auth_required_message: str,
     invalid_token_message: str,
     jwt_not_configured_message: str,
+    auth_required_code: str | None = None,
+    invalid_token_code: str | None = None,
+    jwt_not_configured_code: str | None = None,
 ) -> AuthenticatedUser | JSONResponse:
     """Verifies a Supabase Auth JWT from the Authorization header, with
     no HISTORY_READ_TOKEN fallback of any kind — the one piece of
@@ -1178,10 +1802,24 @@ def _verify_jwt_bearer(
     so each gate keeps its own wording, while the verification logic
     itself — and the _JWT_UNAVAILABLE_REASONS classification — lives
     in exactly one place (fix/history-read-token-write-isolation).
+
+    The `*_code` parameters (added for Task 7,
+    feature/sync-analyze-jwt-project-auth) are optional stable,
+    machine-readable identifiers passed straight through to
+    error_response()'s own `code` field — see that function's
+    docstring. None of this function's pre-existing callers pass them,
+    so their response body shape is completely unchanged; only
+    callers that need a caller-side disambiguation more robust than
+    matching `message`'s exact prose (e.g. _resolve_analyze_project_auth()
+    below, whose 503 shares a status code with an unrelated,
+    pre-existing "Python API misconfigured" 503 from a different code
+    path) need to pass one.
     """
     auth_settings = load_auth_settings()
     if not is_jwt_verification_configured(auth_settings):
-        return error_response(jwt_not_configured_message, status_code=503)
+        return error_response(
+            jwt_not_configured_message, status_code=503, code=jwt_not_configured_code
+        )
 
     authorization_header = request.headers.get(AUTHORIZATION_HEADER)
     try:
@@ -1189,10 +1827,14 @@ def _verify_jwt_bearer(
         return verify_supabase_jwt(token, auth_settings)
     except JWTAuthError as exc:
         if exc.reason in _JWT_UNAVAILABLE_REASONS:
-            return error_response(jwt_not_configured_message, status_code=503)
+            return error_response(
+                jwt_not_configured_message, status_code=503, code=jwt_not_configured_code
+            )
         if exc.reason in {"missing_header", "invalid_header"}:
-            return error_response(auth_required_message, status_code=401)
-        return error_response(invalid_token_message, status_code=401)
+            return error_response(
+                auth_required_message, status_code=401, code=auth_required_code
+            )
+        return error_response(invalid_token_message, status_code=401, code=invalid_token_code)
 
 
 HISTORY_WRITE_AUTH_REQUIRED_MESSAGE = "authentication required"

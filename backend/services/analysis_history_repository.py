@@ -54,7 +54,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from services.db_settings import load_db_settings
@@ -151,13 +151,38 @@ def save_analysis_history(
     visibility_score: int | None,
     meta_json: dict[str, Any] | None,
     status: str,
+    project_id: str | None = None,
 ) -> AnalysisHistorySaveResult | None:
     """Best-effort save of one analysis run to Postgres.
+
+    `project_id`, added by Task 6-B2
+    (feature/sync-analyze-jwt-project-auth), is the caller's **already
+    verified** project id — main.py's analyze() only ever passes one
+    after confirming (via can_user_access_project()) that the caller's
+    JWT actually belongs to that project. This function trusts it
+    as-is and never re-derives or re-checks it; it must never be a raw,
+    unverified value from the request body.
+
+    - `project_id=None` (the default, used by every caller before this
+      task and by the legacy/ANALYZE_AUTH_REQUIRED=false path):
+      unchanged behavior — always resolves and saves to the fixed
+      default project (organizations.slug='default',
+      projects.slug='default'), exactly as before this parameter
+      existed.
+    - `project_id=<uuid>`: saves brand/analysis_run under that project
+      instead. Brand lookup is scoped to `(name, project_id)` rather
+      than name alone, so a same-named brand belonging to a *different*
+      project is never silently reused across projects — this is the
+      authenticated path's own project-isolation guarantee, independent
+      of (and in addition to) the caller-side can_user_access_project()
+      check.
 
     Returns None when:
     - DB persistence is not configured (DB_SAVE_ENABLED/DATABASE_URL —
       see services/db_settings.py); no connection is attempted.
     - The psycopg driver is not installed.
+    - `project_id` is None and the default project doesn't exist yet
+      (unchanged from before this parameter existed).
     - Anything about the connection/query fails (logged here via
       logger.exception before returning).
 
@@ -178,54 +203,104 @@ def save_analysis_history(
     try:
         with psycopg.connect(settings.database_url, connect_timeout=5) as conn:
             with conn.cursor() as cur:
-                # default project (organizations/projects with
-                # slug='default', see backend/migrations/002_add_organizations_projects.sql)
-                # is required for the project_id columns below. If it
-                # doesn't exist yet (e.g. migration 002 hasn't been
-                # applied to this database), skip the save entirely
-                # rather than writing new brands/analysis_runs rows
-                # with no project_id — see
-                # docs/28_supabase_auth_rls_migration_design.md "21.
-                # 本番適用状況" for why this is preferred over saving
-                # without a project_id.
-                default_project_id = get_default_project_id(cur)
-                if default_project_id is None:
-                    logger.warning(
-                        "default project (organizations.slug='default', "
-                        "projects.slug='default') not found; skipping analysis history save"
-                    )
-                    return None
-
-                # Brand: reuse an existing row by exact name match if
-                # one exists (simple get), otherwise create one — see
-                # docs/19_minimum_db_migration_design.md "5. brands
-                # テーブル案", which explicitly says not to enforce
-                # strict dedup here. An existing brand that already has
-                # a project_id is left untouched; one with project_id
-                # still null (e.g. from before this backfill existed)
-                # is assigned the default project.
-                cur.execute(
-                    "select id, project_id from brands where name = %s order by created_at desc limit 1",
-                    (brand_name,),
-                )
-                row = cur.fetchone()
-                if row is not None:
-                    brand_id, brand_project_id = row
-                    if brand_project_id is None:
-                        cur.execute(
-                            "update brands set project_id = %s where id = %s",
-                            (default_project_id, brand_id),
-                        )
-                else:
+                if project_id is not None:
+                    # Authenticated path (Task 6-B2): the caller
+                    # already verified this exact project_id via
+                    # can_user_access_project() — use it as-is, and
+                    # scope the brand lookup to this project so a
+                    # same-named brand from a different project is
+                    # never silently reused.
+                    target_project_id = project_id
                     cur.execute(
-                        """
-                        insert into brands (name, canonical_domain, project_id)
-                        values (%s, %s, %s)
-                        returning id
-                        """,
-                        (brand_name, canonical_domain, default_project_id),
+                        "select id from brands where name = %s and project_id = %s "
+                        "order by created_at desc limit 1",
+                        (brand_name, target_project_id),
                     )
-                    brand_id = cur.fetchone()[0]
+                    row = cur.fetchone()
+                    if row is not None:
+                        brand_id = row[0]
+                    else:
+                        cur.execute(
+                            """
+                            insert into brands (name, canonical_domain, project_id)
+                            values (%s, %s, %s)
+                            returning id
+                            """,
+                            (brand_name, canonical_domain, target_project_id),
+                        )
+                        brand_id = cur.fetchone()[0]
+                else:
+                    # Legacy/anonymous path. default project
+                    # (organizations/projects with slug='default', see
+                    # backend/migrations/002_add_organizations_projects.sql)
+                    # is required for the project_id columns below. If
+                    # it doesn't exist yet (e.g. migration 002 hasn't
+                    # been applied to this database), skip the save
+                    # entirely rather than writing new brands/
+                    # analysis_runs rows with no project_id — see
+                    # docs/28_supabase_auth_rls_migration_design.md
+                    # "21. 本番適用状況" for why this is preferred over
+                    # saving without a project_id.
+                    target_project_id = get_default_project_id(cur)
+                    if target_project_id is None:
+                        logger.warning(
+                            "default project (organizations.slug='default', "
+                            "projects.slug='default') not found; skipping analysis history save"
+                        )
+                        return None
+
+                    # Brand: reuse an existing row scoped to the
+                    # default project (or a legacy project_id IS NULL
+                    # row, which gets backfilled below) if one exists,
+                    # otherwise create one — see
+                    # docs/19_minimum_db_migration_design.md "5. brands
+                    # テーブル案", which explicitly says not to enforce
+                    # strict dedup here.
+                    #
+                    # Fixed by Task 7 (feature/sync-analyze-jwt-project-auth,
+                    # "匿名モードのbrand/project整合性修正"): this lookup
+                    # used to match on `name` alone, with no project
+                    # scoping at all — a same-named brand already
+                    # belonging to a *different*, non-default project
+                    # (e.g. one created via the authenticated path
+                    # above) could be silently reused here, while the
+                    # new analysis_runs row was still stamped with
+                    # `target_project_id` (the default project) —
+                    # leaving the run's own brand pointing at a
+                    # different project than the run itself. The fixed
+                    # WHERE clause mirrors the authenticated path's own
+                    # project-isolation guarantee: only a brand already
+                    # in the default project, or one not yet claimed by
+                    # any project, is ever reused here. Existing rows
+                    # are never deleted or moved by this fix — a brand
+                    # already (incorrectly) shared this way before this
+                    # fix shipped is left exactly as it is; see this
+                    # task's completion report for what that means for
+                    # already-saved data.
+                    cur.execute(
+                        "select id, project_id from brands where name = %s "
+                        "and (project_id = %s or project_id is null) "
+                        "order by created_at desc limit 1",
+                        (brand_name, target_project_id),
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        brand_id, brand_project_id = row
+                        if brand_project_id is None:
+                            cur.execute(
+                                "update brands set project_id = %s where id = %s",
+                                (target_project_id, brand_id),
+                            )
+                    else:
+                        cur.execute(
+                            """
+                            insert into brands (name, canonical_domain, project_id)
+                            values (%s, %s, %s)
+                            returning id
+                            """,
+                            (brand_name, canonical_domain, target_project_id),
+                        )
+                        brand_id = cur.fetchone()[0]
 
                 cur.execute(
                     """
@@ -236,7 +311,7 @@ def save_analysis_history(
                     """,
                     (
                         brand_id,
-                        default_project_id,
+                        target_project_id,
                         status,
                         Jsonb(input_snapshot),
                         _maybe_jsonb(source_summary),
@@ -2522,15 +2597,589 @@ def get_analysis_job_result(analysis_run_id: str) -> dict[str, Any] | None:
     }
 
 
+# --- Synchronous analysis idempotency (Task 6-B3,
+# feature/sync-analyze-jwt-project-auth) ------------------------------
+#
+# Reuses the exact same `analysis_runs.idempotency_key`/
+# `created_by_user_id` columns and unique index as the async job system
+# above (migration 005) — no new migration needed. The two systems are
+# kept from ever interfering with each other by a single structural
+# fact: `create_running_analysis_run()` below inserts its row directly
+# with status='running' (never 'queued'), so it can never be matched
+# by claim_next_queued_analysis_run()'s `where status = 'queued'`
+# query (migration 006) — a synchronous analysis run is never, even
+# momentarily, visible to the async worker as something to claim.
+# `complete_analysis_job()` (Phase 2, below) is reused unchanged to
+# finalize a sync run, since its own WHERE clause
+# (`id = %s and locked_by = %s and status = 'running' and
+# lease_expires_at > now()`) already expresses exactly the ownership
+# check a synchronous caller also needs — the caller here plays the
+# role of its own single-shot "worker", using a freshly generated
+# `locked_by` token purely to satisfy that WHERE clause, never
+# registered anywhere else.
+#
+# Deliberately scoped to the *authenticated* path only
+# (ANALYZE_AUTH_REQUIRED=true) — not usable for the anonymous path.
+# The existing unique index's scope, `(project_id, created_by_user_id,
+# idempotency_key) where idempotency_key is not null`, cannot enforce
+# anything when `created_by_user_id` is NULL (every anonymous request):
+# SQL NULL is never equal to NULL, so two anonymous callers reusing the
+# same key would never collide in this index at all — there is no safe
+# way to extend this same mechanism to anonymous callers without
+# either inventing a new, unauthenticated-identity scheme (out of this
+# task's scope) or scoping purely by `(project_id, idempotency_key)`,
+# which would let two *different* anonymous visitors collide on the
+# same client-generated key and see each other's result — exactly the
+# "別ユーザー・別projectのrequestIdが衝突しても情報を漏らさない"
+# requirement this task asks to uphold. The anonymous path is therefore
+# left completely untouched by this section.
+#
+# --- Task 6-B4 usage-quota counters (migration 009) ------------------
+#
+# create_running_analysis_run() below now also accepts
+# `required_counters: list[UsageCounterRequirement]` (empty/omitted by
+# default) — when non-empty, every counter in the list is atomically
+# reserved (insert-or-increment, rejecting if that specific counter is
+# already at its limit) in the exact same transaction as the new
+# analysis_runs/analysis_results row, before that transaction ever
+# commits. If ANY counter is already at its limit, the whole
+# transaction is abandoned (never committed — see
+# _reserve_usage_counters()'s own docstring) and
+# AnalysisQuotaExceededError is raised: no analysis_runs row, no
+# analysis_results row, and no partially-incremented counter ever
+# persists. main.py builds this list only when
+# AnalyzeQuotaSettings.enforcement_enabled is true (see
+# services/analyze_quota_settings.py) — an empty list here always
+# means "no quota checked at all", which is also exactly what happens
+# today when enforcement is disabled or (structurally) for the
+# anonymous path, which never calls this function at all.
+#
+# A resubmission of an *existing* idempotency_key never reaches this
+# counter-reservation step — _resolve_existing_sync_run() above always
+# returns/raises before create_running_analysis_run() gets to the
+# "genuinely new key" INSERT branch where required_counters is
+# consulted. This is what guarantees "同じrequestIdの再送ではカウンター
+# を増やさない" without any special-case code: the ordering already in
+# place from Task 6-B3 does this for free.
+#
+# Deadlock avoidance: the two advisory locks create_running_analysis_run()
+# already acquires (keyed by this request's project_id, then its
+# created_by_user_id — see that function's own docstring) already
+# serialize every counter this feature can ever touch, since every
+# counter's scope_id is always either that exact project_id or that
+# exact user_id. Two concurrent create_running_analysis_run() calls
+# that could possibly contend over the same counter row are therefore
+# already fully serialized before either one reaches the counter
+# upserts at all — no new advisory lock key is needed. _reserve_usage_counters()
+# still processes its list in a fixed, deterministic order (sorted by
+# (scope_type, scope_id, metric, period_type)) purely as defense in
+# depth against a future caller that might one day touch this table
+# without holding those same two locks (e.g. a hypothetical future
+# extension to the async job system) — not needed for this feature's
+# own correctness today.
+
+
+def daily_period_start(now: datetime | None = None) -> datetime:
+    """UTC start-of-day for `now` (default: the current instant) —
+    computed in application code, not SQL, so the result never depends
+    on a connection's session TimeZone setting (see this section's
+    module-level comment for why that matters for a value used as part
+    of an exact-match upsert key)."""
+    instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return instant.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def monthly_period_start(now: datetime | None = None) -> datetime:
+    """UTC start-of-month for `now` — see daily_period_start()'s
+    docstring for why this is computed in Python, not SQL."""
+    instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return instant.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+@dataclass(frozen=True)
+class UsageCounterRequirement:
+    """One usage-quota counter create_running_analysis_run() must
+    atomically reserve (insert-or-increment, subject to `limit`)
+    before a new synchronous analysis run is allowed to proceed.
+
+    `scope_type` is "user" or "project"; `scope_id` is that user's or
+    project's id. `metric` is "all_analyses" (every analysis, mock/off
+    included) or a specific paid-provider metric ("dataforseo_sandbox"
+    / "dataforseo_live" / "openai" / "anthropic" / "google" — see
+    backend/main.py for how the resolved provider mode maps to one of
+    these). `period_type` is "daily" or "monthly"; `period_start` must
+    be daily_period_start()/monthly_period_start()'s own output for
+    the current instant — this module never recomputes it. `limit` of
+    0 means "never allow a single call" (a fully valid, meaningful
+    value — see services/analyze_quota_settings.py)."""
+
+    scope_type: Literal["user", "project"]
+    scope_id: str
+    metric: str
+    period_type: Literal["daily", "monthly"]
+    period_start: datetime
+    limit: int
+
+
+class AnalysisQuotaExceededError(Exception):
+    """Raised by create_running_analysis_run() when any one
+    UsageCounterRequirement in `required_counters` is already at its
+    limit. main.py turns this into HTTP 429
+    (analysis_quota_exceeded) — identifies exactly which counter was
+    hit and when it next resets (`next_period_start`, computed by
+    the caller as this counter's period_start plus one day/month)."""
+
+    def __init__(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        metric: str,
+        period_type: str,
+        period_start: datetime,
+        limit: int,
+    ):
+        super().__init__(
+            f"usage quota exceeded: scope_type={scope_type!r} scope_id={scope_id!r} "
+            f"metric={metric!r} period_type={period_type!r} limit={limit!r}"
+        )
+        self.scope_type = scope_type
+        self.scope_id = scope_id
+        self.metric = metric
+        self.period_type = period_type
+        self.period_start = period_start
+        self.limit = limit
+
+
+def _reserve_usage_counters(cur, required_counters: list[UsageCounterRequirement]) -> None:
+    """Atomically reserves (insert-or-increment) every counter in
+    `required_counters`, raising AnalysisQuotaExceededError on the
+    first one already at its limit — called from inside
+    create_running_analysis_run()'s own transaction, strictly before
+    that transaction's conn.commit(), so a raise here (which this
+    function never catches) propagates straight out through the
+    caller's `with psycopg.connect(...) as conn:` block and triggers
+    psycopg3's automatic ROLLBACK — undoing this call's own prior
+    counter increments *and* the analysis_runs/analysis_results INSERT
+    that happened earlier in the same transaction. No new row, no
+    partially-incremented counter, ever persists on a 429. See this
+    section's module-level comment for why a fixed processing order
+    and no new advisory lock are both safe here.
+    """
+    for requirement in sorted(
+        required_counters,
+        key=lambda r: (r.scope_type, r.scope_id, r.metric, r.period_type),
+    ):
+        # `select ... where %s > 0` (rather than a plain `values (...)`)
+        # on the INSERT side is deliberate, not cosmetic: a plain
+        # `values (1)` INSERT always succeeds on the very first-ever
+        # row for a given counter key regardless of `limit`, since the
+        # `where count < limit` guard below only ever applies to the
+        # ON CONFLICT DO UPDATE branch — never to the initial INSERT
+        # itself. That would let limit=0 ("never allow a single call")
+        # wrongly succeed exactly once, the first time this exact
+        # counter key is ever touched. Guarding the SELECT with
+        # `limit > 0` makes the INSERT itself produce zero candidate
+        # rows whenever the limit is 0, so ON CONFLICT never even has
+        # a row to consider and this correctly returns no row either
+        # way — verified directly against real PostgreSQL 17 (see
+        # Task 6-B4's completion report).
+        cur.execute(
+            """
+            insert into analysis_usage_counters
+                (scope_type, scope_id, metric, period_type, period_start, count)
+            select %s, %s, %s, %s, %s, 1
+            where %s > 0
+            on conflict (scope_type, scope_id, metric, period_type, period_start)
+            do update set count = analysis_usage_counters.count + 1, updated_at = now()
+            where analysis_usage_counters.count < %s
+            returning count
+            """,
+            (
+                requirement.scope_type,
+                requirement.scope_id,
+                requirement.metric,
+                requirement.period_type,
+                requirement.period_start,
+                requirement.limit,
+                requirement.limit,
+            ),
+        )
+        if cur.fetchone() is None:
+            raise AnalysisQuotaExceededError(
+                scope_type=requirement.scope_type,
+                scope_id=requirement.scope_id,
+                metric=requirement.metric,
+                period_type=requirement.period_type,
+                period_start=requirement.period_start,
+                limit=requirement.limit,
+            )
+
+
+class SyncAnalysisStillRunningError(Exception):
+    """Raised by create_running_analysis_run() when the same
+    (project_id, created_by_user_id, idempotency_key) already has a
+    run that is still genuinely 'running' (its lease has not expired)
+    — main.py turns this into 409. The caller must not start a second
+    analysis for the same key while the first is still in flight."""
+
+    def __init__(self, existing_analysis_run_id: str):
+        super().__init__("a synchronous analysis for this idempotency key is still running")
+        self.existing_analysis_run_id = existing_analysis_run_id
+
+
+class SyncAnalysisPreviouslyFailedError(Exception):
+    """Raised by create_running_analysis_run() when the same
+    (project_id, created_by_user_id, idempotency_key) belongs to a run
+    that already reached 'failed' (either from a genuine pipeline
+    failure, or because its lease expired — see the inline lazy-expiry
+    check below). main.py turns this into 409. Deliberately never
+    auto-retried: this backend cannot know whether an external paid
+    API call already happened before the failure, the same reasoning
+    fail_expired_running_analysis_runs() already documents for the
+    async worker. The caller must start a genuinely new analysis (a
+    fresh idempotency_key), never resubmit this same one."""
+
+    def __init__(self, existing_analysis_run_id: str):
+        super().__init__("a synchronous analysis for this idempotency key already failed")
+        self.existing_analysis_run_id = existing_analysis_run_id
+
+
+@dataclass(frozen=True)
+class SyncAnalysisRunReservation:
+    """Returned by create_running_analysis_run() on success.
+
+    `created=True`: a brand-new row was inserted directly as 'running'
+    — `locked_by` is the token the caller must pass to
+    complete_analysis_job() (as `worker_id`) once the pipeline
+    finishes; `result_json`/`meta_json` are both None.
+
+    `created=False`: the same idempotency key already has a
+    'completed'/'partial' run — `locked_by` is None (nothing to
+    complete, there is no in-flight execution this call owns),
+    `result_json`/`meta_json` are the already-saved result to replay
+    as-is, and `analysis_run_id`/`status` identify and describe it.
+    """
+
+    analysis_run_id: str
+    created: bool
+    status: str
+    locked_by: str | None
+    result_json: dict[str, Any] | None = None
+    meta_json: dict[str, Any] | None = None
+
+
+def _replay_result_for_existing_sync_run(cur, existing_id) -> tuple[dict | None, dict | None]:
+    cur.execute(
+        "select result_json, meta_json from analysis_results where analysis_run_id = %s",
+        (existing_id,),
+    )
+    row = cur.fetchone()
+    return (row[0], row[1]) if row is not None else (None, None)
+
+
+def _resolve_existing_sync_run(conn, cur, existing, canonical_input: dict[str, Any]):
+    """Shared by create_running_analysis_run()'s pre-insert lookup and
+    its UniqueViolation defense-in-depth path below — given a non-None
+    _fetch_existing_job_by_idempotency_key() result, either returns a
+    SyncAnalysisRunReservation(created=False, ...) for a replayable
+    terminal state, or raises for every other case. Must be called
+    from inside the same transaction as the caller's advisory locks (or
+    the UniqueViolation path's own fresh connection) so the lazy
+    lease-expiry UPDATE below is consistent with whatever else that
+    transaction does.
+
+    Takes `conn` (not just `cur`) because the lazy lease-expiry UPDATE
+    below must be committed *before* SyncAnalysisPreviouslyFailedError
+    is raised out of this function — found by this task's real-
+    PostgreSQL integration test, not by any mocked test: psycopg3's
+    connection context manager rolls back on an exception propagating
+    through its `with` block, so without this explicit commit, the
+    very UPDATE that transitions the row to 'failed' would be silently
+    undone the moment this function raises, leaving the row forever
+    stuck as 'running' instead.
+    """
+    existing_id, existing_status, existing_snapshot, existing_deleted_at = existing
+    if existing_deleted_at is not None:
+        # Mirrors create_queued_analysis_run()'s own reasoning exactly
+        # — a soft-deleted row's key must never be resurrected or
+        # reused, regardless of input.
+        raise AnalysisJobCancelledConflictError(str(existing_id))
+    if existing_snapshot != canonical_input:
+        raise AnalysisJobCreateConflictError(str(existing_id))
+
+    if existing_status == "running":
+        # Lazily expires a dead lease right here, rather than waiting
+        # for fail_expired_running_analysis_runs()'s own background
+        # sweep (which, with ANALYSIS_JOBS_WORKER_ENABLED=false in
+        # production today, never runs at all) — see this section's
+        # module-level comment and docs/40 "11.4"'s "never auto-retry
+        # after a lease expires" rule, which applies here identically.
+        # Scoped to this exact row and re-checks `status = 'running'`
+        # in the WHERE clause so a concurrent caller that already
+        # expired/completed it a moment ago simply updates zero rows
+        # here instead of double-writing.
+        cur.execute(
+            """
+            update analysis_runs
+            set status = 'failed',
+                completed_at = now(),
+                error_message = 'worker lease expired (possible partial execution, not auto-retried)'
+            where id = %s
+              and status = 'running'
+              and lease_expires_at < now()
+            returning id
+            """,
+            (existing_id,),
+        )
+        if cur.fetchone() is not None:
+            existing_status = "failed"
+            # Must be committed now — see this function's docstring.
+            conn.commit()
+        else:
+            raise SyncAnalysisStillRunningError(str(existing_id))
+
+    if existing_status == "failed":
+        raise SyncAnalysisPreviouslyFailedError(str(existing_id))
+
+    # completed / partial -> replay the already-saved result as-is.
+    result_json, meta_json = _replay_result_for_existing_sync_run(cur, existing_id)
+    return SyncAnalysisRunReservation(
+        analysis_run_id=str(existing_id),
+        created=False,
+        status=existing_status,
+        locked_by=None,
+        result_json=result_json,
+        meta_json=meta_json,
+    )
+
+
+def _resolve_sync_run_after_unique_violation(
+    database_url: str,
+    *,
+    project_id: str,
+    created_by_user_id: str,
+    idempotency_key: str,
+    canonical_input: dict[str, Any],
+):
+    """Defense-in-depth path for create_running_analysis_run() — see
+    its docstring and _resolve_job_after_unique_violation()'s own
+    analogous comment above. The transaction that hit the
+    UniqueViolation is already aborted, so this re-queries on a
+    brand-new connection and transaction."""
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                existing = _fetch_existing_job_by_idempotency_key(
+                    cur,
+                    project_id=project_id,
+                    created_by_user_id=created_by_user_id,
+                    idempotency_key=idempotency_key,
+                )
+                if existing is None:
+                    raise AnalysisHistoryReadError("failed to create synchronous analysis run")
+                result = _resolve_existing_sync_run(conn, cur, existing, canonical_input)
+            conn.commit()
+    except (
+        AnalysisJobCancelledConflictError,
+        AnalysisJobCreateConflictError,
+        SyncAnalysisStillRunningError,
+        SyncAnalysisPreviouslyFailedError,
+    ):
+        raise
+    except Exception as exc:
+        logger.exception("Failed to resolve synchronous analysis run after unique constraint conflict")
+        raise AnalysisHistoryReadError("failed to create synchronous analysis run") from exc
+
+    return result
+
+
+def create_running_analysis_run(
+    *,
+    project_id: str,
+    created_by_user_id: str,
+    idempotency_key: str,
+    brand_name: str,
+    documents: list[str] | None,
+    urls: list[str] | None,
+    common_crawl_mode: str | None,
+    common_crawl_domain: str | None,
+    ai_overview_mode: str | None,
+    chatgpt_mode: str | None,
+    claude_mode: str | None,
+    gemini_mode: str | None,
+    lease_seconds: int,
+    required_counters: list[UsageCounterRequirement] | None = None,
+) -> SyncAnalysisRunReservation:
+    """Atomically reserves one synchronous, authenticated POST /analyze
+    request's execution slot — Task 6-B3's idempotency mechanism. See
+    this section's module-level comment for why this is safe to share
+    the async job system's schema/columns without ever letting
+    claim_next_queued_analysis_run() see (let alone claim) the row this
+    creates.
+
+    Locking/idempotency-lookup structure mirrors
+    create_queued_analysis_run() exactly (same two fixed-order
+    advisory locks, same _fetch_existing_job_by_idempotency_key()
+    lookup, same UniqueViolation defense-in-depth fallback) — see that
+    function's docstring for the full reasoning, not repeated here.
+    The one structural difference: on a genuinely new key, this
+    function inserts the new row directly with status='running' (plus
+    locked_by/locked_at/lease_expires_at already set), never 'queued' —
+    there is no separate "wait for a worker to claim it" phase, because
+    the caller (main.py's analyze()) *is* the thing that executes it,
+    synchronously, in this same request.
+
+    `required_counters` (Task 6-B4, default empty — no quota checked
+    at all) is only ever consulted on the "genuinely new key" branch
+    below, strictly before this transaction's own conn.commit() — see
+    _reserve_usage_counters()'s and this section's own module-level
+    comment for why a resubmission of an existing key never touches it,
+    why no new advisory lock is needed, and why a rejection here undoes
+    the row INSERT too.
+
+    Raises SyncAnalysisStillRunningError / SyncAnalysisPreviouslyFailedError
+    / AnalysisJobCreateConflictError / AnalysisJobCancelledConflictError
+    / AnalysisQuotaExceededError for every non-replayable existing-row
+    or over-limit case (see their own docstrings) — main.py maps the
+    first four to 409 and the last to 429. Raises
+    AnalysisHistoryReadError on any other connection/query failure
+    (including any failure while reserving `required_counters` itself
+    — never silently treated as "quota check skipped, proceed anyway").
+    """
+    database_url = _require_connectable()
+
+    canonical_input = _canonicalize_job_input(
+        brand_name=brand_name,
+        documents=documents,
+        urls=urls,
+        common_crawl_mode=common_crawl_mode,
+        common_crawl_domain=common_crawl_domain,
+        ai_overview_mode=ai_overview_mode,
+        chatgpt_mode=chatgpt_mode,
+        claude_mode=claude_mode,
+        gemini_mode=gemini_mode,
+    )
+    locked_by = f"sync:{uuid.uuid4()}"
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                # Same fixed (project, then user) lock order as
+                # create_queued_analysis_run() — see that function's
+                # docstring for why this ordering rules out a deadlock
+                # between two transactions.
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (project_id,),
+                )
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 1))",
+                    (created_by_user_id,),
+                )
+
+                existing = _fetch_existing_job_by_idempotency_key(
+                    cur,
+                    project_id=project_id,
+                    created_by_user_id=created_by_user_id,
+                    idempotency_key=idempotency_key,
+                )
+                if existing is not None:
+                    result = _resolve_existing_sync_run(conn, cur, existing, canonical_input)
+                    conn.commit()
+                    return result
+
+                cur.execute(
+                    "select id from brands where name = %s and project_id = %s order by created_at desc limit 1",
+                    (canonical_input["brandName"], project_id),
+                )
+                brand_row = cur.fetchone()
+                if brand_row is not None:
+                    brand_id = brand_row[0]
+                else:
+                    cur.execute(
+                        "insert into brands (name, project_id) values (%s, %s) returning id",
+                        (canonical_input["brandName"], project_id),
+                    )
+                    brand_id = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    insert into analysis_runs
+                        (brand_id, project_id, status, input_snapshot,
+                         created_by_user_id, idempotency_key,
+                         locked_by, locked_at, lease_expires_at, attempt_count)
+                    values (%s, %s, 'running', %s, %s, %s,
+                            %s, now(), now() + make_interval(secs => %s), 1)
+                    returning id
+                    """,
+                    (
+                        brand_id,
+                        project_id,
+                        Jsonb(canonical_input),
+                        created_by_user_id,
+                        idempotency_key,
+                        locked_by,
+                        lease_seconds,
+                    ),
+                )
+                analysis_run_id = cur.fetchone()[0]
+
+                cur.execute(
+                    "insert into analysis_results (analysis_run_id, result_json) values (%s, %s)",
+                    (analysis_run_id, Jsonb({})),
+                )
+
+                # Task 6-B4: must happen before conn.commit() below —
+                # a raise here (never caught in this function) rolls
+                # back the two INSERTs above too, via psycopg3's
+                # automatic ROLLBACK-on-exception (see
+                # _reserve_usage_counters()'s docstring).
+                _reserve_usage_counters(cur, required_counters or [])
+            conn.commit()
+    except (
+        AnalysisJobCreateConflictError,
+        AnalysisJobCancelledConflictError,
+        SyncAnalysisStillRunningError,
+        SyncAnalysisPreviouslyFailedError,
+        AnalysisQuotaExceededError,
+    ):
+        raise
+    except Exception as exc:
+        if UniqueViolation is not None and isinstance(exc, UniqueViolation):
+            return _resolve_sync_run_after_unique_violation(
+                database_url,
+                project_id=project_id,
+                created_by_user_id=created_by_user_id,
+                idempotency_key=idempotency_key,
+                canonical_input=canonical_input,
+            )
+        logger.exception("Failed to create synchronous analysis run")
+        raise AnalysisHistoryReadError("failed to create synchronous analysis run") from exc
+
+    return SyncAnalysisRunReservation(
+        analysis_run_id=str(analysis_run_id),
+        created=True,
+        status="running",
+        locked_by=locked_by,
+    )
+
+
 # --- Async analysis jobs, Phase 2 worker (services/analysis_job_worker.py)
 # — see docs/40_async_analysis_jobs_design.md "11"/"12". Three new
 # functions: claim_next_queued_analysis_run() (queued -> running,
 # exclusive), complete_analysis_job() (running -> completed/partial/
-# failed, exclusive, atomic with the result write), and
-# fail_expired_running_analysis_runs() (the lease-expiry sweep). None
-# of these are called by anything in Phase 1 — they are reachable
-# only via the worker, which is itself off unless
-# ANALYSIS_JOBS_WORKER_ENABLED=true (services/analysis_jobs_settings.py).
+# failed, exclusive, atomic with the result write — also reused as-is
+# by create_running_analysis_run() above for Task 6-B3's synchronous
+# idempotency, with the synchronous caller itself playing the role of
+# a single-shot "worker"), and fail_expired_running_analysis_runs()
+# (the lease-expiry sweep, used only by the worker's own poll loop —
+# create_running_analysis_run() above does its own narrower, inline,
+# single-row equivalent instead, so it keeps working correctly even
+# when ANALYSIS_JOBS_WORKER_ENABLED=false). None of these three are
+# called by anything in Phase 1 — they are reachable only via the
+# worker, which is itself off unless ANALYSIS_JOBS_WORKER_ENABLED=true
+# (services/analysis_jobs_settings.py).
 
 
 @dataclass(frozen=True)
