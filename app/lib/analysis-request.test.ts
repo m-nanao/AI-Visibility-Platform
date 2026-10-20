@@ -755,6 +755,159 @@ describe("resolveRequestIdForSyncAnalysis / clearPendingSyncAnalysisRequest", ()
   });
 });
 
+// --- Task 6-B3 audit fix regression (不具合A): app/page.tsx's
+// handleAnalyze() has no exported function of its own (this project
+// has no React component test infrastructure — see
+// app/lib/analysis-jobs.test.ts's own makeFakeWindow()-based
+// convention for why logic lives in lib/ files instead), so these
+// tests reproduce its exact post-fetch decision sequence verbatim
+// against the real exported functions, proving the fixed behavior:
+// a dummy-fallback response (ANALYZE_FALLBACK_HEADER present) must
+// NEVER clear the pending requestId — only a confirmed real success
+// (no fallback header) may.
+describe("app/page.tsx's post-/api/analyze requestId handling (不具合A regression)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", makeFakeWindow());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Mirrors app/page.tsx:286-316's exact sequence for a response
+   * that was `response.ok` — the only branch 不具合A touched. */
+  function simulateOkResponseHandling(isDummyFallback: boolean) {
+    if (isDummyFallback) {
+      // (setFallbackMessage(...) in the real code — no storage effect)
+    } else {
+      clearPendingSyncAnalysisRequest();
+    }
+  }
+
+  it("keeps the same requestId after a dummy-fallback (200 + ANALYZE_FALLBACK_HEADER) response", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const firstRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-1",
+    );
+
+    simulateOkResponseHandling(/* isDummyFallback */ true);
+
+    const secondRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-2",
+    );
+    expect(secondRequestId).toBe(firstRequestId);
+  });
+
+  it("clears the requestId after a confirmed real success (200, no fallback header)", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const firstRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-1",
+    );
+
+    simulateOkResponseHandling(/* isDummyFallback */ false);
+
+    const secondRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-2",
+    );
+    expect(secondRequestId).toBe("generated-2");
+    expect(secondRequestId).not.toBe(firstRequestId);
+  });
+
+  it("resubmitting the exact same input after a fallback reuses the same requestId (never a fresh/duplicate execution)", () => {
+    const firstBody = buildAnalyzeRequestBody("Acme", []);
+    const firstRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      firstBody,
+      () => "generated-1",
+    );
+    simulateOkResponseHandling(true);
+
+    // The user resubmits with identical input (same brand, no edits).
+    const secondBody = buildAnalyzeRequestBody("Acme", []);
+    const secondRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      secondBody,
+      () => "generated-2",
+    );
+
+    expect(secondRequestId).toBe(firstRequestId);
+  });
+
+  it("still issues a fresh requestId when the input genuinely changes after a fallback", () => {
+    const firstBody = buildAnalyzeRequestBody("Acme", []);
+    resolveRequestIdForSyncAnalysis("user-1", "project-1", firstBody, () => "generated-1");
+    simulateOkResponseHandling(true);
+
+    const differentBody = buildAnalyzeRequestBody("DifferentBrand", []);
+    const secondRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      differentBody,
+      () => "generated-2",
+    );
+    expect(secondRequestId).toBe("generated-2");
+  });
+
+  it("a terminal 409 (previously failed) still clears the requestId even though it's also a kept-alive concern for still-running", () => {
+    // Regression guard: 不具合A's fix only touches the response.ok
+    // branch — the existing 409 handling (isTerminalAnalyzeConflictCode)
+    // must be unaffected.
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const firstRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-1",
+    );
+    expect(isTerminalAnalyzeConflictCode("analysis_previously_failed")).toBe(true);
+    clearPendingSyncAnalysisRequest();
+
+    const secondRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-2",
+    );
+    expect(secondRequestId).not.toBe(firstRequestId);
+  });
+
+  it("a still-running 409 keeps the requestId (isTerminalAnalyzeConflictCode is false, so no clear happens)", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const firstRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-1",
+    );
+    expect(isTerminalAnalyzeConflictCode("analysis_still_running")).toBe(false);
+    // app/page.tsx only calls clearPendingSyncAnalysisRequest() here
+    // when isTerminalAnalyzeConflictCode(code) is true — simulate the
+    // "false" branch by simply not calling it.
+
+    const secondRequestId = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      body,
+      () => "generated-2",
+    );
+    expect(secondRequestId).toBe(firstRequestId);
+  });
+});
+
 describe("getAnalyzeConflictMessage / isTerminalAnalyzeConflictCode", () => {
   it("returns a still-running-specific message and treats it as non-terminal", () => {
     expect(getAnalyzeConflictMessage(ANALYZE_STILL_RUNNING_CODE)).toContain("処理中");

@@ -1345,11 +1345,32 @@ def _analyze_authenticated_idempotent(
             # own state already reflects that; this result is simply
             # discarded, never force-written over whatever the row
             # already says, and never retried automatically.
+            #
+            # Task 6-B3 audit fix (不具合B): `reservation.analysis_run_id`
+            # now unambiguously identifies a 'failed' run with no saved
+            # result (complete_analysis_job()'s own WHERE clause
+            # guarantees this row was never overwritten back to
+            # completed/partial — see that function's docstring). The
+            # caller here still received a real, successfully computed
+            # `result`, so it is still returned as-is — only
+            # `analysisRunId` is cleared, mirroring the anonymous
+            # path's own existing convention of only ever setting it
+            # when the save actually succeeded (see _analyze_anonymous()
+            # above). This prevents the history detail screen (which
+            # correctly reports this run as "failed", per
+            # resolveHistoryDetailFetchOutcome()'s status check) from
+            # ever being reachable from what looks like a successful
+            # on-screen result — the screen simply shows no "view in
+            # history" link for this response (see
+            # app/lib/analysis-history.ts's resolvePostAnalyzeHistoryLink(),
+            # which already treats a null analysisRunId as "no link").
             logger.warning(
                 "Synchronous analysis run %s's lease expired before completion; "
-                "result discarded",
+                "result discarded, analysisRunId omitted from the response",
                 reservation.analysis_run_id,
             )
+            result.analysisRunId = None
+            return result
     except AnalysisHistoryReadError:
         logger.exception("Failed to save synchronous analysis result")
 

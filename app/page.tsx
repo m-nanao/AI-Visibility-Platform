@@ -303,12 +303,32 @@ export default function Home() {
         throw new Error(errorBody?.error ?? "分析に失敗しました。");
       }
 
-      clearPendingSyncAnalysisRequest();
-
-      if (response.headers.get(ANALYZE_FALLBACK_HEADER)) {
+      // Task 6-B3 audit fix (不具合A): a 200 response here does NOT
+      // necessarily mean the real analysis actually finished — when
+      // the Python API didn't answer in time (or at all), this is the
+      // dummy-fallback response (see app/api/analyze/route.ts's
+      // PYTHON_API_TIMEOUT_MS comment: "the Python API keeps running
+      // ... and may still save a real result"). Its true server-side
+      // outcome (still running / already completed / already failed)
+      // is unknown to this client, so the pending requestId must be
+      // kept — never cleared — so a resubmission of the same input
+      // naturally reuses it and lets the backend's own idempotency
+      // judgment (replay / 409 still-running / 409 previously-failed)
+      // decide, instead of this client blindly starting a second,
+      // independent (and potentially paid) execution under a fresh
+      // key. Only a confirmed real result (no fallback header) clears
+      // it. Found by the Task 6-B3 audit's real-PostgreSQL
+      // verification: without this guard, a fallback response clears
+      // the key just like a real success would, defeating the whole
+      // idempotency mechanism in exactly its most common trigger
+      // (a slow full-ON request exceeding this route's own timeout).
+      const isDummyFallback = Boolean(response.headers.get(ANALYZE_FALLBACK_HEADER));
+      if (isDummyFallback) {
         setFallbackMessage(
           getAnalyzeFallbackMessage(response.headers.get(ANALYZE_FALLBACK_REASON_HEADER)),
         );
+      } else {
+        clearPendingSyncAnalysisRequest();
       }
 
       const data: AnalysisResult = await response.json();

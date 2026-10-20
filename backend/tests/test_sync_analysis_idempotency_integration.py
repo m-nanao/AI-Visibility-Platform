@@ -13,12 +13,12 @@ Requires a `TEST_DATABASE_URL` environment variable pointing at a
 disposable PostgreSQL database — never `DATABASE_URL` itself. The
 whole module is skipped with an explicit reason when it's unset.
 
-**This module HAS been executed, against a real local disposable
-PostgreSQL 16 instance (macOS/Homebrew, port 5544), as part of
-implementing Task 6-B3.** The instance was created, used only for this
-verification, and torn down (dropdb + pg_ctl stop) within the same
-session — no Supabase connection of any kind was made. All tests in
-this module passed.
+**This module HAS been executed, against real local disposable
+PostgreSQL 16 and 17 instances (macOS/Homebrew), as part of
+implementing and later auditing/fixing Task 6-B3.** Each instance was
+created, used only for this verification, and torn down (dropdb +
+pg_ctl stop) within the same session — no Supabase connection of any
+kind was made. All tests in this module passed.
 """
 
 from __future__ import annotations
@@ -301,3 +301,85 @@ def test_second_request_sees_still_running_then_lease_expiry_makes_it_failed_not
         cur.execute(f"select count(*) from {schema}.analysis_runs")
         (row_count,) = cur.fetchone()
     assert row_count == 1
+
+
+def test_late_completion_after_lazy_expiry_never_overwrites_the_failed_row(db_connection):
+    """Task 6-B3 audit (不具合B's root cause, verified on real
+    PostgreSQL): the ORIGINAL process is still genuinely executing
+    (not stopped — see the module-level reasoning above) when its
+    lease expires and a *different* request's lazy-expiry check
+    transitions the row to 'failed'. When the original process finally
+    finishes and calls complete_analysis_job() with its own
+    `locked_by` token to save a REAL completed result, that call must
+    be refused (status='running' no longer matches) — the row must
+    stay 'failed', and the real result must never reach
+    `analysis_results`. This is the DB-level half of 不具合B; the other
+    half (main.py must not report this run's id as if it held a saved
+    result) is covered by
+    tests/test_main_analyze_idempotency.py's
+    test_lease_expired_completion_omits_analysis_run_id_from_response.
+    """
+    import services.analysis_history_repository as repo
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    first = _create_running(database_url, lease_seconds=1)
+    assert first.created is True
+    original_locked_by = first.locked_by
+    run_id = first.analysis_run_id
+
+    # Simulate the lease having expired while the original process is
+    # still genuinely running (never assume expiry means "stopped" —
+    # same reasoning as the test above).
+    with conn.cursor() as cur:
+        cur.execute(
+            f"update {schema}.analysis_runs set lease_expires_at = now() - interval '1 second'"
+        )
+
+    # A different request (same key) discovers the expiry and sweeps
+    # the row to 'failed'.
+    with pytest.raises(repo.SyncAnalysisPreviouslyFailedError):
+        _create_running(database_url)
+
+    # Meanwhile, a THIRD request with a genuinely different key (e.g.
+    # the Frontend bug this audit found: a resubmission that was given
+    # a fresh requestId instead of reusing the original) is free to
+    # start its own, fully independent execution — proving the
+    # backend has no secondary defense once a different key is used.
+    second = _create_running(database_url, idempotency_key="req-unrelated")
+    assert second.created is True
+    assert second.analysis_run_id != run_id
+
+    # The ORIGINAL process now finally finishes and tries to save its
+    # real result — this must be refused, not overwrite the 'failed'
+    # row.
+    original_load_db_settings = repo.load_db_settings
+    repo.load_db_settings = lambda: type(
+        "S", (), {"database_url": database_url, "save_enabled": True}
+    )()
+    try:
+        completed = repo.complete_analysis_job(
+            run_id,
+            worker_id=original_locked_by,
+            status="completed",
+            result_json={"brandName": "Acme", "lateRealResult": True},
+            meta_json={},
+            error_message=None,
+        )
+    finally:
+        repo.load_db_settings = original_load_db_settings
+
+    assert completed is False
+
+    with conn.cursor() as cur:
+        cur.execute(f"select status from {schema}.analysis_runs where id = %s", (run_id,))
+        (status,) = cur.fetchone()
+        cur.execute(
+            f"select result_json from {schema}.analysis_results where analysis_run_id = %s",
+            (run_id,),
+        )
+        (result_json,) = cur.fetchone()
+    assert status == "failed"
+    assert result_json == {}
+    assert "lateRealResult" not in result_json

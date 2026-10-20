@@ -178,6 +178,84 @@ def test_new_request_id_runs_pipeline_once_and_completes(monkeypatch):
     assert complete_calls[0]["status"] == "completed"
 
 
+def test_lease_expired_completion_omits_analysis_run_id_from_response(monkeypatch):
+    """Task 6-B3 audit fix (不具合B): when complete_analysis_job()
+    returns False (its own lease/ownership WHERE clause didn't match
+    — the row was already lazily expired to 'failed' by a different
+    request), the caller still receives the real, successfully
+    computed result (never discarded from the *response*), but
+    `analysisRunId` must be None — never the id of a run the DB
+    already (and correctly, irreversibly) marked 'failed'. Returning
+    that id would let the Frontend link to a history detail screen
+    that reports "分析に失敗しました" for an analysis the user just
+    saw succeed on-screen."""
+    _mock_authenticated(monkeypatch)
+    complete_calls = []
+
+    monkeypatch.setattr(
+        main,
+        "create_running_analysis_run",
+        lambda **kwargs: SyncAnalysisRunReservation(
+            analysis_run_id=RUN_ID, created=True, status="running", locked_by="sync:tok"
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "run_analysis_pipeline",
+        lambda **kwargs: main.AnalysisPipelineOutcome(
+            result=main.build_dummy_analysis(kwargs["brand_name"]),
+            cooccurrence_status="real",
+            source_summary={},
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "complete_analysis_job",
+        lambda run_id, **kwargs: complete_calls.append(kwargs) or False,
+    )
+
+    response = _post({"brandName": "サイボウズ", "projectId": "p1", "requestId": "req-1"})
+
+    assert response.status_code == 200
+    body = response.json()
+    # The real result is still returned — never silently swapped for
+    # dummy/empty data just because persistence lost the race.
+    assert body["brandName"] == "サイボウズ"
+    assert body["analysisRunId"] is None
+    assert len(complete_calls) == 1
+
+
+def test_completed_completion_still_returns_the_real_analysis_run_id(monkeypatch):
+    """Companion to the lease-expired case above — confirms the fix is
+    scoped to the False branch only: a normal, successful completion
+    (complete_analysis_job() returns True) must still return the real
+    analysisRunId, unchanged."""
+    _mock_authenticated(monkeypatch)
+
+    monkeypatch.setattr(
+        main,
+        "create_running_analysis_run",
+        lambda **kwargs: SyncAnalysisRunReservation(
+            analysis_run_id=RUN_ID, created=True, status="running", locked_by="sync:tok"
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "run_analysis_pipeline",
+        lambda **kwargs: main.AnalysisPipelineOutcome(
+            result=main.build_dummy_analysis(kwargs["brand_name"]),
+            cooccurrence_status="real",
+            source_summary={},
+        ),
+    )
+    monkeypatch.setattr(main, "complete_analysis_job", lambda run_id, **kwargs: True)
+
+    response = _post({"brandName": "サイボウズ", "projectId": "p1", "requestId": "req-1"})
+
+    assert response.status_code == 200
+    assert response.json()["analysisRunId"] == RUN_ID
+
+
 def test_unavailable_cooccurrence_completes_as_partial(monkeypatch):
     _mock_authenticated(monkeypatch)
     complete_calls = []
