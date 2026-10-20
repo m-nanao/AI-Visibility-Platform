@@ -4,14 +4,21 @@ services.ai_gap_comparison.generate_ai_gap_comparison()) — added so a
 依頼者 can generate an AI-powered Web/AI gap comparison on demand from
 the history detail screen.
 
-Mirrors tests/test_main_analysis_runs_rerun_gemini_api.py's
-conventions: never touches a real database
-(main.repository_get_analysis_run/repository_update_analysis_result
-are monkeypatched) and never calls the real Anthropic API
-(main.generate_ai_gap_comparison is monkeypatched) — JWT/project-access
-behavior is already covered by tests/test_jwt_auth.py and
-tests/test_analysis_history_repository.py, and the comparison-call
-logic itself by tests/test_ai_gap_comparison.py.
+Authorization was tightened by fix/history-read-token-write-isolation
+(pre-demo audit issue B2): this endpoint is now JWT-only, with no
+HISTORY_READ_TOKEN fallback of any kind — mirrors
+tests/test_main_tags_categories_api.py's auth-test conventions exactly.
+Every content/behavior test below authenticates via JWT
+(_mock_jwt_dependencies + _jwt_headers()) rather than the old
+HISTORY_READ_TOKEN-only path, since that path is no longer valid for
+this endpoint at all.
+
+Never touches a real database (main.repository_get_analysis_run/
+repository_update_analysis_result are monkeypatched) and never calls
+the real Anthropic API (main.generate_ai_gap_comparison is
+monkeypatched) — JWT/project-access behavior is already covered by
+tests/test_jwt_auth.py and tests/test_analysis_history_repository.py,
+and the comparison-call logic itself by tests/test_ai_gap_comparison.py.
 """
 
 from fastapi.testclient import TestClient
@@ -21,7 +28,7 @@ from main import HISTORY_READ_TOKEN_HEADER, app
 from models import AiGapActionRecommendation, WebAiGapAiComparison
 from services.ai_gap_comparison import AiGapComparisonOutcome
 from services.analysis_history_repository import AnalysisHistoryReadError
-from services.jwt_auth import AuthenticatedUser
+from services.jwt_auth import AuthenticatedUser, JWTAuthError
 
 client = TestClient(app)
 
@@ -54,11 +61,11 @@ class _FakeHistoryDbConnection:
 
 
 def _mock_jwt_dependencies(monkeypatch, *, user_id: str = "user-1", can_access_run: bool = True):
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
     monkeypatch.setattr(
         main, "verify_supabase_jwt", lambda token, settings: AuthenticatedUser(user_id=user_id)
     )
     monkeypatch.setattr(main, "open_history_db_connection", lambda: _FakeHistoryDbConnection())
-    monkeypatch.setattr(main, "get_accessible_project_ids", lambda conn, uid: [])
     monkeypatch.setattr(
         main, "can_user_access_analysis_run", lambda conn, uid, run_id: can_access_run
     )
@@ -127,7 +134,7 @@ def _mock_failed_generation(
     )
 
 
-# --- disabled / unconfigured / unauthorized → same gate as DELETE/rerun ----
+# --- disabled / unconfigured -------------------------------------------
 
 
 def test_ai_comparison_returns_503_when_read_history_disabled(monkeypatch):
@@ -140,43 +147,73 @@ def test_ai_comparison_returns_503_when_read_history_disabled(monkeypatch):
     assert response.status_code == 503
 
 
-def test_ai_comparison_returns_403_when_token_header_missing(monkeypatch):
+def test_ai_comparison_rejected_when_jwt_not_configured(monkeypatch):
     _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: False)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
+
+    assert response.status_code == 503
+
+
+# --- HISTORY_READ_TOKEN is no longer a valid credential for this
+# endpoint (fix/history-read-token-write-isolation) --------------------
+
+
+def test_ai_comparison_rejected_with_history_read_token_alone(monkeypatch):
+    """A correct HISTORY_READ_TOKEN, with no Authorization header at
+    all, must never be enough to trigger an AI-gap comparison
+    generation (and therefore never consume the Anthropic API budget
+    on behalf of an unauthenticated caller) — previously this succeeded
+    unconditionally (pre-demo audit issue B2)."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
+    generate_calls = []
+    monkeypatch.setattr(
+        main,
+        "generate_ai_gap_comparison",
+        lambda **kwargs: generate_calls.append(kwargs),
+    )
+
+    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+
+    assert response.status_code == 401
+    assert generate_calls == []
+
+
+def test_ai_comparison_rejected_with_no_credentials_at_all(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
 
     response = client.post(AI_COMPARISON_PATH)
 
-    assert response.status_code == 403
-
-
-def test_ai_comparison_returns_403_when_token_header_mismatched(monkeypatch):
-    _enable_read_env(monkeypatch)
-
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers("wrong-token"))
-
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_ai_comparison_token_value_never_appears_in_response_body(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_successful_generation(monkeypatch)
     monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers={**_jwt_headers(), **_auth_headers()})
 
     assert TEST_TOKEN not in response.text
 
 
-# --- HISTORY_READ_TOKEN mode: unrestricted, matches existing DELETE/rerun --
+# --- JWT-authenticated: content/behavior (access-checked by run id
+# before anything else, verified separately further below) -----------
 
 
-def test_ai_comparison_history_token_mode_success(monkeypatch):
+def test_ai_comparison_jwt_mode_success(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     comparison = _mock_successful_generation(monkeypatch)
     monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -191,6 +228,7 @@ def test_ai_comparison_text_fallback_is_saved_and_returned_and_preserves_web_ai_
     and returned exactly like a normal structured one, and the existing
     rule-based webAiGap is still left untouched."""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     fallback_comparison = _comparison(
@@ -211,7 +249,7 @@ def test_ai_comparison_text_fallback_is_saved_and_returned_and_preserves_web_ai_
 
     monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -230,6 +268,7 @@ def test_ai_comparison_json_like_fallback_is_saved_and_returned_and_preserves_we
     and returned exactly like a normal structured one, and the existing
     rule-based webAiGap is still left untouched."""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     json_like_comparison = _comparison(
@@ -250,7 +289,7 @@ def test_ai_comparison_json_like_fallback_is_saved_and_returned_and_preserves_we
 
     monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -267,6 +306,7 @@ def test_ai_comparison_action_recommendations_are_saved_and_returned(monkeypatch
     webAiGapAiComparison, and the existing rule-based webAiGap stays
     untouched."""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     comparison_with_actions = _comparison(
@@ -291,7 +331,7 @@ def test_ai_comparison_action_recommendations_are_saved_and_returned(monkeypatch
 
     monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -311,6 +351,7 @@ def test_ai_comparison_action_recommendation_with_null_target_round_trips(monkey
     Noneの項目でも、フィールド自体は失われずnullとしてAPI応答・保存先の
     両方に残ること。"""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     comparison_with_actions = _comparison(
@@ -326,7 +367,7 @@ def test_ai_comparison_action_recommendation_with_null_target_round_trips(monkey
     _mock_successful_generation(monkeypatch, comparison=comparison_with_actions)
     monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 200
     action_recommendations = response.json()["webAiGapAiComparison"]["actionRecommendations"]
@@ -339,28 +380,31 @@ def test_ai_comparison_action_recommendations_absent_when_not_set(monkeypatch):
     """actionRecommendationsを指定しない通常の比較結果は、応答・保存先
     いずれもnullのまま——既存の互換性を壊さない。"""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     _mock_successful_generation(monkeypatch)
     monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 200
     assert response.json()["webAiGapAiComparison"]["actionRecommendations"] is None
 
 
-def test_ai_comparison_history_token_mode_not_found(monkeypatch):
+def test_ai_comparison_jwt_mode_not_found(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: None)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 404
 
 
 def test_ai_comparison_passes_through_brand_name_and_result_json(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     received_kwargs = {}
@@ -372,7 +416,7 @@ def test_ai_comparison_passes_through_brand_name_and_result_json(monkeypatch):
     monkeypatch.setattr(main, "generate_ai_gap_comparison", fake_generate)
     monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
 
-    client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert received_kwargs["brand_name"] == "Acme"
     assert received_kwargs["result_json"] == detail["result"]
@@ -380,6 +424,7 @@ def test_ai_comparison_passes_through_brand_name_and_result_json(monkeypatch):
 
 def test_ai_comparison_saves_only_webAiGapAiComparison_and_does_not_overwrite_webAiGap(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     detail = _fake_detail()
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: detail)
     _mock_successful_generation(monkeypatch)
@@ -392,7 +437,7 @@ def test_ai_comparison_saves_only_webAiGapAiComparison_and_does_not_overwrite_we
 
     monkeypatch.setattr(main, "repository_update_analysis_result", fake_update)
 
-    client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert saved["result_json"]["webAiGap"] == detail["result"]["webAiGap"]
     assert "webAiGapAiComparison" in saved["result_json"]
@@ -401,6 +446,7 @@ def test_ai_comparison_saves_only_webAiGapAiComparison_and_does_not_overwrite_we
 
 def test_ai_comparison_failure_not_attempted_returns_503_and_does_not_write_to_db(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_failed_generation(
         monkeypatch,
@@ -415,7 +461,7 @@ def test_ai_comparison_failure_not_attempted_returns_503_and_does_not_write_to_d
         lambda run_id, **kw: update_calls.append(run_id) or True,
     )
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 503
     assert response.json() == {
@@ -427,6 +473,7 @@ def test_ai_comparison_failure_not_attempted_returns_503_and_does_not_write_to_d
 
 def test_ai_comparison_failure_attempted_returns_502_and_does_not_write_to_db(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_failed_generation(
         monkeypatch,
@@ -441,7 +488,7 @@ def test_ai_comparison_failure_attempted_returns_502_and_does_not_write_to_db(mo
         lambda run_id, **kw: update_calls.append(run_id) or True,
     )
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 502
     assert response.json() == {
@@ -456,10 +503,11 @@ def test_ai_comparison_failure_response_reason_is_none_when_not_set(monkeypatch)
     future/unexpected failure path) still returns a well-formed body
     with reason: null, rather than omitting the key or erroring."""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_failed_generation(monkeypatch, reason="boom", unavailable=False, internal_reason=None)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 502
     assert response.json() == {"error": "boom", "reason": None}
@@ -467,6 +515,7 @@ def test_ai_comparison_failure_response_reason_is_none_when_not_set(monkeypatch)
 
 def test_ai_comparison_failure_response_never_includes_raw_model_output_or_secrets(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_failed_generation(
         monkeypatch,
@@ -475,7 +524,7 @@ def test_ai_comparison_failure_response_never_includes_raw_model_output_or_secre
         internal_reason="json_decode_failed",
     )
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
     text = response.text
 
     assert "sk-ant-" not in text
@@ -484,6 +533,7 @@ def test_ai_comparison_failure_response_never_includes_raw_model_output_or_secre
 
 def test_ai_comparison_returns_503_when_repository_update_raises(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_successful_generation(monkeypatch)
 
@@ -492,57 +542,46 @@ def test_ai_comparison_returns_503_when_repository_update_raises(monkeypatch):
 
     monkeypatch.setattr(main, "repository_update_analysis_result", raising_update)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 503
 
 
 def test_ai_comparison_returns_404_when_update_reports_run_vanished(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
     _mock_successful_generation(monkeypatch)
     monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: False)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 404
 
 
 def test_ai_comparison_returns_503_when_get_analysis_run_raises(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
 
     def raising_get(run_id):
         raise AnalysisHistoryReadError("boom")
 
     monkeypatch.setattr(main, "repository_get_analysis_run", raising_get)
 
-    response = client.post(AI_COMPARISON_PATH, headers=_auth_headers())
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 503
 
 
-# --- AUTH_JWT_ENABLED=true: access-checked by run id before anything else --
-
-
-def test_ai_comparison_jwt_mode_success_when_accessible(monkeypatch):
-    _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
-    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
-    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: _fake_detail())
-    _mock_successful_generation(monkeypatch)
-    monkeypatch.setattr(main, "repository_update_analysis_result", lambda run_id, **kw: True)
-
-    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
-
-    assert response.status_code == 200
-    assert response.json()["analysisRunId"] == RUN_ID
+# --- JWT-authenticated: access control itself -------------------------
 
 
 def test_ai_comparison_jwt_mode_returns_403_when_run_inaccessible(monkeypatch):
     """False from can_user_access_analysis_run() must produce 403
-    without ever calling the Anthropic API or touching the DB."""
+    without ever calling the Anthropic API or touching the DB — this is
+    what keeps a user who can't see a run (e.g. a different project)
+    from triggering a billable call for it."""
     _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_run=False)
     generate_calls = []
     monkeypatch.setattr(
@@ -558,25 +597,13 @@ def test_ai_comparison_jwt_mode_returns_403_when_run_inaccessible(monkeypatch):
     assert generate_calls == []
 
 
-def test_ai_comparison_jwt_mode_returns_404_when_accessible_but_not_found(monkeypatch):
-    _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
-    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
-    monkeypatch.setattr(main, "repository_get_analysis_run", lambda run_id: None)
-
-    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
-
-    assert response.status_code == 404
-
-
 def test_ai_comparison_jwt_mode_returns_503_when_access_check_fails(monkeypatch):
     _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
     monkeypatch.setattr(
         main, "verify_supabase_jwt", lambda token, settings: AuthenticatedUser(user_id="user-1")
     )
     monkeypatch.setattr(main, "open_history_db_connection", lambda: _FakeHistoryDbConnection())
-    monkeypatch.setattr(main, "get_accessible_project_ids", lambda conn, uid: [])
 
     def raising_access_check(conn, uid, run_id):
         raise RuntimeError("db unreachable")
@@ -586,3 +613,27 @@ def test_ai_comparison_jwt_mode_returns_503_when_access_check_fails(monkeypatch)
     response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
 
     assert response.status_code == 503
+
+
+def test_ai_comparison_rejected_with_invalid_jwt(monkeypatch):
+    """A verification failure (expired/bad signature/etc.) must also
+    never reach generate_ai_gap_comparison() — no external API call
+    happens here either."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
+    generate_calls = []
+    monkeypatch.setattr(
+        main,
+        "generate_ai_gap_comparison",
+        lambda **kwargs: generate_calls.append(kwargs),
+    )
+
+    def raising_verify(token, settings):
+        raise JWTAuthError("expired", "token expired")
+
+    monkeypatch.setattr(main, "verify_supabase_jwt", raising_verify)
+
+    response = client.post(AI_COMPARISON_PATH, headers=_jwt_headers())
+
+    assert response.status_code == 401
+    assert generate_calls == []

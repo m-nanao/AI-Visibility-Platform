@@ -4,6 +4,14 @@ soft_delete_analysis_run()), added by feature/history-delete-and-mode-badges
 so a依頼者 can clear repeated full-ON/single-ON verification runs out of
 the history list.
 
+Authorization was tightened by fix/history-read-token-write-isolation
+(pre-demo audit issue B2): this endpoint is now JWT-only, with no
+HISTORY_READ_TOKEN fallback of any kind — mirrors
+tests/test_main_tags_categories_api.py's auth-test conventions exactly
+(_mock_jwt_auth-equivalent helper monkeypatches
+main.is_jwt_verification_configured directly rather than requiring a
+real SUPABASE_JWKS_URL-shaped env).
+
 Mirrors tests/test_main_analysis_history_read_api.py's conventions:
 never touches a real database (main.repository_soft_delete_analysis_run
 is monkeypatched), and mocks main.verify_supabase_jwt/
@@ -48,20 +56,17 @@ class _FakeHistoryDbConnection:
 
 
 def _mock_jwt_dependencies(monkeypatch, *, user_id: str = "user-1", can_access_run: bool = True):
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
     monkeypatch.setattr(
         main, "verify_supabase_jwt", lambda token, settings: AuthenticatedUser(user_id=user_id)
     )
     monkeypatch.setattr(main, "open_history_db_connection", lambda: _FakeHistoryDbConnection())
-    # _resolve_history_access() always resolves accessible projects for
-    # every JWT-mode request, regardless of which endpoint called it —
-    # must be mocked here too, not just can_user_access_analysis_run.
-    monkeypatch.setattr(main, "get_accessible_project_ids", lambda conn, uid: [])
     monkeypatch.setattr(
         main, "can_user_access_analysis_run", lambda conn, uid, run_id: can_access_run
     )
 
 
-# --- disabled / unconfigured / unauthorized → same gate as GET endpoints --
+# --- disabled / unconfigured -------------------------------------------
 
 
 def test_delete_returns_503_when_read_history_disabled(monkeypatch):
@@ -74,87 +79,80 @@ def test_delete_returns_503_when_read_history_disabled(monkeypatch):
     assert response.status_code == 503
 
 
-def test_delete_returns_403_when_token_header_missing(monkeypatch):
+def test_delete_rejected_when_jwt_not_configured(monkeypatch):
     _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: False)
+
+    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_jwt_headers())
+
+    assert response.status_code == 503
+
+
+# --- HISTORY_READ_TOKEN is no longer a valid credential for this
+# endpoint (fix/history-read-token-write-isolation) --------------------
+
+
+def test_delete_rejected_with_history_read_token_alone(monkeypatch):
+    """The whole point of this fix: a correct HISTORY_READ_TOKEN, with
+    no Authorization header at all, must never be enough to delete a
+    run — previously this succeeded unconditionally (pre-demo audit
+    issue B2)."""
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
+    delete_calls = []
+    monkeypatch.setattr(
+        main, "repository_soft_delete_analysis_run", lambda run_id: delete_calls.append(run_id)
+    )
+
+    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers())
+
+    assert response.status_code == 401
+    assert delete_calls == []
+
+
+def test_delete_rejected_with_no_credentials_at_all(monkeypatch):
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
 
     response = client.delete(f"/analysis-runs/{RUN_ID}")
 
-    assert response.status_code == 403
-
-
-def test_delete_returns_403_when_token_header_mismatched(monkeypatch):
-    _enable_read_env(monkeypatch)
-
-    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers("wrong-token"))
-
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_delete_token_value_never_appears_in_response_body(monkeypatch):
+    """A caller may still send the (now-ignored) X-History-Read-Token
+    header alongside a valid JWT — its value must never leak back,
+    success or failure."""
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_soft_delete_analysis_run", lambda run_id: True)
 
-    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers())
+    response = client.delete(
+        f"/analysis-runs/{RUN_ID}", headers={**_jwt_headers(), **_auth_headers()}
+    )
 
     assert TEST_TOKEN not in response.text
 
 
-# --- HISTORY_READ_TOKEN mode: unrestricted, matches existing GET gate ------
-
-
-def test_delete_history_token_mode_success(monkeypatch):
-    _enable_read_env(monkeypatch)
-    monkeypatch.setattr(main, "repository_soft_delete_analysis_run", lambda run_id: True)
-
-    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers())
-
-    assert response.status_code == 200
-    assert response.json() == {"deleted": True}
-
-
-def test_delete_history_token_mode_not_found(monkeypatch):
-    _enable_read_env(monkeypatch)
-    monkeypatch.setattr(main, "repository_soft_delete_analysis_run", lambda run_id: False)
-
-    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers())
-
-    assert response.status_code == 404
-
-
-def test_delete_history_token_mode_passes_through_the_requested_id(monkeypatch):
-    _enable_read_env(monkeypatch)
-    received_ids = []
-
-    def fake_delete(run_id):
-        received_ids.append(run_id)
-        return True
-
-    monkeypatch.setattr(main, "repository_soft_delete_analysis_run", fake_delete)
-
-    client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers())
-
-    assert received_ids == [RUN_ID]
-
-
 def test_delete_returns_503_when_repository_raises(monkeypatch):
     _enable_read_env(monkeypatch)
+    _mock_jwt_dependencies(monkeypatch, can_access_run=True)
 
     def raising_delete(run_id):
         raise AnalysisHistoryReadError("boom")
 
     monkeypatch.setattr(main, "repository_soft_delete_analysis_run", raising_delete)
 
-    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_auth_headers())
+    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_jwt_headers())
 
     assert response.status_code == 503
 
 
-# --- AUTH_JWT_ENABLED=true: access-checked by run id before deleting ------
+# --- JWT-authenticated: access-checked by run id before deleting ------
 
 
 def test_delete_jwt_mode_success_when_accessible(monkeypatch):
     _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_soft_delete_analysis_run", lambda run_id: True)
 
@@ -167,9 +165,9 @@ def test_delete_jwt_mode_success_when_accessible(monkeypatch):
 def test_delete_jwt_mode_returns_403_when_run_inaccessible(monkeypatch):
     """False from can_user_access_analysis_run() must produce 403
     without ever calling repository_soft_delete_analysis_run() — a
-    caller who can't see a run must not be able to delete it either."""
+    caller who can't see a run (e.g. it belongs to a different
+    project) must not be able to delete it either."""
     _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_run=False)
     delete_calls = []
     monkeypatch.setattr(
@@ -189,7 +187,6 @@ def test_delete_jwt_mode_returns_404_when_accessible_but_not_found(monkeypatch):
     whether the run still exists/is already deleted — the repository
     call is still the source of truth for "not found"."""
     _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_run=True)
     monkeypatch.setattr(main, "repository_soft_delete_analysis_run", lambda run_id: False)
 
@@ -200,12 +197,11 @@ def test_delete_jwt_mode_returns_404_when_accessible_but_not_found(monkeypatch):
 
 def test_delete_jwt_mode_returns_503_when_access_check_fails(monkeypatch):
     _enable_read_env(monkeypatch)
-    monkeypatch.setenv("AUTH_JWT_ENABLED", "true")
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
     monkeypatch.setattr(
         main, "verify_supabase_jwt", lambda token, settings: AuthenticatedUser(user_id="user-1")
     )
     monkeypatch.setattr(main, "open_history_db_connection", lambda: _FakeHistoryDbConnection())
-    monkeypatch.setattr(main, "get_accessible_project_ids", lambda conn, uid: [])
 
     def raising_access_check(conn, uid, run_id):
         raise RuntimeError("db unreachable")
@@ -215,3 +211,19 @@ def test_delete_jwt_mode_returns_503_when_access_check_fails(monkeypatch):
     response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_jwt_headers())
 
     assert response.status_code == 503
+
+
+def test_delete_rejected_with_invalid_jwt(monkeypatch):
+    from services.jwt_auth import JWTAuthError
+
+    _enable_read_env(monkeypatch)
+    monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
+
+    def raising_verify(token, settings):
+        raise JWTAuthError("expired", "token expired")
+
+    monkeypatch.setattr(main, "verify_supabase_jwt", raising_verify)
+
+    response = client.delete(f"/analysis-runs/{RUN_ID}", headers=_jwt_headers())
+
+    assert response.status_code == 401
