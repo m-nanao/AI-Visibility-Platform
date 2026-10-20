@@ -84,7 +84,11 @@ type PythonApiOutcome =
   // urls: []) — this is the caller's mistake, not a Python API
   // failure, so it must be reported back rather than silently
   // papered over with dummy data.
-  | { kind: "validationError"; message: string }
+  // `code` (Task 6-B5) distinguishes project_id_required/
+  // request_id_required/request_id_invalid (Task 6-B2/6-B3) from a
+  // generic pre-existing validation error (e.g. urls: [], which has
+  // no code) — forwarded faithfully, never guessed from `message`.
+  | { kind: "validationError"; message: string; code: string | null }
   // Only reachable once the Python API's ANALYZE_AUTH_REQUIRED=true
   // (Task 6-B2, feature/sync-analyze-jwt-project-auth) — missing/
   // invalid JWT (401), inaccessible project (403), or the one specific
@@ -95,7 +99,15 @@ type PythonApiOutcome =
   // dummy-data fallback below, since an auth/authorization failure
   // silently rendered as a successful "mock" analysis would be
   // actively misleading.
-  | { kind: "authError"; status: 401 | 403 | 503 }
+  // `code` (Task 6-B5, feature/sync-analyze-jwt-project-auth) is the
+  // Python API's stable, machine-readable code whenever present
+  // (auth_required / invalid_token / project_access_denied /
+  // auth_unavailable / quota_enforcement_required) — forwarded
+  // faithfully so app/lib/analyze-error-display.ts can distinguish
+  // each cause precisely (e.g. "not logged in" vs "session expired",
+  // both 401) rather than this route collapsing every 401/403/503
+  // into one generic message per status code the way it used to.
+  | { kind: "authError"; status: 401 | 403 | 503; code: string | null }
   // Task 6-B3 (feature/sync-analyze-jwt-project-auth): the Python
   // API's requestId-based idempotency judgment rejected this
   // submission (still running / previously failed / different input
@@ -131,6 +143,13 @@ type PythonApiOutcome =
 // `error` prose means a future reword of that backend message can
 // never silently break this distinction.
 const ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable";
+// Must match backend/main.py's ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE
+// exactly (Task 6-B4/6-B5) — the 503 a caller gets when
+// ANALYZE_AUTH_REQUIRED=true but usage-quota enforcement isn't
+// enabled (and the dev/test-only ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA
+// override isn't set either). Also never dummy-fallback-worthy, same
+// reasoning as ANALYZE_AUTH_UNAVAILABLE_CODE above.
+const ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE = "quota_enforcement_required";
 
 /**
  * Tries the Python analysis API when PYTHON_ANALYSIS_API_URL is configured.
@@ -258,7 +277,8 @@ async function fetchFromPythonApi(
         errorBody && typeof errorBody.error === "string"
           ? errorBody.error
           : "入力内容を確認してください";
-      return { kind: "validationError", message };
+      const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+      return { kind: "validationError", message, code };
     }
 
     if (response.status === 409) {
@@ -297,21 +317,24 @@ async function fetchFromPythonApi(
       // silently rendered as a successful "mock" analysis would be
       // actively misleading (this task's explicit requirement).
       if (response.status === 401 || response.status === 403) {
-        return { kind: "authError", status: response.status };
+        const errorBody = await response.json().catch(() => null);
+        const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+        return { kind: "authError", status: response.status, code };
       }
       if (response.status === 503) {
         // Distinguishes "JWT verification/project-access check is
-        // misconfigured" (also an authError, same reasoning as above)
-        // from every other, unrelated 503 cause this route has always
+        // misconfigured" (auth_unavailable) and "quota enforcement
+        // isn't enabled in authenticated mode" (quota_enforcement_required,
+        // Task 6-B4) — both authErrors, same reasoning as above — from
+        // every other, unrelated 503 cause this route has always
         // treated as a dummy-fallback-worthy "unavailable" outcome
         // (Python API not configured, DB unreachable, etc.) — via the
-        // stable `code` field (see ANALYZE_AUTH_UNAVAILABLE_CODE
-        // above), never by matching the response's human-readable
-        // `error` text.
+        // stable `code` field, never by matching the response's
+        // human-readable `error` text.
         const errorBody = await response.json().catch(() => null);
         const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
-        if (code === ANALYZE_AUTH_UNAVAILABLE_CODE) {
-          return { kind: "authError", status: 503 };
+        if (code === ANALYZE_AUTH_UNAVAILABLE_CODE || code === ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE) {
+          return { kind: "authError", status: 503, code };
         }
       }
       console.warn(
@@ -460,19 +483,31 @@ export async function POST(request: Request) {
   }
 
   if (outcome.kind === "validationError") {
-    return NextResponse.json({ error: outcome.message }, { status: 400 });
+    return NextResponse.json(
+      { error: outcome.message, code: outcome.code },
+      { status: 400 },
+    );
   }
 
   if (outcome.kind === "authError") {
     // Never falls back to dummy data — see PythonApiOutcome's
-    // "authError" doc above for why.
+    // "authError" doc above for why. `code` (Task 6-B5) is forwarded
+    // as-is so app/lib/analyze-error-display.ts can distinguish each
+    // exact cause (auth_required/invalid_token/project_access_denied/
+    // auth_unavailable/quota_enforcement_required) rather than this
+    // route collapsing everything into one message per status code.
+    // A generic per-status fallback text is still sent in `error` for
+    // any consumer that only reads that field.
     const message =
       outcome.status === 401
         ? ANALYZE_AUTH_REQUIRED_MESSAGE
         : outcome.status === 403
           ? ANALYZE_ACCESS_DENIED_MESSAGE
           : ANALYZE_AUTH_CONFIG_ERROR_MESSAGE;
-    return NextResponse.json({ error: message }, { status: outcome.status });
+    return NextResponse.json(
+      { error: message, code: outcome.code },
+      { status: outcome.status },
+    );
   }
 
   if (outcome.kind === "conflict") {

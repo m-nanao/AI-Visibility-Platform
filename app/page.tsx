@@ -1,24 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppHeader from "./components/AppHeader";
 import BrandInputForm from "./components/BrandInputForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
 import {
-  ANALYZE_AUTH_REQUIRED_MESSAGE,
   ANALYZE_FALLBACK_HEADER,
   ANALYZE_FALLBACK_REASON_HEADER,
-  ANALYZE_PROJECT_ID_REQUIRED_MESSAGE,
   buildAnalyzeRequestBody,
   clearPendingSyncAnalysisRequest,
-  getAnalyzeConflictMessage,
   getAnalyzeFallbackMessage,
   isAnalyzeAuthRequiredEnabled,
   isTerminalAnalyzeConflictCode,
   resolveRequestIdForSyncAnalysis,
+  type AnalyzeQuotaInfo,
 } from "./lib/analysis-request";
+import {
+  resolveAnalyzeErrorDisplay,
+  resolveAnalyzeQuotaDisplay,
+  type AnalyzeErrorDisplay,
+} from "./lib/analyze-error-display";
 import {
   ANALYSIS_RESULT_PREVIEW_NOTE,
   HISTORY_LIST_LINK_TEXT,
@@ -83,7 +86,16 @@ export default function Home() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  // Plain-string error, used only by the async-job flow
+  // (handleAsyncAnalyze, Task 6-B2 Phase 3 — out of this task's
+  // scope) — left exactly as it was before Task 6-B5.
   const [error, setError] = useState<string | null>(null);
+  // Structured error, used only by the synchronous flow
+  // (handleAnalyze, Task 6-B2/6-B3/6-B4) — Task 6-B5 adds this so the
+  // render below can show a login link / project-reselect affordance
+  // alongside the message, derived from the exact HTTP status + stable
+  // `code` the backend sent (see app/lib/analyze-error-display.ts).
+  const [errorDisplay, setErrorDisplay] = useState<AnalyzeErrorDisplay | null>(null);
   // Whether the in-flight (or most recently finished) request included
   // urls, so the loading message can say "fetching web pages" instead
   // of the generic message — url-based analysis can take much longer.
@@ -106,6 +118,21 @@ export default function Home() {
   // false.
   const [projectsOutcome, setProjectsOutcome] = useState<MeProjectsOutcome>({ kind: "loading" });
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+
+  // Extracted from the effect below so Task 6-B5's 403 (project
+  // access denied) error display can offer a "プロジェクト一覧を再取得"
+  // affordance that reuses this exact same fetch — never a fabricated
+  // "check status" action, just genuinely re-running the one real
+  // project-list lookup this app already has.
+  const reloadProjects = useCallback(async () => {
+    const response = await fetch("/api/me/projects").catch(() => null);
+    const outcome = await resolveMeProjectsOutcome(response);
+    setProjectsOutcome(outcome);
+    if (outcome.kind === "success" && outcome.projectIds.length === 1) {
+      setSelectedProjectId(outcome.projectIds[0]);
+    }
+    return outcome;
+  }, []);
 
   useEffect(() => {
     if (!asyncAnalysisEnabled && !analyzeAuthRequired) return;
@@ -220,19 +247,23 @@ export default function Home() {
     // production as of this task.
     if (analyzeAuthRequired) {
       if (sessionState.status !== "signed-in") {
-        setError(ANALYZE_AUTH_REQUIRED_MESSAGE);
+        setErrorDisplay(
+          resolveAnalyzeErrorDisplay(401, null, "authentication required"),
+        );
         setStatus("error");
         return;
       }
       if (!selectedProjectId) {
-        setError(ANALYZE_PROJECT_ID_REQUIRED_MESSAGE);
+        setErrorDisplay(
+          resolveAnalyzeErrorDisplay(400, "project_id_required", "projectId is required"),
+        );
         setStatus("error");
         return;
       }
     }
 
     setStatus("loading");
-    setError(null);
+    setErrorDisplay(null);
     setFallbackMessage(null);
     setIsUrlAnalysis(urls.length > 0);
     try {
@@ -285,11 +316,32 @@ export default function Home() {
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => null);
+        const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+        const serverMessage =
+          errorBody && typeof errorBody.error === "string"
+            ? errorBody.error
+            : "分析に失敗しました。";
+
+        if (response.status === 429) {
+          // Task 6-B4/6-B5: usage-quota exceeded — no analysis_runs
+          // row was ever created for this attempt (see backend/main.py's
+          // AnalysisQuotaExceededError handling), so there is nothing
+          // for a later retry with the SAME requestId to conflict
+          // with; the requestId is kept (not cleared) so a retry of
+          // the same input is recognized as the same logical attempt,
+          // mirroring the still-running 409 case below.
+          const quota =
+            errorBody && errorBody.quota && typeof errorBody.quota === "object"
+              ? (errorBody.quota as AnalyzeQuotaInfo)
+              : null;
+          setErrorDisplay(resolveAnalyzeQuotaDisplay(quota, serverMessage));
+          setStatus("error");
+          return;
+        }
+
         if (response.status === 409) {
-          const code =
-            errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
-          // "まだ処理中" is not a definitive outcome — keep the same
-          // requestId so a later resubmission (once the analysis
+          // "still running" is not a definitive outcome — keep the
+          // same requestId so a later resubmission (once the analysis
           // actually finishes) can still reuse it. Every other 409
           // cause (previously failed / input conflict / cancelled), and
           // every other non-409 rejection below, is definitive: the
@@ -297,24 +349,15 @@ export default function Home() {
           if (isTerminalAnalyzeConflictCode(code)) {
             clearPendingSyncAnalysisRequest();
           }
-          throw new Error(getAnalyzeConflictMessage(code));
+          setErrorDisplay(resolveAnalyzeErrorDisplay(409, code, serverMessage));
+          setStatus("error");
+          return;
         }
-        if (response.status === 429) {
-          // Task 6-B4: usage-quota exceeded — no analysis_runs row was
-          // ever created for this attempt (see backend/main.py's
-          // AnalysisQuotaExceededError handling), so there is nothing
-          // for a later retry with a fresh requestId to conflict with;
-          // the requestId is kept (not cleared) purely so a retry of
-          // the same input is recognized as the same logical attempt,
-          // mirroring the still-running 409 case above. Detailed quota
-          // UI (availableAt, etc.) is Task 6-B5's scope — this is the
-          // minimal "don't crash, don't show it as success" handling.
-          throw new Error(
-            errorBody?.error ?? "利用上限に達しているため、分析を開始できません。",
-          );
-        }
+
         clearPendingSyncAnalysisRequest();
-        throw new Error(errorBody?.error ?? "分析に失敗しました。");
+        setErrorDisplay(resolveAnalyzeErrorDisplay(response.status, code, serverMessage));
+        setStatus("error");
+        return;
       }
 
       // Task 6-B3 audit fix (不具合A): a 200 response here does NOT
@@ -349,9 +392,19 @@ export default function Home() {
       setResult(data);
       setStatus("done");
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "分析中にエラーが発生しました。",
-      );
+      // Network-level failure (fetch() itself rejected) — never a
+      // response status, so resolveAnalyzeErrorDisplay() doesn't
+      // apply; the pending requestId is deliberately NOT cleared here
+      // (same "unknown true outcome" reasoning as the dummy-fallback
+      // case above), so a retry of the same input reuses it.
+      setErrorDisplay({
+        kind: "generic",
+        title: "分析中にエラーが発生しました",
+        message:
+          err instanceof Error ? err.message : "分析中にエラーが発生しました。",
+        showLoginLink: false,
+        showProjectReselect: false,
+      });
       setStatus("error");
     }
   };
@@ -361,6 +414,7 @@ export default function Home() {
     setStatus("idle");
     setResult(null);
     setError(null);
+    setErrorDisplay(null);
     setFallbackMessage(null);
     setIsUrlAnalysis(false);
   };
@@ -384,7 +438,16 @@ export default function Home() {
           <AsyncProjectNotice
             outcome={projectsOutcome}
             selectedProjectId={selectedProjectId}
-            onSelectProjectId={setSelectedProjectId}
+            onSelectProjectId={(projectId) => {
+              // A different project means a different requestId scope
+              // (app/lib/analysis-request.ts's resolveRequestIdForSyncAnalysis()
+              // already hashes on projectId, so this alone guarantees
+              // the old requestId is never reused for the new
+              // selection) — clearing the stale error display here is
+              // purely a UX nicety, not required for correctness.
+              setSelectedProjectId(projectId);
+              setErrorDisplay(null);
+            }}
           />
         )}
 
@@ -403,6 +466,36 @@ export default function Home() {
           <p className="mt-4 text-sm text-rose-600 dark:text-rose-400">
             {error}
           </p>
+        )}
+
+        {errorDisplay && (
+          <div className="mt-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-400">
+            <p className="font-medium">{errorDisplay.title}</p>
+            <p className="mt-0.5">{errorDisplay.message}</p>
+            {(errorDisplay.showLoginLink || errorDisplay.showProjectReselect) && (
+              <div className="mt-2 flex flex-wrap gap-3">
+                {errorDisplay.showLoginLink && (
+                  <Link
+                    href="/login"
+                    className="text-xs font-medium underline-offset-2 hover:underline"
+                  >
+                    ログインする
+                  </Link>
+                )}
+                {errorDisplay.showProjectReselect && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      reloadProjects();
+                    }}
+                    className="text-xs font-medium underline-offset-2 hover:underline"
+                  >
+                    プロジェクト一覧を再取得
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {status === "loading" && (
@@ -446,6 +539,28 @@ export default function Home() {
               );
             })()}
 
+            {/* Task 6-B5: when this is a genuinely real result (not a
+                dummy fallback — fallbackMessage covers that case
+                separately below) but analysisRunId is null, the
+                history card above correctly renders nothing — but a
+                silent absence could easily be mistaken for "it just
+                hasn't finished saving yet." Scoped to the
+                authenticated path only: in Task 6-B3's lease-expiry
+                case specifically, the real result shown here is known
+                to not be retrievable later (see
+                backend/main.py's _analyze_authenticated_idempotent(),
+                which sets analysisRunId=None exactly when
+                complete_analysis_job() lost that race) — the
+                anonymous path's own (unrelated, pre-existing) reasons
+                for a null analysisRunId are left with their existing,
+                unchanged behavior (no note), since this task must not
+                alter that regression-tested flow. */}
+            {analyzeAuthRequired && !result.analysisRunId && !fallbackMessage && (
+              <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                この分析結果は履歴に保存されていません。あとで見返したい場合は、今のうちに内容を保存してください。
+              </p>
+            )}
+
             {/* Always shown while a result is displayed, kept
                 deliberately short/muted so it doesn't compete with the
                 result content itself on a normal run. */}
@@ -472,7 +587,23 @@ export default function Home() {
             </div>
             {fallbackMessage && (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                <p>{fallbackMessage}</p>
+                <div>
+                  <p>{fallbackMessage}</p>
+                  {/* Task 6-B5: only accurate once analyzeAuthRequired
+                      is true — the anonymous flow has no idempotency
+                      mechanism at all, so clicking "分析開始" again
+                      there genuinely starts a brand-new, independent
+                      analysis rather than safely checking/replaying
+                      this one. This app has no dedicated status-check
+                      API, so this explicitly describes the existing
+                      submit button's own behavior, never implying a
+                      separate "確認する" action exists. */}
+                  {analyzeAuthRequired && (
+                    <p className="mt-1 text-xs">
+                      同じ内容でもう一度「分析開始」を押すと、処理中かどうかを安全に確認できます（二重に分析が実行されることはありません）。
+                    </p>
+                  )}
+                </div>
                 <Link
                   href={HISTORY_LIST_PATH}
                   className="shrink-0 text-xs font-medium underline-offset-2 hover:underline"

@@ -1267,7 +1267,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "urls must not be empty" });
+    expect(data).toEqual({ error: "urls must not be empty", code: null });
   });
 
   it("forwards a generic safe message when the Python API's 400 body is unexpected", async () => {
@@ -1280,7 +1280,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "入力内容を確認してください" });
+    expect(data).toEqual({ error: "入力内容を確認してください", code: null });
   });
 
   it("treats a 422 from the Python API the same as a 400 (own {error} shape forwarded)", async () => {
@@ -1295,7 +1295,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "brandName is required" });
+    expect(data).toEqual({ error: "brandName is required", code: null });
   });
 
   it("never exposes FastAPI's raw detail array from a 422 response", async () => {
@@ -1318,7 +1318,7 @@ describe("POST /api/analyze", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "入力内容を確認してください" });
+    expect(data).toEqual({ error: "入力内容を確認してください", code: null });
     expect(JSON.stringify(data)).not.toContain("type_error");
   });
 
@@ -1471,7 +1471,7 @@ describe("POST /api/analyze", () => {
     const body = await response.json();
 
     expect(response.status).toBe(400);
-    expect(body).toEqual({ error: "projectId is required" });
+    expect(body).toEqual({ error: "projectId is required", code: "project_id_required" });
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
@@ -1485,7 +1485,7 @@ describe("POST /api/analyze", () => {
     const body = await response.json();
 
     expect(response.status).toBe(401);
-    expect(body).toEqual({ error: ANALYZE_AUTH_REQUIRED_MESSAGE });
+    expect(body).toEqual({ error: ANALYZE_AUTH_REQUIRED_MESSAGE, code: null });
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
@@ -1502,7 +1502,7 @@ describe("POST /api/analyze", () => {
     const body = await response.json();
 
     expect(response.status).toBe(403);
-    expect(body).toEqual({ error: ANALYZE_ACCESS_DENIED_MESSAGE });
+    expect(body).toEqual({ error: ANALYZE_ACCESS_DENIED_MESSAGE, code: null });
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
@@ -1524,7 +1524,7 @@ describe("POST /api/analyze", () => {
     const body = await response.json();
 
     expect(response.status).toBe(503);
-    expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE });
+    expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE, code: "auth_unavailable" });
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
@@ -1541,7 +1541,7 @@ describe("POST /api/analyze", () => {
     const body = await response.json();
 
     expect(response.status).toBe(503);
-    expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE });
+    expect(body).toEqual({ error: ANALYZE_AUTH_CONFIG_ERROR_MESSAGE, code: "auth_unavailable" });
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
@@ -1575,6 +1575,79 @@ describe("POST /api/analyze", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
+  });
+
+  // --- Task 6-B5 (feature/sync-analyze-jwt-project-auth): `code` is
+  // now forwarded on every 400/401/403/503 outcome, not just 409/429 —
+  // so Frontend code can distinguish each exact cause.
+
+  it("returns 401 with code: invalid_token distinct from code: auth_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "invalid or expired token", code: "invalid_token" }),
+        { status: 401 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(body.code).toBe("invalid_token");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 400 with code: project_id_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "projectId is required", code: "project_id_required" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("project_id_required");
+  });
+
+  it("returns 400 with code: request_id_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "requestId is required", code: "request_id_required" }),
+        { status: 400 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("request_id_required");
+  });
+
+  it("returns 503 (never a dummy-data fallback) with code: quota_enforcement_required", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "quota enforcement is not enabled",
+          code: "quota_enforcement_required",
+        }),
+        { status: 503 },
+      ),
+    );
+
+    const response = await POST(makeRequest({ brandName: "OpenAI", projectId: "p1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.code).toBe("quota_enforcement_required");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
 
   // --- requestId idempotency conflicts (Task 6-B3,
