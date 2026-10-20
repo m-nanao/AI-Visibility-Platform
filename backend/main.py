@@ -1162,6 +1162,102 @@ def _resolve_history_access(request: Request) -> HistoryAccessContext | JSONResp
     return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
 
 
+def _verify_jwt_bearer(
+    request: Request,
+    *,
+    auth_required_message: str,
+    invalid_token_message: str,
+    jwt_not_configured_message: str,
+) -> AuthenticatedUser | JSONResponse:
+    """Verifies a Supabase Auth JWT from the Authorization header, with
+    no HISTORY_READ_TOKEN fallback of any kind — the one piece of
+    JWT-verification logic shared by every JWT-only auth gate in this
+    file (_resolve_tag_category_auth(), _resolve_jwt_only_auth(),
+    _resolve_job_auth(), _resolve_history_write_auth() below all call
+    this instead of repeating it). Messages are injected by the caller
+    so each gate keeps its own wording, while the verification logic
+    itself — and the _JWT_UNAVAILABLE_REASONS classification — lives
+    in exactly one place (fix/history-read-token-write-isolation).
+    """
+    auth_settings = load_auth_settings()
+    if not is_jwt_verification_configured(auth_settings):
+        return error_response(jwt_not_configured_message, status_code=503)
+
+    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
+    try:
+        token = extract_bearer_token(authorization_header)
+        return verify_supabase_jwt(token, auth_settings)
+    except JWTAuthError as exc:
+        if exc.reason in _JWT_UNAVAILABLE_REASONS:
+            return error_response(jwt_not_configured_message, status_code=503)
+        if exc.reason in {"missing_header", "invalid_header"}:
+            return error_response(auth_required_message, status_code=401)
+        return error_response(invalid_token_message, status_code=401)
+
+
+HISTORY_WRITE_AUTH_REQUIRED_MESSAGE = "authentication required"
+
+
+def _resolve_history_write_auth(
+    request: Request, *, analysis_run_id: str
+) -> AuthenticatedUser | JSONResponse:
+    """JWT-only authorization for every *mutating* /analysis-runs/{id}/...
+    endpoint (DELETE, PATCH .../important, PATCH .../favorite, POST
+    .../rerun/gemini, POST .../web-ai-gap/ai-comparison).
+
+    Replaces the previous pattern of calling _resolve_history_access()
+    (the GET endpoints' gate) and only checking project ownership
+    `if access.mode == "jwt"` — that left HISTORY_READ_TOKEN alone
+    sufficient to delete/modify *any* run across every project with no
+    scoping at all, which is broader than what a "read token" should
+    grant (found during the pre-demo audit, issue B2). This function
+    requires a verified Supabase JWT unconditionally; HISTORY_READ_TOKEN
+    is never consulted here, regardless of whether it's also present
+    and correct.
+
+    Still gated by READ_HISTORY_ENABLED/DATABASE_URL first — these
+    endpoints remain part of the "history" feature and have nothing to
+    act on if it's off/unconfigured — but the credential itself is
+    always the caller's JWT (via _verify_jwt_bearer() above), plus the
+    exact same can_user_access_analysis_run() ownership check every
+    JWT-mode caller of these endpoints already had to pass. A caller
+    with no Authorization header, an invalid/expired JWT, or a JWT for
+    a project that doesn't own `analysis_run_id` is rejected before
+    anything is read or written — identical to the JWT-mode behavior
+    these endpoints already had; only the HISTORY_READ_TOKEN bypass is
+    removed.
+    """
+    settings = load_db_settings()
+    if not settings.read_history_enabled:
+        return error_response(HISTORY_READ_NOT_CONFIGURED_MESSAGE, status_code=503)
+    if settings.database_url is None:
+        return error_response(HISTORY_READ_DB_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    auth_result = _verify_jwt_bearer(
+        request,
+        auth_required_message=HISTORY_WRITE_AUTH_REQUIRED_MESSAGE,
+        invalid_token_message=HISTORY_READ_INVALID_TOKEN_MESSAGE,
+        jwt_not_configured_message=HISTORY_READ_JWT_NOT_CONFIGURED_MESSAGE,
+    )
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_analysis_run(
+                conn, auth_result.user_id, analysis_run_id
+            )
+    except Exception:
+        logger.exception(
+            "Failed to check analysis run access for JWT-authenticated request"
+        )
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    return auth_result
+
+
 def _parse_history_list_boundary(
     raw: str | None, *, field_name: str
 ) -> datetime | str | None:
@@ -1461,36 +1557,14 @@ def delete_analysis_run(analysis_run_id: str, request: Request):
     (analysis_results/brands are untouched; `deleted_at` can be cleared
     manually later if a delete needs undoing).
 
-    Uses the same `_resolve_history_access()` gate as every other
-    /analysis-runs endpoint, and the same JWT-mode authorization
-    pattern as the GET detail/comparison endpoints above: access is
-    checked against `analysis_run_id` itself (via
-    can_user_access_analysis_run()) before anything is deleted, so a
-    caller who can't see this run gets 403 without it being touched.
-
-    - mode="jwt": delete is only allowed when the caller can access the
-      run's project; otherwise 403.
-    - mode="history_token": unrestricted, same as every existing
-      HISTORY_READ_TOKEN-gated endpoint — allowed for internal/admin
-      use as the task that added this endpoint intended.
+    Requires a verified Supabase JWT whose caller can access this run's
+    project (see _resolve_history_write_auth()) — HISTORY_READ_TOKEN is
+    never sufficient to delete a run, regardless of project
+    (fix/history-read-token-write-isolation, pre-demo audit issue B2).
     """
-    access = _resolve_history_access(request)
-    if isinstance(access, JSONResponse):
-        return access
-
-    if access.mode == "jwt":
-        try:
-            with open_history_db_connection() as conn:
-                allowed = can_user_access_analysis_run(
-                    conn, access.user_id, analysis_run_id
-                )
-        except Exception:
-            logger.exception(
-                "Failed to check analysis run access for JWT-authenticated request"
-            )
-            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
-        if not allowed:
-            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+    auth_result = _resolve_history_write_auth(request, analysis_run_id=analysis_run_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
 
     try:
         deleted = repository_soft_delete_analysis_run(analysis_run_id)
@@ -1519,32 +1593,14 @@ def set_analysis_run_important(
     which sets `analysis_runs.is_important` directly (backend/migrations/
     004_add_is_important_to_analysis_runs.sql).
 
-    Uses the exact same `_resolve_history_access()` gate and JWT-mode
-    authorization pattern as DELETE /analysis-runs/{id} and POST
-    /analysis-runs/{id}/rerun/gemini above: access is checked against
-    `analysis_run_id` itself (via can_user_access_analysis_run()) before
-    anything is written, so a caller who can't see this run gets 403
-    without it being touched, and HISTORY_READ_TOKEN mode remains
-    unrestricted for internal/admin use exactly as every other mutating
-    history endpoint already is.
+    Requires a verified Supabase JWT whose caller can access this run's
+    project (see _resolve_history_write_auth()) — HISTORY_READ_TOKEN is
+    never sufficient to mark a run important, regardless of project
+    (fix/history-read-token-write-isolation, pre-demo audit issue B2).
     """
-    access = _resolve_history_access(request)
-    if isinstance(access, JSONResponse):
-        return access
-
-    if access.mode == "jwt":
-        try:
-            with open_history_db_connection() as conn:
-                allowed = can_user_access_analysis_run(
-                    conn, access.user_id, analysis_run_id
-                )
-        except Exception:
-            logger.exception(
-                "Failed to check analysis run access for JWT-authenticated request"
-            )
-            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
-        if not allowed:
-            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+    auth_result = _resolve_history_write_auth(request, analysis_run_id=analysis_run_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
 
     try:
         updated = repository_set_analysis_run_important(
@@ -1578,35 +1634,22 @@ def set_analysis_run_favorite(
     which sets `analysis_runs.is_favorite` directly (backend/migrations/
     007_add_is_favorite_to_analysis_runs.sql).
 
-    Mirrors set_analysis_run_important() above exactly: the same
-    `_resolve_history_access()` gate and JWT-mode authorization
-    pattern (access is checked against `analysis_run_id` itself before
-    anything is written, so a caller who can't see this run gets 403
-    without it being touched), the same queued/running restriction
-    policy — there is deliberately no status check here either; like
-    the important flag, this endpoint itself never blocks on
-    `analysis_runs.status`, and a queued/running job's favorite toggle
-    is instead kept out of reach by the frontend never rendering the
-    button for those statuses (see app/lib/analysis-history.ts's
-    canManageHistoryListItem(), reused unchanged for favorite).
+    Mirrors set_analysis_run_important() above exactly, including
+    authorization: requires a verified Supabase JWT whose caller can
+    access this run's project (see _resolve_history_write_auth()) —
+    HISTORY_READ_TOKEN is never sufficient, regardless of project
+    (fix/history-read-token-write-isolation, pre-demo audit issue B2).
+    Same queued/running restriction policy as before — there is
+    deliberately no status check here either; like the important flag,
+    this endpoint itself never blocks on `analysis_runs.status`, and a
+    queued/running job's favorite toggle is instead kept out of reach
+    by the frontend never rendering the button for those statuses (see
+    app/lib/analysis-history.ts's canManageHistoryListItem(), reused
+    unchanged for favorite).
     """
-    access = _resolve_history_access(request)
-    if isinstance(access, JSONResponse):
-        return access
-
-    if access.mode == "jwt":
-        try:
-            with open_history_db_connection() as conn:
-                allowed = can_user_access_analysis_run(
-                    conn, access.user_id, analysis_run_id
-                )
-        except Exception:
-            logger.exception(
-                "Failed to check analysis run access for JWT-authenticated request"
-            )
-            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
-        if not allowed:
-            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+    auth_result = _resolve_history_write_auth(request, analysis_run_id=analysis_run_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
 
     try:
         updated = repository_set_analysis_run_favorite(
@@ -1639,14 +1682,10 @@ def rerun_gemini_observation(analysis_run_id: str, request: Request):
     budgets for no reason related to the problem being investigated).
     See services/gemini_rerun.py for what is and isn't touched.
 
-    Uses the exact same `_resolve_history_access()` gate and JWT-mode
-    authorization pattern as DELETE /analysis-runs/{id} above: access is
-    checked against `analysis_run_id` itself (via
-    can_user_access_analysis_run()) before anything is read or written,
-    so a caller who can't see this run gets 403 without it being
-    touched, and HISTORY_READ_TOKEN mode remains unrestricted for
-    internal/admin use exactly as every other mutating history endpoint
-    already is.
+    Requires a verified Supabase JWT whose caller can access this run's
+    project (see _resolve_history_write_auth()) — HISTORY_READ_TOKEN is
+    never sufficient to trigger a Gemini re-run, regardless of project
+    (fix/history-read-token-write-isolation, pre-demo audit issue B2).
 
     Never calls DataForSEO/ChatGPT/Claude/Common Crawl/web fetch — only
     services/gemini_provider.py's build_gemini_observation(), the same
@@ -1655,23 +1694,9 @@ def rerun_gemini_observation(analysis_run_id: str, request: Request):
     anything, so the previously saved result is never corrupted or
     cleared by a failed re-run.
     """
-    access = _resolve_history_access(request)
-    if isinstance(access, JSONResponse):
-        return access
-
-    if access.mode == "jwt":
-        try:
-            with open_history_db_connection() as conn:
-                allowed = can_user_access_analysis_run(
-                    conn, access.user_id, analysis_run_id
-                )
-        except Exception:
-            logger.exception(
-                "Failed to check analysis run access for JWT-authenticated request"
-            )
-            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
-        if not allowed:
-            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+    auth_result = _resolve_history_write_auth(request, analysis_run_id=analysis_run_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
 
     try:
         detail = repository_get_analysis_run(analysis_run_id)
@@ -1728,15 +1753,11 @@ def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
     docs/39_ai_gap_comparison_design.md. Manual/on-demand only: never
     called from `/analyze` itself.
 
-    Uses the exact same `_resolve_history_access()` gate and JWT-mode
-    authorization pattern as DELETE /analysis-runs/{id}, POST
-    /analysis-runs/{id}/rerun/gemini, and PATCH
-    /analysis-runs/{id}/important above: access is checked against
-    `analysis_run_id` itself (via can_user_access_analysis_run())
-    before anything is read or written, so a caller who can't see this
-    run gets 403 without it being touched, and HISTORY_READ_TOKEN mode
-    remains unrestricted for internal/admin use exactly as every other
-    mutating history endpoint already is.
+    Requires a verified Supabase JWT whose caller can access this run's
+    project (see _resolve_history_write_auth()) — HISTORY_READ_TOKEN is
+    never sufficient to trigger an AI-gap comparison generation,
+    regardless of project (fix/history-read-token-write-isolation,
+    pre-demo audit issue B2).
 
     Never calls DataForSEO/ChatGPT/Claude observation/Gemini
     observation/Common Crawl/web fetch — only
@@ -1749,23 +1770,9 @@ def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
     returns 502. Either way, nothing is written — the previously saved
     result (including any earlier webAiGapAiComparison) is unchanged.
     """
-    access = _resolve_history_access(request)
-    if isinstance(access, JSONResponse):
-        return access
-
-    if access.mode == "jwt":
-        try:
-            with open_history_db_connection() as conn:
-                allowed = can_user_access_analysis_run(
-                    conn, access.user_id, analysis_run_id
-                )
-        except Exception:
-            logger.exception(
-                "Failed to check analysis run access for JWT-authenticated request"
-            )
-            return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
-        if not allowed:
-            return error_response(HISTORY_READ_ACCESS_DENIED_MESSAGE, status_code=403)
+    auth_result = _resolve_history_write_auth(request, analysis_run_id=analysis_run_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
 
     try:
         detail = repository_get_analysis_run(analysis_run_id)
@@ -1863,28 +1870,18 @@ CATEGORY_REQUIRES_PROJECT_MESSAGE = (
 
 def _resolve_tag_category_auth(request: Request) -> AuthenticatedUser | JSONResponse:
     """Verifies a Supabase Auth JWT with no HISTORY_READ_TOKEN fallback
-    of any kind — structurally identical to _resolve_jwt_only_auth()/
-    _resolve_job_auth() above/below, with this section's own error
-    messages. Shared by every *mutating* tags/categories endpoint
-    (never by the GET list endpoints, which use
-    `_resolve_history_access()` instead — see this section's module
-    docstring)."""
-    auth_settings = load_auth_settings()
-    if not is_jwt_verification_configured(auth_settings):
-        return error_response(TAG_CATEGORY_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
-
-    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
-    try:
-        token = extract_bearer_token(authorization_header)
-        authenticated_user = verify_supabase_jwt(token, auth_settings)
-    except JWTAuthError as exc:
-        if exc.reason in _JWT_UNAVAILABLE_REASONS:
-            return error_response(TAG_CATEGORY_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
-        if exc.reason in {"missing_header", "invalid_header"}:
-            return error_response(TAG_CATEGORY_AUTH_REQUIRED_MESSAGE, status_code=401)
-        return error_response(TAG_CATEGORY_INVALID_TOKEN_MESSAGE, status_code=401)
-
-    return authenticated_user
+    of any kind, via the shared _verify_jwt_bearer() helper — structurally
+    identical to _resolve_jwt_only_auth()/_resolve_job_auth() below,
+    with this section's own error messages. Shared by every *mutating*
+    tags/categories endpoint (never by the GET list endpoints, which
+    use `_resolve_history_access()` instead — see this section's
+    module docstring)."""
+    return _verify_jwt_bearer(
+        request,
+        auth_required_message=TAG_CATEGORY_AUTH_REQUIRED_MESSAGE,
+        invalid_token_message=TAG_CATEGORY_INVALID_TOKEN_MESSAGE,
+        jwt_not_configured_message=TAG_CATEGORY_JWT_NOT_CONFIGURED_MESSAGE,
+    )
 
 
 def _resolve_project_write_access(
@@ -2251,26 +2248,16 @@ ME_PROJECTS_FAILED_MESSAGE = "failed to list accessible projects"
 
 def _resolve_jwt_only_auth(request: Request) -> AuthenticatedUser | JSONResponse:
     """Verifies a Supabase Auth JWT with no HISTORY_READ_TOKEN
-    fallback of any kind — shared by GET /me/projects. Structurally
-    identical to _resolve_job_auth() below minus the
-    ANALYSIS_JOBS_ENABLED gate (this endpoint isn't part of that
-    feature)."""
-    auth_settings = load_auth_settings()
-    if not is_jwt_verification_configured(auth_settings):
-        return error_response(ME_PROJECTS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
-
-    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
-    try:
-        token = extract_bearer_token(authorization_header)
-        authenticated_user = verify_supabase_jwt(token, auth_settings)
-    except JWTAuthError as exc:
-        if exc.reason in _JWT_UNAVAILABLE_REASONS:
-            return error_response(ME_PROJECTS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
-        if exc.reason in {"missing_header", "invalid_header"}:
-            return error_response(ME_PROJECTS_AUTH_REQUIRED_MESSAGE, status_code=401)
-        return error_response(ME_PROJECTS_INVALID_TOKEN_MESSAGE, status_code=401)
-
-    return authenticated_user
+    fallback of any kind, via the shared _verify_jwt_bearer() helper —
+    shared by GET /me/projects. Structurally identical to
+    _resolve_job_auth() below minus the ANALYSIS_JOBS_ENABLED gate
+    (this endpoint isn't part of that feature)."""
+    return _verify_jwt_bearer(
+        request,
+        auth_required_message=ME_PROJECTS_AUTH_REQUIRED_MESSAGE,
+        invalid_token_message=ME_PROJECTS_INVALID_TOKEN_MESSAGE,
+        jwt_not_configured_message=ME_PROJECTS_JWT_NOT_CONFIGURED_MESSAGE,
+    )
 
 
 @app.get("/me/projects", response_model=MeProjectsResponse)
@@ -2360,22 +2347,12 @@ def _resolve_job_auth(request: Request) -> AuthenticatedUser | JSONResponse:
     if not jobs_settings.enabled:
         return error_response(ANALYSIS_JOBS_NOT_ENABLED_MESSAGE, status_code=404)
 
-    auth_settings = load_auth_settings()
-    if not is_jwt_verification_configured(auth_settings):
-        return error_response(ANALYSIS_JOBS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
-
-    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
-    try:
-        token = extract_bearer_token(authorization_header)
-        authenticated_user = verify_supabase_jwt(token, auth_settings)
-    except JWTAuthError as exc:
-        if exc.reason in _JWT_UNAVAILABLE_REASONS:
-            return error_response(ANALYSIS_JOBS_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
-        if exc.reason in {"missing_header", "invalid_header"}:
-            return error_response(ANALYSIS_JOBS_AUTH_REQUIRED_MESSAGE, status_code=401)
-        return error_response(ANALYSIS_JOBS_INVALID_TOKEN_MESSAGE, status_code=401)
-
-    return authenticated_user
+    return _verify_jwt_bearer(
+        request,
+        auth_required_message=ANALYSIS_JOBS_AUTH_REQUIRED_MESSAGE,
+        invalid_token_message=ANALYSIS_JOBS_INVALID_TOKEN_MESSAGE,
+        jwt_not_configured_message=ANALYSIS_JOBS_JWT_NOT_CONFIGURED_MESSAGE,
+    )
 
 
 @app.post("/analysis-jobs", response_model=AnalysisJobAcceptedResponse, status_code=202)
