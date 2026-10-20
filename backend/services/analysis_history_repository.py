@@ -2597,15 +2597,388 @@ def get_analysis_job_result(analysis_run_id: str) -> dict[str, Any] | None:
     }
 
 
+# --- Synchronous analysis idempotency (Task 6-B3,
+# feature/sync-analyze-jwt-project-auth) ------------------------------
+#
+# Reuses the exact same `analysis_runs.idempotency_key`/
+# `created_by_user_id` columns and unique index as the async job system
+# above (migration 005) — no new migration needed. The two systems are
+# kept from ever interfering with each other by a single structural
+# fact: `create_running_analysis_run()` below inserts its row directly
+# with status='running' (never 'queued'), so it can never be matched
+# by claim_next_queued_analysis_run()'s `where status = 'queued'`
+# query (migration 006) — a synchronous analysis run is never, even
+# momentarily, visible to the async worker as something to claim.
+# `complete_analysis_job()` (Phase 2, below) is reused unchanged to
+# finalize a sync run, since its own WHERE clause
+# (`id = %s and locked_by = %s and status = 'running' and
+# lease_expires_at > now()`) already expresses exactly the ownership
+# check a synchronous caller also needs — the caller here plays the
+# role of its own single-shot "worker", using a freshly generated
+# `locked_by` token purely to satisfy that WHERE clause, never
+# registered anywhere else.
+#
+# Deliberately scoped to the *authenticated* path only
+# (ANALYZE_AUTH_REQUIRED=true) — not usable for the anonymous path.
+# The existing unique index's scope, `(project_id, created_by_user_id,
+# idempotency_key) where idempotency_key is not null`, cannot enforce
+# anything when `created_by_user_id` is NULL (every anonymous request):
+# SQL NULL is never equal to NULL, so two anonymous callers reusing the
+# same key would never collide in this index at all — there is no safe
+# way to extend this same mechanism to anonymous callers without
+# either inventing a new, unauthenticated-identity scheme (out of this
+# task's scope) or scoping purely by `(project_id, idempotency_key)`,
+# which would let two *different* anonymous visitors collide on the
+# same client-generated key and see each other's result — exactly the
+# "別ユーザー・別projectのrequestIdが衝突しても情報を漏らさない"
+# requirement this task asks to uphold. The anonymous path is therefore
+# left completely untouched by this section.
+
+
+class SyncAnalysisStillRunningError(Exception):
+    """Raised by create_running_analysis_run() when the same
+    (project_id, created_by_user_id, idempotency_key) already has a
+    run that is still genuinely 'running' (its lease has not expired)
+    — main.py turns this into 409. The caller must not start a second
+    analysis for the same key while the first is still in flight."""
+
+    def __init__(self, existing_analysis_run_id: str):
+        super().__init__("a synchronous analysis for this idempotency key is still running")
+        self.existing_analysis_run_id = existing_analysis_run_id
+
+
+class SyncAnalysisPreviouslyFailedError(Exception):
+    """Raised by create_running_analysis_run() when the same
+    (project_id, created_by_user_id, idempotency_key) belongs to a run
+    that already reached 'failed' (either from a genuine pipeline
+    failure, or because its lease expired — see the inline lazy-expiry
+    check below). main.py turns this into 409. Deliberately never
+    auto-retried: this backend cannot know whether an external paid
+    API call already happened before the failure, the same reasoning
+    fail_expired_running_analysis_runs() already documents for the
+    async worker. The caller must start a genuinely new analysis (a
+    fresh idempotency_key), never resubmit this same one."""
+
+    def __init__(self, existing_analysis_run_id: str):
+        super().__init__("a synchronous analysis for this idempotency key already failed")
+        self.existing_analysis_run_id = existing_analysis_run_id
+
+
+@dataclass(frozen=True)
+class SyncAnalysisRunReservation:
+    """Returned by create_running_analysis_run() on success.
+
+    `created=True`: a brand-new row was inserted directly as 'running'
+    — `locked_by` is the token the caller must pass to
+    complete_analysis_job() (as `worker_id`) once the pipeline
+    finishes; `result_json`/`meta_json` are both None.
+
+    `created=False`: the same idempotency key already has a
+    'completed'/'partial' run — `locked_by` is None (nothing to
+    complete, there is no in-flight execution this call owns),
+    `result_json`/`meta_json` are the already-saved result to replay
+    as-is, and `analysis_run_id`/`status` identify and describe it.
+    """
+
+    analysis_run_id: str
+    created: bool
+    status: str
+    locked_by: str | None
+    result_json: dict[str, Any] | None = None
+    meta_json: dict[str, Any] | None = None
+
+
+def _replay_result_for_existing_sync_run(cur, existing_id) -> tuple[dict | None, dict | None]:
+    cur.execute(
+        "select result_json, meta_json from analysis_results where analysis_run_id = %s",
+        (existing_id,),
+    )
+    row = cur.fetchone()
+    return (row[0], row[1]) if row is not None else (None, None)
+
+
+def _resolve_existing_sync_run(conn, cur, existing, canonical_input: dict[str, Any]):
+    """Shared by create_running_analysis_run()'s pre-insert lookup and
+    its UniqueViolation defense-in-depth path below — given a non-None
+    _fetch_existing_job_by_idempotency_key() result, either returns a
+    SyncAnalysisRunReservation(created=False, ...) for a replayable
+    terminal state, or raises for every other case. Must be called
+    from inside the same transaction as the caller's advisory locks (or
+    the UniqueViolation path's own fresh connection) so the lazy
+    lease-expiry UPDATE below is consistent with whatever else that
+    transaction does.
+
+    Takes `conn` (not just `cur`) because the lazy lease-expiry UPDATE
+    below must be committed *before* SyncAnalysisPreviouslyFailedError
+    is raised out of this function — found by this task's real-
+    PostgreSQL integration test, not by any mocked test: psycopg3's
+    connection context manager rolls back on an exception propagating
+    through its `with` block, so without this explicit commit, the
+    very UPDATE that transitions the row to 'failed' would be silently
+    undone the moment this function raises, leaving the row forever
+    stuck as 'running' instead.
+    """
+    existing_id, existing_status, existing_snapshot, existing_deleted_at = existing
+    if existing_deleted_at is not None:
+        # Mirrors create_queued_analysis_run()'s own reasoning exactly
+        # — a soft-deleted row's key must never be resurrected or
+        # reused, regardless of input.
+        raise AnalysisJobCancelledConflictError(str(existing_id))
+    if existing_snapshot != canonical_input:
+        raise AnalysisJobCreateConflictError(str(existing_id))
+
+    if existing_status == "running":
+        # Lazily expires a dead lease right here, rather than waiting
+        # for fail_expired_running_analysis_runs()'s own background
+        # sweep (which, with ANALYSIS_JOBS_WORKER_ENABLED=false in
+        # production today, never runs at all) — see this section's
+        # module-level comment and docs/40 "11.4"'s "never auto-retry
+        # after a lease expires" rule, which applies here identically.
+        # Scoped to this exact row and re-checks `status = 'running'`
+        # in the WHERE clause so a concurrent caller that already
+        # expired/completed it a moment ago simply updates zero rows
+        # here instead of double-writing.
+        cur.execute(
+            """
+            update analysis_runs
+            set status = 'failed',
+                completed_at = now(),
+                error_message = 'worker lease expired (possible partial execution, not auto-retried)'
+            where id = %s
+              and status = 'running'
+              and lease_expires_at < now()
+            returning id
+            """,
+            (existing_id,),
+        )
+        if cur.fetchone() is not None:
+            existing_status = "failed"
+            # Must be committed now — see this function's docstring.
+            conn.commit()
+        else:
+            raise SyncAnalysisStillRunningError(str(existing_id))
+
+    if existing_status == "failed":
+        raise SyncAnalysisPreviouslyFailedError(str(existing_id))
+
+    # completed / partial -> replay the already-saved result as-is.
+    result_json, meta_json = _replay_result_for_existing_sync_run(cur, existing_id)
+    return SyncAnalysisRunReservation(
+        analysis_run_id=str(existing_id),
+        created=False,
+        status=existing_status,
+        locked_by=None,
+        result_json=result_json,
+        meta_json=meta_json,
+    )
+
+
+def _resolve_sync_run_after_unique_violation(
+    database_url: str,
+    *,
+    project_id: str,
+    created_by_user_id: str,
+    idempotency_key: str,
+    canonical_input: dict[str, Any],
+):
+    """Defense-in-depth path for create_running_analysis_run() — see
+    its docstring and _resolve_job_after_unique_violation()'s own
+    analogous comment above. The transaction that hit the
+    UniqueViolation is already aborted, so this re-queries on a
+    brand-new connection and transaction."""
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                existing = _fetch_existing_job_by_idempotency_key(
+                    cur,
+                    project_id=project_id,
+                    created_by_user_id=created_by_user_id,
+                    idempotency_key=idempotency_key,
+                )
+                if existing is None:
+                    raise AnalysisHistoryReadError("failed to create synchronous analysis run")
+                result = _resolve_existing_sync_run(conn, cur, existing, canonical_input)
+            conn.commit()
+    except (
+        AnalysisJobCancelledConflictError,
+        AnalysisJobCreateConflictError,
+        SyncAnalysisStillRunningError,
+        SyncAnalysisPreviouslyFailedError,
+    ):
+        raise
+    except Exception as exc:
+        logger.exception("Failed to resolve synchronous analysis run after unique constraint conflict")
+        raise AnalysisHistoryReadError("failed to create synchronous analysis run") from exc
+
+    return result
+
+
+def create_running_analysis_run(
+    *,
+    project_id: str,
+    created_by_user_id: str,
+    idempotency_key: str,
+    brand_name: str,
+    documents: list[str] | None,
+    urls: list[str] | None,
+    common_crawl_mode: str | None,
+    common_crawl_domain: str | None,
+    ai_overview_mode: str | None,
+    chatgpt_mode: str | None,
+    claude_mode: str | None,
+    gemini_mode: str | None,
+    lease_seconds: int,
+) -> SyncAnalysisRunReservation:
+    """Atomically reserves one synchronous, authenticated POST /analyze
+    request's execution slot — Task 6-B3's idempotency mechanism. See
+    this section's module-level comment for why this is safe to share
+    the async job system's schema/columns without ever letting
+    claim_next_queued_analysis_run() see (let alone claim) the row this
+    creates.
+
+    Locking/idempotency-lookup structure mirrors
+    create_queued_analysis_run() exactly (same two fixed-order
+    advisory locks, same _fetch_existing_job_by_idempotency_key()
+    lookup, same UniqueViolation defense-in-depth fallback) — see that
+    function's docstring for the full reasoning, not repeated here.
+    The one structural difference: on a genuinely new key, this
+    function inserts the new row directly with status='running' (plus
+    locked_by/locked_at/lease_expires_at already set), never 'queued' —
+    there is no separate "wait for a worker to claim it" phase, because
+    the caller (main.py's analyze()) *is* the thing that executes it,
+    synchronously, in this same request.
+
+    Raises SyncAnalysisStillRunningError / SyncAnalysisPreviouslyFailedError
+    / AnalysisJobCreateConflictError / AnalysisJobCancelledConflictError
+    for every non-replayable existing-row case (see their own
+    docstrings) — main.py maps each to a 409. Raises
+    AnalysisHistoryReadError on any other connection/query failure.
+    """
+    database_url = _require_connectable()
+
+    canonical_input = _canonicalize_job_input(
+        brand_name=brand_name,
+        documents=documents,
+        urls=urls,
+        common_crawl_mode=common_crawl_mode,
+        common_crawl_domain=common_crawl_domain,
+        ai_overview_mode=ai_overview_mode,
+        chatgpt_mode=chatgpt_mode,
+        claude_mode=claude_mode,
+        gemini_mode=gemini_mode,
+    )
+    locked_by = f"sync:{uuid.uuid4()}"
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                # Same fixed (project, then user) lock order as
+                # create_queued_analysis_run() — see that function's
+                # docstring for why this ordering rules out a deadlock
+                # between two transactions.
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (project_id,),
+                )
+                cur.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%s, 1))",
+                    (created_by_user_id,),
+                )
+
+                existing = _fetch_existing_job_by_idempotency_key(
+                    cur,
+                    project_id=project_id,
+                    created_by_user_id=created_by_user_id,
+                    idempotency_key=idempotency_key,
+                )
+                if existing is not None:
+                    result = _resolve_existing_sync_run(conn, cur, existing, canonical_input)
+                    conn.commit()
+                    return result
+
+                cur.execute(
+                    "select id from brands where name = %s and project_id = %s order by created_at desc limit 1",
+                    (canonical_input["brandName"], project_id),
+                )
+                brand_row = cur.fetchone()
+                if brand_row is not None:
+                    brand_id = brand_row[0]
+                else:
+                    cur.execute(
+                        "insert into brands (name, project_id) values (%s, %s) returning id",
+                        (canonical_input["brandName"], project_id),
+                    )
+                    brand_id = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    insert into analysis_runs
+                        (brand_id, project_id, status, input_snapshot,
+                         created_by_user_id, idempotency_key,
+                         locked_by, locked_at, lease_expires_at, attempt_count)
+                    values (%s, %s, 'running', %s, %s, %s,
+                            %s, now(), now() + make_interval(secs => %s), 1)
+                    returning id
+                    """,
+                    (
+                        brand_id,
+                        project_id,
+                        Jsonb(canonical_input),
+                        created_by_user_id,
+                        idempotency_key,
+                        locked_by,
+                        lease_seconds,
+                    ),
+                )
+                analysis_run_id = cur.fetchone()[0]
+
+                cur.execute(
+                    "insert into analysis_results (analysis_run_id, result_json) values (%s, %s)",
+                    (analysis_run_id, Jsonb({})),
+                )
+            conn.commit()
+    except (
+        AnalysisJobCreateConflictError,
+        AnalysisJobCancelledConflictError,
+        SyncAnalysisStillRunningError,
+        SyncAnalysisPreviouslyFailedError,
+    ):
+        raise
+    except Exception as exc:
+        if UniqueViolation is not None and isinstance(exc, UniqueViolation):
+            return _resolve_sync_run_after_unique_violation(
+                database_url,
+                project_id=project_id,
+                created_by_user_id=created_by_user_id,
+                idempotency_key=idempotency_key,
+                canonical_input=canonical_input,
+            )
+        logger.exception("Failed to create synchronous analysis run")
+        raise AnalysisHistoryReadError("failed to create synchronous analysis run") from exc
+
+    return SyncAnalysisRunReservation(
+        analysis_run_id=str(analysis_run_id),
+        created=True,
+        status="running",
+        locked_by=locked_by,
+    )
+
+
 # --- Async analysis jobs, Phase 2 worker (services/analysis_job_worker.py)
 # — see docs/40_async_analysis_jobs_design.md "11"/"12". Three new
 # functions: claim_next_queued_analysis_run() (queued -> running,
 # exclusive), complete_analysis_job() (running -> completed/partial/
-# failed, exclusive, atomic with the result write), and
-# fail_expired_running_analysis_runs() (the lease-expiry sweep). None
-# of these are called by anything in Phase 1 — they are reachable
-# only via the worker, which is itself off unless
-# ANALYSIS_JOBS_WORKER_ENABLED=true (services/analysis_jobs_settings.py).
+# failed, exclusive, atomic with the result write — also reused as-is
+# by create_running_analysis_run() above for Task 6-B3's synchronous
+# idempotency, with the synchronous caller itself playing the role of
+# a single-shot "worker"), and fail_expired_running_analysis_runs()
+# (the lease-expiry sweep, used only by the worker's own poll loop —
+# create_running_analysis_run() above does its own narrower, inline,
+# single-row equivalent instead, so it keeps working correctly even
+# when ANALYSIS_JOBS_WORKER_ENABLED=false). None of these three are
+# called by anything in Phase 1 — they are reachable only via the
+# worker, which is itself off unless ANALYSIS_JOBS_WORKER_ENABLED=true
+# (services/analysis_jobs_settings.py).
 
 
 @dataclass(frozen=True)

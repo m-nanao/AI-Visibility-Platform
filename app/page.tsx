@@ -12,8 +12,12 @@ import {
   ANALYZE_FALLBACK_REASON_HEADER,
   ANALYZE_PROJECT_ID_REQUIRED_MESSAGE,
   buildAnalyzeRequestBody,
+  clearPendingSyncAnalysisRequest,
+  getAnalyzeConflictMessage,
   getAnalyzeFallbackMessage,
   isAnalyzeAuthRequiredEnabled,
+  isTerminalAnalyzeConflictCode,
+  resolveRequestIdForSyncAnalysis,
 } from "./lib/analysis-request";
 import {
   ANALYSIS_RESULT_PREVIEW_NOTE,
@@ -255,6 +259,24 @@ export default function Home() {
         analyzeAuthRequired ? selectedProjectId ?? undefined : undefined,
       );
 
+      // Task 6-B3 (feature/sync-analyze-jwt-project-auth): requestId is
+      // only ever generated/sent when analyzeAuthRequired is true —
+      // the backend's DB-level idempotency enforcement is scoped to
+      // the authenticated path only (see
+      // app/lib/analysis-request.ts's AnalyzeRequestBody doc), so the
+      // anonymous flow stays byte-for-byte unchanged. Resolved from
+      // `requestBody` *before* requestId is added to it, same as
+      // app/lib/analysis-jobs.ts's own idempotency-key pattern —
+      // reused across a retry of the exact same input, fresh for a
+      // genuinely new submission.
+      if (analyzeAuthRequired) {
+        requestBody.requestId = resolveRequestIdForSyncAnalysis(
+          userScope,
+          selectedProjectId ?? "",
+          requestBody,
+        );
+      }
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -263,8 +285,25 @@ export default function Home() {
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => null);
+        if (response.status === 409) {
+          const code =
+            errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+          // "まだ処理中" is not a definitive outcome — keep the same
+          // requestId so a later resubmission (once the analysis
+          // actually finishes) can still reuse it. Every other 409
+          // cause (previously failed / input conflict / cancelled), and
+          // every other non-409 rejection below, is definitive: the
+          // next explicit "分析開始" click must get a fresh requestId.
+          if (isTerminalAnalyzeConflictCode(code)) {
+            clearPendingSyncAnalysisRequest();
+          }
+          throw new Error(getAnalyzeConflictMessage(code));
+        }
+        clearPendingSyncAnalysisRequest();
         throw new Error(errorBody?.error ?? "分析に失敗しました。");
       }
+
+      clearPendingSyncAnalysisRequest();
 
       if (response.headers.get(ANALYZE_FALLBACK_HEADER)) {
         setFallbackMessage(

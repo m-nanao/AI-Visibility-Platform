@@ -1576,4 +1576,97 @@ describe("POST /api/analyze", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get(ANALYZE_FALLBACK_HEADER)).toBe("1");
   });
+
+  // --- requestId idempotency conflicts (Task 6-B3,
+  // feature/sync-analyze-jwt-project-auth) -------------------------------
+
+  it("forwards requestId to the Python API when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(requestInit.body as string);
+    expect(sentBody.requestId).toBe("req-1");
+  });
+
+  it("omits requestId entirely when not sent (anonymous flow, unchanged)", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(buildDummyAnalysis("OpenAI")), { status: 200 }),
+    );
+    global.fetch = fetchMock;
+
+    await POST(makeRequest({ brandName: "OpenAI" }));
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(requestInit.body as string);
+    expect("requestId" in sentBody).toBe(false);
+  });
+
+  it("returns 409 (never a dummy-data fallback) with code analysis_still_running", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "an analysis for this requestId is still running",
+          code: "analysis_still_running",
+        }),
+        { status: 409 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: "an analysis for this requestId is still running",
+      code: "analysis_still_running",
+    });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 409 (never a dummy-data fallback) with code analysis_previously_failed", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "the previous analysis for this requestId failed",
+          code: "analysis_previously_failed",
+        }),
+        { status: 409 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("analysis_previously_failed");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 409 with a generic message when the response body has no recognizable error/code", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(new Response("not json", { status: 409 }));
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBeNull();
+    expect(typeof body.error).toBe("string");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
 });

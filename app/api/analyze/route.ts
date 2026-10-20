@@ -96,9 +96,18 @@ type PythonApiOutcome =
   // silently rendered as a successful "mock" analysis would be
   // actively misleading.
   | { kind: "authError"; status: 401 | 403 | 503 }
-  // Unset URL, network error, timeout, non-2xx (other than 400/401/403,
-  // and 503 only when it isn't the auth-config case above), invalid
-  // JSON, or a response that doesn't match AnalysisResult.
+  // Task 6-B3 (feature/sync-analyze-jwt-project-auth): the Python
+  // API's requestId-based idempotency judgment rejected this
+  // submission (still running / previously failed / different input
+  // reusing the same requestId / requestId belongs to a deleted run).
+  // Reported back as a real 409, exactly like authError above — must
+  // NEVER fall through to the dummy-data fallback below, since a
+  // "please wait" or "start over" signal silently rendered as a
+  // successful "mock" analysis would be actively misleading.
+  | { kind: "conflict"; message: string; code: string | null }
+  // Unset URL, network error, timeout, non-2xx (other than 400/401/403/
+  // 409, and 503 only when it isn't the auth-config case above),
+  // invalid JSON, or a response that doesn't match AnalysisResult.
   | { kind: "unavailable"; reason: PythonApiUnavailableReason };
 
 // Must match backend/main.py's ANALYZE_AUTH_UNAVAILABLE_CODE exactly —
@@ -141,6 +150,13 @@ async function fetchFromPythonApi(
   // existed.
   projectId?: string,
   accessToken?: string | null,
+  // Task 6-B3 (feature/sync-analyze-jwt-project-auth): forwarded as-is
+  // whenever present — like projectId above, only ever sent by
+  // app/page.tsx once analyzeAuthRequired is true, since the Python
+  // API's idempotency enforcement is scoped to the authenticated path
+  // only. Omitted entirely for the anonymous flow, same as before this
+  // field existed.
+  requestId?: string,
 ): Promise<PythonApiOutcome> {
   const baseUrl = process.env.PYTHON_ANALYSIS_API_URL;
   if (!baseUrl) return { kind: "unavailable", reason: "not_configured" };
@@ -162,10 +178,12 @@ async function fetchFromPythonApi(
     claudeMode?: ClaudeProviderMode;
     geminiMode?: GeminiProviderMode;
     projectId?: string;
+    requestId?: string;
   } = { brandName };
   if (documents) requestBody.documents = documents;
   if (urls) requestBody.urls = urls;
   if (projectId) requestBody.projectId = projectId;
+  if (requestId) requestBody.requestId = requestId;
   // Forwarded as-is; the Python API decides whether to actually honor
   // it (ALLOW_AI_OVERVIEW_MODE_OVERRIDE) or ignore it in favor of its
   // own AI_OVERVIEW_PROVIDER_MODE default. Next.js does not gate this
@@ -233,6 +251,20 @@ async function fetchFromPythonApi(
           ? errorBody.error
           : "入力内容を確認してください";
       return { kind: "validationError", message };
+    }
+
+    if (response.status === 409) {
+      // Task 6-B3: requestId-based idempotency conflict
+      // (ANALYZE_AUTH_REQUIRED=true only — never sent by the Python
+      // API otherwise). Must never fall through to the dummy-data
+      // fallback below, same reasoning as the 401/403 authError case.
+      const errorBody = await response.json().catch(() => null);
+      const message =
+        errorBody && typeof errorBody.error === "string"
+          ? errorBody.error
+          : "分析を開始できませんでした";
+      const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+      return { kind: "conflict", message, code };
     }
 
     if (!response.ok) {
@@ -370,6 +402,14 @@ export async function POST(request: Request) {
     typeof body?.projectId === "string" && body.projectId.trim()
       ? body.projectId.trim()
       : undefined;
+  // Task 6-B3 (feature/sync-analyze-jwt-project-auth): forwarded as-is
+  // whenever present — this route does no validation of its own (the
+  // Python API validates format/length and does the actual idempotency
+  // judgment); see backend/main.py's _validate_request_id().
+  const requestId =
+    typeof body?.requestId === "string" && body.requestId.trim()
+      ? body.requestId.trim()
+      : undefined;
   // Always resolved and forwarded regardless of whether this app knows
   // ANALYZE_AUTH_REQUIRED's current value — see fetchFromPythonApi()'s
   // `accessToken` parameter doc. null when there's no session (an
@@ -389,6 +429,7 @@ export async function POST(request: Request) {
     geminiMode,
     projectId,
     accessToken,
+    requestId,
   );
 
   if (outcome.kind === "success") {
@@ -409,6 +450,15 @@ export async function POST(request: Request) {
           ? ANALYZE_ACCESS_DENIED_MESSAGE
           : ANALYZE_AUTH_CONFIG_ERROR_MESSAGE;
     return NextResponse.json({ error: message }, { status: outcome.status });
+  }
+
+  if (outcome.kind === "conflict") {
+    // Never falls back to dummy data — see PythonApiOutcome's
+    // "conflict" doc above for why.
+    return NextResponse.json(
+      { error: outcome.message, code: outcome.code },
+      { status: 409 },
+    );
   }
 
   await new Promise((resolve) =>

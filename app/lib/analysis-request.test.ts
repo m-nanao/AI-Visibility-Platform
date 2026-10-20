@@ -1,6 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ANALYZE_CONFLICT_GENERIC_MESSAGE,
+  ANALYZE_PREVIOUSLY_FAILED_CODE,
+  ANALYZE_REQUEST_CANCELLED_CODE,
+  ANALYZE_REQUEST_CONFLICT_CODE,
+  ANALYZE_STILL_RUNNING_CODE,
   buildAnalyzeRequestBody,
+  clearPendingSyncAnalysisRequest,
+  getAnalyzeConflictMessage,
   getAnalyzeFallbackMessage,
   isAiOverviewModeSelectorEnabled,
   isAnalyzeAuthRequiredEnabled,
@@ -8,6 +15,8 @@ import {
   isClaudeModeSelectorEnabled,
   isCommonCrawlModeSelectorEnabled,
   isGeminiModeSelectorEnabled,
+  isTerminalAnalyzeConflictCode,
+  resolveRequestIdForSyncAnalysis,
 } from "./analysis-request";
 
 describe("isAiOverviewModeSelectorEnabled", () => {
@@ -590,6 +599,183 @@ describe("buildAnalyzeRequestBody", () => {
       "   ",
     );
     expect("projectId" in body).toBe(false);
+  });
+
+  // --- requestId (Task 6-B3, feature/sync-analyze-jwt-project-auth) ---
+
+  it("omits requestId when not passed", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    expect(body.requestId).toBeUndefined();
+    expect("requestId" in body).toBe(false);
+  });
+
+  it("includes requestId when passed", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "project-123",
+        "req-1",
+      ),
+    ).toEqual({ brandName: "Acme", projectId: "project-123", requestId: "req-1" });
+  });
+
+  it("trims requestId before including it", () => {
+    expect(
+      buildAnalyzeRequestBody(
+        "Acme",
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "  req-1  ",
+      ).requestId,
+    ).toBe("req-1");
+  });
+
+  it("omits a blank/whitespace-only requestId", () => {
+    const body = buildAnalyzeRequestBody(
+      "Acme",
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "   ",
+    );
+    expect("requestId" in body).toBe(false);
+  });
+});
+
+// This project's vitest run doesn't use a jsdom environment (no
+// `window` global by default) — see app/lib/analysis-jobs.test.ts's
+// own makeFakeWindow() for the same pattern, mirrored here since
+// resolveRequestIdForSyncAnalysis()/clearPendingSyncAnalysisRequest()
+// use sessionStorage exactly the same way that file's
+// resolveIdempotencyKeyForJobSubmission()/clearPendingJobSubmission()
+// do.
+function makeFakeWindow() {
+  const store = new Map<string, string>();
+  return {
+    sessionStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+    },
+  };
+}
+
+describe("resolveRequestIdForSyncAnalysis / clearPendingSyncAnalysisRequest", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", makeFakeWindow());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("generates a new requestId for a first submission", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const id = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-1");
+    expect(id).toBe("generated-1");
+  });
+
+  it("reuses the stored requestId for a retry of the exact same input by the same user/project", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const first = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-1");
+    const second = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-2");
+    expect(first).toBe("generated-1");
+    expect(second).toBe("generated-1");
+  });
+
+  it("generates a fresh requestId when the input changes", () => {
+    const first = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      buildAnalyzeRequestBody("Acme", []),
+      () => "generated-1",
+    );
+    const second = resolveRequestIdForSyncAnalysis(
+      "user-1",
+      "project-1",
+      buildAnalyzeRequestBody("OtherBrand", []),
+      () => "generated-2",
+    );
+    expect(first).toBe("generated-1");
+    expect(second).toBe("generated-2");
+  });
+
+  it("generates a fresh requestId for a different user even with identical input", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const first = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-1");
+    const second = resolveRequestIdForSyncAnalysis("user-2", "project-1", body, () => "generated-2");
+    expect(first).toBe("generated-1");
+    expect(second).toBe("generated-2");
+  });
+
+  it("generates a fresh requestId for a different project even with identical input", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const first = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-1");
+    const second = resolveRequestIdForSyncAnalysis("user-1", "project-2", body, () => "generated-2");
+    expect(first).toBe("generated-1");
+    expect(second).toBe("generated-2");
+  });
+
+  it("generates a fresh requestId again after clearPendingSyncAnalysisRequest()", () => {
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const first = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-1");
+    clearPendingSyncAnalysisRequest();
+    const second = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-2");
+    expect(first).toBe("generated-1");
+    expect(second).toBe("generated-2");
+  });
+
+  it("does not throw and still generates a requestId when there is no window", () => {
+    vi.unstubAllGlobals();
+    const body = buildAnalyzeRequestBody("Acme", []);
+    const id = resolveRequestIdForSyncAnalysis("user-1", "project-1", body, () => "generated-1");
+    expect(id).toBe("generated-1");
+  });
+});
+
+describe("getAnalyzeConflictMessage / isTerminalAnalyzeConflictCode", () => {
+  it("returns a still-running-specific message and treats it as non-terminal", () => {
+    expect(getAnalyzeConflictMessage(ANALYZE_STILL_RUNNING_CODE)).toContain("処理中");
+    expect(isTerminalAnalyzeConflictCode(ANALYZE_STILL_RUNNING_CODE)).toBe(false);
+  });
+
+  it("returns a previously-failed-specific message and treats it as terminal", () => {
+    expect(getAnalyzeConflictMessage(ANALYZE_PREVIOUSLY_FAILED_CODE)).toContain("失敗");
+    expect(isTerminalAnalyzeConflictCode(ANALYZE_PREVIOUSLY_FAILED_CODE)).toBe(true);
+  });
+
+  it("treats a request conflict and a cancelled request as terminal", () => {
+    expect(isTerminalAnalyzeConflictCode(ANALYZE_REQUEST_CONFLICT_CODE)).toBe(true);
+    expect(isTerminalAnalyzeConflictCode(ANALYZE_REQUEST_CANCELLED_CODE)).toBe(true);
+  });
+
+  it("falls back to a generic message and treats an unrecognized/missing code as non-terminal", () => {
+    expect(getAnalyzeConflictMessage(null)).toBe(ANALYZE_CONFLICT_GENERIC_MESSAGE);
+    expect(getAnalyzeConflictMessage("some_unknown_code")).toBe(ANALYZE_CONFLICT_GENERIC_MESSAGE);
+    expect(isTerminalAnalyzeConflictCode(null)).toBe(false);
+    expect(isTerminalAnalyzeConflictCode("some_unknown_code")).toBe(false);
   });
 });
 

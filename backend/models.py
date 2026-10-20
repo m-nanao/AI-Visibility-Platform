@@ -808,6 +808,16 @@ class AnalyzeRequest(BaseModel):
     # can_user_access_project() before it is ever passed to
     # save_analysis_history().
     projectId: str | None = None
+    # Client-generated idempotency key for one "start analysis"
+    # operation — required only when ANALYZE_AUTH_REQUIRED=true (Task
+    # 6-B3, feature/sync-analyze-jwt-project-auth). Ignored entirely
+    # when that flag is false, exactly like projectId above: the
+    # anonymous path has no concept of request-level idempotency and
+    # is completely unaffected by this field. See
+    # services/analysis_history_repository.py's "Synchronous analysis
+    # idempotency" section for why this can't safely be extended to
+    # the anonymous path too.
+    requestId: str | None = None
 
 
 class ErrorResponse(BaseModel):

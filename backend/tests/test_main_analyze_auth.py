@@ -5,6 +5,12 @@ production switch-on can require a verified Supabase JWT + project
 access before accepting a sync analysis, while the flag stays false
 (the default) today with zero behavior change.
 
+Focused on the auth *gate* itself (401/403/503/400 for a missing/
+invalid JWT or project) — the authenticated path's actual idempotency/
+execution behavior (Task 6-B3: create_running_analysis_run(),
+complete_analysis_job(), requestId handling) is covered separately in
+tests/test_main_analyze_idempotency.py.
+
 Never touches a real database (main.open_history_db_connection,
 main.can_user_access_project are monkeypatched) and never calls a real
 external provider (main.run_analysis_pipeline/main.save_analysis_history
@@ -17,7 +23,10 @@ from fastapi.testclient import TestClient
 
 import main
 from main import app
-from services.analysis_history_repository import AnalysisHistorySaveResult
+from services.analysis_history_repository import (
+    AnalysisHistorySaveResult,
+    SyncAnalysisRunReservation,
+)
 from services.jwt_auth import AuthenticatedUser, JWTAuthError
 
 client = TestClient(app)
@@ -49,9 +58,15 @@ def _mock_jwt_dependencies(monkeypatch, *, user_id: str = "user-1", can_access_p
 def _stub_pipeline_and_save(monkeypatch):
     """Lets analyze() run to completion (200) without touching any real
     provider or DB — used only by tests that need to reach past the
-    auth gate to assert what happens afterward."""
+    auth gate to assert what happens afterward. Stubs both the
+    anonymous path's save_analysis_history() and the authenticated
+    path's create_running_analysis_run()/complete_analysis_job()
+    (Task 6-B3) — `reservation_calls` is only populated for tests that
+    reach the authenticated path."""
     pipeline_calls = []
     save_calls = []
+    reservation_calls = []
+    complete_calls = []
 
     def fake_pipeline(**kwargs):
         pipeline_calls.append(kwargs)
@@ -68,9 +83,24 @@ def _stub_pipeline_and_save(monkeypatch):
             brand_id="22222222-2222-2222-2222-222222222222",
         )
 
+    def fake_create_running(**kwargs):
+        reservation_calls.append(kwargs)
+        return SyncAnalysisRunReservation(
+            analysis_run_id="11111111-1111-1111-1111-111111111111",
+            created=True,
+            status="running",
+            locked_by="sync:test-token",
+        )
+
+    def fake_complete(analysis_run_id, **kwargs):
+        complete_calls.append({"analysis_run_id": analysis_run_id, **kwargs})
+        return True
+
     monkeypatch.setattr(main, "run_analysis_pipeline", fake_pipeline)
     monkeypatch.setattr(main, "save_analysis_history", fake_save)
-    return pipeline_calls, save_calls
+    monkeypatch.setattr(main, "create_running_analysis_run", fake_create_running)
+    monkeypatch.setattr(main, "complete_analysis_job", fake_complete)
+    return pipeline_calls, save_calls, reservation_calls, complete_calls
 
 
 # --- ANALYZE_AUTH_REQUIRED flag resolution ------------------------------
@@ -117,7 +147,7 @@ def test_analyze_flag_off_ignores_jwt_and_project_id_entirely(monkeypatch):
         "can_user_access_project",
         lambda conn, uid, project_id: project_calls.append(project_id),
     )
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",
@@ -130,20 +160,23 @@ def test_analyze_flag_off_ignores_jwt_and_project_id_entirely(monkeypatch):
     assert project_calls == []
     assert len(pipeline_calls) == 1
     assert len(save_calls) == 1
-    # The legacy path never forwards projectId into save_analysis_history().
-    assert save_calls[0]["project_id"] is None
+    # The legacy path never passes a project_id to save_analysis_history()
+    # at all (not even None as an explicit kwarg) — it relies entirely
+    # on that function's own default-project resolution, exactly as
+    # before this task.
+    assert "project_id" not in save_calls[0]
 
 
 def test_analyze_flag_off_anonymous_request_still_works(monkeypatch):
     monkeypatch.delenv("ANALYZE_AUTH_REQUIRED", raising=False)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post("/analyze", json={"brandName": "サイボウズ"})
 
     assert response.status_code == 200
     assert response.json()["brandName"] == "サイボウズ"
     assert len(pipeline_calls) == 1
-    assert save_calls[0]["project_id"] is None
+    assert "project_id" not in save_calls[0]
 
 
 # --- Flag ON: authorization enforced ------------------------------------
@@ -152,7 +185,7 @@ def test_analyze_flag_off_anonymous_request_still_works(monkeypatch):
 def test_analyze_flag_on_rejects_missing_authorization(monkeypatch):
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post("/analyze", json={"brandName": "サイボウズ", "projectId": "p1"})
 
@@ -170,7 +203,7 @@ def test_analyze_flag_on_rejects_invalid_jwt(monkeypatch):
         raise JWTAuthError("expired", "token expired")
 
     monkeypatch.setattr(main, "verify_supabase_jwt", raising_verify)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",
@@ -193,7 +226,7 @@ def test_analyze_flag_on_rejects_when_jwt_verification_not_configured(monkeypatc
     `error` prose to tell it apart from an unrelated 503."""
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: False)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",
@@ -210,7 +243,7 @@ def test_analyze_flag_on_rejects_when_jwt_verification_not_configured(monkeypatc
 def test_analyze_flag_on_rejects_missing_project_id(monkeypatch):
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     _mock_jwt_dependencies(monkeypatch)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze", json={"brandName": "サイボウズ"}, headers=_jwt_headers()
@@ -225,7 +258,7 @@ def test_analyze_flag_on_rejects_missing_project_id(monkeypatch):
 def test_analyze_flag_on_rejects_blank_project_id(monkeypatch):
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     _mock_jwt_dependencies(monkeypatch)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",
@@ -245,7 +278,7 @@ def test_analyze_flag_on_rejects_inaccessible_project(monkeypatch):
     (possibly billable) analysis "on behalf of" it either."""
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_project=False)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",
@@ -275,7 +308,7 @@ def test_analyze_flag_on_returns_503_when_project_access_check_fails(monkeypatch
         raise RuntimeError("db unreachable")
 
     monkeypatch.setattr(main, "can_user_access_project", raising_access_check)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",
@@ -292,20 +325,28 @@ def test_analyze_flag_on_returns_503_when_project_access_check_fails(monkeypatch
 def test_analyze_flag_on_succeeds_with_valid_jwt_and_accessible_project(monkeypatch):
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_project=True)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, _save_calls, reservation_calls, complete_calls = _stub_pipeline_and_save(
+        monkeypatch
+    )
 
     response = client.post(
         "/analyze",
-        json={"brandName": "サイボウズ", "projectId": "my-project"},
+        json={"brandName": "サイボウズ", "projectId": "my-project", "requestId": "req-1"},
         headers=_jwt_headers(),
     )
 
     assert response.status_code == 200
     assert response.json()["brandName"] == "サイボウズ"
     assert len(pipeline_calls) == 1
-    # The verified (not client-trusted-as-is) project id is what
-    # actually reaches save_analysis_history().
-    assert save_calls[0]["project_id"] == "my-project"
+    # The verified (not client-trusted-as-is) project id and user id are
+    # what actually reach create_running_analysis_run() (Task 6-B3) —
+    # the authenticated path no longer calls save_analysis_history() at
+    # all (see _analyze_authenticated_idempotent()).
+    assert reservation_calls[0]["project_id"] == "my-project"
+    assert reservation_calls[0]["created_by_user_id"] == "user-1"
+    assert reservation_calls[0]["idempotency_key"] == "req-1"
+    assert len(complete_calls) == 1
+    assert complete_calls[0]["status"] in ("completed", "partial")
 
 
 def test_analyze_flag_on_never_trusts_a_project_id_the_caller_cannot_access(monkeypatch):
@@ -315,7 +356,7 @@ def test_analyze_flag_on_never_trusts_a_project_id_the_caller_cannot_access(monk
     しない" requirement verified end-to-end."""
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_project=False)
-    pipeline_calls, save_calls = _stub_pipeline_and_save(monkeypatch)
+    pipeline_calls, save_calls, _reservation_calls, _complete_calls = _stub_pipeline_and_save(monkeypatch)
 
     response = client.post(
         "/analyze",

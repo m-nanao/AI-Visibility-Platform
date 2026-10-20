@@ -85,6 +85,7 @@ POST body.
 
 import hmac
 import logging
+import re
 from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -158,14 +159,18 @@ from services.analysis_history_repository import (
     CategoryNameInvalidError,
     CategoryNotAssignableError,
     CategoryRequiresProjectError,
+    SyncAnalysisPreviouslyFailedError,
+    SyncAnalysisStillRunningError,
     TagNameConflictError,
     TagNameInvalidError,
     TagNotAssignableError,
     attach_tag_to_analysis_run,
     cancel_queued_analysis_run,
+    complete_analysis_job,
     count_analysis_runs as repository_count_analysis_runs,
     create_category,
     create_queued_analysis_run,
+    create_running_analysis_run,
     create_tag,
     delete_category,
     delete_tag,
@@ -958,10 +963,65 @@ ANALYZE_AUTH_UNAVAILABLE_CODE = "auth_unavailable"
 ANALYZE_ACCESS_DENIED_CODE = "project_access_denied"
 ANALYZE_PROJECT_ID_REQUIRED_CODE = "project_id_required"
 
+# --- Synchronous analysis idempotency (Task 6-B3,
+# feature/sync-analyze-jwt-project-auth) — only reachable once
+# ANALYZE_AUTH_REQUIRED=true (see analyze() below); the anonymous path
+# never looks at `requestId` at all. See
+# services/analysis_history_repository.py's "Synchronous analysis
+# idempotency" section for the full mechanism this backs.
+
+ANALYZE_REQUEST_ID_REQUIRED_MESSAGE = "requestId is required"
+ANALYZE_REQUEST_ID_REQUIRED_CODE = "request_id_required"
+ANALYZE_REQUEST_ID_INVALID_MESSAGE = (
+    "requestId must be 1-200 characters, using only letters, digits, '-' or '_'"
+)
+ANALYZE_REQUEST_ID_INVALID_CODE = "request_id_invalid"
+ANALYZE_STILL_RUNNING_MESSAGE = "an analysis for this requestId is still running"
+ANALYZE_STILL_RUNNING_CODE = "analysis_still_running"
+ANALYZE_PREVIOUSLY_FAILED_MESSAGE = (
+    "the previous analysis for this requestId failed; start a new analysis "
+    "with a new requestId"
+)
+ANALYZE_PREVIOUSLY_FAILED_CODE = "analysis_previously_failed"
+ANALYZE_REQUEST_CONFLICT_MESSAGE = "requestId reused with a different request body"
+ANALYZE_REQUEST_CONFLICT_CODE = "analysis_request_conflict"
+ANALYZE_REQUEST_CANCELLED_MESSAGE = (
+    "this requestId's analysis was deleted and cannot be reused"
+)
+ANALYZE_REQUEST_CANCELLED_CODE = "analysis_request_cancelled"
+ANALYZE_RUN_FAILED_MESSAGE = "failed to run the analysis"
+
+# Generous relative to the ~100s worst-case full-ON pipeline duration
+# documented in app/api/analyze/route.ts's PYTHON_API_TIMEOUT_MS
+# comment — this lease only needs to outlive a single synchronous
+# request's own pipeline execution, never a worker's poll cycle.
+SYNC_ANALYSIS_LEASE_SECONDS = 180
+
+MAX_REQUEST_ID_LENGTH = 200
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_request_id(raw: str | None) -> str | None:
+    """Returns the trimmed, validated requestId, or None if it's
+    missing/malformed — the caller decides the exact 400 response
+    (missing vs. invalid get distinct messages/codes). Deliberately
+    restrictive (letters/digits/hyphen/underscore only, matching a
+    typical UUID's own character set) since this value is stored
+    verbatim as `analysis_runs.idempotency_key` and never needs to be
+    anything fancier than an opaque client-generated token."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > MAX_REQUEST_ID_LENGTH:
+        return None
+    if not _REQUEST_ID_PATTERN.match(value):
+        return None
+    return value
+
 
 def _resolve_analyze_project_auth(
     request: Request, payload: AnalyzeRequest
-) -> str | None | JSONResponse:
+) -> tuple[str, str] | None | JSONResponse:
     """Resolves POST /analyze's authorization requirement (Task 6-B2,
     feature/sync-analyze-jwt-project-auth).
 
@@ -975,13 +1035,13 @@ def _resolve_analyze_project_auth(
       JWT-verification logic is duplicated here) and a `projectId` the
       caller can access (via the existing can_user_access_project(),
       the same helper POST /tags and POST /categories already use for
-      exactly this check). On success, returns the verified project id
-      (a plain str) for analyze() to pass into save_analysis_history().
-      On any failure, returns a JSONResponse to return immediately —
-      the caller must never proceed to run_analysis_pipeline() or
-      save_analysis_history() in that case, so no external provider is
-      ever called and nothing is ever saved for an unauthorized
-      request.
+      exactly this check). On success, returns `(user_id, project_id)`
+      — both already verified — for analyze() to pass into Task 6-B3's
+      idempotency reservation. On any failure, returns a JSONResponse
+      to return immediately — the caller must never proceed to
+      run_analysis_pipeline() or any save path in that case, so no
+      external provider is ever called and nothing is ever saved for
+      an unauthorized request.
 
     A failed/misconfigured JWT or project check never falls back to
     the anonymous default-project path merely because this flag
@@ -1028,7 +1088,7 @@ def _resolve_analyze_project_auth(
             ANALYZE_ACCESS_DENIED_MESSAGE, status_code=403, code=ANALYZE_ACCESS_DENIED_CODE
         )
 
-    return project_id
+    return auth_result.user_id, project_id
 
 
 @app.post("/analyze", response_model=AnalysisResult)
@@ -1047,11 +1107,28 @@ def analyze(payload: AnalyzeRequest, request: Request):
     if isinstance(auth_outcome, JSONResponse):
         return auth_outcome
     # None when ANALYZE_AUTH_REQUIRED=false (legacy/anonymous path,
-    # save_analysis_history() below resolves the default project
-    # itself exactly as before); otherwise the caller's own, already
-    # access-checked project id.
-    verified_project_id = auth_outcome
+    # handled by _analyze_anonymous() below, completely unchanged);
+    # otherwise the caller's own, already JWT-verified user id and
+    # access-checked project id, handled by
+    # _analyze_authenticated_idempotent() (Task 6-B3).
+    if auth_outcome is None:
+        return _analyze_anonymous(payload, brand_name)
 
+    verified_user_id, verified_project_id = auth_outcome
+    return _analyze_authenticated_idempotent(
+        payload, brand_name, user_id=verified_user_id, project_id=verified_project_id
+    )
+
+
+def _analyze_anonymous(payload: AnalyzeRequest, brand_name: str):
+    """ANALYZE_AUTH_REQUIRED=false path — byte-for-byte the same
+    behavior as before Task 6-B2/6-B3 existed: no idempotency, no
+    JWT/project concept, always saves (best-effort) to the fixed
+    default project. `payload.requestId`, even if sent, is never read
+    here — see services/analysis_history_repository.py's "Synchronous
+    analysis idempotency" section for why this path is deliberately
+    left alone rather than extended to cover it too.
+    """
     # Minimal diagnostic logging around each stage of /analyze — added
     # to narrow down where a Render free-tier request was dying (past
     # url fetch, but before any "POST /analyze ... 200/500" completion
@@ -1106,7 +1183,6 @@ def analyze(payload: AnalyzeRequest, request: Request):
             visibility_score=result.summary.visibilityScore,
             meta_json=result.meta.model_dump(),
             status="partial" if cooccurrence_status == "unavailable" else "completed",
-            project_id=verified_project_id,
         )
     except Exception:
         logger.exception("Unexpected error while saving analysis history")
@@ -1119,6 +1195,165 @@ def analyze(payload: AnalyzeRequest, request: Request):
         history_result.analysis_run_id if history_result is not None else None
     )
 
+    return result
+
+
+def _analyze_authenticated_idempotent(
+    payload: AnalyzeRequest, brand_name: str, *, user_id: str, project_id: str
+):
+    """ANALYZE_AUTH_REQUIRED=true path (Task 6-B3) — requires a valid
+    `requestId`, then atomically reserves this request's execution
+    slot via create_running_analysis_run() *before* ever calling
+    run_analysis_pipeline() (processing order mandated by this task's
+    "6. 二重課金防止": JWT/project auth -> requestId validation -> DB
+    idempotency/reservation -> only then the actual analysis).
+
+    A replay (already completed/partial) returns the saved result
+    immediately, without calling run_analysis_pipeline() or any save
+    function again — no new external provider call, no new row.
+    """
+    request_id = _validate_request_id(payload.requestId)
+    if request_id is None:
+        if not payload.requestId:
+            return error_response(
+                ANALYZE_REQUEST_ID_REQUIRED_MESSAGE,
+                status_code=400,
+                code=ANALYZE_REQUEST_ID_REQUIRED_CODE,
+            )
+        return error_response(
+            ANALYZE_REQUEST_ID_INVALID_MESSAGE,
+            status_code=400,
+            code=ANALYZE_REQUEST_ID_INVALID_CODE,
+        )
+
+    try:
+        reservation = create_running_analysis_run(
+            project_id=project_id,
+            created_by_user_id=user_id,
+            idempotency_key=request_id,
+            brand_name=brand_name,
+            documents=payload.documents,
+            urls=payload.urls,
+            common_crawl_mode=payload.commonCrawlMode,
+            common_crawl_domain=payload.commonCrawlDomain,
+            ai_overview_mode=payload.aiOverviewMode,
+            chatgpt_mode=payload.chatgptMode,
+            claude_mode=payload.claudeMode,
+            gemini_mode=payload.geminiMode,
+            lease_seconds=SYNC_ANALYSIS_LEASE_SECONDS,
+        )
+    except SyncAnalysisStillRunningError:
+        return error_response(
+            ANALYZE_STILL_RUNNING_MESSAGE, status_code=409, code=ANALYZE_STILL_RUNNING_CODE
+        )
+    except SyncAnalysisPreviouslyFailedError:
+        return error_response(
+            ANALYZE_PREVIOUSLY_FAILED_MESSAGE,
+            status_code=409,
+            code=ANALYZE_PREVIOUSLY_FAILED_CODE,
+        )
+    except AnalysisJobCreateConflictError:
+        return error_response(
+            ANALYZE_REQUEST_CONFLICT_MESSAGE,
+            status_code=409,
+            code=ANALYZE_REQUEST_CONFLICT_CODE,
+        )
+    except AnalysisJobCancelledConflictError:
+        return error_response(
+            ANALYZE_REQUEST_CANCELLED_MESSAGE,
+            status_code=409,
+            code=ANALYZE_REQUEST_CANCELLED_CODE,
+        )
+    except AnalysisHistoryReadError:
+        return error_response(ANALYZE_RUN_FAILED_MESSAGE, status_code=503)
+
+    if not reservation.created:
+        # Replay: a 'completed'/'partial' run for this exact requestId
+        # (same input) already exists — return its saved result as-is,
+        # never re-running the pipeline or writing anything new.
+        result = AnalysisResult(**reservation.result_json)
+        result.analysisRunId = reservation.analysis_run_id
+        return result
+
+    # Newly reserved as 'running' — this request now owns it exclusively
+    # (via reservation.locked_by) until SYNC_ANALYSIS_LEASE_SECONDS
+    # elapses. Any exception below is caught so the row is always
+    # finalized (never left dangling as 'running' longer than
+    # necessary) before this function returns or re-raises.
+    try:
+        outcome = run_analysis_pipeline(
+            brand_name=brand_name,
+            documents=payload.documents,
+            urls=payload.urls,
+            common_crawl_mode=payload.commonCrawlMode,
+            common_crawl_domain=payload.commonCrawlDomain,
+            ai_overview_mode_override=payload.aiOverviewMode,
+            chatgpt_mode_override=payload.chatgptMode,
+            claude_mode_override=payload.claudeMode,
+            gemini_mode_override=payload.geminiMode,
+        )
+    except AnalysisPipelineInputError as exc:
+        try:
+            complete_analysis_job(
+                reservation.analysis_run_id,
+                worker_id=reservation.locked_by,
+                status="failed",
+                result_json=None,
+                meta_json=None,
+                error_message=str(exc),
+            )
+        except AnalysisHistoryReadError:
+            logger.exception(
+                "Failed to mark synchronous analysis run as failed after input error"
+            )
+        return error_response(str(exc))
+    except Exception:
+        logger.exception("Unexpected error while running synchronous analysis pipeline")
+        try:
+            complete_analysis_job(
+                reservation.analysis_run_id,
+                worker_id=reservation.locked_by,
+                status="failed",
+                result_json=None,
+                meta_json=None,
+                error_message="unexpected error during analysis pipeline execution",
+            )
+        except AnalysisHistoryReadError:
+            logger.exception(
+                "Failed to mark synchronous analysis run as failed after unexpected error"
+            )
+        raise
+
+    result = outcome.result
+    cooccurrence_status = outcome.cooccurrence_status
+    final_status = "partial" if cooccurrence_status == "unavailable" else "completed"
+
+    try:
+        completed = complete_analysis_job(
+            reservation.analysis_run_id,
+            worker_id=reservation.locked_by,
+            status=final_status,
+            result_json=result.model_dump(),
+            meta_json=result.meta.model_dump(),
+            error_message=None,
+        )
+        if not completed:
+            # The lease already expired (e.g. this request ran longer
+            # than SYNC_ANALYSIS_LEASE_SECONDS, or Render stopped/
+            # restarted this process and another request's lazy-expiry
+            # check already swept this row to 'failed') — the row's
+            # own state already reflects that; this result is simply
+            # discarded, never force-written over whatever the row
+            # already says, and never retried automatically.
+            logger.warning(
+                "Synchronous analysis run %s's lease expired before completion; "
+                "result discarded",
+                reservation.analysis_run_id,
+            )
+    except AnalysisHistoryReadError:
+        logger.exception("Failed to save synchronous analysis result")
+
+    result.analysisRunId = reservation.analysis_run_id
     return result
 
 
