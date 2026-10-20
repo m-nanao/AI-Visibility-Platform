@@ -129,7 +129,9 @@ create index if not exists idx_tags_project_id on tags(project_id);
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'uq_analysis_runs_id_project'
+    select 1 from pg_constraint
+    where conname = 'uq_analysis_runs_id_project'
+      and conrelid = 'public.analysis_runs'::regclass
   ) then
     alter table analysis_runs
       add constraint uq_analysis_runs_id_project unique (id, project_id);
@@ -142,7 +144,9 @@ alter table analysis_runs
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'fk_analysis_runs_category_project'
+    select 1 from pg_constraint
+    where conname = 'fk_analysis_runs_category_project'
+      and conrelid = 'public.analysis_runs'::regclass
   ) then
     alter table analysis_runs
       add constraint fk_analysis_runs_category_project
@@ -158,7 +162,9 @@ end $$;
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'chk_analysis_runs_category_requires_project'
+    select 1 from pg_constraint
+    where conname = 'chk_analysis_runs_category_requires_project'
+      and conrelid = 'public.analysis_runs'::regclass
   ) then
     alter table analysis_runs
       add constraint chk_analysis_runs_category_requires_project
