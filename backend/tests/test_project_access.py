@@ -12,7 +12,9 @@ import pytest
 from services.project_access import (
     ProjectAccessError,
     can_user_access_analysis_run,
+    can_user_access_category,
     can_user_access_project,
+    can_user_access_tag,
     can_user_cancel_analysis_run,
     get_accessible_project_ids,
 )
@@ -160,6 +162,91 @@ def test_can_user_access_analysis_run_raises_on_db_error():
 
     with pytest.raises(ProjectAccessError):
         can_user_access_analysis_run(conn, "user-1", "run-1")
+
+
+# --- can_user_access_tag / can_user_access_category
+# (feature/history-tags-categories) ------------------------------------
+
+
+def test_can_user_access_tag_true_when_member_of_owning_project():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_tag(conn, "user-1", "tag-1") is True
+    assert cursor.queries[0][1] == ("tag-1", "user-1")
+    assert "tags" in cursor.queries[0][0]
+    assert "organization_members" in cursor.queries[0][0]
+
+
+def test_can_user_access_tag_false_when_not_member_of_owning_project():
+    cursor = _FakeCursor(fetchone_result=None)
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_tag(conn, "user-1", "tag-1") is False
+
+
+def test_can_user_access_tag_false_when_tag_does_not_exist():
+    cursor = _FakeCursor(fetchone_result=None)
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_tag(conn, "user-1", "no-such-tag") is False
+
+
+def test_can_user_access_tag_false_when_user_id_empty():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_tag(conn, "", "tag-1") is False
+    assert cursor.queries == []
+
+
+def test_can_user_access_tag_false_when_tag_id_empty():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_tag(conn, "user-1", "") is False
+    assert cursor.queries == []
+
+
+def test_can_user_access_tag_raises_on_db_error():
+    cursor = _FakeCursor(raise_error=True)
+    conn = _FakeConnection(cursor)
+
+    with pytest.raises(ProjectAccessError):
+        can_user_access_tag(conn, "user-1", "tag-1")
+
+
+def test_can_user_access_category_true_when_member_of_owning_project():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_category(conn, "user-1", "category-1") is True
+    assert cursor.queries[0][1] == ("category-1", "user-1")
+    assert "categories" in cursor.queries[0][0]
+    assert "organization_members" in cursor.queries[0][0]
+
+
+def test_can_user_access_category_false_when_not_member_of_owning_project():
+    cursor = _FakeCursor(fetchone_result=None)
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_category(conn, "user-1", "category-1") is False
+
+
+def test_can_user_access_category_false_when_user_id_empty():
+    cursor = _FakeCursor(fetchone_result=(1,))
+    conn = _FakeConnection(cursor)
+
+    assert can_user_access_category(conn, "", "category-1") is False
+    assert cursor.queries == []
+
+
+def test_can_user_access_category_raises_on_db_error():
+    cursor = _FakeCursor(raise_error=True)
+    conn = _FakeConnection(cursor)
+
+    with pytest.raises(ProjectAccessError):
+        can_user_access_category(conn, "user-1", "category-1")
 
 
 # --- get_accessible_project_ids ------------------------------------------

@@ -8,6 +8,7 @@ import type {
   GeminiRerunResponse,
   WebAiGapAiComparisonUpdateResponse,
 } from "./analysis-history";
+import { categoryItemSchema, tagItemSchema } from "./tags-categories-schema";
 
 /**
  * Mirrors backend/models.py's AnalysisRunListItem/AnalysisRunListResponse
@@ -75,6 +76,14 @@ const analysisRunListItemSchema = z.object({
   // column (feature/history-favorite-flag, backend/migrations/
   // 007_add_is_favorite_to_analysis_runs.sql).
   isFavorite: z.boolean().default(false),
+  // backend/models.py declares this as `tags: list[TagItem] = []`
+  // (feature/history-tags-categories) — same always-a-real-array
+  // reasoning as sourceUrls above.
+  tags: z.array(tagItemSchema).default([]),
+  // backend/models.py declares this as `category: CategoryItem | None
+  // = None` — same reasoning as modeSummary above (absent key and
+  // Pydantic's `null` both mean "未分類"/no category yet).
+  category: optionalFromPython(categoryItemSchema),
 });
 
 export const analysisRunListResponseSchema = z.object({
@@ -151,6 +160,10 @@ export const analysisRunDetailResponseSchema = z.object({
   // analysis" action, which needs the original project id to submit a
   // new job against. `null`/absent for a legacy run.
   projectId: optionalFromPython(z.string()),
+  // Same field/default as analysisRunListItemSchema.tags/category
+  // above (feature/history-tags-categories).
+  tags: z.array(tagItemSchema).default([]),
+  category: optionalFromPython(categoryItemSchema),
 });
 
 export type AnalysisRunDetailParseResult =

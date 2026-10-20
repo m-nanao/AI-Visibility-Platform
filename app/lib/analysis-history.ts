@@ -17,6 +17,8 @@ import {
 } from "./analysis-history-schema";
 import { buildAnalysisJobPath } from "./analysis-jobs";
 import { parseAnalysisResult } from "./analysis-result-schema";
+import { UNCATEGORIZED_LABEL } from "./tags-categories";
+import type { CategoryItem, TagItem } from "./tags-categories";
 import type { AnalysisResult, CooccurrenceKeyword, WebAiGapAiComparison } from "./types";
 
 /** Which observation providers were actually in effect for one saved
@@ -85,6 +87,17 @@ export type AnalysisRunListItem = {
   // optionality/defense-in-depth reasoning as isImportant: read as
   // `item.isFavorite ?? false`.
   isFavorite?: boolean;
+  // Every tag currently attached to this run
+  // (feature/history-tags-categories, backend/migrations/
+  // 008_add_tags_and_categories.sql). Optional for the same "older
+  // backend build" reason as isImportant/isFavorite above — defaults
+  // to `[]` via the Zod schema, never omitted in practice; read as
+  // `item.tags ?? []` for defense in depth.
+  tags?: TagItem[];
+  // This run's category, or null for "未分類" (including a legacy run
+  // predating this migration). Optional/nullable for the same reason
+  // as tags above — read as `item.category ?? null`.
+  category?: CategoryItem | null;
 };
 
 export type AnalysisRunListResponse = {
@@ -225,6 +238,10 @@ export type AnalysisRunListItemDisplay = {
   sourceSummaryLabel?: string;
   startedAtLabel: string;
   modeBadges: ModeSummaryBadge[];
+  // "未分類" when item.category is null/undefined — always a
+  // displayable string, never blank, so the list card never shows an
+  // empty category slot (feature/history-tags-categories).
+  categoryLabel: string;
 };
 
 export function formatAnalysisRunListItem(
@@ -241,6 +258,7 @@ export function formatAnalysisRunListItem(
     sourceSummaryLabel: formatSourceSummary(item.sourceSummary),
     startedAtLabel: item.startedAt ?? item.createdAt ?? "実行日時不明",
     modeBadges: formatModeSummaryBadges(item.modeSummary),
+    categoryLabel: item.category?.name ?? UNCATEGORIZED_LABEL,
   };
 }
 
@@ -611,6 +629,14 @@ export type HistoryListQuery = {
   // above, same 2-way-toggle semantics (undefined/false = "all", no
   // "favorite=false" mode).
   favorite?: boolean;
+  // GET /analysis-runs's `tagIds`/`categoryId`/`uncategorizedOnly`
+  // (feature/history-tags-categories). `tagIds` OR-matches any run
+  // with at least one of the given tag ids; `categoryId` and
+  // `uncategorizedOnly` are mutually exclusive (the backend rejects
+  // both being set at once with 400) — callers must never set both.
+  tagIds?: string[];
+  categoryId?: string;
+  uncategorizedOnly?: boolean;
   sort: HistorySortOrder;
   page: number;
 };
@@ -655,6 +681,14 @@ export function buildHistoryListRequestUrl(query: HistoryListQuery): string {
   if (query.favorite) {
     params.set("favorite", "true");
   }
+  if (query.tagIds && query.tagIds.length > 0) {
+    params.set("tagIds", query.tagIds.join(","));
+  }
+  if (query.uncategorizedOnly) {
+    params.set("uncategorizedOnly", "true");
+  } else if (query.categoryId) {
+    params.set("categoryId", query.categoryId);
+  }
 
   return `/api/analysis-runs?${params.toString()}`;
 }
@@ -676,6 +710,9 @@ export function isHistoryListQueryFiltered(
     | "claudeObservation"
     | "geminiObservation"
     | "favorite"
+    | "tagIds"
+    | "categoryId"
+    | "uncategorizedOnly"
   >,
 ): boolean {
   return Boolean(
@@ -687,6 +724,9 @@ export function isHistoryListQueryFiltered(
       query.chatgptObservation ||
       query.claudeObservation ||
       query.favorite ||
+      (query.tagIds && query.tagIds.length > 0) ||
+      query.categoryId ||
+      query.uncategorizedOnly ||
       query.geminiObservation,
   );
 }
@@ -931,6 +971,104 @@ export const HISTORY_FAVORITE_FILTER_DEFAULT: HistoryFavoriteFilter = "all";
 export const HISTORY_FAVORITE_FILTER_ALL_LABEL = "すべて";
 export const HISTORY_FAVORITE_FILTER_FAVORITE_ONLY_LABEL = "お気に入りのみ";
 
+// --- Category/tag filter select state (feature/history-tags-categories,
+// Task 5-C) ---
+//
+// Both are plain select-box value types, converted into
+// HistoryListQuery.categoryId/uncategorizedOnly/tagIds by the page —
+// the select box itself only ever shows "すべて"/"未分類"/each category
+// name, never a raw id. `HistoryCategoryFilterValue` collapses
+// categoryId/uncategorizedOnly's mutual exclusivity into one
+// select-box-friendly value (see buildHistoryListRequestUrl() above,
+// which already keeps that same exclusivity when actually building the
+// query string).
+
+export const HISTORY_CATEGORY_FILTER_ALL_VALUE = "all";
+export const HISTORY_CATEGORY_FILTER_UNCATEGORIZED_VALUE = "uncategorized";
+
+export type HistoryCategoryFilterValue =
+  | typeof HISTORY_CATEGORY_FILTER_ALL_VALUE
+  | typeof HISTORY_CATEGORY_FILTER_UNCATEGORIZED_VALUE
+  | string; // a real category id
+
+export const HISTORY_CATEGORY_FILTER_LABEL_TEXT = "カテゴリ";
+export const HISTORY_TAG_FILTER_LABEL_TEXT = "タグ（複数選択可、いずれかに一致）";
+
+// --- Filter panel chrome (collapsible wrapper, active-filter summary,
+// "条件をクリア" — Task 5-C's "4. UI") ---
+
+export const HISTORY_FILTERS_PANEL_SHOW_LABEL = "検索条件を表示";
+export const HISTORY_FILTERS_PANEL_HIDE_LABEL = "検索条件を隠す";
+export const HISTORY_CLEAR_FILTERS_BUTTON_LABEL = "条件をクリア";
+
+/**
+ * Decision (Task 5-C's "並び替えの挙動"): "条件をクリア" resets sort
+ * order back to the default ("newest") along with every other filter,
+ * rather than leaving it untouched. Treating sort as just another
+ * piece of "current search condition" state is what keeps this button
+ * unsurprising — a user who clicks "clear all conditions" and then
+ * sees results still sorted oldest-first would reasonably read that as
+ * the clear having only partially worked. Documented here since this
+ * choice isn't obvious from the button's label alone.
+ */
+export const HISTORY_CLEAR_FILTERS_RESETS_SORT = true;
+
+/** One line per currently-active filter, for the "現在の条件" summary
+ * shown next to the filter panel toggle — e.g. ["検索: cybozu", "重要
+ * のみ", "カテゴリ: キャンペーンA"]. Returns `[]` when nothing is
+ * filtering (the caller then shows nothing, or a neutral "フィルタ
+ * なし" of its own choosing) so this function never has to know how
+ * "no active filters" should be worded. `categoryName`/`tagNames` are
+ * passed in separately (rather than re-deriving them from ids here)
+ * since this module has no access to the category/tag list itself. */
+export function describeActiveHistoryFilters(
+  query: HistoryListQuery,
+  options: { categoryName?: string; tagNames: string[] },
+): string[] {
+  const lines: string[] = [];
+  if (query.search && query.search.trim()) {
+    lines.push(`検索: ${query.search.trim()}`);
+  }
+  if (query.important) {
+    lines.push(HISTORY_IMPORTANT_FILTER_IMPORTANT_ONLY_LABEL);
+  }
+  if (query.favorite) {
+    lines.push(HISTORY_FAVORITE_FILTER_FAVORITE_ONLY_LABEL);
+  }
+  if (query.startedFrom || query.startedTo) {
+    lines.push(`期間: ${query.startedFrom ?? "…"} 〜 ${query.startedTo ?? "…"}`);
+  }
+  if (query.aiOverviewObservation) {
+    lines.push(
+      `${AI_OVERVIEW_OBSERVATION_FILTER_LABEL_TEXT}: ${AI_OVERVIEW_OBSERVATION_FILTER_LABELS[query.aiOverviewObservation]}`,
+    );
+  }
+  if (query.chatgptObservation) {
+    lines.push(
+      `${CHATGPT_OBSERVATION_FILTER_LABEL_TEXT}: ${SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS[query.chatgptObservation]}`,
+    );
+  }
+  if (query.claudeObservation) {
+    lines.push(
+      `${CLAUDE_OBSERVATION_FILTER_LABEL_TEXT}: ${SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS[query.claudeObservation]}`,
+    );
+  }
+  if (query.geminiObservation) {
+    lines.push(
+      `${GEMINI_OBSERVATION_FILTER_LABEL_TEXT}: ${SIMPLE_PROVIDER_OBSERVATION_FILTER_LABELS[query.geminiObservation]}`,
+    );
+  }
+  if (query.uncategorizedOnly) {
+    lines.push(`${HISTORY_CATEGORY_FILTER_LABEL_TEXT}: 未分類`);
+  } else if (query.categoryId && options.categoryName) {
+    lines.push(`${HISTORY_CATEGORY_FILTER_LABEL_TEXT}: ${options.categoryName}`);
+  }
+  if (options.tagNames.length > 0) {
+    lines.push(`タグ: ${options.tagNames.join("、")}`);
+  }
+  return lines;
+}
+
 export type HistoryViewState =
   | { kind: "loading" }
   | { kind: "disabled"; message: string; detail: string }
@@ -1146,6 +1284,12 @@ export type AnalysisRunDetailResponse = {
   // field's docstring. undefined for a legacy run saved before
   // 002_add_organizations_projects.sql.
   projectId?: string;
+  // Same fields/semantics as AnalysisRunListItem.tags/category above
+  // (feature/history-tags-categories) — now surfaced on the detail
+  // page's own UI (unlike isFavorite above), since tag/category
+  // editing is scoped to the detail page per this task.
+  tags?: TagItem[];
+  category?: CategoryItem | null;
 };
 
 export type AnalysisRunDetailBasicInfoDisplay = {

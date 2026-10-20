@@ -340,4 +340,43 @@ describe("GET /api/analysis-runs", () => {
     const forwardedParams = new URL(url as string).searchParams;
     expect(forwardedParams.has("favorite")).toBe(false);
   });
+
+  // --- tagIds/categoryId/uncategorizedOnly forwarding
+  // (feature/history-tags-categories, Task 5-C) ---
+
+  it("forwards tagIds/categoryId/uncategorizedOnly when present", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest("?tagIds=tag-1,tag-2&categoryId=cat-1&uncategorizedOnly=true"));
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.get("tagIds")).toBe("tag-1,tag-2");
+    expect(forwardedParams.get("categoryId")).toBe("cat-1");
+    expect(forwardedParams.get("uncategorizedOnly")).toBe("true");
+  });
+
+  it("omits tagIds/categoryId/uncategorizedOnly entirely when the caller didn't set them", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 20, offset: 0, total: 0 }), {
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock;
+
+    await GET(makeRequest());
+
+    const [url] = fetchMock.mock.calls[0];
+    const forwardedParams = new URL(url as string).searchParams;
+    expect(forwardedParams.has("tagIds")).toBe(false);
+    expect(forwardedParams.has("categoryId")).toBe(false);
+    expect(forwardedParams.has("uncategorizedOnly")).toBe(false);
+  });
 });

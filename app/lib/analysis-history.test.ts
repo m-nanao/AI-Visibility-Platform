@@ -95,6 +95,7 @@ import {
   getAiGapComparisonButtonLabel,
   resolveAiGapComparisonOutcome,
   buildHistoryListRequestUrl,
+  describeActiveHistoryFilters,
   formatHistoryPaginationLabel,
   isHistoryListQueryFiltered,
   jstDateStringToRangeBoundary,
@@ -1072,6 +1073,37 @@ describe("buildHistoryListRequestUrl", () => {
     const notFavorite = buildHistoryListRequestUrl({ sort: "newest", page: 1, favorite: false });
     expect(notFavorite).not.toContain("favorite=");
   });
+
+  it("joins multiple tagIds with a comma", () => {
+    const url = buildHistoryListRequestUrl({
+      sort: "newest",
+      page: 1,
+      tagIds: ["tag-1", "tag-2"],
+    });
+    expect(url).toContain("tagIds=tag-1%2Ctag-2");
+  });
+
+  it("omits tagIds when the array is empty", () => {
+    const url = buildHistoryListRequestUrl({ sort: "newest", page: 1, tagIds: [] });
+    expect(url).not.toContain("tagIds=");
+  });
+
+  it("includes categoryId when set and uncategorizedOnly is not", () => {
+    const url = buildHistoryListRequestUrl({ sort: "newest", page: 1, categoryId: "cat-1" });
+    expect(url).toContain("categoryId=cat-1");
+    expect(url).not.toContain("uncategorizedOnly=");
+  });
+
+  it("prefers uncategorizedOnly over categoryId when both are set (mutual exclusivity)", () => {
+    const url = buildHistoryListRequestUrl({
+      sort: "newest",
+      page: 1,
+      categoryId: "cat-1",
+      uncategorizedOnly: true,
+    });
+    expect(url).toContain("uncategorizedOnly=true");
+    expect(url).not.toContain("categoryId=");
+  });
 });
 
 describe("isHistoryListQueryFiltered", () => {
@@ -1103,6 +1135,60 @@ describe("isHistoryListQueryFiltered", () => {
 
   it("is false when favorite is false", () => {
     expect(isHistoryListQueryFiltered({ favorite: false })).toBe(false);
+  });
+
+  it("is true when tagIds/categoryId/uncategorizedOnly is set", () => {
+    expect(isHistoryListQueryFiltered({ tagIds: ["tag-1"] })).toBe(true);
+    expect(isHistoryListQueryFiltered({ categoryId: "cat-1" })).toBe(true);
+    expect(isHistoryListQueryFiltered({ uncategorizedOnly: true })).toBe(true);
+  });
+
+  it("is false when tagIds is an empty array", () => {
+    expect(isHistoryListQueryFiltered({ tagIds: [] })).toBe(false);
+  });
+});
+
+describe("describeActiveHistoryFilters", () => {
+  it("returns an empty array when nothing is active", () => {
+    expect(describeActiveHistoryFilters({ sort: "newest", page: 1 }, { tagNames: [] })).toEqual(
+      [],
+    );
+  });
+
+  it("describes search/important/favorite", () => {
+    const lines = describeActiveHistoryFilters(
+      { sort: "newest", page: 1, search: "cybozu", important: true, favorite: true },
+      { tagNames: [] },
+    );
+    expect(lines).toContain("検索: cybozu");
+    expect(lines).toContain("重要のみ");
+    expect(lines).toContain("お気に入りのみ");
+  });
+
+  it("describes uncategorizedOnly as 未分類", () => {
+    const lines = describeActiveHistoryFilters(
+      { sort: "newest", page: 1, uncategorizedOnly: true },
+      { tagNames: [] },
+    );
+    expect(lines.some((line) => line.includes("未分類"))).toBe(true);
+  });
+
+  it("describes categoryId using the provided categoryName", () => {
+    const lines = describeActiveHistoryFilters(
+      { sort: "newest", page: 1, categoryId: "cat-1" },
+      { categoryName: "キャンペーンA", tagNames: [] },
+    );
+    expect(lines.some((line) => line.includes("キャンペーンA"))).toBe(true);
+  });
+
+  it("describes selected tag names joined together", () => {
+    const lines = describeActiveHistoryFilters(
+      { sort: "newest", page: 1, tagIds: ["tag-1", "tag-2"] },
+      { tagNames: ["重要顧客", "季節キャンペーン"] },
+    );
+    expect(lines.some((line) => line.includes("重要顧客") && line.includes("季節キャンペーン"))).toBe(
+      true,
+    );
   });
 });
 

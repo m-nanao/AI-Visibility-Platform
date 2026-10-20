@@ -93,7 +93,7 @@ from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -114,14 +114,20 @@ from models import (
     AnalysisRunComparisonResponse,
     AnalysisRunDetailResponse,
     AnalysisRunInfo,
+    AnalysisRunCategorySetRequest,
     AnalysisRunFavoriteRequest,
     AnalysisRunFavoriteResponse,
     AnalysisRunImportantRequest,
     AnalysisRunImportantResponse,
     AnalysisRunListItem,
     AnalysisRunListResponse,
+    AnalysisRunTagAttachRequest,
     AnalysisSectionStatuses,
     AnalyzeRequest,
+    CategoryCreateRequest,
+    CategoryItem,
+    CategoryListResponse,
+    CategoryRenameRequest,
     ChatGptProviderInfo,
     ClaudeProviderInfo,
     CommonCrawlProviderInfo,
@@ -133,6 +139,10 @@ from models import (
     MeProjectItem,
     MeProjectsResponse,
     SectionStatus,
+    TagCreateRequest,
+    TagItem,
+    TagListResponse,
+    TagRenameRequest,
     UrlFetchResult,
     WebAiGapAiComparisonResponse,
 )
@@ -143,16 +153,35 @@ from services.analysis_history_repository import (
     AnalysisJobCancelledConflictError,
     AnalysisJobCreateConflictError,
     AnalysisJobLimitExceededError,
+    AnalysisRunStatusConflictError,
+    CategoryNameConflictError,
+    CategoryNameInvalidError,
+    CategoryNotAssignableError,
+    CategoryRequiresProjectError,
+    TagNameConflictError,
+    TagNameInvalidError,
+    TagNotAssignableError,
+    attach_tag_to_analysis_run,
     cancel_queued_analysis_run,
     count_analysis_runs as repository_count_analysis_runs,
+    create_category,
     create_queued_analysis_run,
+    create_tag,
+    delete_category,
+    delete_tag,
+    detach_tag_from_analysis_run,
     get_analysis_job_result,
     get_analysis_job_status,
     get_analysis_run as repository_get_analysis_run,
     get_connection as open_history_db_connection,
     get_previous_analysis_run_for_brand as repository_get_previous_analysis_run_for_brand,
     list_analysis_runs as repository_list_analysis_runs,
+    list_categories,
+    list_tags,
+    rename_category,
+    rename_tag,
     save_analysis_history,
+    set_analysis_run_category,
     set_analysis_run_favorite as repository_set_analysis_run_favorite,
     set_analysis_run_important as repository_set_analysis_run_important,
     soft_delete_analysis_run as repository_soft_delete_analysis_run,
@@ -171,7 +200,9 @@ from services.jwt_auth import (
 from services.project_access import (
     ProjectAccessError,
     can_user_access_analysis_run,
+    can_user_access_category,
     can_user_access_project,
+    can_user_access_tag,
     can_user_cancel_analysis_run,
     get_accessible_project_ids,
 )
@@ -1207,11 +1238,30 @@ def list_analysis_runs(
     claudeObservation: str | None = None,
     geminiObservation: str | None = None,
     favorite: bool | None = None,
+    tagIds: str | None = None,
+    categoryId: str | None = None,
+    uncategorizedOnly: bool | None = None,
     sort: str = "newest",
 ):
     access = _resolve_history_access(request)
     if isinstance(access, JSONResponse):
         return access
+
+    if uncategorizedOnly and categoryId is not None:
+        return error_response("categoryId and uncategorizedOnly must not both be set")
+
+    # Comma-separated list, e.g. "tagIds=<uuid>,<uuid>" — blank/empty
+    # entries are dropped rather than passed through as a (never
+    # matching) empty-string tag id. `None` (the param omitted
+    # entirely, or resolving to no non-blank entries) means "no tag
+    # filter", same as every other optional filter here.
+    tag_ids = (
+        [part.strip() for part in tagIds.split(",") if part.strip()]
+        if tagIds
+        else None
+    )
+    if tag_ids == []:
+        tag_ids = None
 
     started_from = _parse_history_list_boundary(startedFrom, field_name="startedFrom")
     if isinstance(started_from, str):
@@ -1265,6 +1315,9 @@ def list_analysis_runs(
         claude_observation=claude_observation,
         gemini_observation=gemini_observation,
         favorite=favorite,
+        tag_ids=tag_ids,
+        category_id=categoryId,
+        uncategorized_only=bool(uncategorizedOnly),
     )
 
     try:
@@ -1394,6 +1447,8 @@ def get_analysis_run(analysis_run_id: str, request: Request):
         isImportant=detail.get("isImportant", False),
         isFavorite=detail.get("isFavorite", False),
         projectId=detail.get("projectId"),
+        tags=detail.get("tags", []),
+        category=detail.get("category"),
     )
 
 
@@ -1758,6 +1813,424 @@ def generate_web_ai_gap_ai_comparison(analysis_run_id: str, request: Request):
         analysisRunId=analysis_run_id,
         webAiGapAiComparison=outcome.comparison,
     )
+
+
+# --- Tags / categories (feature/history-tags-categories) -----------------
+#
+# See backend/migrations/008_add_tags_and_categories.sql and
+# services/analysis_history_repository.py's own "Tags / categories"
+# section for the full schema/constraint design and the exceptions
+# this section's endpoints map to HTTP statuses.
+#
+# Authorization is deliberately stricter than is_important/is_favorite
+# above for every *mutating* endpoint in this section: Supabase JWT is
+# required with no HISTORY_READ_TOKEN fallback of any kind (this
+# task's explicit "HISTORY_READ_TOKENだけでの変更は禁止"), plus an
+# explicit project-membership (for /tags, /categories) or
+# run-accessibility (for the /analysis-runs/{id}/... endpoints) check
+# — reusing can_user_access_project()/can_user_access_analysis_run()/
+# can_user_access_tag()/can_user_access_category() exactly as the
+# existing JWT-mode read paths already do. GET /tags and GET
+# /categories (read, listing) are the one exception: they use the
+# existing `_resolve_history_access()` gate instead, so they remain
+# compatible with both JWT and HISTORY_READ_TOKEN callers, exactly
+# like GET /analysis-runs — this task's "読み取りAPIは既存の認証方式と
+# の互換性を維持".
+
+TAG_CATEGORY_AUTH_REQUIRED_MESSAGE = "authentication required"
+TAG_CATEGORY_INVALID_TOKEN_MESSAGE = "invalid or expired authentication token"
+TAG_CATEGORY_JWT_NOT_CONFIGURED_MESSAGE = "JWT verification is not configured"
+TAG_CATEGORY_ACCESS_DENIED_MESSAGE = "access denied"
+TAG_CATEGORY_FAILED_MESSAGE = "failed to update tags or categories"
+TAG_NOT_FOUND_MESSAGE = "tag not found"
+CATEGORY_NOT_FOUND_MESSAGE = "category not found"
+TAG_NAME_CONFLICT_MESSAGE = "a tag with this name already exists in this project"
+CATEGORY_NAME_CONFLICT_MESSAGE = "a category with this name already exists in this project"
+TAG_NAME_INVALID_MESSAGE = (
+    "tag name must be between 1 and 100 characters after trimming whitespace"
+)
+CATEGORY_NAME_INVALID_MESSAGE = (
+    "category name must be between 1 and 100 characters after trimming whitespace"
+)
+ANALYSIS_RUN_NOT_FOUND_FOR_EDIT_MESSAGE = "analysis run not found"
+ANALYSIS_RUN_STATUS_CONFLICT_MESSAGE = (
+    "this analysis run is still in progress and cannot be edited yet"
+)
+CATEGORY_REQUIRES_PROJECT_MESSAGE = (
+    "this analysis run has no project and cannot be assigned a category"
+)
+
+
+def _resolve_tag_category_auth(request: Request) -> AuthenticatedUser | JSONResponse:
+    """Verifies a Supabase Auth JWT with no HISTORY_READ_TOKEN fallback
+    of any kind — structurally identical to _resolve_jwt_only_auth()/
+    _resolve_job_auth() above/below, with this section's own error
+    messages. Shared by every *mutating* tags/categories endpoint
+    (never by the GET list endpoints, which use
+    `_resolve_history_access()` instead — see this section's module
+    docstring)."""
+    auth_settings = load_auth_settings()
+    if not is_jwt_verification_configured(auth_settings):
+        return error_response(TAG_CATEGORY_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+
+    authorization_header = request.headers.get(AUTHORIZATION_HEADER)
+    try:
+        token = extract_bearer_token(authorization_header)
+        authenticated_user = verify_supabase_jwt(token, auth_settings)
+    except JWTAuthError as exc:
+        if exc.reason in _JWT_UNAVAILABLE_REASONS:
+            return error_response(TAG_CATEGORY_JWT_NOT_CONFIGURED_MESSAGE, status_code=503)
+        if exc.reason in {"missing_header", "invalid_header"}:
+            return error_response(TAG_CATEGORY_AUTH_REQUIRED_MESSAGE, status_code=401)
+        return error_response(TAG_CATEGORY_INVALID_TOKEN_MESSAGE, status_code=401)
+
+    return authenticated_user
+
+
+def _resolve_project_write_access(
+    request: Request, *, project_id: str
+) -> AuthenticatedUser | JSONResponse:
+    """_resolve_tag_category_auth() plus an explicit
+    can_user_access_project() check against `project_id` — shared by
+    POST /tags and POST /categories (the two endpoints that create a
+    new project-scoped resource directly from a caller-supplied
+    `projectId`, rather than inheriting it from an already-existing
+    tag/category/analysis run)."""
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_project(conn, auth_result.user_id, project_id)
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check project access for tag/category write")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if not allowed:
+        return error_response(TAG_CATEGORY_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    return auth_result
+
+
+@app.get("/tags", response_model=TagListResponse)
+def list_tags_endpoint(request: Request, projectId: str | None = None):
+    """Lists tags — uses the existing `_resolve_history_access()` gate
+    (JWT or HISTORY_READ_TOKEN), same compatibility story as GET
+    /analysis-runs. In JWT mode, always scoped to the caller's
+    accessible projects (`access.project_ids`); `projectId` further
+    narrows to one specific project (in either mode) — a JWT caller
+    who passes a `projectId` they don't have access to simply sees an
+    empty list, the same "scoped, never an information leak" shape
+    GET /analysis-runs already has for `project_ids`."""
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    project_ids = access.project_ids if access.mode == "jwt" else None
+
+    try:
+        tags = list_tags(project_ids=project_ids, project_id=projectId)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    return TagListResponse(tags=[TagItem(**tag) for tag in tags])
+
+
+@app.post("/tags", response_model=TagItem, status_code=201)
+def create_tag_endpoint(payload: TagCreateRequest, request: Request):
+    project_id = (payload.projectId or "").strip()
+    if not project_id:
+        return error_response("projectId is required")
+    name = (payload.name or "").strip()
+    if not name:
+        return error_response(TAG_NAME_INVALID_MESSAGE)
+
+    auth_result = _resolve_project_write_access(request, project_id=project_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        tag = create_tag(project_id=project_id, name=name)
+    except TagNameConflictError:
+        return error_response(TAG_NAME_CONFLICT_MESSAGE, status_code=409)
+    except TagNameInvalidError:
+        return error_response(TAG_NAME_INVALID_MESSAGE)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    return TagItem(**tag)
+
+
+@app.patch("/tags/{tag_id}", response_model=TagItem)
+def rename_tag_endpoint(tag_id: str, payload: TagRenameRequest, request: Request):
+    name = (payload.name or "").strip()
+    if not name:
+        return error_response(TAG_NAME_INVALID_MESSAGE)
+
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_tag(conn, auth_result.user_id, tag_id)
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check tag access")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(TAG_NOT_FOUND_MESSAGE, status_code=404)
+
+    try:
+        tag = rename_tag(tag_id, name=name)
+    except TagNameConflictError:
+        return error_response(TAG_NAME_CONFLICT_MESSAGE, status_code=409)
+    except TagNameInvalidError:
+        return error_response(TAG_NAME_INVALID_MESSAGE)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if tag is None:
+        return error_response(TAG_NOT_FOUND_MESSAGE, status_code=404)
+    return TagItem(**tag)
+
+
+@app.delete("/tags/{tag_id}")
+def delete_tag_endpoint(tag_id: str, request: Request):
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_tag(conn, auth_result.user_id, tag_id)
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check tag access")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(TAG_NOT_FOUND_MESSAGE, status_code=404)
+
+    try:
+        deleted = delete_tag(tag_id)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if not deleted:
+        return error_response(TAG_NOT_FOUND_MESSAGE, status_code=404)
+    return {"deleted": True}
+
+
+@app.get("/categories", response_model=CategoryListResponse)
+def list_categories_endpoint(request: Request, projectId: str | None = None):
+    """Mirrors list_tags_endpoint() above exactly, one table
+    swapped."""
+    access = _resolve_history_access(request)
+    if isinstance(access, JSONResponse):
+        return access
+
+    project_ids = access.project_ids if access.mode == "jwt" else None
+
+    try:
+        categories = list_categories(project_ids=project_ids, project_id=projectId)
+    except AnalysisHistoryReadError:
+        return error_response(HISTORY_READ_FAILED_MESSAGE, status_code=503)
+
+    return CategoryListResponse(categories=[CategoryItem(**c) for c in categories])
+
+
+@app.post("/categories", response_model=CategoryItem, status_code=201)
+def create_category_endpoint(payload: CategoryCreateRequest, request: Request):
+    project_id = (payload.projectId or "").strip()
+    if not project_id:
+        return error_response("projectId is required")
+    name = (payload.name or "").strip()
+    if not name:
+        return error_response(CATEGORY_NAME_INVALID_MESSAGE)
+
+    auth_result = _resolve_project_write_access(request, project_id=project_id)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        category = create_category(project_id=project_id, name=name)
+    except CategoryNameConflictError:
+        return error_response(CATEGORY_NAME_CONFLICT_MESSAGE, status_code=409)
+    except CategoryNameInvalidError:
+        return error_response(CATEGORY_NAME_INVALID_MESSAGE)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    return CategoryItem(**category)
+
+
+@app.patch("/categories/{category_id}", response_model=CategoryItem)
+def rename_category_endpoint(
+    category_id: str, payload: CategoryRenameRequest, request: Request
+):
+    name = (payload.name or "").strip()
+    if not name:
+        return error_response(CATEGORY_NAME_INVALID_MESSAGE)
+
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_category(conn, auth_result.user_id, category_id)
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check category access")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(CATEGORY_NOT_FOUND_MESSAGE, status_code=404)
+
+    try:
+        category = rename_category(category_id, name=name)
+    except CategoryNameConflictError:
+        return error_response(CATEGORY_NAME_CONFLICT_MESSAGE, status_code=409)
+    except CategoryNameInvalidError:
+        return error_response(CATEGORY_NAME_INVALID_MESSAGE)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if category is None:
+        return error_response(CATEGORY_NOT_FOUND_MESSAGE, status_code=404)
+    return CategoryItem(**category)
+
+
+@app.delete("/categories/{category_id}")
+def delete_category_endpoint(category_id: str, request: Request):
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_category(conn, auth_result.user_id, category_id)
+    except (AnalysisHistoryReadError, ProjectAccessError):
+        logger.exception("Failed to check category access")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(CATEGORY_NOT_FOUND_MESSAGE, status_code=404)
+
+    try:
+        deleted = delete_category(category_id)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if not deleted:
+        return error_response(CATEGORY_NOT_FOUND_MESSAGE, status_code=404)
+    return {"deleted": True}
+
+
+@app.post("/analysis-runs/{analysis_run_id}/tags", status_code=204)
+def attach_tag_endpoint(
+    analysis_run_id: str, payload: AnalysisRunTagAttachRequest, request: Request
+):
+    """Attaches one tag to one run — idempotent (see
+    attach_tag_to_analysis_run()). Access is checked against
+    `analysis_run_id` itself (can_user_access_analysis_run()), exactly
+    like PATCH /analysis-runs/{id}/important's existing JWT-mode
+    check, but with no HISTORY_READ_TOKEN fallback at all (see this
+    section's module docstring) — unlike /important/, this endpoint
+    always requires a JWT.
+    """
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_analysis_run(
+                conn, auth_result.user_id, analysis_run_id
+            )
+    except Exception:
+        logger.exception("Failed to check analysis run access for tag attach")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(TAG_CATEGORY_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        attached = attach_tag_to_analysis_run(analysis_run_id, payload.tagId)
+    except AnalysisRunStatusConflictError:
+        return error_response(ANALYSIS_RUN_STATUS_CONFLICT_MESSAGE, status_code=409)
+    except TagNotAssignableError:
+        return error_response(TAG_NOT_FOUND_MESSAGE, status_code=404)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if not attached:
+        return error_response(ANALYSIS_RUN_NOT_FOUND_FOR_EDIT_MESSAGE, status_code=404)
+    return Response(status_code=204)
+
+
+@app.delete("/analysis-runs/{analysis_run_id}/tags/{tag_id}", status_code=204)
+def detach_tag_endpoint(analysis_run_id: str, tag_id: str, request: Request):
+    """Detaches one tag from one run — idempotent (see
+    detach_tag_from_analysis_run()). Same access/auth shape as
+    attach_tag_endpoint() above."""
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_analysis_run(
+                conn, auth_result.user_id, analysis_run_id
+            )
+    except Exception:
+        logger.exception("Failed to check analysis run access for tag detach")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(TAG_CATEGORY_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        detached = detach_tag_from_analysis_run(analysis_run_id, tag_id)
+    except AnalysisRunStatusConflictError:
+        return error_response(ANALYSIS_RUN_STATUS_CONFLICT_MESSAGE, status_code=409)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if not detached:
+        return error_response(ANALYSIS_RUN_NOT_FOUND_FOR_EDIT_MESSAGE, status_code=404)
+    return Response(status_code=204)
+
+
+@app.put("/analysis-runs/{analysis_run_id}/category", status_code=204)
+def set_analysis_run_category_endpoint(
+    analysis_run_id: str, payload: AnalysisRunCategorySetRequest, request: Request
+):
+    """Sets or clears (`categoryId: null`) one run's category. Same
+    access/auth shape as attach_tag_endpoint() above."""
+    auth_result = _resolve_tag_category_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
+    try:
+        with open_history_db_connection() as conn:
+            allowed = can_user_access_analysis_run(
+                conn, auth_result.user_id, analysis_run_id
+            )
+    except Exception:
+        logger.exception("Failed to check analysis run access for category set")
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+    if not allowed:
+        return error_response(TAG_CATEGORY_ACCESS_DENIED_MESSAGE, status_code=403)
+
+    try:
+        updated = set_analysis_run_category(analysis_run_id, payload.categoryId)
+    except AnalysisRunStatusConflictError:
+        return error_response(ANALYSIS_RUN_STATUS_CONFLICT_MESSAGE, status_code=409)
+    except CategoryNotAssignableError:
+        return error_response(CATEGORY_NOT_FOUND_MESSAGE, status_code=404)
+    except CategoryRequiresProjectError:
+        return error_response(CATEGORY_REQUIRES_PROJECT_MESSAGE, status_code=400)
+    except AnalysisHistoryReadError:
+        return error_response(TAG_CATEGORY_FAILED_MESSAGE, status_code=503)
+
+    if not updated:
+        return error_response(ANALYSIS_RUN_NOT_FOUND_FOR_EDIT_MESSAGE, status_code=404)
+    return Response(status_code=204)
 
 
 # --- GET /me/projects — see docs/40_async_analysis_jobs_design.md

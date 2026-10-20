@@ -478,6 +478,10 @@ def test_list_analysis_runs_success(monkeypatch):
         input_snapshot,
         True,
         False,
+        None,
+        None,
+        None,
+        [],
     )
     fake_cursor = _FakeReadCursor(fetchall_result=[row])
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -506,6 +510,8 @@ def test_list_analysis_runs_success(monkeypatch):
             "sourceUrls": ["https://cybozu.co.jp/"],
             "isImportant": True,
             "isFavorite": False,
+            "category": None,
+            "tags": [],
         }
     ]
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
@@ -586,7 +592,10 @@ def test_list_analysis_runs_project_ids_none_is_unfiltered(monkeypatch):
     repo.list_analysis_runs()
 
     query, _ = fake_cursor.executed[0]
-    assert "project_id" not in query.lower()
+    # `c.project_id`/`t.project_id` are always selected now (for the
+    # tags/category display columns), so this checks for the absence
+    # of the *filter* condition specifically, not the bare substring.
+    assert "ar.project_id in" not in query.lower()
 
 
 def test_list_analysis_runs_project_ids_empty_list_short_circuits(monkeypatch):
@@ -732,6 +741,116 @@ def test_list_analysis_runs_favorite_and_important_are_independent(monkeypatch):
     query, _ = fake_cursor.executed[0]
     assert "and ar.is_favorite" in query.lower()
     assert "and ar.is_important" in query.lower()
+
+
+def test_list_analysis_runs_tag_ids_adds_exists_or_condition(monkeypatch):
+    """Multiple tag_ids OR-match via a single `exists(...)` subquery —
+    never a JOIN, which would multiply a row once per matching tag
+    (feature/history-tags-categories)."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(tag_ids=["tag-1", "tag-2"])
+
+    query, params = fake_cursor.executed[0]
+    assert "exists" in query.lower()
+    assert "analysis_run_tags" in query.lower()
+    assert "art.tag_id in (%s, %s)" in query.lower()
+    # tag_ids params come before limit/offset.
+    assert params[0:2] == ["tag-1", "tag-2"]
+    assert params[-2:] == [repo.DEFAULT_LIST_LIMIT, 0]
+
+
+def test_list_analysis_runs_tag_ids_none_or_empty_adds_no_condition(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(tag_ids=None)
+    repo.list_analysis_runs(tag_ids=[])
+
+    for query, params in fake_cursor.executed:
+        assert "exists" not in query.lower()
+        assert len(params) == 2
+
+
+def test_list_analysis_runs_category_id_adds_equality_condition(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(category_id="category-1")
+
+    query, params = fake_cursor.executed[0]
+    assert "ar.category_id = %s" in query.lower()
+    assert params[0] == "category-1"
+
+
+def test_list_analysis_runs_uncategorized_only_adds_is_null_condition(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(uncategorized_only=True)
+
+    query, params = fake_cursor.executed[0]
+    assert "ar.category_id is null" in query.lower()
+    assert len(params) == 2  # no extra bound param for an IS NULL check
+
+
+def test_list_analysis_runs_uncategorized_only_takes_precedence_over_category_id(monkeypatch):
+    """Defensive: if a caller somehow passes both (main.py rejects this
+    combination with 400 before it ever reaches here), uncategorized_only
+    wins rather than silently combining into an impossible condition."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(category_id="category-1", uncategorized_only=True)
+
+    query, params = fake_cursor.executed[0]
+    assert "ar.category_id is null" in query.lower()
+    assert "ar.category_id = %s" not in query.lower()
+    assert len(params) == 2
+
+
+def test_list_analysis_runs_tags_and_category_combine_with_other_filters_as_and(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs(
+        search="cybozu", important=True, tag_ids=["tag-1"], category_id="category-1"
+    )
+
+    query, params = fake_cursor.executed[0]
+    assert "ilike" in query.lower()
+    assert "and ar.is_important" in query.lower()
+    assert "exists" in query.lower()
+    assert "ar.category_id = %s" in query.lower()
+    # search's 3 params, then tag_ids' 1, then category_id, then limit/offset.
+    assert params[0:3] == ["%cybozu%"] * 3
+    assert params[3] == "tag-1"
+    assert params[4] == "category-1"
+    assert params[-2:] == [repo.DEFAULT_LIST_LIMIT, 0]
+
+
+def test_list_analysis_runs_includes_tags_and_category_in_select(monkeypatch):
+    """The display columns (tags JSON subquery, category left join)
+    are present in every query regardless of whether any tag/category
+    filter is used — feature/history-tags-categories's "履歴一覧...で
+    タグ・カテゴリが分かる" requirement."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchall_result=[])
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.list_analysis_runs()
+
+    query, _ = fake_cursor.executed[0]
+    assert "left join categories c on c.id = ar.category_id" in query.lower()
+    assert "jsonb_agg" in query.lower()
+    assert "analysis_run_tags" in query.lower()
 
 
 def test_list_analysis_runs_important_false_or_none_adds_no_condition(monkeypatch):
@@ -1011,6 +1130,36 @@ def test_count_analysis_runs_applies_the_same_favorite_filter_as_list(monkeypatc
     assert "analysis_results" not in query.lower()
 
 
+def test_count_analysis_runs_applies_the_same_tag_and_category_filters_as_list(monkeypatch):
+    """Tags/category filtering never needs the analysis_results join
+    either (feature/history-tags-categories) — tags live in
+    analysis_run_tags, category_id is a plain column on
+    analysis_runs."""
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs(tag_ids=["tag-1", "tag-2"], category_id="category-1")
+
+    query, params = fake_cursor.executed[0]
+    assert "exists" in query.lower()
+    assert "analysis_run_tags" in query.lower()
+    assert "ar.category_id = %s" in query.lower()
+    assert "analysis_results" not in query.lower()
+    assert params == ["tag-1", "tag-2", "category-1"]
+
+
+def test_count_analysis_runs_uncategorized_only(monkeypatch):
+    _configure_read_env(monkeypatch)
+    fake_cursor = _FakeReadCursor(fetchone_result=(0,))
+    monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))
+
+    repo.count_analysis_runs(uncategorized_only=True)
+
+    query, _ = fake_cursor.executed[0]
+    assert "ar.category_id is null" in query.lower()
+
+
 def test_count_analysis_runs_joins_analysis_results_only_when_an_observation_filter_is_set(
     monkeypatch,
 ):
@@ -1135,6 +1284,10 @@ def test_get_analysis_run_success(monkeypatch):
         project_id,
         True,
         False,
+        None,
+        None,
+        None,
+        [],
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
     fake_psycopg = _FakeReadPsycopg(fake_cursor)
@@ -1161,6 +1314,8 @@ def test_get_analysis_run_success(monkeypatch):
         "projectId": project_id,
         "isImportant": True,
         "isFavorite": False,
+        "category": None,
+        "tags": [],
     }
     assert fake_psycopg.connect_calls == [("postgresql://user:pass@host/db", 5)]
 
@@ -1186,6 +1341,10 @@ def test_get_analysis_run_project_id_is_none_for_legacy_row(monkeypatch):
         None,
         False,
         False,
+        None,
+        None,
+        None,
+        [],
     )
     fake_cursor = _FakeReadCursor(fetchone_result=row)
     monkeypatch.setattr(repo, "psycopg", _FakeReadPsycopg(fake_cursor))

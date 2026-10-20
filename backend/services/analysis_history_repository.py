@@ -72,8 +72,23 @@ except ImportError:  # pragma: no cover - exercised when the optional driver isn
 # Used by create_queued_analysis_run()'s defense-in-depth path (see its
 # docstring) — guarded the same way as psycopg/Jsonb above so this
 # module still imports cleanly when the optional driver isn't
-# installed.
+# installed. Captured once, here, at import time — every caller below
+# does `if XViolation is not None and isinstance(exc, XViolation)`
+# inside a broad `except Exception as exc:` rather than writing
+# `except psycopg.errors.XViolation:` directly, specifically so tests
+# can monkeypatch this module's `psycopg` name with a bare fake object
+# (see tests/test_analysis_history_repository.py's _FakeReadPsycopg)
+# without that fake object needing its own `.errors` namespace — a
+# literal `except psycopg.errors.XViolation:` would raise AttributeError
+# the moment any exception needed matching against it, once `psycopg`
+# itself had been replaced.
 UniqueViolation = psycopg.errors.UniqueViolation if psycopg is not None else None
+ForeignKeyViolation = psycopg.errors.ForeignKeyViolation if psycopg is not None else None
+NotNullViolation = psycopg.errors.NotNullViolation if psycopg is not None else None
+CheckViolation = psycopg.errors.CheckViolation if psycopg is not None else None
+InvalidTextRepresentation = (
+    psycopg.errors.InvalidTextRepresentation if psycopg is not None else None
+)
 
 DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
@@ -525,6 +540,24 @@ _GEMINI_OBSERVATION_STATE_SQL = _simple_provider_observation_state_sql(
 )
 
 
+# Builds a `tags` JSON array for one run as a SELECT-list expression —
+# a correlated subquery, never a `from`-clause JOIN, so a run with N
+# tags still contributes exactly one output row (feature/history-
+# tags-categories; see list_analysis_runs()/get_analysis_run()'s
+# docstrings for why this matters for the stable sort/pagination).
+# `coalesce(..., '[]'::jsonb)` so a tagless run gets an empty array
+# rather than SQL NULL.
+_TAGS_JSON_SUBQUERY_SQL = """coalesce(
+            (
+                select jsonb_agg(jsonb_build_object('id', t.id, 'projectId', t.project_id, 'name', t.name) order by t.name)
+                from analysis_run_tags art
+                join tags t on t.id = art.tag_id
+                where art.analysis_run_id = ar.id
+            ),
+            '[]'::jsonb
+        ) as tags_json"""
+
+
 def _build_history_filter_conditions(
     *,
     brand: str | None,
@@ -539,6 +572,9 @@ def _build_history_filter_conditions(
     claude_observation: str | None = None,
     gemini_observation: str | None = None,
     favorite: bool | None = None,
+    tag_ids: list[str] | None = None,
+    category_id: str | None = None,
+    uncategorized_only: bool = False,
 ) -> tuple[list[str], list[Any], bool]:
     """Builds the shared WHERE-clause conditions/params for both
     list_analysis_runs() and count_analysis_runs() below, so the two
@@ -595,6 +631,18 @@ def _build_history_filter_conditions(
     decide whether they need to join `analysis_results` at all, to
     avoid that extra join's cost on every call that doesn't use this
     feature.
+
+    `tag_ids` (feature/history-tags-categories): OR-matches any run
+    that has *at least one* of the given tags, via an `exists (...)`
+    correlated subquery against `analysis_run_tags` — never a JOIN in
+    the main query's FROM clause, which would multiply a row once per
+    matching tag and corrupt both the count and the stable
+    pagination. `category_id`/`uncategorized_only` filter the plain
+    `ar.category_id` column directly (no join needed at all, since a
+    run has at most one category) — `uncategorized_only=True` means
+    `ar.category_id is null`; callers must never pass both
+    `category_id` and `uncategorized_only=True` together (main.py
+    rejects that combination with 400 before it reaches here).
     """
     conditions: list[str] = ["ar.deleted_at is null"]
     params: list[Any] = []
@@ -644,6 +692,20 @@ def _build_history_filter_conditions(
         conditions.append(f"({_GEMINI_OBSERVATION_STATE_SQL}) = %s")
         params.append(gemini_observation)
         needs_results_join = True
+    if tag_ids:
+        placeholders = ", ".join(["%s"] * len(tag_ids))
+        conditions.append(
+            f"""exists (
+                select 1 from analysis_run_tags art
+                where art.analysis_run_id = ar.id and art.tag_id in ({placeholders})
+            )"""
+        )
+        params.extend(tag_ids)
+    if uncategorized_only:
+        conditions.append("ar.category_id is null")
+    elif category_id is not None:
+        conditions.append("ar.category_id = %s")
+        params.append(category_id)
 
     return conditions, params, needs_results_join
 
@@ -662,6 +724,9 @@ def count_analysis_runs(
     claude_observation: str | None = None,
     gemini_observation: str | None = None,
     favorite: bool | None = None,
+    tag_ids: list[str] | None = None,
+    category_id: str | None = None,
+    uncategorized_only: bool = False,
 ) -> int:
     """Counts how many rows list_analysis_runs() would return across
     *every* page for the exact same filter (same parameters, minus
@@ -701,6 +766,9 @@ def count_analysis_runs(
         claude_observation=claude_observation,
         gemini_observation=gemini_observation,
         favorite=favorite,
+        tag_ids=tag_ids,
+        category_id=category_id,
+        uncategorized_only=uncategorized_only,
     )
     where_clause = f"where {' and '.join(conditions)}"
     results_join = (
@@ -744,6 +812,9 @@ def list_analysis_runs(
     claude_observation: str | None = None,
     gemini_observation: str | None = None,
     favorite: bool | None = None,
+    tag_ids: list[str] | None = None,
+    category_id: str | None = None,
+    uncategorized_only: bool = False,
     sort: Literal["newest", "oldest"] = "newest",
 ) -> list[dict[str, Any]]:
     """Returns saved analysis run summaries (brands ⋈ analysis_runs ⋈
@@ -785,10 +856,20 @@ def list_analysis_runs(
 
     `search`/`important`/`started_from`/`started_to`/
     `ai_overview_observation`/`chatgpt_observation`/`claude_observation`/
-    `gemini_observation`/`favorite` are documented on
+    `gemini_observation`/`favorite`/`tag_ids`/`category_id`/
+    `uncategorized_only` are documented on
     _build_history_filter_conditions() above, which this function
     shares verbatim with count_analysis_runs() so the two can never
     disagree about what matches.
+
+    Each item's `tags`/`category` (feature/history-tags-categories)
+    are populated via a correlated subquery (tags, aggregated as a
+    JSON array per run) and a plain `left join categories` (a run has
+    at most one category, so this can never multiply a row) — neither
+    is part of the filter above, which uses its own, separate
+    `exists(...)`/plain-column conditions specifically so filtering
+    and display can never interact with the stable sort/pagination
+    below.
 
     The `order by` uses `ar.id` as a secondary, same-direction sort key
     after the primary `coalesce(started_at, created_at)` key — without
@@ -824,6 +905,9 @@ def list_analysis_runs(
         claude_observation=claude_observation,
         gemini_observation=gemini_observation,
         favorite=favorite,
+        tag_ids=tag_ids,
+        category_id=category_id,
+        uncategorized_only=uncategorized_only,
     )
     where_clause = f"where {' and '.join(conditions)}"
     order_direction = "asc" if sort == "oldest" else "desc"
@@ -842,10 +926,15 @@ def list_analysis_runs(
             res.meta_json,
             ar.input_snapshot,
             ar.is_important,
-            ar.is_favorite
+            ar.is_favorite,
+            c.id,
+            c.project_id,
+            c.name,
+            {_TAGS_JSON_SUBQUERY_SQL}
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
+        left join categories c on c.id = ar.category_id
         {where_clause}
         order by coalesce(ar.started_at, ar.created_at) {order_direction}, ar.id {order_direction}
         limit %s offset %s
@@ -892,6 +981,21 @@ def list_analysis_runs(
             # 007_add_is_favorite_to_analysis_runs.sql) — independent
             # of isImportant above (feature/history-favorite-flag).
             "isFavorite": bool(row[12]),
+            # analysis_runs.category_id, joined to categories for its
+            # name (feature/history-tags-categories). None ("未分類")
+            # when category_id is null or points at a deleted
+            # category (the latter can't actually happen once
+            # migration 008's ON DELETE SET NULL(category_id) runs,
+            # but a plain left join degrades the same way regardless).
+            "category": (
+                {"id": str(row[13]), "projectId": str(row[14]), "name": row[15]}
+                if row[13] is not None
+                else None
+            ),
+            # Every tag currently attached to this run, via the
+            # correlated subquery above — already a list of plain
+            # dicts (jsonb_agg/jsonb_build_object), never SQL NULL.
+            "tags": row[16],
         }
         for row in rows
     ]
@@ -934,7 +1038,7 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
 
     database_url = _require_connectable()
 
-    query = """
+    query = f"""
         select
             ar.id,
             b.id,
@@ -949,10 +1053,15 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
             res.meta_json,
             ar.project_id,
             ar.is_important,
-            ar.is_favorite
+            ar.is_favorite,
+            c.id,
+            c.project_id,
+            c.name,
+            {_TAGS_JSON_SUBQUERY_SQL}
         from analysis_runs ar
         join brands b on b.id = ar.brand_id
         left join analysis_results res on res.analysis_run_id = ar.id
+        left join categories c on c.id = ar.category_id
         where ar.id = %s and ar.deleted_at is null
         order by res.created_at desc
         limit 1
@@ -995,6 +1104,14 @@ def get_analysis_run(analysis_run_id: str) -> dict[str, Any] | None:
         # 007_add_is_favorite_to_analysis_runs.sql) — independent of
         # isImportant above (feature/history-favorite-flag).
         "isFavorite": bool(row[13]),
+        # Same fields/semantics as list_analysis_runs()'s "category"/
+        # "tags" above (feature/history-tags-categories).
+        "category": (
+            {"id": str(row[14]), "projectId": str(row[15]), "name": row[16]}
+            if row[14] is not None
+            else None
+        ),
+        "tags": row[17],
     }
 
 
@@ -1318,6 +1435,566 @@ def update_analysis_result(
         raise AnalysisHistoryReadError("failed to update analysis result") from exc
 
     return updated
+
+
+# --- Tags / categories (feature/history-tags-categories) -----------------
+#
+# See backend/migrations/008_add_tags_and_categories.sql for the full
+# schema/constraint design this section relies on: project-shared
+# `tags`/`categories` tables, a many-to-many `analysis_run_tags` join
+# table, and `analysis_runs.category_id` (nullable, "未分類" = null).
+# Every write here relies on a real-PostgreSQL constraint to do the
+# actual safety-critical work rather than re-deriving it in Python:
+#
+# - `uq_tags_project_name_ci`/`uq_categories_project_name_ci` (UNIQUE
+#   index on `(project_id, lower(btrim(name)))`) reject a duplicate
+#   name — caught here as psycopg.errors.UniqueViolation.
+# - `chk_tags_name_length`/`chk_categories_name_length` reject an
+#   empty/over-length name — caught as psycopg.errors.CheckViolation.
+# - The composite FKs on `analysis_run_tags`/`analysis_runs.category_id`
+#   reject attaching a tag/category from a different project than the
+#   run's own `project_id` — caught as
+#   psycopg.errors.ForeignKeyViolation (or InvalidTextRepresentation
+#   for a malformed, non-UUID id, which never matches any row).
+# - `chk_analysis_runs_category_requires_project` rejects setting a
+#   category on a run whose `project_id` is null — caught as a
+#   distinct CheckViolation, surfaced as CategoryRequiresProjectError
+#   rather than CategoryNotAssignableError, since the problem here is
+#   the *run*, not the category.
+#
+# None of these checks are re-implemented in Python — this module only
+# ever translates the DB's own rejection into a specific exception
+# type main.py can map to the right HTTP status, exactly the same
+# "let the constraint be the source of truth" approach
+# create_queued_analysis_run() already uses for its own unique index.
+
+
+class TagNameConflictError(Exception):
+    """Raised by create_tag()/rename_tag() when the (project_id,
+    case/whitespace-insensitive name) already exists in that project
+    — backs the `uq_tags_project_name_ci` unique index. main.py turns
+    this into 409."""
+
+
+class TagNameInvalidError(Exception):
+    """Raised by create_tag()/rename_tag() when `name` is empty
+    (after trimming) or over 100 characters — backs
+    `chk_tags_name_length`. main.py turns this into 400."""
+
+
+class CategoryNameConflictError(Exception):
+    """Mirrors TagNameConflictError for categories
+    (`uq_categories_project_name_ci`)."""
+
+
+class CategoryNameInvalidError(Exception):
+    """Mirrors TagNameInvalidError for categories
+    (`chk_categories_name_length`)."""
+
+
+class AnalysisRunStatusConflictError(Exception):
+    """Raised by attach_tag_to_analysis_run()/
+    detach_tag_from_analysis_run()/set_analysis_run_category() when
+    the target run's status is 'queued' or 'running' — this task's
+    explicit requirement that tag/category edits be blocked at the
+    backend for a job still in progress, not just hidden by the
+    frontend (unlike set_analysis_run_important()/
+    set_analysis_run_favorite() above, which impose no backend status
+    restriction at all — tags/categories are deliberately stricter
+    here). main.py turns this into 409. Carries the offending status
+    for the error message."""
+
+    def __init__(self, status: str):
+        super().__init__(f"analysis run status {status!r} does not allow tag/category edits")
+        self.status = status
+
+
+class TagNotAssignableError(Exception):
+    """Raised by attach_tag_to_analysis_run() when `tag_id` doesn't
+    exist, is malformed, or belongs to a different project than the
+    run — all three collapse into this one exception (never
+    distinguished) for the same existence-leak-avoidance reason
+    services.project_access's helpers already follow. main.py turns
+    this into 404."""
+
+
+class CategoryNotAssignableError(Exception):
+    """Mirrors TagNotAssignableError for
+    set_analysis_run_category()."""
+
+
+class CategoryRequiresProjectError(Exception):
+    """Raised by set_analysis_run_category() when the target run's
+    `project_id` is null — backs
+    `chk_analysis_runs_category_requires_project`. Distinct from
+    CategoryNotAssignableError: the category itself may be perfectly
+    valid, the run simply has no project to scope it to. main.py turns
+    this into 400."""
+
+
+def _raise_for_name_write_error(
+    exc: Exception, *, conflict_error: type[Exception], invalid_error: type[Exception]
+) -> None:
+    """Shared by create_tag()/rename_tag()/create_category()/
+    rename_category() — translates a UniqueViolation/CheckViolation
+    raised by the DB into the matching domain-specific exception.
+    Returns normally (does nothing) for anything else, so the caller's
+    own broad `except Exception` handler runs next."""
+    if UniqueViolation is not None and isinstance(exc, UniqueViolation):
+        raise conflict_error() from exc
+    if CheckViolation is not None and isinstance(exc, CheckViolation):
+        raise invalid_error() from exc
+
+
+def create_tag(*, project_id: str, name: str) -> dict[str, Any]:
+    """Creates one project-shared tag. Raises TagNameConflictError on
+    a case/whitespace-insensitive duplicate within `project_id`,
+    TagNameInvalidError for an empty/over-100-character name, and
+    AnalysisHistoryReadError on any other connection/query failure
+    (including `project_id` not referencing a real project — main.py
+    is expected to have already checked this via
+    services.project_access.can_user_access_project() before calling,
+    so that case is treated as an unexpected failure here, not a
+    documented outcome).
+    """
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "insert into tags (project_id, name) values (%s, %s) "
+                    "returning id, project_id, name",
+                    (project_id, name),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        _raise_for_name_write_error(
+            exc, conflict_error=TagNameConflictError, invalid_error=TagNameInvalidError
+        )
+        logger.exception("Failed to create tag")
+        raise AnalysisHistoryReadError("failed to create tag") from exc
+
+    return {"id": str(row[0]), "projectId": str(row[1]), "name": row[2]}
+
+
+def list_tags(
+    *, project_ids: list[str] | None = None, project_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Lists tags, newest-name-first... actually alphabetical by name
+    (a small, flat list — there's no pagination concern here, unlike
+    list_analysis_runs()). `project_ids` restricts to an accessible
+    set (JWT mode — an explicit `[]` short-circuits to `[]` without
+    touching the DB, same convention as list_analysis_runs());
+    `project_id` optionally narrows further to one specific project
+    (works in either mode, e.g. a caller who only wants one project's
+    tags). Both `None` means "every tag in every project" — only ever
+    reached in HISTORY_READ_TOKEN mode, mirroring
+    list_analysis_runs()'s own `project_ids=None` meaning.
+    """
+    if project_ids is not None and len(project_ids) == 0:
+        return []
+
+    database_url = _require_connectable()
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if project_ids is not None:
+        placeholders = ", ".join(["%s"] * len(project_ids))
+        conditions.append(f"project_id in ({placeholders})")
+        params.extend(project_ids)
+    if project_id is not None:
+        conditions.append("project_id = %s")
+        params.append(project_id)
+    where_clause = f"where {' and '.join(conditions)}" if conditions else ""
+
+    query = f"select id, project_id, name from tags {where_clause} order by name"
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+    except Exception as exc:
+        logger.exception("Failed to list tags")
+        raise AnalysisHistoryReadError("failed to list tags") from exc
+
+    return [{"id": str(r[0]), "projectId": str(r[1]), "name": r[2]} for r in rows]
+
+
+def rename_tag(tag_id: str, *, name: str) -> dict[str, Any] | None:
+    """Renames one tag — the join table (`analysis_run_tags`) is keyed
+    by `tag_id`, never by name, so every existing association survives
+    a rename untouched. Returns None for a malformed/nonexistent
+    `tag_id`. Raises TagNameConflictError/TagNameInvalidError the same
+    way create_tag() does.
+    """
+    try:
+        uuid.UUID(tag_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "update tags set name = %s, updated_at = now() where id = %s "
+                    "returning id, project_id, name",
+                    (name, tag_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        _raise_for_name_write_error(
+            exc, conflict_error=TagNameConflictError, invalid_error=TagNameInvalidError
+        )
+        logger.exception("Failed to rename tag")
+        raise AnalysisHistoryReadError("failed to rename tag") from exc
+
+    if row is None:
+        return None
+    return {"id": str(row[0]), "projectId": str(row[1]), "name": row[2]}
+
+
+def delete_tag(tag_id: str) -> bool:
+    """Deletes one tag — `analysis_run_tags`' composite FK to `tags`
+    is `on delete cascade`, so every association row referencing this
+    tag is removed along with it; `analysis_runs` itself is never
+    touched (this task's "タグ削除時に分析履歴本体を削除しない").
+    Returns False for a malformed/nonexistent `tag_id`.
+    """
+    try:
+        uuid.UUID(tag_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute("delete from tags where id = %s returning id", (tag_id,))
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to delete tag")
+        raise AnalysisHistoryReadError("failed to delete tag") from exc
+
+    return row is not None
+
+
+def create_category(*, project_id: str, name: str) -> dict[str, Any]:
+    """Mirrors create_tag() exactly, one table swapped."""
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "insert into categories (project_id, name) values (%s, %s) "
+                    "returning id, project_id, name",
+                    (project_id, name),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        _raise_for_name_write_error(
+            exc, conflict_error=CategoryNameConflictError, invalid_error=CategoryNameInvalidError
+        )
+        logger.exception("Failed to create category")
+        raise AnalysisHistoryReadError("failed to create category") from exc
+
+    return {"id": str(row[0]), "projectId": str(row[1]), "name": row[2]}
+
+
+def list_categories(
+    *, project_ids: list[str] | None = None, project_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Mirrors list_tags() exactly, one table swapped."""
+    if project_ids is not None and len(project_ids) == 0:
+        return []
+
+    database_url = _require_connectable()
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if project_ids is not None:
+        placeholders = ", ".join(["%s"] * len(project_ids))
+        conditions.append(f"project_id in ({placeholders})")
+        params.extend(project_ids)
+    if project_id is not None:
+        conditions.append("project_id = %s")
+        params.append(project_id)
+    where_clause = f"where {' and '.join(conditions)}" if conditions else ""
+
+    query = f"select id, project_id, name from categories {where_clause} order by name"
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+    except Exception as exc:
+        logger.exception("Failed to list categories")
+        raise AnalysisHistoryReadError("failed to list categories") from exc
+
+    return [{"id": str(r[0]), "projectId": str(r[1]), "name": r[2]} for r in rows]
+
+
+def rename_category(category_id: str, *, name: str) -> dict[str, Any] | None:
+    """Mirrors rename_tag() exactly — `analysis_runs.category_id` is
+    keyed by id, so a rename never disturbs which runs are in this
+    category."""
+    try:
+        uuid.UUID(category_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "update categories set name = %s, updated_at = now() where id = %s "
+                    "returning id, project_id, name",
+                    (name, category_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        _raise_for_name_write_error(
+            exc, conflict_error=CategoryNameConflictError, invalid_error=CategoryNameInvalidError
+        )
+        logger.exception("Failed to rename category")
+        raise AnalysisHistoryReadError("failed to rename category") from exc
+
+    if row is None:
+        return None
+    return {"id": str(row[0]), "projectId": str(row[1]), "name": row[2]}
+
+
+def delete_category(category_id: str) -> bool:
+    """Deletes one category — `analysis_runs.category_id`'s composite
+    FK is `on delete set null (category_id)`, so every run in this
+    category becomes "未分類" (category_id -> null) atomically;
+    `analysis_runs` rows themselves are never touched. Returns False
+    for a malformed/nonexistent `category_id`.
+    """
+    try:
+        uuid.UUID(category_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "delete from categories where id = %s returning id", (category_id,)
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except Exception as exc:
+        logger.exception("Failed to delete category")
+        raise AnalysisHistoryReadError("failed to delete category") from exc
+
+    return row is not None
+
+
+def _get_analysis_run_status_for_edit(cur, analysis_run_id: str) -> str | None:
+    """Shared by attach_tag_to_analysis_run()/
+    detach_tag_from_analysis_run()/set_analysis_run_category() —
+    looks up one non-soft-deleted run's status using an already-open
+    cursor. Returns None for "doesn't exist or is soft-deleted" (the
+    caller turns this into a False/404 result), otherwise the status
+    string (the caller checks it against 'queued'/'running' itself,
+    so this helper stays a plain lookup with no policy baked in)."""
+    cur.execute(
+        "select status from analysis_runs where id = %s and deleted_at is null",
+        (analysis_run_id,),
+    )
+    row = cur.fetchone()
+    return row[0] if row is not None else None
+
+
+# Statuses for which this task explicitly requires the backend (not
+# just the frontend) to refuse a tag/category edit — see
+# AnalysisRunStatusConflictError's docstring above.
+_STATUSES_BLOCKING_TAG_CATEGORY_EDITS = frozenset({"queued", "running"})
+
+
+def attach_tag_to_analysis_run(analysis_run_id: str, tag_id: str) -> bool:
+    """Attaches one tag to one run — idempotent (`on conflict ...
+    do nothing`): attaching an already-attached tag is a no-op
+    success, not an error.
+
+    Returns False when `analysis_run_id` doesn't exist, is malformed,
+    or is soft-deleted. Raises AnalysisRunStatusConflictError when the
+    run's status is 'queued'/'running'. Raises TagNotAssignableError
+    when `tag_id` doesn't exist, is malformed, or belongs to a
+    different project than the run (the composite FK on
+    `analysis_run_tags` rejects the INSERT in exactly this case — see
+    this section's module docstring). Raises AnalysisHistoryReadError
+    on any other connection/query failure.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                status = _get_analysis_run_status_for_edit(cur, analysis_run_id)
+                if status is None:
+                    return False
+                if status in _STATUSES_BLOCKING_TAG_CATEGORY_EDITS:
+                    raise AnalysisRunStatusConflictError(status)
+
+                cur.execute(
+                    """
+                    insert into analysis_run_tags (analysis_run_id, tag_id, project_id)
+                    select ar.id, %s, ar.project_id
+                    from analysis_runs ar
+                    where ar.id = %s
+                    on conflict (analysis_run_id, tag_id) do nothing
+                    """,
+                    (tag_id, analysis_run_id),
+                )
+            conn.commit()
+    except AnalysisRunStatusConflictError:
+        raise
+    except Exception as exc:
+        if any(
+            cls is not None and isinstance(exc, cls)
+            for cls in (ForeignKeyViolation, NotNullViolation, InvalidTextRepresentation)
+        ):
+            raise TagNotAssignableError() from exc
+        logger.exception("Failed to attach tag to analysis run")
+        raise AnalysisHistoryReadError("failed to update analysis history") from exc
+
+    return True
+
+
+def detach_tag_from_analysis_run(analysis_run_id: str, tag_id: str) -> bool:
+    """Detaches one tag from one run — idempotent: detaching a tag
+    that was never attached (or already detached) is a no-op success,
+    not an error, consistent with soft_delete_analysis_run()'s own
+    "repeat is success" convention. Never validates `tag_id` beyond
+    "is it a well-formed UUID" (deleting a nonexistent association row
+    is always harmless).
+
+    Returns False when `analysis_run_id` doesn't exist, is malformed,
+    or is soft-deleted. Raises AnalysisRunStatusConflictError when the
+    run's status is 'queued'/'running'. Raises
+    AnalysisHistoryReadError on any other connection/query failure.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                status = _get_analysis_run_status_for_edit(cur, analysis_run_id)
+                if status is None:
+                    return False
+                if status in _STATUSES_BLOCKING_TAG_CATEGORY_EDITS:
+                    raise AnalysisRunStatusConflictError(status)
+
+                try:
+                    cur.execute(
+                        "delete from analysis_run_tags where analysis_run_id = %s and tag_id = %s",
+                        (analysis_run_id, tag_id),
+                    )
+                except Exception as exc:
+                    if InvalidTextRepresentation is not None and isinstance(
+                        exc, InvalidTextRepresentation
+                    ):
+                        # A malformed tag_id can never have been
+                        # attached in the first place — detaching it
+                        # is the same harmless no-op as detaching a
+                        # well-formed but unattached tag_id. Caught
+                        # here (inside the transaction) so the status
+                        # check above still counts, and the
+                        # transaction is explicitly rolled back before
+                        # returning, since this connection's
+                        # transaction is now aborted after the error.
+                        conn.rollback()
+                        return True
+                    raise
+            conn.commit()
+    except AnalysisRunStatusConflictError:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to detach tag from analysis run")
+        raise AnalysisHistoryReadError("failed to update analysis history") from exc
+
+    return True
+
+
+def set_analysis_run_category(analysis_run_id: str, category_id: str | None) -> bool:
+    """Sets (or, with `category_id=None`, clears back to "未分類") one
+    run's category.
+
+    Returns False when `analysis_run_id` doesn't exist, is malformed,
+    or is soft-deleted. Raises AnalysisRunStatusConflictError when the
+    run's status is 'queued'/'running'. Raises
+    CategoryNotAssignableError when `category_id` doesn't exist, is
+    malformed, or belongs to a different project than the run (the
+    composite FK `fk_analysis_runs_category_project` rejects the
+    UPDATE in exactly this case) — never raised when `category_id` is
+    None, since clearing a category is always allowed regardless of
+    the run's project. Raises CategoryRequiresProjectError when
+    `category_id` is not None but the run's own `project_id` is null
+    (`chk_analysis_runs_category_requires_project`). Raises
+    AnalysisHistoryReadError on any other connection/query failure.
+    """
+    try:
+        uuid.UUID(analysis_run_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    database_url = _require_connectable()
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                status = _get_analysis_run_status_for_edit(cur, analysis_run_id)
+                if status is None:
+                    return False
+                if status in _STATUSES_BLOCKING_TAG_CATEGORY_EDITS:
+                    raise AnalysisRunStatusConflictError(status)
+
+                cur.execute(
+                    "update analysis_runs set category_id = %s where id = %s",
+                    (category_id, analysis_run_id),
+                )
+            conn.commit()
+    except AnalysisRunStatusConflictError:
+        raise
+    except Exception as exc:
+        if CheckViolation is not None and isinstance(exc, CheckViolation):
+            raise CategoryRequiresProjectError() from exc
+        if any(
+            cls is not None and isinstance(exc, cls)
+            for cls in (ForeignKeyViolation, InvalidTextRepresentation)
+        ):
+            raise CategoryNotAssignableError() from exc
+        logger.exception("Failed to set analysis run category")
+        raise AnalysisHistoryReadError("failed to update analysis history") from exc
+
+    return True
 
 
 # --- Async analysis jobs, Phase 1 only (POST /analysis-jobs, GET
