@@ -40,6 +40,15 @@ class _FakeHistoryDbConnection:
 
 def _mock_authenticated(monkeypatch, *, user_id: str = "user-1"):
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
+    # This file tests Task 6-B3's idempotency behavior specifically,
+    # not Task 6-B4's usage-quota behavior (covered by
+    # tests/test_main_analyze_quota.py) — the dev/test-only
+    # ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA override (see
+    # services/analyze_quota_settings.py) keeps every test below
+    # exercising exactly what it always did (AUTH on, no quota
+    # counters ever built/checked) rather than hitting Task 6-B4's new
+    # "AUTH on / quota off -> 503" default refusal.
+    monkeypatch.setenv("ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA", "true")
     monkeypatch.setattr(main, "is_jwt_verification_configured", lambda settings: True)
     monkeypatch.setattr(
         main, "verify_supabase_jwt", lambda token, settings: AuthenticatedUser(user_id=user_id)

@@ -54,7 +54,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from services.db_settings import load_db_settings
@@ -2633,6 +2633,187 @@ def get_analysis_job_result(analysis_run_id: str) -> dict[str, Any] | None:
 # "別ユーザー・別projectのrequestIdが衝突しても情報を漏らさない"
 # requirement this task asks to uphold. The anonymous path is therefore
 # left completely untouched by this section.
+#
+# --- Task 6-B4 usage-quota counters (migration 009) ------------------
+#
+# create_running_analysis_run() below now also accepts
+# `required_counters: list[UsageCounterRequirement]` (empty/omitted by
+# default) — when non-empty, every counter in the list is atomically
+# reserved (insert-or-increment, rejecting if that specific counter is
+# already at its limit) in the exact same transaction as the new
+# analysis_runs/analysis_results row, before that transaction ever
+# commits. If ANY counter is already at its limit, the whole
+# transaction is abandoned (never committed — see
+# _reserve_usage_counters()'s own docstring) and
+# AnalysisQuotaExceededError is raised: no analysis_runs row, no
+# analysis_results row, and no partially-incremented counter ever
+# persists. main.py builds this list only when
+# AnalyzeQuotaSettings.enforcement_enabled is true (see
+# services/analyze_quota_settings.py) — an empty list here always
+# means "no quota checked at all", which is also exactly what happens
+# today when enforcement is disabled or (structurally) for the
+# anonymous path, which never calls this function at all.
+#
+# A resubmission of an *existing* idempotency_key never reaches this
+# counter-reservation step — _resolve_existing_sync_run() above always
+# returns/raises before create_running_analysis_run() gets to the
+# "genuinely new key" INSERT branch where required_counters is
+# consulted. This is what guarantees "同じrequestIdの再送ではカウンター
+# を増やさない" without any special-case code: the ordering already in
+# place from Task 6-B3 does this for free.
+#
+# Deadlock avoidance: the two advisory locks create_running_analysis_run()
+# already acquires (keyed by this request's project_id, then its
+# created_by_user_id — see that function's own docstring) already
+# serialize every counter this feature can ever touch, since every
+# counter's scope_id is always either that exact project_id or that
+# exact user_id. Two concurrent create_running_analysis_run() calls
+# that could possibly contend over the same counter row are therefore
+# already fully serialized before either one reaches the counter
+# upserts at all — no new advisory lock key is needed. _reserve_usage_counters()
+# still processes its list in a fixed, deterministic order (sorted by
+# (scope_type, scope_id, metric, period_type)) purely as defense in
+# depth against a future caller that might one day touch this table
+# without holding those same two locks (e.g. a hypothetical future
+# extension to the async job system) — not needed for this feature's
+# own correctness today.
+
+
+def daily_period_start(now: datetime | None = None) -> datetime:
+    """UTC start-of-day for `now` (default: the current instant) —
+    computed in application code, not SQL, so the result never depends
+    on a connection's session TimeZone setting (see this section's
+    module-level comment for why that matters for a value used as part
+    of an exact-match upsert key)."""
+    instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return instant.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def monthly_period_start(now: datetime | None = None) -> datetime:
+    """UTC start-of-month for `now` — see daily_period_start()'s
+    docstring for why this is computed in Python, not SQL."""
+    instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return instant.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+@dataclass(frozen=True)
+class UsageCounterRequirement:
+    """One usage-quota counter create_running_analysis_run() must
+    atomically reserve (insert-or-increment, subject to `limit`)
+    before a new synchronous analysis run is allowed to proceed.
+
+    `scope_type` is "user" or "project"; `scope_id` is that user's or
+    project's id. `metric` is "all_analyses" (every analysis, mock/off
+    included) or a specific paid-provider metric ("dataforseo_sandbox"
+    / "dataforseo_live" / "openai" / "anthropic" / "google" — see
+    backend/main.py for how the resolved provider mode maps to one of
+    these). `period_type` is "daily" or "monthly"; `period_start` must
+    be daily_period_start()/monthly_period_start()'s own output for
+    the current instant — this module never recomputes it. `limit` of
+    0 means "never allow a single call" (a fully valid, meaningful
+    value — see services/analyze_quota_settings.py)."""
+
+    scope_type: Literal["user", "project"]
+    scope_id: str
+    metric: str
+    period_type: Literal["daily", "monthly"]
+    period_start: datetime
+    limit: int
+
+
+class AnalysisQuotaExceededError(Exception):
+    """Raised by create_running_analysis_run() when any one
+    UsageCounterRequirement in `required_counters` is already at its
+    limit. main.py turns this into HTTP 429
+    (analysis_quota_exceeded) — identifies exactly which counter was
+    hit and when it next resets (`next_period_start`, computed by
+    the caller as this counter's period_start plus one day/month)."""
+
+    def __init__(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        metric: str,
+        period_type: str,
+        period_start: datetime,
+        limit: int,
+    ):
+        super().__init__(
+            f"usage quota exceeded: scope_type={scope_type!r} scope_id={scope_id!r} "
+            f"metric={metric!r} period_type={period_type!r} limit={limit!r}"
+        )
+        self.scope_type = scope_type
+        self.scope_id = scope_id
+        self.metric = metric
+        self.period_type = period_type
+        self.period_start = period_start
+        self.limit = limit
+
+
+def _reserve_usage_counters(cur, required_counters: list[UsageCounterRequirement]) -> None:
+    """Atomically reserves (insert-or-increment) every counter in
+    `required_counters`, raising AnalysisQuotaExceededError on the
+    first one already at its limit — called from inside
+    create_running_analysis_run()'s own transaction, strictly before
+    that transaction's conn.commit(), so a raise here (which this
+    function never catches) propagates straight out through the
+    caller's `with psycopg.connect(...) as conn:` block and triggers
+    psycopg3's automatic ROLLBACK — undoing this call's own prior
+    counter increments *and* the analysis_runs/analysis_results INSERT
+    that happened earlier in the same transaction. No new row, no
+    partially-incremented counter, ever persists on a 429. See this
+    section's module-level comment for why a fixed processing order
+    and no new advisory lock are both safe here.
+    """
+    for requirement in sorted(
+        required_counters,
+        key=lambda r: (r.scope_type, r.scope_id, r.metric, r.period_type),
+    ):
+        # `select ... where %s > 0` (rather than a plain `values (...)`)
+        # on the INSERT side is deliberate, not cosmetic: a plain
+        # `values (1)` INSERT always succeeds on the very first-ever
+        # row for a given counter key regardless of `limit`, since the
+        # `where count < limit` guard below only ever applies to the
+        # ON CONFLICT DO UPDATE branch — never to the initial INSERT
+        # itself. That would let limit=0 ("never allow a single call")
+        # wrongly succeed exactly once, the first time this exact
+        # counter key is ever touched. Guarding the SELECT with
+        # `limit > 0` makes the INSERT itself produce zero candidate
+        # rows whenever the limit is 0, so ON CONFLICT never even has
+        # a row to consider and this correctly returns no row either
+        # way — verified directly against real PostgreSQL 17 (see
+        # Task 6-B4's completion report).
+        cur.execute(
+            """
+            insert into analysis_usage_counters
+                (scope_type, scope_id, metric, period_type, period_start, count)
+            select %s, %s, %s, %s, %s, 1
+            where %s > 0
+            on conflict (scope_type, scope_id, metric, period_type, period_start)
+            do update set count = analysis_usage_counters.count + 1, updated_at = now()
+            where analysis_usage_counters.count < %s
+            returning count
+            """,
+            (
+                requirement.scope_type,
+                requirement.scope_id,
+                requirement.metric,
+                requirement.period_type,
+                requirement.period_start,
+                requirement.limit,
+                requirement.limit,
+            ),
+        )
+        if cur.fetchone() is None:
+            raise AnalysisQuotaExceededError(
+                scope_type=requirement.scope_type,
+                scope_id=requirement.scope_id,
+                metric=requirement.metric,
+                period_type=requirement.period_type,
+                period_start=requirement.period_start,
+                limit=requirement.limit,
+            )
 
 
 class SyncAnalysisStillRunningError(Exception):
@@ -2828,6 +3009,7 @@ def create_running_analysis_run(
     claude_mode: str | None,
     gemini_mode: str | None,
     lease_seconds: int,
+    required_counters: list[UsageCounterRequirement] | None = None,
 ) -> SyncAnalysisRunReservation:
     """Atomically reserves one synchronous, authenticated POST /analyze
     request's execution slot — Task 6-B3's idempotency mechanism. See
@@ -2848,11 +3030,22 @@ def create_running_analysis_run(
     the caller (main.py's analyze()) *is* the thing that executes it,
     synchronously, in this same request.
 
+    `required_counters` (Task 6-B4, default empty — no quota checked
+    at all) is only ever consulted on the "genuinely new key" branch
+    below, strictly before this transaction's own conn.commit() — see
+    _reserve_usage_counters()'s and this section's own module-level
+    comment for why a resubmission of an existing key never touches it,
+    why no new advisory lock is needed, and why a rejection here undoes
+    the row INSERT too.
+
     Raises SyncAnalysisStillRunningError / SyncAnalysisPreviouslyFailedError
     / AnalysisJobCreateConflictError / AnalysisJobCancelledConflictError
-    for every non-replayable existing-row case (see their own
-    docstrings) — main.py maps each to a 409. Raises
-    AnalysisHistoryReadError on any other connection/query failure.
+    / AnalysisQuotaExceededError for every non-replayable existing-row
+    or over-limit case (see their own docstrings) — main.py maps the
+    first four to 409 and the last to 429. Raises
+    AnalysisHistoryReadError on any other connection/query failure
+    (including any failure while reserving `required_counters` itself
+    — never silently treated as "quota check skipped, proceed anyway").
     """
     database_url = _require_connectable()
 
@@ -2936,12 +3129,20 @@ def create_running_analysis_run(
                     "insert into analysis_results (analysis_run_id, result_json) values (%s, %s)",
                     (analysis_run_id, Jsonb({})),
                 )
+
+                # Task 6-B4: must happen before conn.commit() below —
+                # a raise here (never caught in this function) rolls
+                # back the two INSERTs above too, via psycopg3's
+                # automatic ROLLBACK-on-exception (see
+                # _reserve_usage_counters()'s docstring).
+                _reserve_usage_counters(cur, required_counters or [])
             conn.commit()
     except (
         AnalysisJobCreateConflictError,
         AnalysisJobCancelledConflictError,
         SyncAnalysisStillRunningError,
         SyncAnalysisPreviouslyFailedError,
+        AnalysisQuotaExceededError,
     ):
         raise
     except Exception as exc:

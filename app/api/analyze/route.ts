@@ -105,8 +105,16 @@ type PythonApiOutcome =
   // "please wait" or "start over" signal silently rendered as a
   // successful "mock" analysis would be actively misleading.
   | { kind: "conflict"; message: string; code: string | null }
+  // Task 6-B4 (feature/sync-analyze-jwt-project-auth): the Python
+  // API's usage-quota check rejected this submission — reported back
+  // as a real 409, exactly like authError/conflict above — must NEVER
+  // fall through to the dummy-data fallback below, since a "you've hit
+  // your usage limit" signal silently rendered as a successful "mock"
+  // analysis would be actively misleading (and would hide the fact
+  // that no real analysis ran at all).
+  | { kind: "quotaExceeded"; message: string; code: string | null; quota: unknown }
   // Unset URL, network error, timeout, non-2xx (other than 400/401/403/
-  // 409, and 503 only when it isn't the auth-config case above),
+  // 409/429, and 503 only when it isn't the auth-config case above),
   // invalid JSON, or a response that doesn't match AnalysisResult.
   | { kind: "unavailable"; reason: PythonApiUnavailableReason };
 
@@ -265,6 +273,21 @@ async function fetchFromPythonApi(
           : "分析を開始できませんでした";
       const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
       return { kind: "conflict", message, code };
+    }
+
+    if (response.status === 429) {
+      // Task 6-B4: usage-quota exceeded (ANALYZE_AUTH_REQUIRED=true
+      // *and* ANALYZE_QUOTA_ENFORCEMENT_ENABLED=true only — never sent
+      // otherwise). Must never fall through to the dummy-data fallback
+      // below, same reasoning as the 409 conflict case above.
+      const errorBody = await response.json().catch(() => null);
+      const message =
+        errorBody && typeof errorBody.error === "string"
+          ? errorBody.error
+          : "利用上限に達しているため、分析を開始できません。";
+      const code = errorBody && typeof errorBody.code === "string" ? errorBody.code : null;
+      const quota = errorBody && typeof errorBody.quota === "object" ? errorBody.quota : null;
+      return { kind: "quotaExceeded", message, code, quota };
     }
 
     if (!response.ok) {
@@ -458,6 +481,15 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: outcome.message, code: outcome.code },
       { status: 409 },
+    );
+  }
+
+  if (outcome.kind === "quotaExceeded") {
+    // Never falls back to dummy data — see PythonApiOutcome's
+    // "quotaExceeded" doc above for why.
+    return NextResponse.json(
+      { error: outcome.message, code: outcome.code, quota: outcome.quota },
+      { status: 429 },
     );
   }
 

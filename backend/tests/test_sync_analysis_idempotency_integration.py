@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import threading
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -110,6 +111,36 @@ def db_connection():
                 meta_json jsonb,
                 created_at timestamptz not null default now()
             )
+            """
+        )
+        # Exact schema from migrations/009_add_analysis_usage_counters.sql
+        # (Task 6-B4).
+        cur.execute(
+            """
+            create table analysis_usage_counters (
+                scope_type   text not null,
+                scope_id     uuid not null,
+                metric       text not null,
+                period_type  text not null,
+                period_start timestamptz not null,
+                count        integer not null default 0,
+                created_at   timestamptz not null default now(),
+                updated_at   timestamptz not null default now(),
+                constraint analysis_usage_counters_pkey
+                    primary key (scope_type, scope_id, metric, period_type, period_start),
+                constraint analysis_usage_counters_scope_type_check
+                    check (scope_type in ('user', 'project')),
+                constraint analysis_usage_counters_period_type_check
+                    check (period_type in ('daily', 'monthly')),
+                constraint analysis_usage_counters_count_check
+                    check (count >= 0)
+            )
+            """
+        )
+        cur.execute(
+            """
+            create index idx_analysis_usage_counters_scope
+                on analysis_usage_counters (scope_type, scope_id, period_type, period_start)
             """
         )
     try:
@@ -383,3 +414,161 @@ def test_late_completion_after_lazy_expiry_never_overwrites_the_failed_row(db_co
     assert status == "failed"
     assert result_json == {}
     assert "lateRealResult" not in result_json
+
+
+# --- Task 6-B4 usage-quota counters (real PostgreSQL) -------------------
+
+
+def _requirement(scope_type, scope_id, metric, period_type, limit):
+    import services.analysis_history_repository as repo
+
+    return repo.UsageCounterRequirement(
+        scope_type=scope_type,
+        scope_id=scope_id,
+        metric=metric,
+        period_type=period_type,
+        period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        limit=limit,
+    )
+
+
+def test_quota_exceeded_rolls_back_the_run_row_and_every_counter_increment(db_connection):
+    """The core atomicity requirement, proven on a real transaction
+    (not the mocked fake, which has no real rollback semantics): when
+    one of several counters is already at its limit, NOTHING from
+    this attempt persists — not the analysis_runs/analysis_results
+    row, and not even the OTHER counters this same call already
+    incremented earlier in its own counter-reservation loop."""
+    import services.analysis_history_repository as repo
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    counters = [
+        _requirement("user", "22222222-2222-2222-2222-222222222222", "all_analyses", "daily", limit=20),
+        _requirement("project", "11111111-1111-1111-1111-111111111111", "openai", "daily", limit=0),
+    ]
+
+    with pytest.raises(repo.AnalysisQuotaExceededError) as exc_info:
+        _create_running(database_url, required_counters=counters)
+
+    assert exc_info.value.metric == "openai"
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (run_count,) = cur.fetchone()
+        cur.execute(f"select count(*) from {schema}.analysis_results")
+        (result_count,) = cur.fetchone()
+        cur.execute(f"select count(*) from {schema}.analysis_usage_counters")
+        (counter_rows,) = cur.fetchone()
+    # Not even the "user/all_analyses/daily" counter (reserved BEFORE
+    # the openai one that actually failed, in the same loop) survived.
+    assert run_count == 0
+    assert result_count == 0
+    assert counter_rows == 0
+
+
+def test_quota_success_persists_the_run_and_every_counter(db_connection):
+    import services.analysis_history_repository as repo
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    counters = [
+        _requirement("user", "22222222-2222-2222-2222-222222222222", "all_analyses", "daily", limit=20),
+        _requirement("project", "11111111-1111-1111-1111-111111111111", "all_analyses", "daily", limit=50),
+    ]
+
+    result = _create_running(database_url, required_counters=counters)
+    assert result.created is True
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (run_count,) = cur.fetchone()
+        cur.execute(f"select count, scope_type from {schema}.analysis_usage_counters order by scope_type")
+        rows = cur.fetchall()
+    assert run_count == 1
+    assert rows == [(1, "project"), (1, "user")]
+
+
+def test_concurrent_different_request_ids_never_exceed_the_project_daily_limit(db_connection):
+    """異なるrequestIdの同時10件で上限を超えない — the real concurrency
+    proof this feature's safety rests on: 10 genuinely concurrent
+    create_running_analysis_run() calls (real threads, real separate
+    connections), each a distinct idempotency_key for the SAME
+    project, with a project-daily limit of 8. Exactly 8 must succeed
+    and exactly 2 must be rejected — never more than 8, and never
+    fewer (no false rejection either)."""
+    import threading
+
+    import services.analysis_history_repository as repo
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    results: list = []
+    errors: list = []
+    lock = threading.Lock()
+
+    def worker(i):
+        counters = [
+            _requirement(
+                "project", "11111111-1111-1111-1111-111111111111", "all_analyses", "daily", limit=8
+            )
+        ]
+        try:
+            result = _create_running(
+                database_url, idempotency_key=f"req-{i}", required_counters=counters
+            )
+            with lock:
+                results.append(result)
+        except repo.AnalysisQuotaExceededError as exc:
+            with lock:
+                errors.append(exc)
+        except Exception as exc:  # noqa: BLE001 - recorded for the assertion below
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    quota_errors = [e for e in errors if isinstance(e, repo.AnalysisQuotaExceededError)]
+    other_errors = [e for e in errors if not isinstance(e, repo.AnalysisQuotaExceededError)]
+
+    assert not other_errors, f"unexpected non-quota errors: {other_errors}"
+    assert len(results) == 8
+    assert len(quota_errors) == 2
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count(*) from {schema}.analysis_runs")
+        (run_count,) = cur.fetchone()
+        cur.execute(f"select count from {schema}.analysis_usage_counters")
+        (counter_value,) = cur.fetchone()
+    assert run_count == 8
+    assert counter_value == 8
+
+
+def test_resubmission_of_existing_key_never_increments_counters_real_db(db_connection):
+    """同じrequestIdの再送で二重消費なし, proven on real PostgreSQL."""
+    import services.analysis_history_repository as repo
+
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    counters = [
+        _requirement("user", "22222222-2222-2222-2222-222222222222", "all_analyses", "daily", limit=20)
+    ]
+
+    first = _create_running(database_url, lease_seconds=180, required_counters=counters)
+    assert first.created is True
+
+    with pytest.raises(repo.SyncAnalysisStillRunningError):
+        _create_running(database_url, required_counters=counters)
+
+    with conn.cursor() as cur:
+        cur.execute(f"select count from {schema}.analysis_usage_counters")
+        (counter_value,) = cur.fetchone()
+    assert counter_value == 1

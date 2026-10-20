@@ -299,6 +299,20 @@ export default function Home() {
           }
           throw new Error(getAnalyzeConflictMessage(code));
         }
+        if (response.status === 429) {
+          // Task 6-B4: usage-quota exceeded — no analysis_runs row was
+          // ever created for this attempt (see backend/main.py's
+          // AnalysisQuotaExceededError handling), so there is nothing
+          // for a later retry with a fresh requestId to conflict with;
+          // the requestId is kept (not cleared) purely so a retry of
+          // the same input is recognized as the same logical attempt,
+          // mirroring the still-running 409 case above. Detailed quota
+          // UI (availableAt, etc.) is Task 6-B5's scope — this is the
+          // minimal "don't crash, don't show it as success" handling.
+          throw new Error(
+            errorBody?.error ?? "利用上限に達しているため、分析を開始できません。",
+          );
+        }
         clearPendingSyncAnalysisRequest();
         throw new Error(errorBody?.error ?? "分析に失敗しました。");
       }

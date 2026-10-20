@@ -1669,4 +1669,57 @@ describe("POST /api/analyze", () => {
     expect(typeof body.error).toBe("string");
     expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
   });
+
+  // --- usage-quota exceeded (Task 6-B4,
+  // feature/sync-analyze-jwt-project-auth) -------------------------------
+
+  it("returns 429 (never a dummy-data fallback) with scope/metric/period/availableAt", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "利用上限に達しているため、分析を開始できません。",
+          code: "analysis_quota_exceeded",
+          quota: {
+            scope: "project",
+            metric: "all_analyses",
+            period: "daily",
+            availableAt: "2026-03-06T00:00:00+00:00",
+          },
+        }),
+        { status: 429 },
+      ),
+    );
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.code).toBe("analysis_quota_exceeded");
+    expect(body.quota).toEqual({
+      scope: "project",
+      metric: "all_analyses",
+      period: "daily",
+      availableAt: "2026-03-06T00:00:00+00:00",
+    });
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
+
+  it("returns 429 with a generic message and null quota when the response body has no recognizable shape", async () => {
+    process.env.PYTHON_ANALYSIS_API_URL = "http://python-api.test";
+    global.fetch = vi.fn().mockResolvedValue(new Response("not json", { status: 429 }));
+
+    const response = await POST(
+      makeRequest({ brandName: "OpenAI", projectId: "p1", requestId: "req-1" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.code).toBeNull();
+    expect(body.quota).toBeNull();
+    expect(typeof body.error).toBe("string");
+    expect(response.headers.has(ANALYZE_FALLBACK_HEADER)).toBe(false);
+  });
 });

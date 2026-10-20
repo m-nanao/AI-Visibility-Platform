@@ -324,6 +324,12 @@ def test_analyze_flag_on_returns_503_when_project_access_check_fails(monkeypatch
 
 def test_analyze_flag_on_succeeds_with_valid_jwt_and_accessible_project(monkeypatch):
     monkeypatch.setenv("ANALYZE_AUTH_REQUIRED", "true")
+    # This file tests the auth *gate* itself, not Task 6-B4's
+    # usage-quota behavior (covered separately in
+    # tests/test_main_analyze_quota.py) — the dev/test-only
+    # ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA override keeps this test
+    # reaching past the gate exactly as it did before quota existed.
+    monkeypatch.setenv("ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA", "true")
     _mock_jwt_dependencies(monkeypatch, can_access_project=True)
     pipeline_calls, _save_calls, reservation_calls, complete_calls = _stub_pipeline_and_save(
         monkeypatch

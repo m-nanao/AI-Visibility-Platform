@@ -362,6 +362,37 @@ export function isTerminalAnalyzeConflictCode(code: string | null): boolean {
   );
 }
 
+// --- POST /api/analyze usage-quota (Task 6-B4,
+// feature/sync-analyze-jwt-project-auth) --------------------------------
+//
+// Only reachable once ANALYZE_AUTH_REQUIRED=true *and*
+// ANALYZE_QUOTA_ENFORCEMENT_ENABLED=true on the backend (both still
+// false in production as of this task). A 429 here means no
+// analysis_runs row was created at all — unlike the 409 conflict
+// codes above, the requestId is safe (and, per this task's design
+// report, expected) to keep for a later retry, since nothing exists
+// yet for the backend to disagree about; app/page.tsx therefore never
+// clears the pending requestId on this outcome. Detailed UI (showing
+// `availableAt`, a countdown, etc.) is deferred to Task 6-B5 — this
+// is the minimal "don't crash, don't mislead" handling this task asks
+// for.
+
+/** Must match backend/main.py's ANALYZE_QUOTA_EXCEEDED_CODE. */
+export const ANALYZE_QUOTA_EXCEEDED_CODE = "analysis_quota_exceeded";
+export const ANALYZE_QUOTA_EXCEEDED_MESSAGE =
+  "利用上限に達しているため、分析を開始できません。時間をおいて再度お試しください。";
+
+/** The `quota` object a 429 analysis_quota_exceeded response body
+ * carries — see backend/main.py's _analyze_authenticated_idempotent().
+ * Any field may be absent/malformed if the response shape ever
+ * drifts; callers must not assume it's present. */
+export interface AnalyzeQuotaInfo {
+  scope?: string;
+  metric?: string;
+  period?: string;
+  availableAt?: string;
+}
+
 // --- POST /api/analyze dummy-fallback signaling (shared between
 // app/api/analyze/route.ts and app/page.tsx, since a Next.js route
 // handler module may only export HTTP method handlers plus a small set

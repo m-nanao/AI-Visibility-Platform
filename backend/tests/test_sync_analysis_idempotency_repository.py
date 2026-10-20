@@ -35,6 +35,7 @@ class _SyncFakeDB:
         self.brands: dict[str, dict] = {}
         self.runs: dict[str, dict] = {}
         self.results: dict[str, dict] = {}
+        self.usage_counters: dict[tuple, int] = {}
         self.advisory_lock_calls: list[tuple[int, str]] = []
         self.force_unique_violation_once = False
 
@@ -172,6 +173,26 @@ class _FakeCursor:
             self._pending_result = (
                 (result["result_json"], result["meta_json"]) if result is not None else None
             )
+            return
+
+        if q.startswith("insert into analysis_usage_counters"):
+            (
+                scope_type,
+                scope_id,
+                metric,
+                period_type,
+                period_start,
+                limit,
+                limit_again,
+            ) = self._last_params
+            assert limit == limit_again
+            key = (scope_type, scope_id, metric, period_type, period_start)
+            current = self.db.usage_counters.get(key, 0)
+            if current < limit:
+                self.db.usage_counters[key] = current + 1
+                self._pending_result = (current + 1,)
+            else:
+                self._pending_result = None
             return
 
         raise AssertionError(f"unexpected query in test fake: {query!r}")
@@ -433,3 +454,142 @@ def test_resolve_sync_run_after_unique_violation_replays_the_winning_rows_result
     assert result.created is False
     assert result.analysis_run_id == first.analysis_run_id
     assert result.result_json == {"brandName": "サイボウズ"}
+
+
+# --- Task 6-B4 usage-quota counters -----------------------------------
+
+
+def _counter(scope_type, scope_id, metric, period_type, limit, period_start=None):
+    return repo.UsageCounterRequirement(
+        scope_type=scope_type,
+        scope_id=scope_id,
+        metric=metric,
+        period_type=period_type,
+        period_start=period_start or datetime(2026, 1, 1, tzinfo=timezone.utc),
+        limit=limit,
+    )
+
+
+def test_no_required_counters_means_no_quota_check_at_all(monkeypatch):
+    """Default/omitted required_counters — exactly today's (pre-6-B4)
+    behavior, no row ever written to analysis_usage_counters."""
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    result = repo.create_running_analysis_run(**BASE_KWARGS)
+    assert result.created is True
+    assert db.usage_counters == {}
+
+
+def test_reservation_succeeds_and_increments_every_counter_when_under_limit(monkeypatch):
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    counters = [
+        _counter("user", "user-1", "all_analyses", "daily", limit=20),
+        _counter("project", "project-1", "all_analyses", "daily", limit=50),
+        _counter("project", "project-1", "openai", "daily", limit=10),
+    ]
+    result = repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+    assert result.created is True
+    assert len(db.usage_counters) == 3
+    assert all(count == 1 for count in db.usage_counters.values())
+
+
+def test_quota_exceeded_raises_and_rolls_back_the_run_row_and_every_counter(monkeypatch):
+    """The core atomicity requirement: when one of several counters is
+    already at its limit, create_running_analysis_run() must raise
+    AnalysisQuotaExceededError and the row it just inserted (plus any
+    counter it already incremented earlier in the same call) must
+    never persist. This fake DB has no real transactional rollback
+    (see module docstring) — this test asserts the exception/fields
+    are correct; tests/test_sync_analysis_idempotency_integration.py's
+    real-PostgreSQL test asserts the actual rollback."""
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    # Pre-fill one counter to its limit so the reservation attempt hits it.
+    key = (
+        "project",
+        "project-1",
+        "openai",
+        "daily",
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    db.usage_counters[key] = 10
+
+    counters = [
+        _counter("user", "user-1", "all_analyses", "daily", limit=20),
+        _counter("project", "project-1", "openai", "daily", limit=10),
+    ]
+
+    try:
+        repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+        raise AssertionError("expected AnalysisQuotaExceededError")
+    except repo.AnalysisQuotaExceededError as exc:
+        assert exc.scope_type == "project"
+        assert exc.scope_id == "project-1"
+        assert exc.metric == "openai"
+        assert exc.period_type == "daily"
+        assert exc.limit == 10
+
+
+def test_a_limit_of_zero_always_rejects(monkeypatch):
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    counters = [_counter("project", "project-1", "dataforseo_live", "daily", limit=0)]
+
+    try:
+        repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+        raise AssertionError("expected AnalysisQuotaExceededError")
+    except repo.AnalysisQuotaExceededError as exc:
+        assert exc.metric == "dataforseo_live"
+        assert exc.limit == 0
+
+
+def test_resubmission_of_an_existing_key_never_touches_the_counters(monkeypatch):
+    """同一requestIdの再送ではカウンターを増やさない — the existing-key
+    branch returns/raises before required_counters is ever consulted."""
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    counters = [_counter("user", "user-1", "all_analyses", "daily", limit=20)]
+
+    first = repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+    assert first.created is True
+    assert len(db.usage_counters) == 1
+    assert next(iter(db.usage_counters.values())) == 1
+
+    try:
+        repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+        raise AssertionError("expected SyncAnalysisStillRunningError")
+    except repo.SyncAnalysisStillRunningError:
+        pass
+
+    # Still exactly 1 — the resubmission never incremented it again.
+    assert len(db.usage_counters) == 1
+    assert next(iter(db.usage_counters.values())) == 1
+
+
+def test_replay_of_a_completed_run_never_touches_the_counters(monkeypatch):
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    counters = [_counter("user", "user-1", "all_analyses", "daily", limit=20)]
+
+    first = repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+    db.runs[first.analysis_run_id]["status"] = "completed"
+    db.results[first.analysis_run_id] = {"result_json": {"brandName": "サイボウズ"}, "meta_json": None}
+
+    replay = repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+    assert replay.created is False
+    assert len(db.usage_counters) == 1
+    assert next(iter(db.usage_counters.values())) == 1
+
+
+def test_different_request_id_consumes_a_fresh_set_of_counters(monkeypatch):
+    db = _SyncFakeDB()
+    _configure(monkeypatch, db)
+    counters = [_counter("project", "project-1", "all_analyses", "daily", limit=50)]
+
+    repo.create_running_analysis_run(**BASE_KWARGS, required_counters=counters)
+    other_kwargs = dict(BASE_KWARGS, idempotency_key="req-2")
+    repo.create_running_analysis_run(**other_kwargs, required_counters=counters)
+
+    assert len(db.usage_counters) == 1
+    assert next(iter(db.usage_counters.values())) == 2

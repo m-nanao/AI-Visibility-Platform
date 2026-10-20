@@ -89,8 +89,8 @@ import re
 from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -147,13 +147,20 @@ from models import (
     UrlFetchResult,
     WebAiGapAiComparisonResponse,
 )
-from services.ai_overview_provider import build_ai_overview_comparison, resolve_ai_overview_mode
+from services.ai_overview_provider import (
+    build_ai_overview_comparison,
+    resolve_ai_overview_mode,
+    resolve_dataforseo_environment,
+)
+from services.analyze_quota_settings import load_analyze_quota_settings
+from services.dataforseo_settings import get_dataforseo_settings
 from services.analysis_history_comparison import build_comparison_response
 from services.analysis_history_repository import (
     AnalysisHistoryReadError,
     AnalysisJobCancelledConflictError,
     AnalysisJobCreateConflictError,
     AnalysisJobLimitExceededError,
+    AnalysisQuotaExceededError,
     AnalysisRunStatusConflictError,
     CategoryNameConflictError,
     CategoryNameInvalidError,
@@ -164,6 +171,7 @@ from services.analysis_history_repository import (
     TagNameConflictError,
     TagNameInvalidError,
     TagNotAssignableError,
+    UsageCounterRequirement,
     attach_tag_to_analysis_run,
     cancel_queued_analysis_run,
     complete_analysis_job,
@@ -172,6 +180,7 @@ from services.analysis_history_repository import (
     create_queued_analysis_run,
     create_running_analysis_run,
     create_tag,
+    daily_period_start,
     delete_category,
     delete_tag,
     detach_tag_from_analysis_run,
@@ -183,6 +192,7 @@ from services.analysis_history_repository import (
     list_analysis_runs as repository_list_analysis_runs,
     list_categories,
     list_tags,
+    monthly_period_start,
     rename_category,
     rename_tag,
     save_analysis_history,
@@ -302,7 +312,11 @@ app = FastAPI(title="LLMO Analysis API", lifespan=lifespan)
 
 
 def error_response(
-    message: str, status_code: int = 400, *, code: str | None = None
+    message: str,
+    status_code: int = 400,
+    *,
+    code: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> JSONResponse:
     """`code`, added for Task 7 (feature/sync-analyze-jwt-project-auth,
     "認証エラーの処理改善"), is an optional stable, machine-readable
@@ -315,8 +329,19 @@ def error_response(
     (e.g. two different reasons for a 503) without matching this
     function's prose `message` text, which is free to be reworded
     later without silently breaking that check.
+
+    `extra`, added for Task 6-B4's HTTP 429 usage-quota response, is
+    an optional dict of additional top-level fields merged into the
+    body (e.g. `{"quota": {...}}`) — never overwrites `error`/`code`
+    even if a caller's `extra` happens to reuse those keys (this
+    function always sets `error`/`code` last). Omitted (no `extra`
+    passed) by every pre-existing call site, so their response shape
+    is unchanged.
     """
-    content: dict[str, str] = {"error": message}
+    content: dict[str, Any] = {}
+    if extra:
+        content.update(extra)
+    content["error"] = message
     if code is not None:
         content["code"] = code
     return JSONResponse(status_code=status_code, content=content)
@@ -991,6 +1016,27 @@ ANALYZE_REQUEST_CANCELLED_MESSAGE = (
 ANALYZE_REQUEST_CANCELLED_CODE = "analysis_request_cancelled"
 ANALYZE_RUN_FAILED_MESSAGE = "failed to run the analysis"
 
+# Task 6-B4 (feature/sync-analyze-jwt-project-auth) usage-quota
+# responses.
+ANALYZE_QUOTA_EXCEEDED_MESSAGE = "利用上限に達しているため、分析を開始できません。"
+ANALYZE_QUOTA_EXCEEDED_CODE = "analysis_quota_exceeded"
+# Returned when ANALYZE_AUTH_REQUIRED=true but
+# AnalyzeQuotaSettings.enforcement_enabled is false and the narrow
+# ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA dev/test override isn't set either
+# — see services/analyze_quota_settings.py's module docstring and
+# Task 6-B4's design report "6" for why this combination is refused by
+# default rather than silently running the authenticated (and
+# therefore potentially paid) path with no cost protection at all.
+ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_MESSAGE = (
+    "利用枠保護が有効化されていないため、認証必須モードでの分析を安全に実行できません。"
+)
+ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE = "quota_enforcement_required"
+
+# Task 6-B4 metric names — must match services/analyze_quota_settings.py's
+# _METRIC_ENV_SUFFIXES keys and migration 009's analysis_usage_counters.metric
+# values exactly.
+ANALYZE_QUOTA_METRIC_ALL_ANALYSES = "all_analyses"
+
 # Generous relative to the ~100s worst-case full-ON pipeline duration
 # documented in app/api/analyze/route.ts's PYTHON_API_TIMEOUT_MS
 # comment — this lease only needs to outlive a single synchronous
@@ -1198,20 +1244,144 @@ def _analyze_anonymous(payload: AnalyzeRequest, brand_name: str):
     return result
 
 
+def _resolve_required_usage_counters(
+    payload: AnalyzeRequest, *, user_id: str, project_id: str
+) -> list[UsageCounterRequirement]:
+    """Task 6-B4: builds the list of usage-quota counters this request
+    must atomically reserve, using each provider's *resolved* mode
+    (ALLOW_*_MODE_OVERRIDE already applied) — never the raw per-request
+    override alone, so a provider that's actually off (either by its
+    own env default or because override isn't allowed) never consumes
+    its paid-provider counter. Deliberately mirrors
+    run_analysis_pipeline()'s own mode resolution exactly (same inputs,
+    same pure functions, same "ai_overview_mode==mock skips chatgpt"
+    rule) so the two can never disagree within one request — see this
+    task's design report "5"/"6" for why that's a structural guarantee
+    here (same process, same env, same payload, no time gap) rather
+    than something that needs its own synchronization.
+
+    Always includes the three "all_analyses" counters (user daily,
+    project daily, project monthly) — these apply even to a pure
+    mock/off analysis. Only adds a paid-provider counter (daily +
+    monthly) for a provider whose resolved mode indicates it will
+    actually be called.
+    """
+    quota_settings = load_analyze_quota_settings()
+    now = datetime.now(timezone.utc)
+    daily_start = daily_period_start(now)
+    monthly_start = monthly_period_start(now)
+
+    counters = [
+        UsageCounterRequirement(
+            scope_type="user",
+            scope_id=user_id,
+            metric=ANALYZE_QUOTA_METRIC_ALL_ANALYSES,
+            period_type="daily",
+            period_start=daily_start,
+            limit=quota_settings.max_user_daily,
+        ),
+        UsageCounterRequirement(
+            scope_type="project",
+            scope_id=project_id,
+            metric=ANALYZE_QUOTA_METRIC_ALL_ANALYSES,
+            period_type="daily",
+            period_start=daily_start,
+            limit=quota_settings.max_project_daily,
+        ),
+        UsageCounterRequirement(
+            scope_type="project",
+            scope_id=project_id,
+            metric=ANALYZE_QUOTA_METRIC_ALL_ANALYSES,
+            period_type="monthly",
+            period_start=monthly_start,
+            limit=quota_settings.max_project_monthly,
+        ),
+    ]
+
+    def _add_provider_counter(metric: str) -> None:
+        counters.append(
+            UsageCounterRequirement(
+                scope_type="project",
+                scope_id=project_id,
+                metric=metric,
+                period_type="daily",
+                period_start=daily_start,
+                limit=quota_settings.max_project_daily_by_metric[metric],
+            )
+        )
+        counters.append(
+            UsageCounterRequirement(
+                scope_type="project",
+                scope_id=project_id,
+                metric=metric,
+                period_type="monthly",
+                period_start=monthly_start,
+                limit=quota_settings.max_project_monthly_by_metric[metric],
+            )
+        )
+
+    resolved_ai_overview_mode = resolve_ai_overview_mode(payload.aiOverviewMode)
+    dataforseo_environment = resolve_dataforseo_environment(
+        resolved_ai_overview_mode, get_dataforseo_settings()
+    )
+    if dataforseo_environment is not None:
+        _add_provider_counter(f"dataforseo_{dataforseo_environment}")
+
+    # Mirrors run_analysis_pipeline()'s own exact rule: ChatGPT is
+    # skipped entirely (never resolved/called) when aiOverviewMode is
+    # "mock", to avoid duplicating the mock fixture's own ChatGPT card.
+    resolved_chatgpt_mode = (
+        "off" if resolved_ai_overview_mode == "mock" else resolve_chatgpt_mode(payload.chatgptMode)
+    )
+    if resolved_chatgpt_mode == "openai":
+        _add_provider_counter("openai")
+
+    if resolve_claude_mode(payload.claudeMode) == "anthropic":
+        _add_provider_counter("anthropic")
+
+    if resolve_gemini_mode(payload.geminiMode) == "google":
+        _add_provider_counter("google")
+
+    return counters
+
+
 def _analyze_authenticated_idempotent(
     payload: AnalyzeRequest, brand_name: str, *, user_id: str, project_id: str
 ):
-    """ANALYZE_AUTH_REQUIRED=true path (Task 6-B3) — requires a valid
-    `requestId`, then atomically reserves this request's execution
-    slot via create_running_analysis_run() *before* ever calling
-    run_analysis_pipeline() (processing order mandated by this task's
-    "6. 二重課金防止": JWT/project auth -> requestId validation -> DB
-    idempotency/reservation -> only then the actual analysis).
+    """ANALYZE_AUTH_REQUIRED=true path (Task 6-B3/6-B4) — requires a
+    valid `requestId`, then atomically reserves this request's
+    execution slot (and, when quota enforcement is enabled, every
+    usage-quota counter it needs) via create_running_analysis_run()
+    *before* ever calling run_analysis_pipeline() (processing order
+    mandated by Task 6-B3's "6. 二重課金防止" / Task 6-B4's "3.
+    原子的な利用枠確保": JWT/project auth -> requestId validation -> DB
+    idempotency + quota reservation -> only then the actual analysis).
 
     A replay (already completed/partial) returns the saved result
     immediately, without calling run_analysis_pipeline() or any save
-    function again — no new external provider call, no new row.
+    function again — no new external provider call, no new row, no
+    new counter increment.
     """
+    quota_settings = load_analyze_quota_settings()
+    if not quota_settings.enforcement_enabled and not quota_settings.allow_auth_without_quota:
+        # Task 6-B4 "6": AUTH ON / QUOTA OFF is refused by default —
+        # running the authenticated (and therefore potentially paid)
+        # path with no cost protection at all is never a safe implicit
+        # state. The only way around this is the narrow, explicitly
+        # named dev/test-only ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA
+        # override (see services/analyze_quota_settings.py).
+        return error_response(
+            ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_MESSAGE,
+            status_code=503,
+            code=ANALYZE_QUOTA_ENFORCEMENT_REQUIRED_CODE,
+        )
+    if not quota_settings.enforcement_enabled and quota_settings.allow_auth_without_quota:
+        logger.warning(
+            "ANALYZE_AUTH_REQUIRED=true but ANALYZE_QUOTA_ENFORCEMENT_ENABLED=false; "
+            "proceeding UNMETERED because ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA=true "
+            "(dev/test override only — this must never be set in production)"
+        )
+
     request_id = _validate_request_id(payload.requestId)
     if request_id is None:
         if not payload.requestId:
@@ -1225,6 +1395,12 @@ def _analyze_authenticated_idempotent(
             status_code=400,
             code=ANALYZE_REQUEST_ID_INVALID_CODE,
         )
+
+    required_counters = (
+        _resolve_required_usage_counters(payload, user_id=user_id, project_id=project_id)
+        if quota_settings.enforcement_enabled
+        else []
+    )
 
     try:
         reservation = create_running_analysis_run(
@@ -1241,6 +1417,7 @@ def _analyze_authenticated_idempotent(
             claude_mode=payload.claudeMode,
             gemini_mode=payload.geminiMode,
             lease_seconds=SYNC_ANALYSIS_LEASE_SECONDS,
+            required_counters=required_counters,
         )
     except SyncAnalysisStillRunningError:
         return error_response(
@@ -1263,6 +1440,28 @@ def _analyze_authenticated_idempotent(
             ANALYZE_REQUEST_CANCELLED_MESSAGE,
             status_code=409,
             code=ANALYZE_REQUEST_CANCELLED_CODE,
+        )
+    except AnalysisQuotaExceededError as exc:
+        period_length_days = 1 if exc.period_type == "daily" else None
+        if period_length_days is not None:
+            next_period_start = exc.period_start + timedelta(days=period_length_days)
+        else:
+            # monthly — advance to the 1st of the next calendar month.
+            year = exc.period_start.year + (1 if exc.period_start.month == 12 else 0)
+            month = 1 if exc.period_start.month == 12 else exc.period_start.month + 1
+            next_period_start = exc.period_start.replace(year=year, month=month)
+        return error_response(
+            ANALYZE_QUOTA_EXCEEDED_MESSAGE,
+            status_code=429,
+            code=ANALYZE_QUOTA_EXCEEDED_CODE,
+            extra={
+                "quota": {
+                    "scope": exc.scope_type,
+                    "metric": exc.metric,
+                    "period": exc.period_type,
+                    "availableAt": next_period_start.isoformat(),
+                }
+            },
         )
     except AnalysisHistoryReadError:
         return error_response(ANALYZE_RUN_FAILED_MESSAGE, status_code=503)
