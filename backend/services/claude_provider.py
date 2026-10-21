@@ -53,7 +53,13 @@ this one extra card is present.
 import logging
 import os
 
-from models import AIOverviewComparisonItem, ClaudeEnvironment, ClaudeProviderMode, ClaudeStatus
+from models import (
+    AIOverviewComparisonItem,
+    ClaudeEnvironment,
+    ClaudeProviderMode,
+    ClaudeStatus,
+    RecognitionLevel,
+)
 from services.claude_client import fetch_claude_observation
 from services.claude_settings import ClaudeSettings, get_claude_credentials, get_claude_settings
 
@@ -112,23 +118,33 @@ def _gate_rejection_reason(settings: ClaudeSettings, credentials_configured: boo
 
 def build_claude_observation(
     brand_name: str, mode: ClaudeProviderMode
-) -> tuple[AIOverviewComparisonItem | None, ClaudeStatus, str, ClaudeEnvironment]:
-    """Returns (item, status, human-readable reason, environment) for
-    the given mode. "off" never calls Anthropic. "anthropic" calls
-    services/claude_client.py's connector only once CLAUDE_API_KEY is
-    configured and CLAUDE_REQUEST_LIMIT_PER_ANALYZE is exactly 1 — any
-    single gate missing means no external call is made at all (see
-    module docstring). Never includes the API key itself in any reason
-    string (it isn't even held anywhere except the one short-lived
+) -> tuple[
+    AIOverviewComparisonItem | None,
+    ClaudeStatus,
+    str,
+    ClaudeEnvironment,
+    RecognitionLevel | None,
+    str | None,
+]:
+    """Returns (item, status, human-readable reason, environment,
+    recognition_level, prompt_version) for the given mode. "off" never
+    calls Anthropic. "anthropic" calls services/claude_client.py's
+    connector only once CLAUDE_API_KEY is configured and
+    CLAUDE_REQUEST_LIMIT_PER_ANALYZE is exactly 1 — any single gate
+    missing means no external call is made at all (see module
+    docstring). Never includes the API key itself in any reason string
+    (it isn't even held anywhere except the one short-lived
     ClaudeCredentials object — see services/claude_settings.py).
 
     `item` is None whenever no card should be added to
     aiOverviewComparison (mode "off", or an "anthropic" attempt that
     didn't succeed) — the caller (main.py) simply skips appending in
-    that case.
+    that case. `recognition_level`/`prompt_version` (Task 6-D-1,
+    feature/recognition-level-classification) are None under the exact
+    same conditions as `item`.
     """
     if mode == "off":
-        return None, "off", "Claude observation is disabled.", "off"
+        return None, "off", "Claude observation is disabled.", "off", None, None
 
     # mode == "anthropic"
     settings = get_claude_settings()
@@ -139,6 +155,8 @@ def build_claude_observation(
             "unavailable",
             _gate_rejection_reason(settings, credentials is not None),
             "unavailable",
+            None,
+            None,
         )
 
     result = fetch_claude_observation(
@@ -148,7 +166,7 @@ def build_claude_observation(
         max_output_tokens=settings.max_output_tokens,
     )
     if not result.success:
-        return None, "unavailable", result.reason, "unavailable"
+        return None, "unavailable", result.reason, "unavailable", None, None
 
     item = AIOverviewComparisonItem(
         platform=CLAUDE_PLATFORM_LABEL,
@@ -160,4 +178,4 @@ def build_claude_observation(
         referenceSummary=None,
         ownDomainReferenced=None,
     )
-    return item, "real", result.reason, "api"
+    return item, "real", result.reason, "api", result.recognition_level, result.prompt_version

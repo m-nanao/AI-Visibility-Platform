@@ -54,7 +54,13 @@ one extra card is present.
 import logging
 import os
 
-from models import AIOverviewComparisonItem, GeminiEnvironment, GeminiProviderMode, GeminiStatus
+from models import (
+    AIOverviewComparisonItem,
+    GeminiEnvironment,
+    GeminiProviderMode,
+    GeminiStatus,
+    RecognitionLevel,
+)
 from services.gemini_client import fetch_gemini_observation
 from services.gemini_settings import GeminiSettings, get_gemini_credentials, get_gemini_settings
 
@@ -113,23 +119,33 @@ def _gate_rejection_reason(settings: GeminiSettings, credentials_configured: boo
 
 def build_gemini_observation(
     brand_name: str, mode: GeminiProviderMode
-) -> tuple[AIOverviewComparisonItem | None, GeminiStatus, str, GeminiEnvironment]:
-    """Returns (item, status, human-readable reason, environment) for
-    the given mode. "off" never calls Gemini. "google" calls
-    services/gemini_client.py's connector only once GEMINI_API_KEY is
-    configured and GEMINI_REQUEST_LIMIT_PER_ANALYZE is exactly 1 — any
-    single gate missing means no external call is made at all (see
-    module docstring). Never includes the API key itself in any reason
-    string (it isn't even held anywhere except the one short-lived
+) -> tuple[
+    AIOverviewComparisonItem | None,
+    GeminiStatus,
+    str,
+    GeminiEnvironment,
+    RecognitionLevel | None,
+    str | None,
+]:
+    """Returns (item, status, human-readable reason, environment,
+    recognition_level, prompt_version) for the given mode. "off" never
+    calls Gemini. "google" calls services/gemini_client.py's connector
+    only once GEMINI_API_KEY is configured and
+    GEMINI_REQUEST_LIMIT_PER_ANALYZE is exactly 1 — any single gate
+    missing means no external call is made at all (see module
+    docstring). Never includes the API key itself in any reason string
+    (it isn't even held anywhere except the one short-lived
     GeminiCredentials object — see services/gemini_settings.py).
 
     `item` is None whenever no card should be added to
     aiOverviewComparison (mode "off", or a "google" attempt that didn't
     succeed) — the caller (main.py) simply skips appending in that
-    case.
+    case. `recognition_level`/`prompt_version` (Task 6-D-1,
+    feature/recognition-level-classification) are None under the exact
+    same conditions as `item`.
     """
     if mode == "off":
-        return None, "off", "Gemini observation is disabled.", "off"
+        return None, "off", "Gemini observation is disabled.", "off", None, None
 
     # mode == "google"
     settings = get_gemini_settings()
@@ -140,6 +156,8 @@ def build_gemini_observation(
             "unavailable",
             _gate_rejection_reason(settings, credentials is not None),
             "unavailable",
+            None,
+            None,
         )
 
     result = fetch_gemini_observation(
@@ -149,7 +167,7 @@ def build_gemini_observation(
         max_output_tokens=settings.max_output_tokens,
     )
     if not result.success:
-        return None, "unavailable", result.reason, "unavailable"
+        return None, "unavailable", result.reason, "unavailable", None, None
 
     item = AIOverviewComparisonItem(
         platform=GEMINI_PLATFORM_LABEL,
@@ -168,4 +186,4 @@ def build_gemini_observation(
         isTruncated=result.is_truncated,
         note=result.note,
     )
-    return item, "real", result.reason, "api"
+    return item, "real", result.reason, "api", result.recognition_level, result.prompt_version

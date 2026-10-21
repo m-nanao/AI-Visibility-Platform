@@ -252,8 +252,8 @@ def test_fetch_user_prompt_uses_the_shared_unified_prompt(monkeypatch):
 
     user_content = seen_bodies[0]["input"][1]["content"]
     assert user_content == build_user_prompt("Acme")
-    assert "どのような企業・ブランド・サービスとして認識されるか" in user_content
-    assert "確信できない情報は推測で補わず、不明であることを明示してください。" in user_content
+    assert "対象を具体的に識別できる場合は" in user_content
+    assert "名称の印象だけから事業内容や特徴を推測しないでください。" in user_content
     assert "Acme" in user_content
 
 
@@ -443,3 +443,56 @@ def test_api_key_never_appears_in_the_reason_string_on_success(monkeypatch):
 
     assert "sk-super-secret-key" not in result.reason
     assert "sk-super-secret-key" not in (result.full_summary or "")
+
+
+# --- recognition_level / prompt_version (Task 6-D-1) ------------------------
+
+
+def _fetch_with_text(monkeypatch, text: str):
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json={"output_text": text}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+    return fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
+
+
+def test_fetch_classifies_specific_knowledge_response(monkeypatch):
+    result = _fetch_with_text(
+        monkeypatch, "Acmeは架空の企業で、SaaS事業を展開しています。\n認識レベル：具体的な認識あり"
+    )
+    assert result.recognition_level == "specific_knowledge"
+    assert result.prompt_version == "no_search_v1"
+
+
+def test_fetch_classifies_partial_knowledge_response(monkeypatch):
+    result = _fetch_with_text(
+        monkeypatch, "Acmeについては一部の情報のみ把握しています。\n認識レベル：部分的な認識"
+    )
+    assert result.recognition_level == "partial_knowledge"
+
+
+def test_fetch_classifies_unidentified_response(monkeypatch):
+    result = _fetch_with_text(
+        monkeypatch, "Acmeという企業を具体的に識別できません。\n認識レベル：対象企業を識別できない"
+    )
+    assert result.recognition_level == "unidentified"
+
+
+def test_fetch_classifies_name_inference_only_response(monkeypatch):
+    result = _fetch_with_text(
+        monkeypatch, "名称から推測すると技術系の企業と思われます。\n認識レベル：名称からの推測のみ"
+    )
+    assert result.recognition_level == "name_inference_only"
+
+
+def test_fetch_defaults_to_indeterminate_when_label_line_is_missing_or_corrupted(monkeypatch):
+    result = _fetch_with_text(monkeypatch, "Acmeについて説明しますが、ラベル行がありません。")
+    assert result.recognition_level == "indeterminate"
+
+
+def test_fetch_strips_the_recognition_label_line_from_the_visible_summary(monkeypatch):
+    result = _fetch_with_text(
+        monkeypatch, "これは本文です。\n認識レベル：具体的な認識あり"
+    )
+    assert "認識レベル" not in (result.full_summary or "")
+    assert "認識レベル" not in (result.summary or "")

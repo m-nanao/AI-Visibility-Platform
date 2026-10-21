@@ -144,6 +144,46 @@ GeminiStatus = Literal["real", "off", "unavailable"]
 # otherwise. See services/gemini_provider.py's build_gemini_observation().
 GeminiEnvironment = Literal["api", "off", "unavailable"]
 
+# Task 6-D-1 (feature/recognition-level-classification): how
+# specifically a single-call AI observation provider (ChatGPT/Claude/
+# Gemini — never Google AI Mode/DataForSEO, which is search-based, not
+# a model self-report) claims to recognize the brand, parsed from its
+# own answer text by services/ai_observation_prompts.py's
+# classify_recognition_level(). Five values, matching that function's
+# exact label text:
+# - "specific_knowledge": the model described concrete, specific
+#   company information.
+# - "partial_knowledge": the model described some information, but
+#   signaled it was incomplete/uncertain.
+# - "unidentified": the model stated it could not identify the
+#   specific company/brand this name refers to.
+# - "name_inference_only": the model explicitly noted it was only
+#   guessing from how the name sounds, not from actual knowledge.
+# - "indeterminate": no reliable classification could be made — the
+#   model didn't follow the requested label format, or used wording
+#   that doesn't map to any of the four values above. Also the safe
+#   fallback whenever parsing the label line itself fails; never
+#   treated as equivalent to actual recognition.
+#
+# **This is the model's own self-report, never independently verified
+# against any Web/official source** — a future task may cross-check it
+# against Common Crawl/official-site content, but this value alone
+# must never be presented as "confirmed accurate" (see
+# classify_recognition_level()'s own docstring for the full caveat).
+# It is also deliberately independent of the older, unrelated
+# `mentioned` flag on AIOverviewComparisonItem (a simple substring
+# check for the brand name appearing anywhere in the answer text, which
+# can be True even for a "対象企業を識別できない" / unidentified answer
+# that merely echoes the name back) — `mentioned` must never be read as
+# evidence of recognition accuracy either.
+RecognitionLevel = Literal[
+    "specific_knowledge",
+    "partial_knowledge",
+    "unidentified",
+    "name_inference_only",
+    "indeterminate",
+]
+
 # Whether /analyze should try to add supplementary Document(s) from
 # Common Crawl (see services/common_crawl_index.py /
 # common_crawl_warc.py / common_crawl_document_provider.py and
@@ -256,12 +296,24 @@ class ChatGptProviderInfo(BaseModel):
     services/chatgpt_provider.py. Entirely optional/independent of
     AIOverviewProviderInfo above: a request can have a real DataForSEO
     result and no ChatGPT card (or vice versa, e.g. aiOverviewMode=off).
+
+    `recognitionLevel`/`promptVersion` (Task 6-D-1,
+    feature/recognition-level-classification) are both optional —
+    `None` on every pre-existing saved history row (neither field
+    existed before this task) and whenever no actual model call
+    happened (mode="off", or a gate/API failure before any text was
+    returned) — so existing clients/tests that don't know about them
+    keep working unchanged. See models.RecognitionLevel's own
+    docstring for why `recognitionLevel` must never be read as a
+    verified fact.
     """
 
     mode: ChatGptProviderMode
     status: ChatGptStatus
     reason: str
     environment: ChatGptEnvironment | None = None
+    recognitionLevel: RecognitionLevel | None = None
+    promptVersion: str | None = None
 
 
 class ClaudeProviderInfo(BaseModel):
@@ -269,12 +321,19 @@ class ClaudeProviderInfo(BaseModel):
     to aiOverviewComparison this request, and why — see
     services/claude_provider.py. Entirely optional/independent of
     AIOverviewProviderInfo/ChatGptProviderInfo above.
+
+    `recognitionLevel`/`promptVersion`: see
+    ChatGptProviderInfo's own doc for this Task 6-D-1 addition — same
+    optionality/backward-compatibility reasoning applies identically
+    here.
     """
 
     mode: ClaudeProviderMode
     status: ClaudeStatus
     reason: str
     environment: ClaudeEnvironment | None = None
+    recognitionLevel: RecognitionLevel | None = None
+    promptVersion: str | None = None
 
 
 class GeminiProviderInfo(BaseModel):
@@ -282,12 +341,19 @@ class GeminiProviderInfo(BaseModel):
     to aiOverviewComparison this request, and why — see
     services/gemini_provider.py. Entirely optional/independent of the
     other AI observation providers above.
+
+    `recognitionLevel`/`promptVersion`: see
+    ChatGptProviderInfo's own doc for this Task 6-D-1 addition — same
+    optionality/backward-compatibility reasoning applies identically
+    here.
     """
 
     mode: GeminiProviderMode
     status: GeminiStatus
     reason: str
     environment: GeminiEnvironment | None = None
+    recognitionLevel: RecognitionLevel | None = None
+    promptVersion: str | None = None
 
 
 class CommonCrawlProviderInfo(BaseModel):

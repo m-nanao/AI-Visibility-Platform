@@ -50,7 +50,7 @@ def _mock_successful_gemini_call(monkeypatch, *, mentioned=True, summary="new Ge
     monkeypatch.setattr(
         gemini_rerun,
         "build_gemini_observation",
-        lambda brand_name, mode: (new_item, "real", "ok", "api"),
+        lambda brand_name, mode: (new_item, "real", "ok", "api", "specific_knowledge", "no_search_v1"),
     )
     return new_item
 
@@ -59,7 +59,7 @@ def _mock_failed_gemini_call(monkeypatch, reason: str = "Gemini API key is not c
     monkeypatch.setattr(
         gemini_rerun,
         "build_gemini_observation",
-        lambda brand_name, mode: (None, "unavailable", reason, "unavailable"),
+        lambda brand_name, mode: (None, "unavailable", reason, "unavailable", None, None),
     )
 
 
@@ -133,6 +133,8 @@ def test_success_updates_gemini_provider_in_meta(monkeypatch):
         "status": "real",
         "reason": "ok",
         "environment": "api",
+        "recognitionLevel": "specific_knowledge",
+        "promptVersion": "no_search_v1",
     }
 
 

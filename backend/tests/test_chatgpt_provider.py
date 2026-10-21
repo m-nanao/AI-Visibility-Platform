@@ -71,12 +71,16 @@ def test_resolve_chatgpt_mode_override_flag_is_case_insensitive(monkeypatch):
 def test_build_chatgpt_observation_off_mode_returns_no_item(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
 
-    item, status, reason, environment = build_chatgpt_observation("Acme", "off")
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "off"
+    )
 
     assert item is None
     assert status == "off"
     assert environment == "off"
     assert reason
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_chatgpt_observation_off_mode_never_calls_openai(monkeypatch):
@@ -94,12 +98,16 @@ def test_build_chatgpt_observation_off_mode_never_calls_openai(monkeypatch):
 def test_build_chatgpt_observation_openai_mode_without_api_key_is_unavailable(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
 
-    item, status, reason, environment = build_chatgpt_observation("Acme", "openai")
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
 
     assert item is None
     assert status == "unavailable"
     assert environment == "unavailable"
     assert "not configured" in reason
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_chatgpt_observation_openai_mode_without_api_key_never_calls_openai(monkeypatch):
@@ -123,12 +131,16 @@ def test_build_chatgpt_observation_openai_mode_with_request_limit_above_one_is_r
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fail_if_called)
 
-    item, status, reason, environment = build_chatgpt_observation("Acme", "openai")
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
 
     assert item is None
     assert status == "unavailable"
     assert environment == "unavailable"
     assert reason == "ChatGPT request limit must be 1."
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_chatgpt_observation_success_returns_an_item(monkeypatch):
@@ -138,13 +150,17 @@ def test_build_chatgpt_observation_success_returns_an_item(monkeypatch):
     def fake_post(url, **kwargs):
         return httpx.Response(
             200,
-            json={"output_text": "Acme is a well-known tool for teams."},
+            json={
+                "output_text": "Acme is a well-known tool for teams。\n認識レベル：具体的な認識あり"
+            },
             request=httpx.Request("POST", url),
         )
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    item, status, reason, environment = build_chatgpt_observation("Acme", "openai")
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
 
     assert status == "real"
     assert environment == "api"
@@ -158,6 +174,8 @@ def test_build_chatgpt_observation_success_returns_an_item(monkeypatch):
     assert item.references is None
     assert item.referenceSummary is None
     assert item.ownDomainReferenced is None
+    assert recognition_level == "specific_knowledge"
+    assert prompt_version == "no_search_v1"
 
 
 def test_build_chatgpt_observation_sends_exactly_one_request(monkeypatch):
@@ -253,7 +271,7 @@ def test_build_chatgpt_observation_omits_temperature_for_the_default_gpt5_mini_m
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    item, status, _, _ = build_chatgpt_observation("Acme", "openai")
+    item, status, _, _, _, _ = build_chatgpt_observation("Acme", "openai")
 
     assert "temperature" not in seen_bodies[0]
     assert status == "real"
@@ -269,12 +287,16 @@ def test_build_chatgpt_observation_failure_reports_unavailable_without_crashing(
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", raise_timeout)
 
-    item, status, reason, environment = build_chatgpt_observation("Acme", "openai")
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
 
     assert item is None
     assert status == "unavailable"
     assert environment == "unavailable"
     assert reason
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_chatgpt_observation_reason_never_includes_the_api_key(monkeypatch):
@@ -286,7 +308,7 @@ def test_build_chatgpt_observation_reason_never_includes_the_api_key(monkeypatch
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", raise_timeout)
 
-    _, _, reason, _ = build_chatgpt_observation("Acme", "openai")
+    _, _, reason, _, _, _ = build_chatgpt_observation("Acme", "openai")
 
     assert "sk-super-secret-key" not in reason
 
@@ -300,6 +322,6 @@ def test_build_chatgpt_observation_reason_never_includes_the_api_key_on_success(
 
     monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
 
-    _, _, reason, _ = build_chatgpt_observation("Acme", "openai")
+    _, _, reason, _, _, _ = build_chatgpt_observation("Acme", "openai")
 
     assert "sk-super-secret-key" not in reason

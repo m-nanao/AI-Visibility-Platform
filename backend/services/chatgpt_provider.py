@@ -48,7 +48,13 @@ this one extra card is present.
 import logging
 import os
 
-from models import AIOverviewComparisonItem, ChatGptEnvironment, ChatGptProviderMode, ChatGptStatus
+from models import (
+    AIOverviewComparisonItem,
+    ChatGptEnvironment,
+    ChatGptProviderMode,
+    ChatGptStatus,
+    RecognitionLevel,
+)
 from services.chatgpt_client import fetch_chatgpt_observation
 from services.chatgpt_settings import ChatGptSettings, get_chatgpt_credentials, get_chatgpt_settings
 
@@ -107,11 +113,18 @@ def _gate_rejection_reason(settings: ChatGptSettings, credentials_configured: bo
 
 def build_chatgpt_observation(
     brand_name: str, mode: ChatGptProviderMode
-) -> tuple[AIOverviewComparisonItem | None, ChatGptStatus, str, ChatGptEnvironment]:
-    """Returns (item, status, human-readable reason, environment) for
-    the given mode. "off" never calls OpenAI. "openai" calls
-    services/chatgpt_client.py's connector only once
-    OPENAI_API_KEY is configured and
+) -> tuple[
+    AIOverviewComparisonItem | None,
+    ChatGptStatus,
+    str,
+    ChatGptEnvironment,
+    RecognitionLevel | None,
+    str | None,
+]:
+    """Returns (item, status, human-readable reason, environment,
+    recognition_level, prompt_version) for the given mode. "off" never
+    calls OpenAI. "openai" calls services/chatgpt_client.py's connector
+    only once OPENAI_API_KEY is configured and
     CHATGPT_REQUEST_LIMIT_PER_ANALYZE is exactly 1 — any single gate
     missing means no external call is made at all (see module
     docstring). Never includes the API key itself in any reason string
@@ -121,10 +134,13 @@ def build_chatgpt_observation(
     `item` is None whenever no card should be added to
     aiOverviewComparison (mode "off", or an "openai" attempt that
     didn't succeed) — the caller (main.py) simply skips appending in
-    that case.
+    that case. `recognition_level`/`prompt_version` (Task 6-D-1,
+    feature/recognition-level-classification) are None under the exact
+    same conditions as `item` — there is nothing to classify/version
+    when no text was ever returned.
     """
     if mode == "off":
-        return None, "off", "ChatGPT observation is disabled.", "off"
+        return None, "off", "ChatGPT observation is disabled.", "off", None, None
 
     # mode == "openai"
     settings = get_chatgpt_settings()
@@ -135,6 +151,8 @@ def build_chatgpt_observation(
             "unavailable",
             _gate_rejection_reason(settings, credentials is not None),
             "unavailable",
+            None,
+            None,
         )
 
     result = fetch_chatgpt_observation(
@@ -145,7 +163,7 @@ def build_chatgpt_observation(
         temperature=settings.temperature,
     )
     if not result.success:
-        return None, "unavailable", result.reason, "unavailable"
+        return None, "unavailable", result.reason, "unavailable", None, None
 
     item = AIOverviewComparisonItem(
         platform=CHATGPT_PLATFORM_LABEL,
@@ -157,4 +175,4 @@ def build_chatgpt_observation(
         referenceSummary=None,
         ownDomainReferenced=None,
     )
-    return item, "real", result.reason, "api"
+    return item, "real", result.reason, "api", result.recognition_level, result.prompt_version

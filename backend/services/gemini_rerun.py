@@ -78,7 +78,14 @@ def rerun_gemini_for_analysis_run(
     old input_snapshot happens to contain `"geminiMode": "google"`.
     """
     gemini_mode = resolve_gemini_mode((input_snapshot or {}).get("geminiMode"))
-    item, status, reason, environment = build_gemini_observation(brand_name, gemini_mode)
+    (
+        item,
+        status,
+        reason,
+        environment,
+        recognition_level,
+        prompt_version,
+    ) = build_gemini_observation(brand_name, gemini_mode)
 
     if item is None:
         # Nothing called successfully — never touch result_json/meta_json,
@@ -107,7 +114,12 @@ def rerun_gemini_for_analysis_run(
 
     updated_meta_json = dict(meta_json or {})
     updated_meta_json["geminiProvider"] = GeminiProviderInfo(
-        mode=gemini_mode, status=status, reason=reason, environment=environment
+        mode=gemini_mode,
+        status=status,
+        reason=reason,
+        environment=environment,
+        recognitionLevel=recognition_level,
+        promptVersion=prompt_version,
     ).model_dump()
 
     return GeminiRerunOutcome(

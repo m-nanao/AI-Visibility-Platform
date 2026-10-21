@@ -81,12 +81,16 @@ def test_resolve_gemini_mode_override_flag_is_case_insensitive(monkeypatch):
 def test_build_gemini_observation_off_mode_returns_no_item(monkeypatch):
     _clear_gemini_env(monkeypatch)
 
-    item, status, reason, environment = build_gemini_observation("Acme", "off")
+    item, status, reason, environment, recognition_level, prompt_version = build_gemini_observation(
+        "Acme", "off"
+    )
 
     assert item is None
     assert status == "off"
     assert environment == "off"
     assert reason
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_gemini_observation_off_mode_never_calls_gemini(monkeypatch):
@@ -104,12 +108,16 @@ def test_build_gemini_observation_off_mode_never_calls_gemini(monkeypatch):
 def test_build_gemini_observation_google_mode_without_api_key_is_unavailable(monkeypatch):
     _clear_gemini_env(monkeypatch)
 
-    item, status, reason, environment = build_gemini_observation("Acme", "google")
+    item, status, reason, environment, recognition_level, prompt_version = build_gemini_observation(
+        "Acme", "google"
+    )
 
     assert item is None
     assert status == "unavailable"
     assert environment == "unavailable"
     assert "not configured" in reason
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_gemini_observation_google_mode_without_api_key_never_calls_gemini(monkeypatch):
@@ -133,12 +141,16 @@ def test_build_gemini_observation_google_mode_with_request_limit_above_one_is_re
 
     monkeypatch.setattr(gemini_client.httpx, "post", fail_if_called)
 
-    item, status, reason, environment = build_gemini_observation("Acme", "google")
+    item, status, reason, environment, recognition_level, prompt_version = build_gemini_observation(
+        "Acme", "google"
+    )
 
     assert item is None
     assert status == "unavailable"
     assert environment == "unavailable"
     assert reason == "Gemini request limit must be 1."
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_gemini_observation_success_returns_an_item(monkeypatch):
@@ -146,11 +158,15 @@ def test_build_gemini_observation_success_returns_an_item(monkeypatch):
     _set_credentials(monkeypatch)
 
     def fake_post(url, **kwargs):
-        return _text_response(url, "Acme is a well-known tool for teams.")
+        return _text_response(
+            url, "Acme is a well-known tool for teams。\n認識レベル：具体的な認識あり"
+        )
 
     monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
 
-    item, status, reason, environment = build_gemini_observation("Acme", "google")
+    item, status, reason, environment, recognition_level, prompt_version = build_gemini_observation(
+        "Acme", "google"
+    )
 
     assert status == "real"
     assert environment == "api"
@@ -166,6 +182,8 @@ def test_build_gemini_observation_success_returns_an_item(monkeypatch):
     assert item.ownDomainReferenced is None
     assert item.isTruncated is False
     assert item.note is None
+    assert recognition_level == "specific_knowledge"
+    assert prompt_version == "no_search_v1"
 
 
 def test_build_gemini_observation_sends_exactly_one_request(monkeypatch):
@@ -232,12 +250,16 @@ def test_build_gemini_observation_failure_reports_unavailable_without_crashing(m
 
     monkeypatch.setattr(gemini_client.httpx, "post", raise_timeout)
 
-    item, status, reason, environment = build_gemini_observation("Acme", "google")
+    item, status, reason, environment, recognition_level, prompt_version = build_gemini_observation(
+        "Acme", "google"
+    )
 
     assert item is None
     assert status == "unavailable"
     assert environment == "unavailable"
     assert reason
+    assert recognition_level is None
+    assert prompt_version is None
 
 
 def test_build_gemini_observation_reason_never_includes_the_api_key(monkeypatch):
@@ -249,7 +271,7 @@ def test_build_gemini_observation_reason_never_includes_the_api_key(monkeypatch)
 
     monkeypatch.setattr(gemini_client.httpx, "post", raise_timeout)
 
-    _, _, reason, _ = build_gemini_observation("Acme", "google")
+    _, _, reason, _, _, _ = build_gemini_observation("Acme", "google")
 
     assert "gm-super-secret-key" not in reason
 
@@ -263,7 +285,7 @@ def test_build_gemini_observation_reason_never_includes_the_api_key_on_success(m
 
     monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
 
-    _, _, reason, _ = build_gemini_observation("Acme", "google")
+    _, _, reason, _, _, _ = build_gemini_observation("Acme", "google")
 
     assert "gm-super-secret-key" not in reason
 
@@ -285,7 +307,7 @@ def test_build_gemini_observation_passes_through_finish_reason_and_truncation(mo
 
     monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
 
-    item, status, _, _ = build_gemini_observation("Acme", "google")
+    item, status, _, _, _, _ = build_gemini_observation("Acme", "google")
 
     assert status == "real"
     assert item is not None
@@ -307,6 +329,8 @@ def test_build_gemini_observation_status_stays_real_even_when_truncated(monkeypa
 
     monkeypatch.setattr(gemini_client.httpx, "post", fake_post)
 
-    item, status, reason, environment = build_gemini_observation("Acme", "google")
+    item, status, reason, environment, recognition_level, prompt_version = build_gemini_observation(
+        "Acme", "google"
+    )
 
     assert status == "real"

@@ -57,9 +57,12 @@ from dataclasses import dataclass
 
 import httpx
 
+from models import RecognitionLevel
 from services.ai_observation_prompts import (
+    PROMPT_VERSION,
     SYSTEM_PROMPT,
     build_user_prompt,
+    classify_recognition_level,
     summarize_observation_text,
 )
 from services.gemini_settings import GeminiCredentials
@@ -99,6 +102,11 @@ class GeminiObservationResult:
     finish_reason: str | None = None
     is_truncated: bool = False
     note: str | None = None
+    # Task 6-D-1 (feature/recognition-level-classification) — both
+    # None unless `success` is True. See models.RecognitionLevel's
+    # docstring: a self-report, never a verified fact.
+    recognition_level: RecognitionLevel | None = None
+    prompt_version: str | None = None
 
 
 def _build_request_body(brand_name: str, max_output_tokens: int) -> dict:
@@ -308,4 +316,6 @@ def fetch_gemini_observation(
         finish_reason=finish_reason,
         is_truncated=is_truncated,
         note=TRUNCATION_NOTE if is_truncated else None,
+        recognition_level=classify_recognition_level(text),
+        prompt_version=PROMPT_VERSION,
     )

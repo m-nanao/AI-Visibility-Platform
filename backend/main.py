@@ -842,6 +842,10 @@ def run_analysis_pipeline(
         chatgpt_status = "off"
         chatgpt_reason = "ChatGPT observation is disabled while aiOverviewMode is mock."
         chatgpt_environment = "off"
+        # Task 6-D-1 (feature/recognition-level-classification) — no
+        # call happened, so nothing to classify/version either.
+        chatgpt_recognition_level = None
+        chatgpt_prompt_version = None
     else:
         chatgpt_mode = resolve_chatgpt_mode(chatgpt_mode_override)
         (
@@ -849,6 +853,8 @@ def run_analysis_pipeline(
             chatgpt_status,
             chatgpt_reason,
             chatgpt_environment,
+            chatgpt_recognition_level,
+            chatgpt_prompt_version,
         ) = build_chatgpt_observation(brand_name, chatgpt_mode)
 
     if chatgpt_item is not None:
@@ -872,6 +878,8 @@ def run_analysis_pipeline(
         claude_status,
         claude_reason,
         claude_environment,
+        claude_recognition_level,
+        claude_prompt_version,
     ) = build_claude_observation(brand_name, claude_mode)
     if claude_item is not None:
         result.aiOverviewComparison = [*result.aiOverviewComparison, claude_item]
@@ -890,6 +898,8 @@ def run_analysis_pipeline(
         gemini_status,
         gemini_reason,
         gemini_environment,
+        gemini_recognition_level,
+        gemini_prompt_version,
     ) = build_gemini_observation(brand_name, gemini_mode)
     if gemini_item is not None:
         result.aiOverviewComparison = [*result.aiOverviewComparison, gemini_item]
@@ -936,18 +946,24 @@ def run_analysis_pipeline(
             status=chatgpt_status,
             reason=chatgpt_reason,
             environment=chatgpt_environment,
+            recognitionLevel=chatgpt_recognition_level,
+            promptVersion=chatgpt_prompt_version,
         ),
         claudeProvider=ClaudeProviderInfo(
             mode=claude_mode,
             status=claude_status,
             reason=claude_reason,
             environment=claude_environment,
+            recognitionLevel=claude_recognition_level,
+            promptVersion=claude_prompt_version,
         ),
         geminiProvider=GeminiProviderInfo(
             mode=gemini_mode,
             status=gemini_status,
             reason=gemini_reason,
             environment=gemini_environment,
+            recognitionLevel=gemini_recognition_level,
+            promptVersion=gemini_prompt_version,
         ),
         commonCrawlProvider=common_crawl_provider,
     )

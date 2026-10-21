@@ -39,7 +39,14 @@ from dataclasses import dataclass
 
 import httpx
 
-from services.ai_observation_prompts import SYSTEM_PROMPT, build_user_prompt
+from models import RecognitionLevel
+from services.ai_observation_prompts import (
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
+    build_user_prompt,
+    classify_recognition_level,
+    strip_recognition_label_line,
+)
 from services.chatgpt_settings import ChatGptCredentials
 
 logger = logging.getLogger(__name__)
@@ -71,6 +78,12 @@ class ChatGptObservationResult:
     mentioned: bool = False
     summary: str | None = None
     full_summary: str | None = None
+    # Task 6-D-1 (feature/recognition-level-classification) — both
+    # None unless `success` is True (nothing to classify/version
+    # otherwise). See models.RecognitionLevel's docstring: a
+    # self-report, never a verified fact.
+    recognition_level: RecognitionLevel | None = None
+    prompt_version: str | None = None
 
 
 # Model name prefixes that reject a "temperature" field on OpenAI's
@@ -165,8 +178,13 @@ def _summarize(text: str, brand_name: str) -> tuple[bool, str, str]:
     """Reduces the model's raw answer text to (mentioned, summary,
     full_summary). `summary` is a short excerpt (<= _SUMMARY_MAX_CHARS);
     `full_summary` is the fuller text (<= _FULL_SUMMARY_MAX_CHARS).
+    `summary`/`full_summary` have the trailing recognition-label line
+    (Task 6-D-1) stripped out via
+    services/ai_observation_prompts.py's strip_recognition_label_line()
+    — `mentioned` is computed from the original, unstripped `text`.
     """
     mentioned = brand_name.lower() in text.lower()
+    text = strip_recognition_label_line(text)
 
     cleaned = " ".join(text.split())
     if len(cleaned) > _SUMMARY_MAX_CHARS:
@@ -248,4 +266,9 @@ def fetch_chatgpt_observation(
         mentioned=mentioned,
         summary=summary,
         full_summary=full_summary,
+        # Classified from the raw, untruncated `text` (not `summary`/
+        # `full_summary`, which may be cut short) so the self-report
+        # label line is never lost to truncation.
+        recognition_level=classify_recognition_level(text),
+        prompt_version=PROMPT_VERSION,
     )
