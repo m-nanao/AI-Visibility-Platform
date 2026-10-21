@@ -1,5 +1,6 @@
 """Tests for services/analyze_quota_settings.py (Task 6-B4,
-feature/sync-analyze-jwt-project-auth)."""
+feature/sync-analyze-jwt-project-auth; Task 6-D-2A,
+feature/websearch-quota-metrics adds the *_WEBSEARCH env vars below)."""
 
 from services.analyze_quota_settings import load_analyze_quota_settings
 
@@ -19,6 +20,12 @@ _ALL_ENV_NAMES = [
     "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_ANTHROPIC",
     "ANALYZE_QUOTA_MAX_PROJECT_DAILY_GOOGLE",
     "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_GOOGLE",
+    "ANALYZE_QUOTA_MAX_PROJECT_DAILY_OPENAI_WEBSEARCH",
+    "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_OPENAI_WEBSEARCH",
+    "ANALYZE_QUOTA_MAX_PROJECT_DAILY_ANTHROPIC_WEBSEARCH",
+    "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_ANTHROPIC_WEBSEARCH",
+    "ANALYZE_QUOTA_MAX_PROJECT_DAILY_GOOGLE_WEBSEARCH",
+    "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_GOOGLE_WEBSEARCH",
 ]
 
 
@@ -42,6 +49,9 @@ def test_defaults_when_everything_unset(monkeypatch):
         "openai": 0,
         "anthropic": 0,
         "google": 0,
+        "openai_websearch": 0,
+        "anthropic_websearch": 0,
+        "google_websearch": 0,
     }
     assert settings.max_project_monthly_by_metric == {
         "dataforseo_sandbox": 500,
@@ -49,6 +59,9 @@ def test_defaults_when_everything_unset(monkeypatch):
         "openai": 0,
         "anthropic": 0,
         "google": 0,
+        "openai_websearch": 0,
+        "anthropic_websearch": 0,
+        "google_websearch": 0,
     }
 
 
@@ -146,3 +159,66 @@ def test_invalid_boolean_value_falls_back_to_false(monkeypatch):
     settings = load_analyze_quota_settings()
 
     assert settings.enforcement_enabled is False
+
+
+# --- Task 6-D-2A: openai_websearch/anthropic_websearch/google_websearch ----
+
+
+def test_websearch_metrics_default_to_zero(monkeypatch):
+    _clear_env(monkeypatch)
+    settings = load_analyze_quota_settings()
+
+    for metric in ("openai_websearch", "anthropic_websearch", "google_websearch"):
+        assert settings.max_project_daily_by_metric[metric] == 0
+        assert settings.max_project_monthly_by_metric[metric] == 0
+
+
+def test_websearch_metrics_read_explicit_configured_values(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_DAILY_OPENAI_WEBSEARCH", "5")
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_OPENAI_WEBSEARCH", "50")
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_DAILY_ANTHROPIC_WEBSEARCH", "3")
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_ANTHROPIC_WEBSEARCH", "30")
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_DAILY_GOOGLE_WEBSEARCH", "7")
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_GOOGLE_WEBSEARCH", "70")
+
+    settings = load_analyze_quota_settings()
+
+    assert settings.max_project_daily_by_metric["openai_websearch"] == 5
+    assert settings.max_project_monthly_by_metric["openai_websearch"] == 50
+    assert settings.max_project_daily_by_metric["anthropic_websearch"] == 3
+    assert settings.max_project_monthly_by_metric["anthropic_websearch"] == 30
+    assert settings.max_project_daily_by_metric["google_websearch"] == 7
+    assert settings.max_project_monthly_by_metric["google_websearch"] == 70
+
+
+def test_websearch_metrics_are_independent_from_the_base_provider_metrics(monkeypatch):
+    """Configuring a *_websearch limit must never change the existing
+    (non-websearch) provider's own limit, and vice versa — they are
+    separate counters under separate env vars."""
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_DAILY_OPENAI_WEBSEARCH", "5")
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_DAILY_OPENAI", "15")
+
+    settings = load_analyze_quota_settings()
+
+    assert settings.max_project_daily_by_metric["openai_websearch"] == 5
+    assert settings.max_project_daily_by_metric["openai"] == 15
+
+
+def test_websearch_metrics_reject_negative_values(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_DAILY_GOOGLE_WEBSEARCH", "-1")
+
+    settings = load_analyze_quota_settings()
+
+    assert settings.max_project_daily_by_metric["google_websearch"] == 0
+
+
+def test_websearch_metrics_reject_non_integer_values(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_ANTHROPIC_WEBSEARCH", "unlimited")
+
+    settings = load_analyze_quota_settings()
+
+    assert settings.max_project_monthly_by_metric["anthropic_websearch"] == 0

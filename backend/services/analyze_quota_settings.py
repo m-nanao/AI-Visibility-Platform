@@ -1,6 +1,12 @@
 """Reads Task 6-B4 (feature/sync-analyze-jwt-project-auth) usage-quota
 environment variables into a small settings object.
 
+Task 6-D-2A (feature/websearch-quota-metrics) adds three additional
+paid-provider metrics ("openai_websearch"/"anthropic_websearch"/
+"google_websearch") purely as quota configuration — see the
+_DEFAULT_DAILY_BY_METRIC/_DEFAULT_MONTHLY_BY_METRIC comment below for
+why no call to reserve/consume them exists anywhere yet.
+
 Placed under services/ to match the existing convention of every
 other settings module living here (see services/db_settings.py,
 services/analysis_jobs_settings.py, services/dataforseo_settings.py).
@@ -72,12 +78,33 @@ DEFAULT_MAX_PROJECT_MONTHLY = 500
 # services/analysis_history_repository.py) and
 # resolve_dataforseo_environment()'s return values
 # ("sandbox"/"live" -> "dataforseo_sandbox"/"dataforseo_live").
+#
+# Task 6-D-2A (feature/websearch-quota-metrics) adds
+# "openai_websearch"/"anthropic_websearch"/"google_websearch" —
+# separate counters reserved for a *future* conditional Web-search
+# follow-up call (Task 6-D's design direction: classify recognition
+# first via the existing no-search "openai"/"anthropic"/"google"
+# metrics, then only a provider that still needs it makes one
+# additional Web-search call, metered separately so a search-heavy
+# brand can't silently exhaust the same budget as the base
+# no-search observation). Like every other paid-provider metric here,
+# the default is 0 ("disabled") until explicitly configured.
+# **No code in this task reserves/consumes these metrics yet** — see
+# main.py's _resolve_required_usage_counters(), which deliberately
+# does not call _add_provider_counter() for any of these three new
+# metrics. They exist here only so a future Web-search task can
+# atomically reserve them (via the existing, already-generic
+# UsageCounterRequirement/_reserve_usage_counters() mechanism) without
+# first needing a settings-module change.
 _DEFAULT_DAILY_BY_METRIC: dict[str, int] = {
     "dataforseo_sandbox": 50,
     "dataforseo_live": 0,
     "openai": 0,
     "anthropic": 0,
     "google": 0,
+    "openai_websearch": 0,
+    "anthropic_websearch": 0,
+    "google_websearch": 0,
 }
 _DEFAULT_MONTHLY_BY_METRIC: dict[str, int] = {
     "dataforseo_sandbox": 500,
@@ -85,6 +112,9 @@ _DEFAULT_MONTHLY_BY_METRIC: dict[str, int] = {
     "openai": 0,
     "anthropic": 0,
     "google": 0,
+    "openai_websearch": 0,
+    "anthropic_websearch": 0,
+    "google_websearch": 0,
 }
 
 # Maps each metric to the env-var name suffix used below —
@@ -96,6 +126,9 @@ _METRIC_ENV_SUFFIXES: dict[str, str] = {
     "openai": "OPENAI",
     "anthropic": "ANTHROPIC",
     "google": "GOOGLE",
+    "openai_websearch": "OPENAI_WEBSEARCH",
+    "anthropic_websearch": "ANTHROPIC_WEBSEARCH",
+    "google_websearch": "GOOGLE_WEBSEARCH",
 }
 
 

@@ -360,6 +360,32 @@ def test_gemini_mode_google_consumes_google_metric(monkeypatch):
     assert any(c.metric == "google" for c in counters)
 
 
+def test_websearch_metrics_are_never_reserved_by_a_normal_analysis(monkeypatch):
+    """Task 6-D-2A: openai_websearch/anthropic_websearch/google_websearch
+    exist only as quota configuration for a *future* conditional
+    Web-search follow-up — no code path in this task reserves them, so
+    a normal (no-search) analysis must never include them in
+    required_counters, even with every provider turned on. This is the
+    guard against the exact failure mode item "6" warns about: a 0
+    default for an unreserved metric silently turning every normal
+    analysis into a 429."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("AI_OVERVIEW_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("CHATGPT_PROVIDER_MODE", "off")
+    monkeypatch.setenv("CLAUDE_PROVIDER_MODE", "anthropic")
+    monkeypatch.setenv("GEMINI_PROVIDER_MODE", "google")
+    _mock_authenticated(monkeypatch)
+    reservation_calls = _stub_create_running(monkeypatch)
+    _stub_pipeline_success(monkeypatch)
+
+    response = _post({"brandName": "サイボウズ", "projectId": "p1", "requestId": "req-1"})
+
+    assert response.status_code == 200
+    counters = reservation_calls[0]["required_counters"]
+    websearch_metrics = {"openai_websearch", "anthropic_websearch", "google_websearch"}
+    assert not any(c.metric in websearch_metrics for c in counters)
+
+
 def test_allow_mode_override_false_ignores_request_override_for_quota_too(monkeypatch):
     """ALLOW_CHATGPT_MODE_OVERRIDE unset/false means the per-request
     chatgptMode is ignored by resolve_chatgpt_mode() — and therefore
