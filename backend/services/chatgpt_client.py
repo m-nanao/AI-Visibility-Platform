@@ -32,6 +32,28 @@ errors, timeouts, non-2xx responses, and unexpected response shapes are
 all caught and converted into a `ChatGptObservationResult` with
 `success=False` and a safe (credential-free) `reason`, so an OpenAI
 outage or response-shape quirk can never take down `/analyze`.
+
+**Incomplete-response detection (Task 6-D-3B, added after a production
+report of a ChatGPT answer visibly cut off mid-sentence at the same
+point on repeated runs).** The Responses API's `max_output_tokens`
+caps *reasoning tokens plus visible output tokens combined* for a
+reasoning model like gpt-5-mini — see
+https://developers.openai.com/api/docs/guides/reasoning — so a call
+can run out of budget before finishing its visible answer even when
+HTTP 200 and some readable text come back. When that happens, OpenAI's
+own response carries `"status": "incomplete"` and
+`"incomplete_details": {"reason": "max_output_tokens"}` (or another
+reason). This module reads that signal directly (see
+`_extract_completion_state()`) rather than only inferring truncation
+heuristically, and surfaces it via the same `finishReason`/
+`isTruncated`/`note` fields services/gemini_client.py already defined
+for its own truncation signal — *never* as a hard failure: a truncated
+answer still has `success=True` (there is real, if incomplete, text to
+show), exactly mirroring Gemini's own "soft signal, not an error"
+philosophy. `classify_recognition_level()` itself is unchanged — a
+truncated answer missing its trailing recognition-level label line
+still safely falls back to `"indeterminate"` via that function's own
+existing logic, never guessed at here.
 """
 
 import logging
@@ -64,6 +86,15 @@ _SUMMARY_MAX_CHARS = 200
 # fullSummary sizing (see that module's _FULL_SUMMARY_MAX_CHARS).
 _FULL_SUMMARY_MAX_CHARS = 2500
 
+# Task 6-D-3B: shown alongside a card whose answer may have been cut
+# short — mirrors services/gemini_client.py's own TRUNCATION_NOTE
+# wording/intent.
+TRUNCATION_NOTE = (
+    "OpenAI APIの出力が途中で終了した可能性があります。"
+    "必要に応じて再実行するか、出力上限を増やして検証してください。"
+)
+
+
 @dataclass(frozen=True)
 class ChatGptObservationResult:
     """Outcome of one OpenAI Responses API call, already reduced to
@@ -71,6 +102,12 @@ class ChatGptObservationResult:
     or the API key. `reason` is always a complete, safe-to-surface
     sentence; `success` is True only when readable text was actually
     extracted from the response.
+
+    `finish_reason`/`is_truncated`/`note` (Task 6-D-3B) mirror
+    services/gemini_client.py's own fields of the same name/intent —
+    see this module's docstring. All three are only ever set on a
+    successful (`success=True`) result; `is_truncated=True` is a soft
+    signal, never a reason to treat this result as a failure.
     """
 
     success: bool
@@ -84,6 +121,11 @@ class ChatGptObservationResult:
     # self-report, never a verified fact.
     recognition_level: RecognitionLevel | None = None
     prompt_version: str | None = None
+    # Task 6-D-3B (feature/chatgpt-truncation-detection) — see module
+    # docstring's "Incomplete-response detection" section.
+    finish_reason: str | None = None
+    is_truncated: bool = False
+    note: str | None = None
 
 
 # Model name prefixes that reject a "temperature" field on OpenAI's
@@ -105,6 +147,43 @@ def should_send_temperature(model: str) -> bool:
     """
     normalized = model.strip().lower()
     return not normalized.startswith(_NO_TEMPERATURE_MODEL_PREFIXES)
+
+
+# Model name prefixes that are OpenAI *reasoning* models, for which
+# `reasoning.effort` is a meaningful, accepted Responses API field —
+# see https://developers.openai.com/api/docs/guides/reasoning (accepted
+# values observed/documented: "minimal"/"low"/"medium"/"high",
+# model-dependent). Deliberately the same prefix set as
+# _NO_TEMPERATURE_MODEL_PREFIXES today (gpt-5* models are both
+# reasoning models and temperature-rejecting), kept as its own tuple
+# since the two restrictions are independent and could diverge for a
+# future model family.
+_REASONING_MODEL_PREFIXES: tuple[str, ...] = ("gpt-5",)
+
+# Task 6-D-3B: lowers (from whatever the model's own unspecified
+# default is) how many of max_output_tokens a reasoning model spends on
+# invisible reasoning before producing visible output — see module
+# docstring's "Incomplete-response detection" section for why that
+# matters here. Deliberately "low", not "minimal": this observation
+# asks the model to identify a specific, possibly obscure company by
+# name, which benefits from at least some reasoning; "minimal" is also
+# documented as incompatible with the web_search tool for gpt-5 models
+# elsewhere in this codebase (services/chatgpt_websearch_client.py),
+# though that restriction doesn't apply here, since this module never
+# offers that tool.
+DEFAULT_REASONING_EFFORT = "low"
+
+
+def should_send_reasoning_effort(model: str) -> bool:
+    """Whether `reasoning.effort` is meaningful to include for `model`
+    — true for gpt-5* models (see _REASONING_MODEL_PREFIXES above).
+    Omitted entirely for non-reasoning models, which don't accept a
+    `reasoning` field the same way (and have no corresponding
+    truncation-via-reasoning-tokens risk to mitigate). Case-insensitive,
+    mirrors should_send_temperature()'s own style.
+    """
+    normalized = model.strip().lower()
+    return normalized.startswith(_REASONING_MODEL_PREFIXES)
 
 
 def _build_request_body(
@@ -133,6 +212,10 @@ def _build_request_body(
         body["temperature"] = temperature
     else:
         logger.info("temperature was omitted for gpt-5 model compatibility (model=%s)", model)
+
+    # Task 6-D-3B — see DEFAULT_REASONING_EFFORT's own comment above.
+    if should_send_reasoning_effort(model):
+        body["reasoning"] = {"effort": DEFAULT_REASONING_EFFORT}
 
     return body
 
@@ -172,6 +255,40 @@ def _extract_output_text(payload: object) -> str | None:
     if not parts:
         return None
     return "\n\n".join(parts)
+
+
+def _extract_completion_state(payload: object) -> tuple[str | None, str | None]:
+    """Returns (status, incomplete_reason) from a Responses API
+    envelope — Task 6-D-3B. `status` is OpenAI's own top-level field
+    (e.g. "completed", "incomplete", "failed"); `incomplete_reason` is
+    `incomplete_details.reason` (e.g. "max_output_tokens") when present.
+    Both None when `payload` isn't shaped as expected, or when the
+    response is a normal "completed" one with no `incomplete_details`
+    at all — this function never guesses a reason that wasn't actually
+    returned.
+
+    This is the authoritative truncation signal this module relies on
+    (unlike services/gemini_client.py, this module does not also add a
+    heuristic markdown/short-text fallback — a community report notes
+    OpenAI has, at least once, returned `status: "completed"` with
+    `incomplete_details: null` for an answer that still looked cut off,
+    so this signal is not claimed to catch every possible truncation,
+    only the ones OpenAI itself reports).
+    """
+    if not isinstance(payload, dict):
+        return None, None
+
+    status = payload.get("status")
+    status = status if isinstance(status, str) and status.strip() else None
+
+    incomplete_reason = None
+    incomplete_details = payload.get("incomplete_details")
+    if isinstance(incomplete_details, dict):
+        raw_reason = incomplete_details.get("reason")
+        if isinstance(raw_reason, str) and raw_reason.strip():
+            incomplete_reason = raw_reason.strip()
+
+    return status, incomplete_reason
 
 
 def _summarize(text: str, brand_name: str) -> tuple[bool, str, str]:
@@ -252,13 +369,27 @@ def fetch_chatgpt_observation(
             reason="OpenAI API request failed: response was not valid JSON.",
         )
 
+    status, incomplete_reason = _extract_completion_state(payload)
     text = _extract_output_text(payload)
     if text is None:
+        reason = "OpenAI API returned no readable text."
+        if status == "incomplete":
+            # Task 6-D-3B item 1: distinguish "nothing came back at
+            # all" (e.g. a response-shape surprise) from "the response
+            # was explicitly incomplete before any readable text was
+            # produced" (e.g. all of max_output_tokens spent on
+            # invisible reasoning — see module docstring).
+            reason = (
+                f"{reason} (OpenAI response was incomplete"
+                + (f", reason={incomplete_reason}" if incomplete_reason else "")
+                + ")"
+            )
         return ChatGptObservationResult(
             success=False,
-            reason="OpenAI API returned no readable text.",
+            reason=reason,
         )
 
+    is_truncated = status == "incomplete"
     mentioned, summary, full_summary = _summarize(text, brand_name)
     return ChatGptObservationResult(
         success=True,
@@ -268,7 +399,14 @@ def fetch_chatgpt_observation(
         full_summary=full_summary,
         # Classified from the raw, untruncated `text` (not `summary`/
         # `full_summary`, which may be cut short) so the self-report
-        # label line is never lost to truncation.
+        # label line is never lost to truncation. Never re-derived or
+        # second-guessed based on `is_truncated` below — a truncated
+        # answer missing its label line still safely falls back to
+        # "indeterminate" via classify_recognition_level()'s own
+        # existing logic (Task 6-D-3B explicitly keeps this unchanged).
         recognition_level=classify_recognition_level(text),
         prompt_version=PROMPT_VERSION,
+        finish_reason=incomplete_reason if is_truncated else None,
+        is_truncated=is_truncated,
+        note=TRUNCATION_NOTE if is_truncated else None,
     )

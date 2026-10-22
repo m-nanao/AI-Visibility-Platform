@@ -67,6 +67,15 @@ def test_chatgpt_model_empty_falls_back_to_default(monkeypatch):
     assert get_chatgpt_settings().model == DEFAULT_MODEL
 
 
+def test_chatgpt_max_output_tokens_default_is_1200(monkeypatch):
+    """Task 6-D-3B: raised from 700 — see chatgpt_settings.py's own
+    DEFAULT_MAX_OUTPUT_TOKENS comment for why 700 left too little
+    headroom for a reasoning model's visible output."""
+    _clear_chatgpt_env(monkeypatch)
+    assert DEFAULT_MAX_OUTPUT_TOKENS == 1200
+    assert get_chatgpt_settings().max_output_tokens == 1200
+
+
 def test_chatgpt_max_output_tokens_env_override(monkeypatch):
     _clear_chatgpt_env(monkeypatch)
     monkeypatch.setenv("CHATGPT_MAX_OUTPUT_TOKENS", "1000")

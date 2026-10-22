@@ -25,7 +25,26 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-5-mini"
 
-DEFAULT_MAX_OUTPUT_TOKENS = 700
+# Task 6-D-3B: raised from 700 — for a reasoning model (gpt-5-mini),
+# this budget covers invisible reasoning tokens *and* visible output
+# tokens combined (see services/chatgpt_client.py's module docstring
+# and https://developers.openai.com/api/docs/guides/reasoning), so 700
+# left too little headroom for the visible answer in at least one
+# production case, cutting it off before the model reached its
+# required trailing recognition-level label line. 1200 keeps real
+# headroom under MAX_MAX_OUTPUT_TOKENS below while staying a bounded,
+# one-off per-/analyze-request cost (same single-call-per-request
+# scope as before — this raises the ceiling of one call's cost, not
+# how many calls happen). Combined with services/chatgpt_client.py's
+# new DEFAULT_REASONING_EFFORT="low" (which should reduce how much of
+# this budget reasoning itself consumes), not a substitute for it —
+# either change alone only reduces the chance of truncation, neither
+# eliminates it, which is why Task 6-D-3B also adds explicit
+# truncation *detection* rather than relying on this number alone.
+# Never applied over an operator's own explicit
+# CHATGPT_MAX_OUTPUT_TOKENS — see _resolve_max_output_tokens() below,
+# unchanged by this task.
+DEFAULT_MAX_OUTPUT_TOKENS = 1200
 MIN_MAX_OUTPUT_TOKENS = 100
 MAX_MAX_OUTPUT_TOKENS = 1500
 

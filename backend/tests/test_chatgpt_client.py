@@ -496,3 +496,121 @@ def test_fetch_strips_the_recognition_label_line_from_the_visible_summary(monkey
     )
     assert "認識レベル" not in (result.full_summary or "")
     assert "認識レベル" not in (result.summary or "")
+
+
+# --- incomplete-response detection (Task 6-D-3B) -----------------------------
+
+
+def _fetch_with_payload(monkeypatch, payload: dict):
+    def fake_post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+    return fetch_chatgpt_observation(
+        _CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2
+    )
+
+
+def test_status_completed_is_not_flagged_as_truncated(monkeypatch):
+    result = _fetch_with_payload(
+        monkeypatch,
+        {"status": "completed", "output_text": "Acmeは架空の企業です。\n認識レベル：具体的な認識あり"},
+    )
+    assert result.success is True
+    assert result.is_truncated is False
+    assert result.finish_reason is None
+    assert result.note is None
+
+
+def test_status_incomplete_with_max_output_tokens_reason_is_flagged_truncated(monkeypatch):
+    result = _fetch_with_payload(
+        monkeypatch,
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output_text": "Acmeは株式会社であり、主な事業内容は",
+        },
+    )
+    assert result.success is True
+    assert result.is_truncated is True
+    assert result.finish_reason == "max_output_tokens"
+    assert result.note is not None
+    # recognitionLevel safely falls back to indeterminate — the label
+    # line was never reached — never guessed as something else.
+    assert result.recognition_level == "indeterminate"
+
+
+def test_status_incomplete_but_some_text_was_produced_is_still_success(monkeypatch):
+    """Task 6-D-3B item 1/3: partial-but-nonempty text is still a
+    usable (if incomplete) observation — never a hard failure."""
+    result = _fetch_with_payload(
+        monkeypatch,
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output_text": "Acmeについて説明します。",
+        },
+    )
+    assert result.success is True
+    assert result.summary
+    assert result.is_truncated is True
+
+
+def test_status_incomplete_with_no_text_at_all_is_a_distinct_failure_reason(monkeypatch):
+    """Task 6-D-3B item 1: "本文がない場合" vs "不完全だが本文がある場合"
+    must be distinguishable — this is the no-text case, and the reason
+    string must say the response was incomplete, not just "no text"."""
+    result = _fetch_with_payload(
+        monkeypatch,
+        {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}},
+    )
+    assert result.success is False
+    assert "incomplete" in result.reason
+    assert "max_output_tokens" in result.reason
+
+
+def test_status_completed_with_no_text_uses_the_plain_no_text_reason(monkeypatch):
+    result = _fetch_with_payload(monkeypatch, {"status": "completed"})
+    assert result.success is False
+    assert result.reason == "OpenAI API returned no readable text."
+
+
+def test_missing_status_field_is_treated_as_not_truncated(monkeypatch):
+    """A response shape that simply doesn't include `status` at all
+    (e.g. an older/different API shape) must not be mistaken for an
+    incomplete one."""
+    result = _fetch_with_payload(monkeypatch, {"output_text": "Acmeについて説明します。"})
+    assert result.success is True
+    assert result.is_truncated is False
+
+
+def test_request_body_includes_low_reasoning_effort_for_gpt5_models(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(
+        _CREDENTIALS, "Acme", model="gpt-5-mini", max_output_tokens=700, temperature=0.2
+    )
+
+    assert seen_bodies[0]["reasoning"] == {"effort": "low"}
+
+
+def test_request_body_omits_reasoning_effort_for_non_reasoning_models(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output_text": "Acme."}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    fetch_chatgpt_observation(
+        _CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2
+    )
+
+    assert "reasoning" not in seen_bodies[0]

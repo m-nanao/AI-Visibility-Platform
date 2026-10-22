@@ -325,3 +325,59 @@ def test_build_chatgpt_observation_reason_never_includes_the_api_key_on_success(
     _, _, reason, _, _, _ = build_chatgpt_observation("Acme", "openai")
 
     assert "sk-super-secret-key" not in reason
+
+
+# --- incomplete-response detection (Task 6-D-3B) -----------------------------
+
+
+def test_build_chatgpt_observation_surfaces_truncation_on_the_item(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    _set_credentials(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": "Acmeは株式会社であり、主な事業内容は",
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
+
+    # A truncated answer is still a usable observation, not a failure —
+    # mirrors services/gemini_provider.py's own established behavior.
+    assert status == "real"
+    assert item is not None
+    assert item.isTruncated is True
+    assert item.finishReason == "max_output_tokens"
+    assert item.note is not None
+    assert recognition_level == "indeterminate"
+
+
+def test_build_chatgpt_observation_does_not_flag_a_complete_answer(monkeypatch):
+    _clear_chatgpt_env(monkeypatch)
+    _set_credentials(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"status": "completed", "output_text": "Acme."},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
+
+    assert item.isTruncated is False
+    assert item.finishReason is None
+    assert item.note is None

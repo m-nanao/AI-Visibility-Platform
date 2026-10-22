@@ -174,5 +174,13 @@ def build_chatgpt_observation(
         references=None,
         referenceSummary=None,
         ownDomainReferenced=None,
+        # Task 6-D-3B — see services/chatgpt_client.py's module
+        # docstring and services/gemini_provider.py's identical use of
+        # these same fields for its own truncation signal: a soft,
+        # heuristic-only signal, never treated as a failure — `status`
+        # stays "real" either way, only this card's note changes.
+        finishReason=result.finish_reason,
+        isTruncated=result.is_truncated,
+        note=result.note,
     )
     return item, "real", result.reason, "api", result.recognition_level, result.prompt_version

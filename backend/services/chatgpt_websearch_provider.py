@@ -274,6 +274,13 @@ def attempt_chatgpt_websearch_supplement(
         referenceSummary=None,
         ownDomainReferenced=None,
         observationMethod="websearch_supplement",
+        # Task 6-D-3B — see services/chatgpt_websearch_client.py's own
+        # "Incomplete-response detection" docstring section: a soft,
+        # heuristic-only signal independent of `searched` above, never
+        # treated as a failure (status stays "real" either way).
+        finishReason=result.finish_reason,
+        isTruncated=result.is_truncated,
+        note=result.note,
     )
     return item, ChatGptWebsearchProviderInfo(
         status="real",

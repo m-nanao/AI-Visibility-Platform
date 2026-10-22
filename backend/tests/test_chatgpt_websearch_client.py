@@ -107,7 +107,13 @@ def test_fetch_sends_exactly_one_request(monkeypatch):
 
 
 def _response_with_search_and_message(
-    url, *, search_status="completed", text="Acme is a company.", annotations=None
+    url,
+    *,
+    search_status="completed",
+    text="Acme is a company.",
+    annotations=None,
+    top_level_status=None,
+    incomplete_reason=None,
 ):
     output = [
         {"type": "web_search_call", "status": search_status, "action": {"type": "search"}},
@@ -122,7 +128,12 @@ def _response_with_search_and_message(
             ],
         },
     ]
-    return httpx.Response(200, json={"output": output}, request=httpx.Request("POST", url))
+    body: dict = {"output": output}
+    if top_level_status is not None:
+        body["status"] = top_level_status
+    if incomplete_reason is not None:
+        body["incomplete_details"] = {"reason": incomplete_reason}
+    return httpx.Response(200, json=body, request=httpx.Request("POST", url))
 
 
 def test_searched_true_when_web_search_call_completed(monkeypatch):
@@ -296,3 +307,67 @@ def test_api_key_never_appears_in_the_reason_string_on_success(monkeypatch):
 
     assert "sk-super-secret-key" not in result.reason
     assert "sk-super-secret-key" not in (result.full_summary or "")
+
+
+# --- incomplete-response detection (Task 6-D-3B) -----------------------------
+
+
+def test_completed_status_is_not_flagged_truncated(monkeypatch):
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, top_level_status="completed")
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.is_truncated is False
+    assert result.finish_reason is None
+    assert result.note is None
+
+
+def test_incomplete_status_is_flagged_truncated_independently_of_searched(monkeypatch):
+    """Task 6-D-3B item 3: web_search_call.status=="completed" (the
+    tool itself finished) must not be conflated with the overall
+    answer finishing — both searched=True and is_truncated=True can be
+    true at once."""
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(
+            url,
+            search_status="completed",
+            top_level_status="incomplete",
+            incomplete_reason="max_output_tokens",
+            text="Acmeは株式会社であり、主な事業内容は",
+        )
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.success is True
+    assert result.searched is True
+    assert result.is_truncated is True
+    assert result.finish_reason == "max_output_tokens"
+    assert result.note is not None
+
+
+def test_incomplete_with_no_text_is_a_distinct_failure_reason(monkeypatch):
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.success is False
+    assert "incomplete" in result.reason
+    assert "max_output_tokens" in result.reason

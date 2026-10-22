@@ -323,6 +323,35 @@ def test_success_builds_an_item_with_the_stable_observation_method(monkeypatch):
     assert info.recognitionLevelAtTrigger == "unidentified"
 
 
+def test_success_with_truncated_result_surfaces_truncation_on_the_item(monkeypatch):
+    """Task 6-D-3B: an incomplete-but-usable websearch-supplement
+    answer must still be surfaced via isTruncated/finishReason/note,
+    while status stays "real" (never a failure)."""
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    _mock_reservation_success(monkeypatch)
+    _mock_fetch(
+        monkeypatch,
+        ChatGptWebsearchObservationResult(
+            success=True,
+            reason="ok",
+            searched=True,
+            summary="partial",
+            is_truncated=True,
+            finish_reason="max_output_tokens",
+            note="truncated note",
+        ),
+    )
+
+    item, info = cwp.attempt_chatgpt_websearch_supplement(**_base_kwargs())
+
+    assert item is not None
+    assert item.isTruncated is True
+    assert item.finishReason == "max_output_tokens"
+    assert item.note == "truncated note"
+    assert info.status == "real"
+
+
 def test_success_with_no_citations_leaves_references_none(monkeypatch):
     _enable(monkeypatch)
     _mock_credentials(monkeypatch)

@@ -50,6 +50,20 @@ shapes are all caught and converted into a
 `ChatGptWebsearchObservationResult` with `success=False` and a safe
 (credential-free) `reason`, mirroring chatgpt_client.py's own
 never-raises contract.
+
+**Incomplete-response detection (Task 6-D-3B)** — same mechanism as
+services/chatgpt_client.py's own module docstring describes (read
+OpenAI's own `status`/`incomplete_details.reason`, surfaced here as
+`is_truncated`/`finish_reason`), added independently to this module
+rather than imported from that one (see this module's own "deliberately
+a separate module" note above). **Deliberately kept independent of
+`searched`**: whether the web_search tool itself completed
+(`web_search_call.status == "completed"`) says nothing about whether
+the model's *final answer* also finished within budget — the search
+can complete and the model can still run out of max_output_tokens
+while composing its answer afterward. A response can therefore be
+`searched=True` and `is_truncated=True` at the same time; neither
+field is inferred from the other.
 """
 
 import logging
@@ -80,6 +94,14 @@ WEBSEARCH_TOOL: dict = {"type": "web_search"}
 
 _SUMMARY_MAX_CHARS = 200
 _FULL_SUMMARY_MAX_CHARS = 2500
+
+# Task 6-D-3B — mirrors services/chatgpt_client.py's own
+# TRUNCATION_NOTE wording/intent, worded for the websearch-supplement
+# card specifically.
+TRUNCATION_NOTE = (
+    "OpenAI APIのWeb検索補完の出力が途中で終了した可能性があります。"
+    "必要に応じて再実行するか、出力上限を増やして検証してください。"
+)
 
 # Distinct from services/ai_observation_prompts.py's SYSTEM_PROMPT
 # (which explicitly forbids browsing) — this one explicitly permits
@@ -148,7 +170,34 @@ class WebsearchCitation:
     title: str | None = None
 
 
-def _parse_websearch_response(payload: object) -> tuple[str | None, bool, list[WebsearchCitation]]:
+def _extract_completion_state(payload: object) -> tuple[str | None, str | None]:
+    """Returns (status, incomplete_reason) — Task 6-D-3B, identical
+    logic to services/chatgpt_client.py's own
+    _extract_completion_state() (duplicated rather than imported, same
+    reasoning as this module's own docstring on why it doesn't share
+    code with that module). `status`/`incomplete_reason` are both None
+    for a normal completed response, or when `payload` isn't shaped as
+    expected.
+    """
+    if not isinstance(payload, dict):
+        return None, None
+
+    status = payload.get("status")
+    status = status if isinstance(status, str) and status.strip() else None
+
+    incomplete_reason = None
+    incomplete_details = payload.get("incomplete_details")
+    if isinstance(incomplete_details, dict):
+        raw_reason = incomplete_details.get("reason")
+        if isinstance(raw_reason, str) and raw_reason.strip():
+            incomplete_reason = raw_reason.strip()
+
+    return status, incomplete_reason
+
+
+def _parse_websearch_response(
+    payload: object,
+) -> tuple[str | None, bool, list[WebsearchCitation]]:
     """Returns (text, searched, citations) from one Responses API
     envelope.
 
@@ -262,7 +311,10 @@ class ChatGptWebsearchObservationResult:
     always a complete, safe-to-surface sentence; `success` is True
     only when readable text was actually extracted from the response
     (regardless of whether the web_search tool was actually used — see
-    `searched`)."""
+    `searched` — or whether that text was itself complete — see
+    `is_truncated`; a truncated-but-non-empty answer is still
+    `success=True`, mirroring chatgpt_client.py's own
+    ChatGptObservationResult)."""
 
     success: bool
     reason: str
@@ -271,6 +323,11 @@ class ChatGptWebsearchObservationResult:
     summary: str | None = None
     full_summary: str | None = None
     citations: list[WebsearchCitation] = field(default_factory=list)
+    # Task 6-D-3B — see module docstring's "Incomplete-response
+    # detection" section. Both None/False unless `success` is True.
+    finish_reason: str | None = None
+    is_truncated: bool = False
+    note: str | None = None
 
 
 def fetch_chatgpt_websearch_observation(
@@ -329,14 +386,23 @@ def fetch_chatgpt_websearch_observation(
             reason="OpenAI websearch-supplement request failed: response was not valid JSON.",
         )
 
+    status, incomplete_reason = _extract_completion_state(payload)
     text, searched, citations = _parse_websearch_response(payload)
     if text is None:
+        reason = "OpenAI websearch-supplement API returned no readable text."
+        if status == "incomplete":
+            reason = (
+                f"{reason} (OpenAI response was incomplete"
+                + (f", reason={incomplete_reason}" if incomplete_reason else "")
+                + ")"
+            )
         return ChatGptWebsearchObservationResult(
             success=False,
-            reason="OpenAI websearch-supplement API returned no readable text.",
+            reason=reason,
             searched=searched,
         )
 
+    is_truncated = status == "incomplete"
     mentioned, summary, full_summary = _summarize_text(text, brand_name)
     return ChatGptWebsearchObservationResult(
         success=True,
@@ -346,4 +412,7 @@ def fetch_chatgpt_websearch_observation(
         summary=summary,
         full_summary=full_summary,
         citations=citations,
+        finish_reason=incomplete_reason if is_truncated else None,
+        is_truncated=is_truncated,
+        note=TRUNCATION_NOTE if is_truncated else None,
     )
