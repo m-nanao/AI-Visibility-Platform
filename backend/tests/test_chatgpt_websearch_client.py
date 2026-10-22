@@ -65,8 +65,65 @@ def test_request_body_offers_the_web_search_tool_and_caps_tool_calls(monkeypatch
     assert body["max_tool_calls"] == MAX_TOOL_CALLS == 1
     assert body["store"] is False
     assert body["model"] == "gpt-5-mini"
-    assert body["max_output_tokens"] == 700
+    # Task 6-D-3C: 700 is below MIN_MAX_OUTPUT_TOKENS_FLOOR, so the
+    # floor applies — see test_request_body_applies_the_output_token_floor
+    # below for the floor behavior itself.
+    assert body["max_output_tokens"] == wc.MIN_MAX_OUTPUT_TOKENS_FLOOR
     assert "temperature" not in body
+
+
+def test_request_body_applies_the_output_token_floor(monkeypatch):
+    """Task 6-D-3C: a configured max_output_tokens below the floor is
+    raised; one already above it is left untouched (never lowered)."""
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output": []}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=1200
+    )
+    assert seen_bodies[-1]["max_output_tokens"] == wc.MIN_MAX_OUTPUT_TOKENS_FLOOR
+
+    fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=3000
+    )
+    assert seen_bodies[-1]["max_output_tokens"] == 3000
+
+
+def test_request_body_includes_low_reasoning_effort_for_gpt5_models(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output": []}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=1200
+    )
+
+    assert seen_bodies[0]["reasoning"] == {"effort": "low"}
+
+
+def test_request_body_omits_reasoning_effort_for_non_reasoning_models(monkeypatch):
+    seen_bodies = []
+
+    def fake_post(url, **kwargs):
+        seen_bodies.append(kwargs.get("json"))
+        return httpx.Response(200, json={"output": []}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-4.1-mini", max_output_tokens=1200
+    )
+
+    assert "reasoning" not in seen_bodies[0]
 
 
 def test_request_body_system_prompt_forbids_treating_fetched_content_as_instructions(monkeypatch):

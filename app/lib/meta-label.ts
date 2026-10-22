@@ -714,15 +714,21 @@ export interface AiOverviewItemDetailDisplay {
   // an OpenAI API observation, so adding this note there would overstate
   // what it actually is.
   platformNote?: string;
-  // Present only when item.isTruncated is true (Gemini-only signal, see
-  // backend/services/gemini_client.py's _is_likely_truncated()) — a
-  // heuristic-only warning that this one observation attempt's text may
-  // have been cut off mid-way. Never means the AI "has no information"
-  // about the brand. Always GEMINI_TRUNCATION_NOTE's text (item.note's
-  // actual content is ignored — see that constant's comment). Undefined
-  // for every non-truncated item, including old saved history that
-  // predates isTruncated/note.
+  // Present only when item.isTruncated is true — a heuristic-only
+  // warning that this one observation attempt's text may have been
+  // cut off mid-way. Never means the AI "has no information" about
+  // the brand. Task 6-D-3C: the exact text depends on which provider
+  // this card belongs to (see buildNonGeminiTruncationNote()'s own
+  // comment for why) — never a hardcoded Gemini-specific message for
+  // a non-Gemini card. Undefined for every non-truncated item,
+  // including old saved history that predates isTruncated/note.
   truncationWarning?: string;
+  // Task 6-D-3C item 3: present only for the Web検索補完 card when it
+  // came back with zero references — see
+  // CHATGPT_WEBSEARCH_NO_SOURCE_CAUTION's own comment. Undefined for
+  // every other card, and for a Web検索補完 card that does have at
+  // least one reference.
+  noSourceCaution?: string;
 }
 
 // Must match backend/services/chatgpt_provider.py's
@@ -764,6 +770,55 @@ export const GEMINI_TRUNCATION_NOTE =
 
 export const GEMINI_PLATFORM_NOTE =
   "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。";
+
+// Task 6-D-3C: fixes a production bug where a ChatGPT card (no-search
+// or Web検索補完) showed GEMINI_TRUNCATION_NOTE's literal "Gemini"
+// wording — getAiOverviewItemDetailDisplay() below used to key the
+// warning text off `item.isTruncated` alone, with no provider check at
+// all, back when Gemini was the only provider that ever set
+// isTruncated. Now that ChatGPT's own client also sets it (see
+// backend/services/chatgpt_client.py / chatgpt_websearch_client.py),
+// this builds provider-correct text for anything that isn't the
+// Gemini card — still never using `item.note`'s own backend text
+// directly (same reasoning as GEMINI_TRUNCATION_NOTE's own comment
+// above: that text implies a per-provider "再実行" action this screen
+// doesn't offer for any provider other than Gemini), but naming the
+// actual `platform` this card belongs to instead of a hardcoded
+// provider name, so this one function correctly covers both of
+// ChatGPT's cards ("ChatGPT (OpenAI API)" and "ChatGPT (OpenAI API,
+// Web検索補完)") without needing a label-specific branch, and degrades
+// safely for any future provider this file doesn't know about yet.
+//
+// `finishReason` additionally decides *what* to suggest: only ever
+// tells the user to raise the output limit when the backend's own
+// signal says the limit was actually the reason (`"max_output_tokens"`)
+// — see Task 6-D-3C's own investigation items 1/2 ("出力上限以外の理由
+// による不完全な応答に対して、誤った改善方法を案内しない"). Any other
+// (or absent) reason gets a generic re-analyze suggestion instead.
+function buildNonGeminiTruncationNote(platform: string, finishReason: string | undefined): string {
+  const base = `${platform}の出力が途中で終了した可能性があります。`;
+  return finishReason === "max_output_tokens"
+    ? `${base}必要に応じて、出力上限を増やした状態で再分析してください。`
+    : `${base}必要に応じて再分析してください。`;
+}
+
+// Must match backend/services/chatgpt_websearch_provider.py's
+// CHATGPT_WEBSEARCH_PLATFORM_LABEL exactly.
+const CHATGPT_WEBSEARCH_OPENAI_PLATFORM_LABEL = "ChatGPT (OpenAI API, Web検索補完)";
+export const CHATGPT_WEBSEARCH_PLATFORM_NOTE =
+  "OpenAI APIのWeb検索機能を使った追加観測です。見つかった情報に基づく回答ですが、" +
+  "ChatGPTアプリ全体の認識や内部状態を保証するものではありません。";
+
+// Task 6-D-3C item 3: shown instead of/alongside the summary whenever
+// this is the Web検索補完 card and it came back with zero references —
+// "検索を行った" is not the same claim as "検証済みの企業情報を得た";
+// without at least one actual citation, this card's text must not be
+// read as confirmed company information. Never shown for the
+// no-search ChatGPT card (which never claims to have searched at all)
+// or for any card that does have references.
+export const CHATGPT_WEBSEARCH_NO_SOURCE_CAUTION =
+  "この回答は参照元を確認できなかったため、検証済みの企業情報とは言えません。" +
+  "表示されている内容は参考情報としてご利用ください。";
 
 // Below this length, a "続きを見る" toggle would reveal only a sliver of
 // text — not worth the extra click. Applies both to a continuation
@@ -974,17 +1029,34 @@ export function getAiOverviewItemDetailDisplay(
     : displaySummary;
 
   const platformNote =
-    item.platform === CHATGPT_OPENAI_PLATFORM_LABEL
-      ? CHATGPT_PLATFORM_NOTE
-      : item.platform === CLAUDE_ANTHROPIC_PLATFORM_LABEL
-        ? CLAUDE_PLATFORM_NOTE
-        : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
-          ? GEMINI_PLATFORM_NOTE
-          : undefined;
+    item.platform === CHATGPT_WEBSEARCH_OPENAI_PLATFORM_LABEL
+      ? CHATGPT_WEBSEARCH_PLATFORM_NOTE
+      : item.platform === CHATGPT_OPENAI_PLATFORM_LABEL
+        ? CHATGPT_PLATFORM_NOTE
+        : item.platform === CLAUDE_ANTHROPIC_PLATFORM_LABEL
+          ? CLAUDE_PLATFORM_NOTE
+          : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
+            ? GEMINI_PLATFORM_NOTE
+            : undefined;
 
-  // item.note is ignored here on purpose — see GEMINI_TRUNCATION_NOTE's
-  // comment above.
-  const truncationWarning = item.isTruncated ? GEMINI_TRUNCATION_NOTE : undefined;
+  // Task 6-D-3C: item.note is still ignored here on purpose (same
+  // reasoning as before), but which hardcoded text to show now depends
+  // on `item.platform` — see buildNonGeminiTruncationNote()'s own
+  // comment for why a ChatGPT (or any other non-Gemini) card must never
+  // show GEMINI_TRUNCATION_NOTE's literal "Gemini" wording.
+  const truncationWarning = !item.isTruncated
+    ? undefined
+    : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
+      ? GEMINI_TRUNCATION_NOTE
+      : buildNonGeminiTruncationNote(item.platform, item.finishReason);
+
+  // Task 6-D-3C item 3 — see CHATGPT_WEBSEARCH_NO_SOURCE_CAUTION's own
+  // comment. Uses observationMethod (the stable discriminator), not
+  // the platform string, per that field's own intended purpose.
+  const noSourceCaution =
+    item.observationMethod === "websearch_supplement" && references.length === 0
+      ? CHATGPT_WEBSEARCH_NO_SOURCE_CAUTION
+      : undefined;
 
   return {
     hasContinuation,
@@ -996,6 +1068,7 @@ export function getAiOverviewItemDetailDisplay(
     ownDomainStatus,
     platformNote,
     truncationWarning,
+    noSourceCaution,
   };
 }
 

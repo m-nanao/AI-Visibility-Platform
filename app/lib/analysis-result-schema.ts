@@ -200,6 +200,11 @@ const aiOverviewComparisonItemSchema = z.object({
   finishReason: optionalFromPython(z.string()),
   isTruncated: optionalFromPython(z.boolean()),
   note: optionalFromPython(z.string()),
+  // observationMethod: see AIOverviewComparisonItem's own comment in
+  // app/lib/types.ts.
+  observationMethod: optionalFromPython(
+    z.enum(["single_call_no_search", "websearch_supplement"]),
+  ),
 });
 
 const improvementSuggestionSchema = z.object({

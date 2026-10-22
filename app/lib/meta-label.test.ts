@@ -805,6 +805,18 @@ describe("getAiOverviewItemDetailDisplay", () => {
     ).toBeUndefined();
   });
 
+  it("adds a distinct platformNote reminder for the Web検索補完 observation card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      ...baseItem(),
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+    });
+
+    expect(display.platformNote).toBeDefined();
+    expect(display.platformNote).not.toBe(
+      "OpenAI APIによる1問観測です。ChatGPTアプリ全体の認識や内部状態を保証するものではありません。",
+    );
+  });
+
   it("adds a platformNote reminder for the real Claude (Anthropic API) observation card", () => {
     const display = getAiOverviewItemDetailDisplay({
       ...baseItem(),
@@ -884,6 +896,126 @@ describe("getAiOverviewItemDetailDisplay — truncationWarning (Gemini truncatio
     });
 
     expect(display.truncationWarning).toBeUndefined();
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — truncationWarning (Task 6-D-3C: ChatGPT cards must never show Gemini's wording)", () => {
+  it("never shows GEMINI_TRUNCATION_NOTE's literal Gemini wording on the no-search ChatGPT card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "max_output_tokens",
+    });
+
+    expect(display.truncationWarning).toBeDefined();
+    expect(display.truncationWarning).not.toBe(GEMINI_TRUNCATION_NOTE);
+    expect(display.truncationWarning).not.toContain("Gemini");
+    expect(display.truncationWarning).toContain("ChatGPT (OpenAI API)");
+  });
+
+  it("never shows GEMINI_TRUNCATION_NOTE's literal Gemini wording on the Web検索補完 card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "max_output_tokens",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.truncationWarning).toBeDefined();
+    expect(display.truncationWarning).not.toBe(GEMINI_TRUNCATION_NOTE);
+    expect(display.truncationWarning).not.toContain("Gemini");
+    expect(display.truncationWarning).toContain("ChatGPT (OpenAI API, Web検索補完)");
+  });
+
+  it("suggests raising the output limit only when finishReason is max_output_tokens", () => {
+    const withMaxTokens = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "max_output_tokens",
+    });
+    expect(withMaxTokens.truncationWarning).toContain("出力上限");
+
+    const withoutReason = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+    });
+    expect(withoutReason.truncationWarning).not.toContain("出力上限");
+  });
+
+  it("Gemini's own warning is completely unaffected by this change (regression guard)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Gemini (Google API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "MAX_TOKENS",
+    });
+
+    expect(display.truncationWarning).toBe(GEMINI_TRUNCATION_NOTE);
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — noSourceCaution (Task 6-D-3C item 3)", () => {
+  it("shows the no-source caution for the Web検索補完 card when it has zero references", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.noSourceCaution).toBeDefined();
+    expect(display.noSourceCaution).toContain("検証済みの企業情報とは言えません");
+  });
+
+  it("does not show the caution for the Web検索補完 card when it has at least one reference", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "websearch_supplement",
+      references: [{ url: "https://acme.example.com", title: "Acme" }],
+    });
+
+    expect(display.noSourceCaution).toBeUndefined();
+  });
+
+  it("does not show the caution on the no-search ChatGPT card, even with zero references", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "single_call_no_search",
+    });
+
+    expect(display.noSourceCaution).toBeUndefined();
+  });
+
+  it("does not show the caution for old saved history predating observationMethod", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+    });
+
+    expect(display.noSourceCaution).toBeUndefined();
   });
 });
 

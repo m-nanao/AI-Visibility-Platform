@@ -390,6 +390,16 @@ export interface AIOverviewComparisonItem {
   // note: a short, safe-to-display explanation shown alongside the card
   // when isTruncated is true. Undefined when there's nothing to add.
   note?: string;
+  // observationMethod: a stable, machine-readable discriminator (see
+  // backend/models.py's ObservationMethod) distinguishing ChatGPT's
+  // original no-search observation ("single_call_no_search") from its
+  // conditional Web-search supplement ("websearch_supplement") — the
+  // two can appear as separate cards sharing the same general
+  // provider. Undefined for every other provider and for old saved
+  // history predating this field; app/lib/meta-label.ts must never
+  // fall back to matching `platform`'s display string for this
+  // distinction when this field is present.
+  observationMethod?: "single_call_no_search" | "websearch_supplement";
 }
 
 export interface ImprovementSuggestion {

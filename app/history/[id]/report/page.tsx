@@ -368,7 +368,8 @@ function ReportContent({
               // detail screens use — a "続きを読む" affordance makes no
               // sense once printed. The normal screens (AnalysisDashboard
               // via AIOverviewComparisonSection.tsx) are unchanged.
-              const { fullText, truncationWarning } = getAiOverviewItemDetailDisplay(item);
+              const { fullText, truncationWarning, noSourceCaution } =
+                getAiOverviewItemDetailDisplay(item);
               return (
                 <div key={item.platform}>
                   <p className="font-medium">
@@ -380,6 +381,11 @@ function ReportContent({
                   {truncationWarning && (
                     <p className="mt-0.5 text-amber-700 dark:text-amber-400 print:text-black">
                       {truncationWarning}
+                    </p>
+                  )}
+                  {noSourceCaution && (
+                    <p className="mt-0.5 text-amber-700 dark:text-amber-400 print:text-black">
+                      {noSourceCaution}
                     </p>
                   )}
                 </div>

@@ -211,6 +211,12 @@ function AIOverviewItemCard({
         </p>
       )}
 
+      {detail.noSourceCaution && (
+        <p className="mt-3 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+          {detail.noSourceCaution}
+        </p>
+      )}
+
       {geminiRerun && (
         <div className="mt-3">
           <GeminiRerunControls controls={geminiRerun} />
