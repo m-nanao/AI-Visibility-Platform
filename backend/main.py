@@ -224,6 +224,7 @@ from services.project_access import (
 )
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
+from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supplement
 from services.claude_provider import build_claude_observation, resolve_claude_mode
 from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -1565,6 +1566,39 @@ def _analyze_authenticated_idempotent(
     result = outcome.result
     cooccurrence_status = outcome.cooccurrence_status
     final_status = "partial" if cooccurrence_status == "unavailable" else "completed"
+
+    # Task 6-D-3 (feature/chatgpt-websearch-supplement): attempted only
+    # here — strictly after run_analysis_pipeline() has returned the
+    # no-search ChatGPT observation's recognitionLevel, and strictly
+    # before complete_analysis_job() below marks this run completed/
+    # partial/failed, so reservation.analysis_run_id is still
+    # genuinely 'running' in the database for the whole duration of
+    # this call (see services/chatgpt_websearch_provider.py's module
+    # docstring for why it must never be called from inside
+    # run_analysis_pipeline() itself, which has no database access).
+    # Never reached by the anonymous path (_analyze_anonymous() never
+    # has a project_id/user_id/analysis_run_id to pass here at all).
+    # Wrapped defensively: any unexpected failure in this new path must
+    # never discard the already-successful no-search result above.
+    try:
+        chatgpt_recognition_level = (
+            result.meta.chatgptProvider.recognitionLevel if result.meta.chatgptProvider else None
+        )
+        websearch_item, websearch_provider_info = attempt_chatgpt_websearch_supplement(
+            brand_name=brand_name,
+            recognition_level=chatgpt_recognition_level,
+            analysis_run_id=reservation.analysis_run_id,
+            project_id=project_id,
+            user_id=user_id,
+        )
+        result.meta.chatgptWebsearchProvider = websearch_provider_info
+        if websearch_item is not None:
+            result.aiOverviewComparison = [*result.aiOverviewComparison, websearch_item]
+        logger.info(
+            "chatgpt websearch supplement complete: status=%s", websearch_provider_info.status
+        )
+    except Exception:
+        logger.exception("Unexpected error while attempting the ChatGPT websearch supplement")
 
     try:
         completed = complete_analysis_job(

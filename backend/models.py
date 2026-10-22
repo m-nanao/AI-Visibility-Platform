@@ -184,6 +184,75 @@ RecognitionLevel = Literal[
     "indeterminate",
 ]
 
+# Task 6-D-3 (feature/chatgpt-websearch-supplement): a stable,
+# machine-readable discriminator for AIOverviewComparisonItem — added
+# because item "G" of this task explicitly forbids branching on
+# `platform`'s display string to tell the original no-search ChatGPT
+# observation apart from its new Web-search-supplement counterpart.
+# "single_call_no_search" is the original behavior every provider
+# (ChatGPT/Claude/Gemini/DataForSEO/mock) has always had; only a
+# ChatGPT websearch-supplement card (see
+# services/chatgpt_websearch_provider.py) ever uses
+# "websearch_supplement". None (the field's default) means "predates
+# this distinction" — every pre-existing saved history row and every
+# non-ChatGPT provider card.
+ObservationMethod = Literal["single_call_no_search", "websearch_supplement"]
+
+# Task 6-D-3: outcome of attempting (or not attempting) ChatGPT's
+# conditional Web-search supplement for this request — see
+# services/chatgpt_websearch_provider.py. Deliberately enumerates every
+# reason a supplement attempt did NOT happen (as its own distinct
+# value, not folded into a single generic "skipped"), per that task's
+# "検索補完の成功・失敗・未実施理由を識別できるようにする":
+# - "not_attempted": the no-search ChatGPT observation itself never
+#   produced a recognitionLevel to evaluate (e.g. ChatGPT mode "off",
+#   or the no-search call itself failed) — nothing to decide on.
+# - "disabled": CHATGPT_WEBSEARCH_SUPPLEMENT_ENABLED is not true.
+# - "quota_enforcement_disabled": this request's quota enforcement
+#   itself is off (the ANALYZE_ALLOW_AUTH_WITHOUT_QUOTA escape hatch) —
+#   the websearch supplement never runs in that combination either,
+#   so it can never be used to bypass its own quota check.
+# - "no_credentials": OPENAI_API_KEY is not configured.
+# - "recognition_level_not_eligible": the no-search observation's
+#   recognitionLevel was "specific_knowledge" (no supplement needed) or
+#   "indeterminate" (deliberately never auto-searched — see
+#   `reason` for which).
+# - "quota_rejected": reserve_websearch_quota_for_analysis_run() raised
+#   AnalysisQuotaExceededError (daily/monthly limit — 0 by default —
+#   already reached).
+# - "already_reserved": the same (analysis_run_id, "openai_websearch")
+#   pair already has a reservation on record (should not normally
+#   happen for a single /analyze request, but guards against any
+#   future retry path).
+# - "run_invalid": reserve_websearch_quota_for_analysis_run() rejected
+#   the run/project/user combination itself (should not normally
+#   happen here, since this only ever runs against the exact run/
+#   project/user this same request just validated, but surfaced
+#   distinctly rather than silently swallowed).
+# - "reservation_error": a genuine DB/connection failure while
+#   reserving quota.
+# - "real": the websearch-supplement API call was attempted and
+#   produced a usable answer (see `searched` on
+#   ChatGptWebsearchProviderInfo for whether the model's response
+#   indicates the web_search tool was actually invoked).
+# - "unavailable": quota was successfully reserved, but the API call
+#   itself failed (network/timeout/non-200/unreadable response) — the
+#   reserved quota slot is never refunded (see that provider module's
+#   docstring for why).
+ChatGptWebsearchStatus = Literal[
+    "not_attempted",
+    "disabled",
+    "quota_enforcement_disabled",
+    "no_credentials",
+    "recognition_level_not_eligible",
+    "quota_rejected",
+    "already_reserved",
+    "run_invalid",
+    "reservation_error",
+    "real",
+    "unavailable",
+]
+
 # Whether /analyze should try to add supplementary Document(s) from
 # Common Crawl (see services/common_crawl_index.py /
 # common_crawl_warc.py / common_crawl_document_provider.py and
@@ -316,6 +385,44 @@ class ChatGptProviderInfo(BaseModel):
     promptVersion: str | None = None
 
 
+class ChatGptWebsearchProviderInfo(BaseModel):
+    """Reports whether ChatGPT's conditional Web-search supplement
+    (Task 6-D-3, feature/chatgpt-websearch-supplement) was attempted
+    for this request, and why — see
+    services/chatgpt_websearch_provider.py. Entirely optional/
+    independent of ChatGptProviderInfo above (the no-search
+    observation): a request can have a real no-search ChatGPT card and
+    no websearch-supplement card (the common case — most
+    recognitionLevels never trigger it, and the feature defaults to
+    disabled), or, on success, both cards side by side in
+    `aiOverviewComparison`, distinguished by
+    AIOverviewComparisonItem.observationMethod — never by `platform`'s
+    display string.
+
+    `recognitionLevelAtTrigger` records the no-search observation's own
+    recognitionLevel at the moment this decision was made — purely
+    informational (so a saved history row shows *why* the supplement
+    did or didn't run), never re-derived from
+    ChatGptProviderInfo.recognitionLevel at read time (that field could
+    change meaning in a future task; this one is a frozen snapshot).
+
+    `searched` is None unless `status == "real"` — see
+    ChatGptWebsearchStatus's own docstring on why a successful API call
+    does not necessarily mean the web_search tool was actually invoked
+    (the model can answer without searching even when the tool is
+    offered); True only when the response's own `web_search_call`
+    output item reports `status == "completed"`.
+
+    Absent entirely (None) on every pre-existing saved history row —
+    this field didn't exist before Task 6-D-3.
+    """
+
+    status: ChatGptWebsearchStatus
+    reason: str
+    recognitionLevelAtTrigger: RecognitionLevel | None = None
+    searched: bool | None = None
+
+
 class ClaudeProviderInfo(BaseModel):
     """Reports whether the Claude-equivalent observation card was added
     to aiOverviewComparison this request, and why — see
@@ -418,6 +525,12 @@ class AnalysisMeta(BaseModel):
     # Independent of aiOverviewProvider — optional so existing
     # clients/tests that don't know about it aren't broken.
     chatgptProvider: ChatGptProviderInfo | None = None
+    # Task 6-D-3 (feature/chatgpt-websearch-supplement) — whether
+    # ChatGPT's conditional Web-search supplement was attempted, and
+    # why (see ChatGptWebsearchProviderInfo above). Independent of
+    # chatgptProvider — optional so existing clients/tests, and every
+    # saved history row predating this task, keep working unchanged.
+    chatgptWebsearchProvider: ChatGptWebsearchProviderInfo | None = None
     # Whether a Claude-equivalent observation card was added to
     # aiOverviewComparison this request (see ClaudeProviderInfo above).
     # Independent of the other AI observation providers — optional so
@@ -567,6 +680,11 @@ class AIOverviewComparisonItem(BaseModel):
     # card when isTruncated is True (see services/gemini_client.py's
     # TRUNCATION_NOTE) — None when there's nothing to add.
     note: str | None = None
+    # Task 6-D-3 (feature/chatgpt-websearch-supplement) — see
+    # ObservationMethod's own docstring. None for every pre-existing
+    # saved history row and every card besides a ChatGPT websearch-
+    # supplement one.
+    observationMethod: ObservationMethod | None = None
 
 
 # Whether services/web_ai_gap.py could build a meaningful comparison —
