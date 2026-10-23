@@ -7,7 +7,7 @@ transformation layer. See docs/07_decisions.md for why.
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 Trend = Literal["up", "down", "flat"]
 Sentiment = Literal["positive", "neutral", "negative"]
@@ -1560,6 +1560,285 @@ class ImprovementSuggestion(BaseModel):
     priority: Priority
 
 
+# Task 6-D-5C-1 (feature/fact-extraction-data-model): data structures
+# and *verification-only* logic for decomposing an AI answer into
+# individual, per-claim factual assertions about the subject brand —
+# see docs/39_ai_gap_comparison_design.md-adjacent design discussion
+# (Task 6-D-5A) and services/fact_extraction.py's own module docstring
+# for the full contract. **No LLM extraction call exists yet** — this
+# task only defines the shapes a future extraction client (Task
+# 6-D-5C-2) must produce, and the verification functions that decide
+# whether a candidate claim is safe to trust and persist. Nothing in
+# the existing /analyze pipeline constructs or sets
+# AnalysisResult.factExtraction today; it stays None for every
+# request, exactly like before this field existed.
+
+# The 9 categories a factual claim about a brand can fall into — see
+# the task's own enumeration. Deliberately flat (no sub-categories)
+# for the MVP; a claim that doesn't fit any of these is not
+# extractable under this scheme (a future task's problem, not
+# silently forced into the nearest category here).
+FactClaimCategory = Literal[
+    "company_name",
+    "location",
+    "representative",
+    "establishment_date",
+    "business",
+    "service",
+    "characteristic",
+    "numerical_achievement",
+    "target_customer_or_industry",
+]
+
+# What *kind* of statement a claim is — kept deliberately separate
+# from `FactAnswerState` below (a claim can be `asserted` and still be
+# a `self_reported_claim` or an `ai_evaluation_or_inference`, not just
+# an `objective_fact`). Conflating the two would make it impossible to
+# tell "the AI said X is true" apart from "the AI said the brand
+# claims X" or "the AI said X, as its own evaluation/inference" — see
+# the task's own rationale for keeping fact/self-report/AI-evaluation
+# distinct.
+FactClaimNature = Literal[
+    "objective_fact", "self_reported_claim", "ai_evaluation_or_inference"
+]
+
+# How the AI's answer addressed this category — see the task's own
+# worked examples ("代表者はA氏" / "代表者は分かりません" / "代表者は
+# いません" / no mention at all). `explicit_unknown` ("the AI said it
+# doesn't know") and `explicit_denial` ("the AI said there is no such
+# thing") are deliberately distinct values, never merged — confusing
+# the two would misrepresent what the AI actually said.
+# `not_mentioned` means the answer has no claim for this category at
+# all. Used by RawFactClaimCandidate (an untrusted extraction
+# candidate may legitimately report any of the 4 states for a
+# category) — see FactGroundedAnswerState below for the narrower,
+# 3-value subset FactExtractedClaim itself is restricted to.
+FactAnswerState = Literal[
+    "asserted", "explicit_unknown", "explicit_denial", "not_mentioned"
+]
+
+# Task 6-D-5C-1 final review: the subset of FactAnswerState that
+# describes an actual statement the AI made (as opposed to silence on
+# the topic). `FactExtractedClaim.answerState` is typed to exactly
+# this — not the full 4-value `FactAnswerState` — so a "not_mentioned
+# claim" is structurally impossible to construct, not just rejected by
+# a runtime validator. This was changed after a依頼者 review pointed
+# out that storing `not_mentioned` entries in the same `claims` list as
+# real, source-grounded claims made `len(claims)` an unreliable count
+# of "facts actually found" — see FactCategoryNotMentioned below for
+# where a category's "not mentioned" state now lives instead.
+FactGroundedAnswerState = Literal["asserted", "explicit_unknown", "explicit_denial"]
+
+# The three AI platforms a fact-extracted claim may legitimately come
+# from. Deliberately excludes "ai_overview" (used by WebAiGapPlatform
+# elsewhere) — AI Overview/DataForSEO cards are never eligible inputs
+# for fact extraction (see services/fact_extraction.py's own
+# eligibility allowlist and the task's "観測対象の限定").
+FactSourcePlatform = Literal["chatgpt", "claude", "gemini"]
+
+# Safety ceilings for fact-extraction input/output — see
+# services/fact_extraction.py's own module docstring for how each is
+# used. Deliberately generous enough for a full AI answer
+# (fullSummary's own ceiling is 20000 chars — see
+# services/chatgpt_client.py's _FULL_SUMMARY_SAFETY_MAX_CHARS) while
+# still bounding worst-case storage/compute per request.
+MAX_FACT_ORIGINAL_TEXT_CHARS = 20_000
+MAX_FACT_CLAIM_TEXT_CHARS = 500
+MAX_FACT_SOURCE_TEXT_CHARS = 2_000
+MAX_FACT_CLAIMS_PER_CARD = 30
+
+
+class RawFactClaimCandidate(BaseModel):
+    """An **untrusted** candidate claim, shaped exactly like what a
+    future extraction call (Task 6-D-5C-2) would ask an LLM to
+    produce. Deliberately does NOT include `sourcePlatform`,
+    `observationMethod`, `sourceModel`, or `extractionModel` — those
+    describe *which card this came from*, and must always be supplied
+    by the trusted calling context (services/fact_extraction.py's
+    verify_and_build_claim()), never trusted from the model's own
+    output (an LLM has no business asserting which provider or model
+    produced the very answer it is reading).
+
+    Pydantic validation alone rejects a structurally invalid category/
+    nature/state or an over-length string (see the Field ceilings
+    below) — see the task's "不正なカテゴリー...を拒否". Position
+    validity (does `sourceText` actually appear at
+    [sourceStartIndex:sourceEndIndex] in the real original text) is
+    NOT checked here — Pydantic has no access to the original text at
+    this layer, so that check is verify_and_build_claim()'s job.
+    """
+
+    claimCategory: FactClaimCategory
+    claimNature: FactClaimNature
+    answerState: FactAnswerState
+    claimText: str = Field(min_length=1, max_length=MAX_FACT_CLAIM_TEXT_CHARS)
+    # None only valid when answerState == "not_mentioned" — enforced by
+    # verify_and_build_claim(), not here (this model alone can't see
+    # answerState's relationship to sourceText without a cross-field
+    # validator; kept in verify_and_build_claim() so the *same* check
+    # also covers sourceStartIndex/sourceEndIndex consistently).
+    sourceText: str | None = Field(default=None, max_length=MAX_FACT_SOURCE_TEXT_CHARS)
+    sourceStartIndex: int | None = None
+    sourceEndIndex: int | None = None
+    # Hedge phrases the model's own answer used for this claim (e.g.
+    # "とされる", "公表されていない") — free-form, never validated
+    # against a fixed vocabulary. Purely descriptive; never affects
+    # verification.
+    uncertaintyMarkers: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _reject_empty_or_whitespace_source_text(self) -> "RawFactClaimCandidate":
+        # Field(min_length=1) only rejects "", not whitespace-only
+        # strings — guard against a claim whose sourceText is e.g.
+        # " " passing length validation but matching nothing
+        # meaningful.
+        if self.sourceText is not None and not self.sourceText.strip():
+            raise ValueError("sourceText must not be blank")
+        return self
+
+
+class FactExtractedClaim(BaseModel):
+    """A single, **verified**, source-grounded factual claim extracted
+    from one AI observation card. Only ever constructed by
+    services/fact_extraction.py's verify_and_build_claim() — never
+    built directly from a RawFactClaimCandidate without that
+    function's source-span verification, so a `FactExtractedClaim`
+    existing at all is itself evidence that its `sourceText` was
+    confirmed present at [sourceStartIndex:sourceEndIndex] in the real
+    original AI answer text, not merely similar to it or inferred from
+    context.
+
+    **`answerState` is typed as `FactGroundedAnswerState` (3 values),
+    not the full 4-value `FactAnswerState` — a "not_mentioned" claim
+    cannot be constructed here at all**, by the type system, not just
+    rejected at runtime. See FactCategoryNotMentioned below for where
+    "this category was not mentioned" is now represented, and
+    FactGroundedAnswerState's own docstring for why this changed.
+    Consequently `sourceText`/`sourceStartIndex`/`sourceEndIndex` are
+    unconditionally required on every `FactExtractedClaim` (see the
+    validator below) — there is no longer a branch where they are
+    legitimately absent.
+
+    **This confirms "the claim's text appears in the AI's answer", not
+    "the claim is true"** — no official-information comparison is
+    performed anywhere in this task (see Task 6-D-5A's design and the
+    future Task 6-D-5C-2/6-D-5C-3).
+
+    `sourceStartIndex`/`sourceEndIndex` are Python string (Unicode
+    code point) indices into the original text, not JavaScript/UTF-16
+    code unit offsets — the two differ for any character outside the
+    Basic Multilingual Plane (e.g. some emoji), where a single Python
+    index corresponds to two UTF-16 code units. No frontend rendering
+    of these offsets exists yet; a future task that highlights the
+    span in a browser must convert, not assume parity.
+
+    `claimId` is optional and never fabricated — see
+    services/fact_extraction.py's own docstring for when it is set.
+    `sourceModel`/`extractionModel`/`observationMethod` are all
+    `None` when genuinely unrecorded (never guessed) — see
+    FactSourcePlatform's own docstring on why `sourcePlatform` itself,
+    unlike these three, is always known (it is supplied by the trusted
+    calling context, not read off the card).
+    """
+
+    claimId: str | None = None
+    brandName: str | None = None
+    claimCategory: FactClaimCategory
+    claimNature: FactClaimNature
+    answerState: FactGroundedAnswerState
+    claimText: str = Field(min_length=1, max_length=MAX_FACT_CLAIM_TEXT_CHARS)
+    sourceText: str = Field(min_length=1, max_length=MAX_FACT_SOURCE_TEXT_CHARS)
+    sourceStartIndex: int
+    sourceEndIndex: int
+    # The model that produced the *original AI answer* this claim was
+    # extracted from (mirrors AIOverviewComparisonItem.model) — None
+    # when that card itself never recorded one. Never guessed.
+    sourceModel: str | None = None
+    # The model that performed the *extraction* itself (Task
+    # 6-D-5C-2's future Claude-based extraction client). Always None
+    # today — no extraction call exists yet; see this class's own
+    # docstring.
+    extractionModel: str | None = None
+    observationMethod: ObservationMethod | None = None
+    sourcePlatform: FactSourcePlatform
+    uncertaintyMarkers: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_source_span(self) -> "FactExtractedClaim":
+        if self.sourceStartIndex < 0 or self.sourceEndIndex <= self.sourceStartIndex:
+            raise ValueError("sourceStartIndex/sourceEndIndex must describe a valid, non-empty span")
+        if not self.sourceText.strip():
+            raise ValueError("sourceText must not be blank")
+        return self
+
+
+class FactCategoryNotMentioned(BaseModel):
+    """Task 6-D-5C-1 final review: a lightweight, category-level
+    record that one AI observation card's answer had **no claim at
+    all** for `claimCategory` — the `not_mentioned` state, now kept
+    structurally separate from FactExtractedClaim (see that class's
+    own docstring for why). Deliberately carries no `claimText`,
+    `sourceText`, or span fields — there is nothing in the source to
+    quote or point at for a category the answer never addressed, and
+    this model has no fields that could even hold a fabricated one.
+
+    Only ever constructed by services/fact_extraction.py's
+    build_category_not_mentioned().
+    """
+
+    claimCategory: FactClaimCategory
+    brandName: str | None = None
+    sourceModel: str | None = None
+    observationMethod: ObservationMethod | None = None
+    sourcePlatform: FactSourcePlatform
+
+
+# Task 6-D-5C-1: the top-level container for a request's fact
+# extraction, nested into AnalysisResult.factExtraction. "not_attempted"
+# is the only status value any code path can set today — no code
+# anywhere constructs this with real claims yet (see this task's own
+# "APIを呼び出していない状態で、抽出完了を示す架空の結果を保存しない
+# こと"). Future values ("real"/"unavailable", mirroring this
+# codebase's existing SectionStatus-like conventions) are intentionally
+# NOT added yet, so a reader can't mistake an unused placeholder for a
+# real tri-state contract this task never actually implements.
+FactExtractionStatus = Literal["not_attempted"]
+
+
+class FactExtractionResult(BaseModel):
+    """Optional, nested nothing-by-default container — see
+    AnalysisResult.factExtraction's own comment. Old saved history
+    (predating this field) and every current `/analyze` response alike
+    simply have this as `None`; this class exists so a future
+    extraction orchestrator (Task 6-D-5C-2) has a validated shape to
+    populate, not because anything populates it yet.
+
+    `claims` only ever contains source-grounded `FactExtractedClaim`
+    entries — `len(claims)` is therefore a reliable count of "facts
+    actually found", never inflated by "this category wasn't
+    mentioned" placeholders, which live in `notMentionedCategories`
+    instead (see Task 6-D-5C-1's final review).
+    """
+
+    status: FactExtractionStatus = "not_attempted"
+    claims: list[FactExtractedClaim] = Field(default_factory=list)
+    notMentionedCategories: list[FactCategoryNotMentioned] = Field(default_factory=list)
+    # How many AIOverviewComparisonItem cards were eligible per the
+    # allowlist (services/fact_extraction.py's
+    # select_fact_extraction_eligible_cards()) for this request. 0
+    # today for every request, since no code calls that during
+    # /analyze yet.
+    eligibleCardCount: int = 0
+    # True only if services/fact_extraction.py's per-card candidate cap
+    # (MAX_FACT_CLAIMS_PER_CARD) actually had to drop candidates for at
+    # least one card — covers `claims` and `notMentionedCategories`
+    # together (the cap bounds how many raw candidates are considered
+    # per card at all, regardless of which of the two lists each one
+    # would end up in).
+    claimsTruncated: bool = False
+    note: str | None = None
+
+
 class AnalysisResult(BaseModel):
     brandName: str
     summary: BrandSummary
@@ -1592,6 +1871,10 @@ class AnalysisResult(BaseModel):
     # was omitted — identical to every other Optional field here,
     # existing/old saved history keeps parsing unchanged.
     officialInfoCandidate: OfficialInfoCandidate | None = None
+    # Task 6-D-5C-1 (feature/fact-extraction-data-model) — always None
+    # today; see FactExtractionResult's own docstring. Optional so old
+    # saved history (predating this field) keeps parsing unchanged.
+    factExtraction: FactExtractionResult | None = None
 
 
 class AnalyzeRequest(BaseModel):
