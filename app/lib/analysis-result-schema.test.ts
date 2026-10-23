@@ -454,6 +454,104 @@ describe("parseAnalysisResult", () => {
     }
   });
 
+  // --- Gemini conditional Google Search grounding supplement (Task 6-D-4B-2) ---
+  //
+  // The raw grounding data itself (groundingChunks/groundingSupports/
+  // searchEntryPoint.renderedContent) is backend-only in this phase —
+  // never added to this Zod schema — but the shared, provider-agnostic
+  // fields (model/fullSummaryTruncated/citationsTruncated/
+  // observationMethod/finishReason/isTruncated/note) must survive
+  // parsing for a Gemini websearch-supplement card exactly as they
+  // already do for ChatGPT's/Claude's.
+
+  it("accepts a Gemini Web検索補完 item with model/fullSummaryTruncated/citationsTruncated", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API, Web検索補完)",
+          mentioned: true,
+          rank: null,
+          summary: "Acme is a company.",
+          observationMethod: "websearch_supplement",
+          model: "gemini-2.5-flash",
+          fullSummaryTruncated: false,
+          citationsTruncated: true,
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0];
+      expect(item.observationMethod).toBe("websearch_supplement");
+      expect(item.model).toBe("gemini-2.5-flash");
+      expect(item.fullSummaryTruncated).toBe(false);
+      expect(item.citationsTruncated).toBe(true);
+    }
+  });
+
+  it("drops Gemini-specific raw grounding fields not present in this schema, without failing", () => {
+    // Task 6-D-4B-2 item 7: the backend's own geminiGroundingChunks/
+    // geminiGroundingSupports/geminiSearchEntryPointRenderedContent
+    // fields are intentionally absent from this Zod schema (Search
+    // Suggestions display is a separate, future task) — an extra key
+    // the schema doesn't know about must be silently stripped, never
+    // cause validation to fail.
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API, Web検索補完)",
+          mentioned: true,
+          rank: null,
+          summary: "Acme is a company.",
+          observationMethod: "websearch_supplement",
+          model: "gemini-2.5-flash",
+          geminiGroundingChunks: [{ uri: "https://acme.example.com", title: "Acme" }],
+          geminiSearchEntryPointRenderedContent: "<div>...</div>",
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0] as Record<string, unknown>;
+      expect(item.model).toBe("gemini-2.5-flash");
+      expect(item.geminiGroundingChunks).toBeUndefined();
+      expect(item.geminiSearchEntryPointRenderedContent).toBeUndefined();
+    }
+  });
+
+  it("can represent different models for the no-search and Web検索補完 Gemini cards", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Gemini (Google API)", mentioned: true, rank: null, summary: "Acme." },
+        {
+          platform: "Gemini (Google API, Web検索補完)",
+          mentioned: true,
+          rank: null,
+          summary: "Acme.",
+          observationMethod: "websearch_supplement",
+          model: "gemini-2.5-flash",
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.aiOverviewComparison[0].model).toBeUndefined();
+      expect(result.data.aiOverviewComparison[1].model).toBe("gemini-2.5-flash");
+    }
+  });
+
   // --- webAiGap ("Web上の説明とAI回答のズレ", backend/services/web_ai_gap.py) ---
 
   it("accepts an AnalysisResult without webAiGap (older saved history predating this field)", () => {

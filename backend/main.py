@@ -226,6 +226,7 @@ from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supplement
 from services.claude_websearch_provider import attempt_claude_websearch_supplement
+from services.gemini_websearch_provider import attempt_gemini_websearch_supplement
 from services.claude_provider import build_claude_observation, resolve_claude_mode
 from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -1628,6 +1629,32 @@ def _analyze_authenticated_idempotent(
         )
     except Exception:
         logger.exception("Unexpected error while attempting the Claude websearch supplement")
+
+    # Task 6-D-4B-2 (feature/gemini-websearch-supplement): same timing
+    # constraint and defensive wrapping as the ChatGPT/Claude websearch
+    # supplements above — see services/gemini_websearch_provider.py's
+    # module docstring. Independent of both: a failure or skip here
+    # never affects the ChatGPT/Claude results, and vice versa.
+    try:
+        gemini_recognition_level = (
+            result.meta.geminiProvider.recognitionLevel if result.meta.geminiProvider else None
+        )
+        gemini_websearch_item, gemini_websearch_provider_info = attempt_gemini_websearch_supplement(
+            brand_name=brand_name,
+            recognition_level=gemini_recognition_level,
+            analysis_run_id=reservation.analysis_run_id,
+            project_id=project_id,
+            user_id=user_id,
+        )
+        result.meta.geminiWebsearchProvider = gemini_websearch_provider_info
+        if gemini_websearch_item is not None:
+            result.aiOverviewComparison = [*result.aiOverviewComparison, gemini_websearch_item]
+        logger.info(
+            "gemini websearch supplement complete: status=%s",
+            gemini_websearch_provider_info.status,
+        )
+    except Exception:
+        logger.exception("Unexpected error while attempting the Gemini websearch supplement")
 
     try:
         completed = complete_analysis_job(

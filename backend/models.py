@@ -494,6 +494,158 @@ class ClaudeWebsearchProviderInfo(BaseModel):
     model: str | None = None
 
 
+# Task 6-D-4B-2 (feature/gemini-websearch-supplement): outcome of
+# attempting (or not attempting) Gemini's conditional Google Search
+# grounding supplement for this request — see
+# services/gemini_websearch_provider.py. Mirrors
+# ChatGptWebsearchStatus/ClaudeWebsearchStatus's values wherever the
+# underlying reason is the same concept, plus one new value this
+# feature alone needs:
+# - "model_not_allowed": Task 6-D-4B-1's investigation found Gemini 3+
+#   models are billed per *executed search query* with no API
+#   parameter to cap how many a single call may issue, unlike OpenAI's
+#   max_tool_calls/Anthropic's max_uses — only `gemini-2.5-flash`
+#   (billed per prompt, a fixed cost per call) is on
+#   services/gemini_websearch_settings.py's GEMINI_WEBSEARCH_ALLOWED_MODELS
+#   allowlist. Any other configured model is rejected with this status
+#   *before* any quota reservation or API call — never a silent
+#   fallback to the allowed model.
+GeminiWebsearchStatus = Literal[
+    "not_attempted",
+    "disabled",
+    "quota_enforcement_disabled",
+    "no_credentials",
+    "recognition_level_not_eligible",
+    "model_not_allowed",
+    "quota_rejected",
+    "already_reserved",
+    "run_invalid",
+    "reservation_error",
+    "real",
+    "unavailable",
+]
+
+
+class GeminiWebsearchProviderInfo(BaseModel):
+    """Reports whether Gemini's conditional Google Search grounding
+    supplement (Task 6-D-4B-2, feature/gemini-websearch-supplement)
+    was attempted for this request, and why — see
+    services/gemini_websearch_provider.py. Entirely optional/
+    independent of GeminiProviderInfo above (the no-search
+    observation): mirrors ClaudeWebsearchProviderInfo's own docstring
+    for the full reasoning.
+
+    **`searched` is deliberately a tri-state (`True`/`False`/`None`),
+    not a plain boolean** — Task 6-D-4B-1's investigation found no
+    explicit "a search ran" flag in Gemini's `generateContent`
+    response (unlike OpenAI's `web_search_call.status=="completed"` or
+    Claude's `web_search_tool_result` block): the only documented
+    signal is that `groundingMetadata` "might not be provided" when a
+    response isn't grounded. This module therefore only ever reports:
+    - `True`: `groundingMetadata` was present *and* `webSearchQueries`
+      contained at least one non-empty query — the strongest
+      available positive signal.
+    - `False`: `groundingMetadata` was entirely absent from the
+      candidate — the documented "not grounded" case.
+    - `None`: an in-between shape this task's own investigation could
+      not confirm the meaning of from documentation alone (e.g.
+      `groundingMetadata` present but `webSearchQueries` empty/absent)
+      — reported as genuinely unknown rather than guessed in either
+      direction. See services/gemini_websearch_client.py's own
+      `_classify_searched()` for the exact rule.
+
+    `groundingMetadataPresent`/`webSearchQueriesCount` are separate,
+    non-lossy diagnostic fields kept alongside the collapsed `searched`
+    tri-state, so every one of Task 6-D-4B-2 item 4's required
+    distinctions (grounding info present/absent, query info
+    present/absent) remains individually recoverable from a saved
+    history row, not flattened into one signal.
+    `webSearchQueriesCount` is diagnostic only — Task 6-D-4B-2 item 4's
+    own instruction: "クエリ件数を確定請求額とは扱わない" (never read as
+    a confirmed billed-query count; Gemini 2.5's own billing is
+    per-prompt regardless of this number — see
+    services/gemini_websearch_settings.py's own docstring).
+
+    `model` is always populated once the attempt reaches the point of
+    reading the configured model (i.e. `status` is none of
+    "not_attempted"/"disabled"/"quota_enforcement_disabled"/
+    "recognition_level_not_eligible"), even when that model is then
+    rejected by the allowlist gate (`status == "model_not_allowed"`)
+    — so a saved history row always shows which model was actually
+    configured, not only which model successfully ran.
+    """
+
+    status: GeminiWebsearchStatus
+    reason: str
+    recognitionLevelAtTrigger: RecognitionLevel | None = None
+    searched: bool | None = None
+    groundingMetadataPresent: bool | None = None
+    webSearchQueriesCount: int | None = None
+    model: str | None = None
+
+
+class GeminiWebsearchGroundingChunk(BaseModel):
+    """Task 6-D-4B-2: one raw `groundingChunks[]` entry from Gemini's
+    `generateContent` response, exactly as Google returned it — see
+    https://ai.google.dev/gemini-api/docs/generate-content/google-search
+    (fetched 2026-10-24). `uri`/`title` are kept unmodified (Google's
+    own `uri` is often itself a `vertexaisearch.cloud.google.com`
+    redirect, not the original source's direct URL — never rewritten
+    or "corrected" here; see GeminiWebsearchReference-building logic in
+    services/gemini_websearch_client.py for the separate, de-duplicated
+    display list derived from this one). `domain` was present in one
+    official example (Vertex AI's grounding reference) but absent in
+    another (the ai.google.dev generateContent page) — kept Optional
+    since its presence could not be confirmed as guaranteed.
+
+    This model exists purely as structured storage for a future task;
+    nothing in this codebase reads it to build any UI yet.
+    """
+
+    uri: str
+    title: str | None = None
+    domain: str | None = None
+
+
+class GeminiWebsearchGroundingSupport(BaseModel):
+    """Task 6-D-4B-2: one raw `groundingSupports[]` entry — maps a
+    character span of the answer text (`startIndex`/`endIndex`/`text`,
+    Gemini's own fields, kept as-is, never computed or guessed here)
+    to one or more sources via `groundingChunkIndices` — **a
+    many-to-many relationship, deliberately preserved as such**: unlike
+    OpenAI's/Claude's one-citation-to-one-URL shape, a single Gemini
+    text segment can point at multiple `groundingChunks` entries at
+    once (Task 6-D-4B-1's investigation found `groundingChunkIndices`
+    is itself an array, e.g. `[1, 0]`). `confidenceScores` (one score
+    per index, when present) is kept aligned with
+    `groundingChunkIndices` exactly as Google returned it, not
+    re-sorted or filtered.
+
+    **Index correspondence**: `groundingChunkIndices` values are
+    positions into the *original* (pre-storage-ceiling)
+    `groundingChunks` list Gemini returned for this response, not into
+    `AIOverviewComparisonItem.geminiGroundingChunks` after that list has
+    potentially been capped by
+    services/gemini_websearch_client.py's own storage ceiling. In the
+    (expected to be rare) case that ceiling was actually exceeded, an
+    index here can point past the end of the stored
+    `geminiGroundingChunks` list — this is an accepted, documented
+    limitation of the storage ceiling (see
+    GeminiWebsearchGroundingChunk's own docstring and
+    AIOverviewComparisonItem.geminiGroundingChunksTotalCount), never
+    silently "fixed up" by renumbering or dropping supports here.
+
+    This model exists purely as structured storage for a future task;
+    nothing in this codebase reads it to build any UI yet.
+    """
+
+    startIndex: int | None = None
+    endIndex: int | None = None
+    text: str | None = None
+    groundingChunkIndices: list[int] = []
+    confidenceScores: list[float] | None = None
+
+
 class ClaudeProviderInfo(BaseModel):
     """Reports whether the Claude-equivalent observation card was added
     to aiOverviewComparison this request, and why — see
@@ -618,6 +770,13 @@ class AnalysisMeta(BaseModel):
     # Independent of the other AI observation providers — optional so
     # existing clients/tests that don't know about it aren't broken.
     geminiProvider: GeminiProviderInfo | None = None
+    # Task 6-D-4B-2 (feature/gemini-websearch-supplement) — whether
+    # Gemini's conditional Google Search grounding supplement was
+    # attempted, and why (see GeminiWebsearchProviderInfo above).
+    # Independent of geminiProvider — optional so existing
+    # clients/tests, and every saved history row predating this task,
+    # keep working unchanged.
+    geminiWebsearchProvider: GeminiWebsearchProviderInfo | None = None
     # Whether a supplementary Common Crawl Document was added to this
     # request's Document[] (see CommonCrawlProviderInfo above).
     # Independent of aiOverviewProvider/chatgptProvider — optional so
@@ -911,6 +1070,56 @@ class AIOverviewComparisonItem(BaseModel):
     # provider was never reached far enough to know which model was
     # configured (e.g. a gate rejection with no item at all).
     model: str | None = None
+    # Task 6-D-4B-2 (feature/gemini-websearch-supplement): the raw
+    # `groundingChunks`/`groundingSupports` data for a Gemini
+    # Google-Search-grounding supplement card — see
+    # GeminiWebsearchGroundingChunk/GeminiWebsearchGroundingSupport's
+    # own docstrings for the full shape. Deliberately separate fields
+    # from citationAnnotations/claudeCitationAnnotations above: none of
+    # the three providers' raw grounding/citation shapes are
+    # interchangeable, and none is ever forced onto another's data.
+    # `citationsTruncated` above is reused as-is for the Gemini card's
+    # display `references` too (same provider-agnostic meaning).
+    # None for every other provider and every pre-existing saved
+    # history row.
+    geminiGroundingChunks: list[GeminiWebsearchGroundingChunk] | None = None
+    # The *true* total number of raw groundingChunks entries Gemini's
+    # response contained, before
+    # services/gemini_websearch_client.py's own storage-safety ceiling
+    # is applied — same role as citationAnnotationsTotalCount/
+    # claudeCitationAnnotationsTotalCount above. None whenever
+    # geminiGroundingChunks itself is None.
+    geminiGroundingChunksTotalCount: int | None = None
+    geminiGroundingSupports: list[GeminiWebsearchGroundingSupport] | None = None
+    # Same role as geminiGroundingChunksTotalCount, for
+    # geminiGroundingSupports — these two totals are independent
+    # (Gemini's groundingChunks and groundingSupports lists are not
+    # guaranteed to be the same length; see
+    # GeminiWebsearchGroundingSupport's own docstring on the
+    # many-to-many relationship between them).
+    geminiGroundingSupportsTotalCount: int | None = None
+    # Task 6-D-4B-2 item 6: Google's own `searchEntryPoint.renderedContent`
+    # (required HTML/CSS for the "Search Suggestions" chip — see
+    # https://ai.google.dev/gemini-api/docs/generate-content/google-search's
+    # display requirements), kept exactly as Google returned it, never
+    # generated or modified by this codebase. Capped at a storage-
+    # safety ceiling (services/gemini_websearch_client.py's own
+    # _MAX_RENDERED_CONTENT_CHARS) — see
+    # geminiSearchEntryPointRenderedContentTruncated below for when
+    # that ceiling actually shortened it. **Not rendered by any
+    # frontend code in this task** — Task 6-D-4B-2 item 6's own
+    # instruction: the display component is a separate, future task
+    # (6-D-4B-3), and raw HTML must never be inserted into the app's
+    # DOM unconditionally. This field exists purely as structured
+    # storage ahead of that task. None when Gemini's response had no
+    # searchEntryPoint at all.
+    geminiSearchEntryPointRenderedContent: str | None = None
+    # True only when the storage-safety ceiling above actually had to
+    # shorten geminiSearchEntryPointRenderedContent — independent of
+    # fullSummaryTruncated (that one is about `fullSummary`, this one
+    # is about this separate field). None whenever
+    # geminiSearchEntryPointRenderedContent itself is None.
+    geminiSearchEntryPointRenderedContentTruncated: bool | None = None
 
 
 # Whether services/web_ai_gap.py could build a meaningful comparison —
