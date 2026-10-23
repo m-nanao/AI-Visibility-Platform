@@ -252,6 +252,7 @@ export function buildAnalysisJobCreateRequestBody(
   commonCrawlDomain?: string,
   claudeMode?: ClaudeProviderMode,
   geminiMode?: GeminiProviderMode,
+  officialUrl?: string,
 ): AnalysisJobCreateRequestBody {
   const content = buildAnalyzeRequestBody(
     brandName,
@@ -262,6 +263,9 @@ export function buildAnalysisJobCreateRequestBody(
     commonCrawlDomain,
     claudeMode,
     geminiMode,
+    undefined, // projectId — not part of AnalyzeRequestBody's own projectId slot here.
+    undefined, // requestId — jobs use idempotencyKey below, not requestId.
+    officialUrl,
   );
   return { ...content, projectId, idempotencyKey };
 }
@@ -296,6 +300,7 @@ export function prepareAnalysisJobCreateRequestBody(
   commonCrawlDomain?: string,
   claudeMode?: ClaudeProviderMode,
   geminiMode?: GeminiProviderMode,
+  officialUrl?: string,
 ): AnalysisJobCreateRequestBody {
   const content = buildAnalyzeRequestBody(
     brandName,
@@ -306,6 +311,9 @@ export function prepareAnalysisJobCreateRequestBody(
     commonCrawlDomain,
     claudeMode,
     geminiMode,
+    undefined, // projectId — not part of AnalyzeRequestBody's own projectId slot here.
+    undefined, // requestId — jobs use idempotencyKey below, not requestId.
+    officialUrl,
   );
   const idempotencyKey = resolveIdempotencyKeyForJobSubmission(userScope, projectId, content);
   return { ...content, projectId, idempotencyKey };

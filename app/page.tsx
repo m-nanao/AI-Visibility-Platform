@@ -164,6 +164,7 @@ export default function Home() {
     commonCrawlDomain?: string,
     claudeMode?: ClaudeProviderMode,
     geminiMode?: GeminiProviderMode,
+    officialUrl?: string,
   ) => {
     if (!selectedProjectId) {
       setError(ME_PROJECTS_NONE_MESSAGE);
@@ -186,6 +187,7 @@ export default function Home() {
       commonCrawlDomain,
       claudeMode,
       geminiMode,
+      officialUrl,
     );
 
     const response = await fetch("/api/analysis-jobs", {
@@ -222,6 +224,7 @@ export default function Home() {
     commonCrawlDomain?: string,
     claudeMode?: ClaudeProviderMode,
     geminiMode?: GeminiProviderMode,
+    officialUrl?: string,
   ) => {
     if (asyncAnalysisEnabled) {
       await handleAsyncAnalyze(
@@ -233,6 +236,7 @@ export default function Home() {
         commonCrawlDomain,
         claudeMode,
         geminiMode,
+        officialUrl,
       );
       return;
     }
@@ -288,6 +292,8 @@ export default function Home() {
         claudeMode,
         geminiMode,
         analyzeAuthRequired ? selectedProjectId ?? undefined : undefined,
+        undefined, // requestId — added below via requestBody.requestId=, not here.
+        officialUrl,
       );
 
       // Task 6-B3 (feature/sync-analyze-jwt-project-auth): requestId is

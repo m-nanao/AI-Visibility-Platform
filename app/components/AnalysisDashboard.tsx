@@ -14,6 +14,7 @@ import type { GeminiRerunControlsState } from "./sections/AIOverviewComparisonSe
 import WebAiGapSection from "./sections/WebAiGapSection";
 import WebAiGapAiComparisonSection from "./sections/WebAiGapAiComparisonSection";
 import type { AiGapComparisonControlsState } from "./sections/WebAiGapAiComparisonSection";
+import OfficialInfoCandidateSection from "./sections/OfficialInfoCandidateSection";
 import ImprovementSuggestionsSection from "./sections/ImprovementSuggestionsSection";
 
 export default function AnalysisDashboard({
@@ -94,6 +95,13 @@ export default function AnalysisDashboard({
           comparison={result.webAiGapAiComparison}
           controls={aiGapComparison}
         />
+      </div>
+      {/* 公式情報の取得候補 (officialInfoCandidate) — officialUrlが未指定
+          の場合(およびこのフィールドより古い履歴)はOfficialInfoCandidateSection
+          自体が何もレンダリングしない。webAiGap/webAiGapAiComparisonの
+          直後・改善提案の直前に置く（feature/official-info-candidate）。 */}
+      <div className="lg:col-span-2">
+        <OfficialInfoCandidateSection officialInfoCandidate={result.officialInfoCandidate} />
       </div>
       {/* 改善提案は他セクションより文章量が多くなりやすく、狭い2カラム
           グリッド内だと1件あたりの説明文が読みにくくなるため、

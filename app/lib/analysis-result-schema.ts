@@ -308,6 +308,21 @@ const webAiGapAiComparisonSchema = z.object({
   caution: z.string(),
 });
 
+// Task 6-D-5B (feature/official-info-candidate): mirrors
+// backend/models.py's OfficialInfoCandidate — see
+// app/lib/types.ts's OfficialInfoCandidate for the full "user-
+// specified candidate, never verified" contract.
+const officialInfoCandidateSchema = z.object({
+  requestedUrl: z.string(),
+  status: z.enum(["success", "failed"]),
+  fetchedUrl: optionalFromPython(z.string()),
+  title: optionalFromPython(z.string()),
+  fetchedAt: optionalFromPython(z.string()),
+  hasText: z.boolean(),
+  documentId: optionalFromPython(z.string()),
+  error: optionalFromPython(z.string()),
+});
+
 export const analysisResultSchema = z.object({
   brandName: z.string(),
   summary: brandSummarySchema,
@@ -331,6 +346,11 @@ export const analysisResultSchema = z.object({
   // saved history, which parses the same as undefined (no block
   // rendered until generated).
   webAiGapAiComparison: optionalFromPython(webAiGapAiComparisonSchema),
+  // Task 6-D-5B (feature/official-info-candidate). Absent entirely
+  // (or null — Pydantic's JSON serialization of an unset Optional
+  // field) when `officialUrl` was not provided, which parses the same
+  // as undefined.
+  officialInfoCandidate: optionalFromPython(officialInfoCandidateSchema),
 });
 
 export type AnalysisResultParseResult =

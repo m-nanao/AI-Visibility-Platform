@@ -260,6 +260,7 @@ async def process_one_job(
                     chatgpt_mode_override=snapshot.get("chatgptMode"),
                     claude_mode_override=snapshot.get("claudeMode"),
                     gemini_mode_override=snapshot.get("geminiMode"),
+                    official_url=snapshot.get("officialUrl"),
                 )
             except AnalysisPipelineInputError as exc:
                 status = "failed"

@@ -228,6 +228,7 @@ from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supple
 from services.claude_websearch_provider import attempt_claude_websearch_supplement
 from services.gemini_websearch_provider import attempt_gemini_websearch_supplement
 from services.gemini_external_document_provider import attempt_gemini_external_document_supplement
+from services.official_info_candidate import build_official_info_candidate
 from services.claude_provider import build_claude_observation, resolve_claude_mode
 from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -606,6 +607,7 @@ def run_analysis_pipeline(
     chatgpt_mode_override: str | None,
     claude_mode_override: str | None,
     gemini_mode_override: str | None,
+    official_url: str | None = None,
 ) -> AnalysisPipelineOutcome:
     """The actual analysis pipeline — Common Crawl / cooccurrence /
     chunking / context analysis / brand summary / AI Overview /
@@ -641,6 +643,16 @@ def run_analysis_pipeline(
     as a hard failure (main.py lets it propagate as an unhandled error
     for /analyze exactly as before this extraction; the worker catches
     it and marks the job 'failed').
+
+    `official_url` (Task 6-D-5B, feature/official-info-candidate) is
+    optional and defaulted to None so every existing caller keeps
+    working unchanged. When given, services/official_info_candidate.py's
+    build_official_info_candidate() is called once this function's own
+    `documents_list` is finalized, and the result is set on
+    `result.officialInfoCandidate` — see that module's own docstring
+    for the full fetch/reuse contract. This never adds a Document to
+    `documents_list` itself, so it has no effect on cooccurrence
+    ranking/context analysis/source_summary/web_fetch_documents above.
     """
     url_fetch_results: list[UrlFetchResult] | None = None
     documents_source: DocumentsSource
@@ -996,6 +1008,12 @@ def run_analysis_pipeline(
 
     source_summary = dict(Counter(document.sourceType for document in documents_list))
 
+    # Task 6-D-5B (feature/official-info-candidate) — see this
+    # function's own docstring above. Deliberately placed after
+    # documents_list is final (so same-run urls[] reuse can work) and
+    # never mutates documents_list itself.
+    result.officialInfoCandidate = build_official_info_candidate(official_url, documents_list)
+
     return AnalysisPipelineOutcome(
         result=result,
         cooccurrence_status=cooccurrence_status,
@@ -1247,6 +1265,7 @@ def _analyze_anonymous(payload: AnalyzeRequest, brand_name: str):
             chatgpt_mode_override=payload.chatgptMode,
             claude_mode_override=payload.claudeMode,
             gemini_mode_override=payload.geminiMode,
+            official_url=payload.officialUrl,
         )
     except AnalysisPipelineInputError as exc:
         return error_response(str(exc))
@@ -1278,6 +1297,7 @@ def _analyze_anonymous(payload: AnalyzeRequest, brand_name: str):
                 "chatgptMode": payload.chatgptMode,
                 "claudeMode": payload.claudeMode,
                 "geminiMode": payload.geminiMode,
+                "officialUrl": payload.officialUrl,
             },
             source_summary=outcome.source_summary,
             result_json=result.model_dump(),
@@ -1473,6 +1493,7 @@ def _analyze_authenticated_idempotent(
             gemini_mode=payload.geminiMode,
             lease_seconds=SYNC_ANALYSIS_LEASE_SECONDS,
             required_counters=required_counters,
+            official_url=payload.officialUrl,
         )
     except SyncAnalysisStillRunningError:
         return error_response(
@@ -1556,6 +1577,7 @@ def _analyze_authenticated_idempotent(
             chatgpt_mode_override=payload.chatgptMode,
             claude_mode_override=payload.claudeMode,
             gemini_mode_override=payload.geminiMode,
+            official_url=payload.officialUrl,
         )
     except AnalysisPipelineInputError as exc:
         try:
@@ -3238,6 +3260,7 @@ def create_analysis_job(payload: AnalysisJobCreateRequest, request: Request):
             gemini_mode=payload.geminiMode,
             max_queued_per_project=jobs_settings.max_queued_per_project,
             max_queued_per_user=jobs_settings.max_queued_per_user,
+            official_url=payload.officialUrl,
         )
     except AnalysisJobCreateConflictError:
         return error_response(ANALYSIS_JOBS_CONFLICT_MESSAGE, status_code=409)

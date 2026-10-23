@@ -110,6 +110,11 @@ export interface AnalyzeRequestBody {
   // existing anonymous flow, or ANALYZE_AUTH_REQUIRED=false in
   // production today) — see Task 6-B2
   // (feature/sync-analyze-jwt-project-auth).
+  // Task 6-D-5B (feature/official-info-candidate) — mirrors
+  // backend/models.py's AnalyzeRequest.officialUrl exactly. Always
+  // sent exactly as the user typed it (trimmed, non-blank) — never
+  // auto-detected, never merged into `urls` above.
+  officialUrl?: string;
   projectId?: string;
   // Idempotency key for the synchronous analysis itself (Task 6-B3,
   // feature/sync-analyze-jwt-project-auth) — only meaningful (and only
@@ -151,6 +156,7 @@ export function buildAnalyzeRequestBody(
   geminiMode?: GeminiProviderMode,
   projectId?: string,
   requestId?: string,
+  officialUrl?: string,
 ): AnalyzeRequestBody {
   const body: AnalyzeRequestBody = { brandName };
   if (urls.length > 0) body.urls = urls;
@@ -164,6 +170,7 @@ export function buildAnalyzeRequestBody(
   if (geminiMode) body.geminiMode = geminiMode;
   if (projectId && projectId.trim()) body.projectId = projectId.trim();
   if (requestId && requestId.trim()) body.requestId = requestId.trim();
+  if (officialUrl && officialUrl.trim()) body.officialUrl = officialUrl.trim();
   return body;
 }
 

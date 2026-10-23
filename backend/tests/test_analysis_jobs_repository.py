@@ -336,6 +336,42 @@ def test_canonicalize_does_not_reorder_urls_or_documents():
     assert a != b
 
 
+def test_canonicalize_includes_official_url_and_defaults_to_none():
+    """Task 6-D-5B (feature/official-info-candidate): officialUrl must
+    be part of the canonicalized/stored shape (so a resubmission with
+    a different officialUrl under the same idempotency key is treated
+    as a genuinely different request), and omitting it must default
+    to None rather than being dropped from the dict entirely (every
+    other field here behaves the same way)."""
+    without_official_url = repo._canonicalize_job_input(
+        brand_name="Acme",
+        documents=None,
+        urls=["https://example.com"],
+        common_crawl_mode=None,
+        common_crawl_domain=None,
+        ai_overview_mode=None,
+        chatgpt_mode=None,
+        claude_mode=None,
+        gemini_mode=None,
+    )
+    assert without_official_url["officialUrl"] is None
+
+    with_official_url = repo._canonicalize_job_input(
+        brand_name="Acme",
+        documents=None,
+        urls=["https://example.com"],
+        common_crawl_mode=None,
+        common_crawl_domain=None,
+        ai_overview_mode=None,
+        chatgpt_mode=None,
+        claude_mode=None,
+        gemini_mode=None,
+        official_url="https://acme.example.com",
+    )
+    assert with_official_url["officialUrl"] == "https://acme.example.com"
+    assert without_official_url != with_official_url
+
+
 # --- create_queued_analysis_run() ------------------------------------------
 
 

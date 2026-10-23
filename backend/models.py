@@ -337,6 +337,78 @@ class Document(BaseModel):
     metadata: dict[str, object] | None = None
 
 
+# Task 6-D-5B (feature/official-info-candidate): outcome of attempting
+# to fetch AnalyzeRequest.officialUrl — see
+# services/official_info_candidate.py. "not_provided" is never
+# actually stored (OfficialInfoCandidate itself is None in that case —
+# see AnalysisResult.officialInfoCandidate's own comment); it exists
+# here only so the Literal's own meaning is self-documenting for a
+# reader of OfficialInfoCandidate.status.
+OfficialUrlFetchStatus = Literal["success", "failed"]
+
+
+class OfficialInfoCandidate(BaseModel):
+    """Task 6-D-5B (feature/official-info-candidate): records that the
+    caller specified `officialUrl` on this request, and whether this
+    application was able to fetch it — see
+    services/official_info_candidate.py's own module docstring for the
+    full fetch/reuse contract.
+
+    **This model records a user-specified candidate, never an
+    independently-verified fact.** Nothing about `status == "success"`
+    means "this URL has been confirmed to be the subject brand's real
+    official site" — it only means "the caller supplied this URL, and
+    this application was able to fetch *something* from it." No
+    authenticity/ownership verification of any kind is performed
+    anywhere in this codebase (consistent with every other provider's
+    own `official_url` parameter, which is always `None` today for the
+    same reason — see e.g. services/chatgpt_websearch_provider.py's own
+    docstring). A future fact-comparison task (Task 6-D-5C) is
+    expected to still treat this as "the user's own claim about which
+    source is official," not a verified ground truth.
+
+    **Deliberately holds no document body text** — only `hasText`
+    (whether the fetched page had any usable text after the existing
+    Document Pipeline's cleaning step), never the text itself. This
+    mirrors how this codebase already treats every other fetched
+    Document today: Document.text is used transiently while building
+    this request's analysis (cooccurrence ranking, context analysis)
+    and is never itself persisted into AnalysisResult/result_json — see
+    AnalysisResult's own field list, which has no "documents" field at
+    all. Storing a document's full text here would be the first
+    departure from that pattern, and Task 6-D-5B's own scope
+    deliberately excludes it ("無制限のWeb本文保存を追加しない"). A
+    future task that needs the actual text for extraction (Task
+    6-D-5C) will need to either re-fetch via `fetchedUrl`, or
+    explicitly add a new, size-capped field here (mirroring
+    `fullSummary`'s own `_FULL_SUMMARY_SAFETY_MAX_CHARS` convention) —
+    this is an intentional, flagged hand-off point, not an oversight.
+
+    `documentId` is set only when this candidate was satisfied by
+    reusing a Document this request's own `urls[]` had already fetched
+    (see services/official_info_candidate.py's own reuse logic) — it
+    is that Document's own `id`, never a newly-minted one for a
+    standalone fetch, so a reader can tell "this official URL happened
+    to also be one of the analysis's own input URLs" apart from "this
+    was fetched solely because of officialUrl."
+
+    `error` is set only when `status == "failed"` — the same safe,
+    credential-free error string services/web_fetcher.py's own
+    `UrlFetchResult.error` already produces (e.g. an SSRF rejection
+    reason, a timeout, a non-2xx status) — never a fabricated or
+    guessed failure reason.
+    """
+
+    requestedUrl: str
+    status: OfficialUrlFetchStatus
+    fetchedUrl: str | None = None
+    title: str | None = None
+    fetchedAt: str | None = None
+    hasText: bool = False
+    documentId: str | None = None
+    error: str | None = None
+
+
 class DocumentChunk(BaseModel):
     """A single chunk of one Document's `text` (see Document above),
     sized for future context-analysis/Embedding use. See
@@ -1513,6 +1585,13 @@ class AnalysisResult(BaseModel):
     # immediately after analysis and only ever set later via POST
     # /analysis-runs/{id}/web-ai-gap/ai-comparison.
     webAiGapAiComparison: WebAiGapAiComparison | None = None
+    # Task 6-D-5B (feature/official-info-candidate) — set only when the
+    # request included `officialUrl` (see OfficialInfoCandidate's own
+    # docstring for the full contract: a user-specified candidate,
+    # never an independently-verified fact). None when `officialUrl`
+    # was omitted — identical to every other Optional field here,
+    # existing/old saved history keeps parsing unchanged.
+    officialInfoCandidate: OfficialInfoCandidate | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -1599,6 +1678,23 @@ class AnalyzeRequest(BaseModel):
     # idempotency" section for why this can't safely be extended to
     # the anonymous path too.
     requestId: str | None = None
+    # Task 6-D-5B (feature/official-info-candidate): an optional,
+    # user-specified "official site" URL to use as a future fact-
+    # comparison source — see OfficialInfoCandidate's own docstring for
+    # the full contract. Deliberately a plain `str | None`, same as
+    # `urls` above: no Pydantic URL-format validator exists anywhere in
+    # this file (confirmed — there is no `field_validator` at all), so
+    # this field is validated the same way every entry in `urls` is —
+    # at fetch time, by services/web_fetcher.py's own SSRF/scheme
+    # checks, never by a stricter Pydantic type here. **Deliberately
+    # independent of `urls` above**: this field is never merged into
+    # `urls`, never auto-detected from it, and never passed to any
+    # existing observation provider (ChatGPT/Claude/Gemini websearch or
+    # external-document supplements, or Google Search grounding) —
+    # see services/official_info_candidate.py's own module docstring.
+    # Omitting it preserves every existing behavior exactly as before
+    # this field existed.
+    officialUrl: str | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -2011,6 +2107,11 @@ class AnalysisJobCreateRequest(BaseModel):
     geminiMode: GeminiProviderMode | None = None
     commonCrawlMode: CommonCrawlProviderMode | None = None
     commonCrawlDomain: str | None = None
+    # Task 6-D-5B (feature/official-info-candidate) — mirrors
+    # AnalyzeRequest.officialUrl exactly (see that field's own
+    # comment for the full contract). Omitting it preserves every
+    # existing behavior exactly as before this field existed.
+    officialUrl: str | None = None
 
 
 class AnalysisJobAcceptedResponse(BaseModel):

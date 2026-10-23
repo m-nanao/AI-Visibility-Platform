@@ -602,4 +602,31 @@ export interface AnalysisResult {
   // after analysis; only ever set after a manual generation from the
   // history detail screen).
   webAiGapAiComparison?: WebAiGapAiComparison;
+  // Task 6-D-5B (feature/official-info-candidate) — set only when the
+  // request included `officialUrl`. See OfficialInfoCandidate's own
+  // comment for the full "user-specified candidate, never an
+  // independently-verified fact" contract. Undefined on older saved
+  // history that predates this field.
+  officialInfoCandidate?: OfficialInfoCandidate | null;
+}
+
+// Task 6-D-5B (feature/official-info-candidate): mirrors
+// backend/models.py's OfficialInfoCandidate exactly — see that
+// model's own docstring for the full contract. In particular:
+// `status === "success"` means only "this application was able to
+// fetch *something* from the user-specified URL," never "this URL has
+// been confirmed to be the subject brand's real official site." No
+// authenticity/ownership verification of any kind is performed
+// anywhere in this codebase. Deliberately carries no document body
+// text — only `hasText` (whether the fetched page had any usable text
+// at all) — see that model's own docstring for why.
+export interface OfficialInfoCandidate {
+  requestedUrl: string;
+  status: "success" | "failed";
+  fetchedUrl?: string;
+  title?: string;
+  fetchedAt?: string;
+  hasText: boolean;
+  documentId?: string;
+  error?: string;
 }

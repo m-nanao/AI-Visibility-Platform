@@ -96,6 +96,7 @@ export default function BrandInputForm({
     commonCrawlDomain?: string,
     claudeMode?: ClaudeProviderMode,
     geminiMode?: GeminiProviderMode,
+    officialUrl?: string,
   ) => void;
   isLoading: boolean;
   initialValue?: string;
@@ -109,6 +110,10 @@ export default function BrandInputForm({
   const [commonCrawlDomain, setCommonCrawlDomain] = useState("");
   const [claudeMode, setClaudeMode] = useState<ClaudeProviderMode>("off");
   const [geminiMode, setGeminiMode] = useState<GeminiProviderMode>("off");
+  // Task 6-D-5B (feature/official-info-candidate) — unlike the
+  // selectors above, this is a normal user-facing field, not gated
+  // behind a dev/verification-only flag.
+  const [officialUrl, setOfficialUrl] = useState("");
   const showAiOverviewModeSelector = isAiOverviewModeSelectorEnabled();
   const showChatGptModeSelector = isChatGptModeSelectorEnabled();
   const showCommonCrawlModeSelector = isCommonCrawlModeSelectorEnabled();
@@ -151,6 +156,7 @@ export default function BrandInputForm({
         : undefined,
       showClaudeModeSelector ? claudeMode : undefined,
       showGeminiModeSelector ? geminiMode : undefined,
+      officialUrl.trim() ? officialUrl.trim() : undefined,
     );
   };
 
@@ -215,6 +221,35 @@ export default function BrandInputForm({
             ))}
           </ul>
         )}
+      </div>
+
+      {/* Task 6-D-5B (feature/official-info-candidate) — a normal,
+          always-visible optional field (unlike the dev/verification
+          selectors below). The entered URL is never auto-detected or
+          inferred; it is used only as a user-specified candidate
+          source for a future fact-comparison feature, and its own
+          取得状態 is shown in the analysis result (see
+          AIOverviewComparisonSection-adjacent display). */}
+      <div>
+        <label
+          htmlFor="officialUrl"
+          className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+        >
+          公式サイトURL（任意）
+        </label>
+        <input
+          id="officialUrl"
+          name="officialUrl"
+          type="text"
+          disabled={isLoading}
+          value={officialUrl}
+          onChange={(event) => setOfficialUrl(event.target.value)}
+          placeholder="https://example.com"
+          className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+        />
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          企業情報の照合に使用します。指定したURLを公式情報の取得元として扱います（取得元が実際に公式サイトであることの確認は行いません）。
+        </p>
       </div>
 
       {/* Dev/verification-only — see app/lib/analysis-request.ts's

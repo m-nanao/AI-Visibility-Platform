@@ -2156,6 +2156,7 @@ def _canonicalize_job_input(
     chatgpt_mode: str | None,
     claude_mode: str | None,
     gemini_mode: str | None,
+    official_url: str | None = None,
 ) -> dict[str, Any]:
     """Normalizes one job-creation request's analysis-input fields
     into the exact shape stored in `analysis_runs.input_snapshot` and
@@ -2182,6 +2183,14 @@ def _canonicalize_job_input(
         "chatgptMode": chatgpt_mode,
         "claudeMode": claude_mode,
         "geminiMode": gemini_mode,
+        # Task 6-D-5B (feature/official-info-candidate) — included so
+        # a resubmission of the same idempotency key with a different
+        # officialUrl is treated as a genuinely different request
+        # (same "入力差分を意図せず無視しないこと" reasoning this
+        # function's own docstring already states for every other
+        # field here), and so officialUrl itself is recorded in the
+        # stored input_snapshot for later replay/display.
+        "officialUrl": official_url,
     }
 
 
@@ -2272,6 +2281,7 @@ def create_queued_analysis_run(
     gemini_mode: str | None,
     max_queued_per_project: int,
     max_queued_per_user: int,
+    official_url: str | None = None,
 ) -> AnalysisJobCreateResult:
     """Creates one queued analysis job (Phase 1 of
     docs/40_async_analysis_jobs_design.md "15") — inserts a placeholder
@@ -2352,6 +2362,7 @@ def create_queued_analysis_run(
         chatgpt_mode=chatgpt_mode,
         claude_mode=claude_mode,
         gemini_mode=gemini_mode,
+        official_url=official_url,
     )
 
     try:
@@ -3010,6 +3021,7 @@ def create_running_analysis_run(
     gemini_mode: str | None,
     lease_seconds: int,
     required_counters: list[UsageCounterRequirement] | None = None,
+    official_url: str | None = None,
 ) -> SyncAnalysisRunReservation:
     """Atomically reserves one synchronous, authenticated POST /analyze
     request's execution slot — Task 6-B3's idempotency mechanism. See
@@ -3059,6 +3071,7 @@ def create_running_analysis_run(
         chatgpt_mode=chatgpt_mode,
         claude_mode=claude_mode,
         gemini_mode=gemini_mode,
+        official_url=official_url,
     )
     locked_by = f"sync:{uuid.uuid4()}"
 
