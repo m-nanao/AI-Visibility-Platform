@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildRefusalNotice,
   CHATGPT_CITATIONS_TRUNCATED_NOTICE,
   CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE,
   GEMINI_TRUNCATION_NOTE,
@@ -970,6 +971,172 @@ describe("getAiOverviewItemDetailDisplay — truncationWarning (Task 6-D-3C: Cha
   });
 });
 
+describe("getAiOverviewItemDetailDisplay — truncationWarning/platformNote (Task 6-D-4A-2: Claude websearch supplement)", () => {
+  it("never shows GEMINI_TRUNCATION_NOTE's literal Gemini wording on the Claude Web検索補完 card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "max_tokens",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.truncationWarning).toBeDefined();
+    expect(display.truncationWarning).not.toBe(GEMINI_TRUNCATION_NOTE);
+    expect(display.truncationWarning).not.toContain("Gemini");
+    expect(display.truncationWarning).toContain("Claude (Anthropic API, Web検索補完)");
+  });
+
+  it("never shows ChatGPT's own platform note on the Claude Web検索補完 card", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.platformNote).toBeDefined();
+    expect(display.platformNote).not.toContain("OpenAI");
+    expect(display.platformNote).not.toContain("ChatGPT");
+    expect(display.platformNote).toContain("Claude");
+  });
+
+  it("suggests raising the output limit when Anthropic's own finishReason is max_tokens", () => {
+    // Task 6-D-4A-2: Anthropic's stop_reason string for "ran out of
+    // output budget" is "max_tokens", not OpenAI's "max_output_tokens"
+    // — both must trigger the same output-limit suggestion.
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "max_tokens",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.truncationWarning).toContain("出力上限");
+  });
+
+  it("does not suggest raising the output limit for Claude's pause_turn finishReason", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "pause_turn",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.truncationWarning).toBeDefined();
+    expect(display.truncationWarning).not.toContain("出力上限");
+  });
+
+  it("the no-search Claude card's own platformNote is unaffected by this change (regression guard)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+    });
+
+    expect(display.platformNote).toBeDefined();
+    expect(display.platformNote).not.toContain("Web検索");
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — refusalNotice (Task 6-D-4A-2 final review)", () => {
+  it("shows a refusal notice when finishReason is refusal, even though isTruncated is false", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: false,
+      rank: null,
+      summary: "I'm not able to help with that.",
+      isTruncated: false,
+      finishReason: "refusal",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.refusalNotice).toBe(buildRefusalNotice("Claude (Anthropic API, Web検索補完)"));
+    expect(display.truncationWarning).toBeUndefined();
+  });
+
+  it("does not show a refusal notice for a normal completed answer", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      finishReason: "end_turn",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.refusalNotice).toBeUndefined();
+  });
+
+  it("does not show a refusal notice for old history predating finishReason", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+    });
+
+    expect(display.refusalNotice).toBeUndefined();
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — model (Task 6-D-4A-2 final review)", () => {
+  it("passes through item.model when present", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      model: "claude-sonnet-5-5",
+    });
+
+    expect(display.model).toBe("claude-sonnet-5-5");
+  });
+
+  it("is undefined for old history predating this field", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+    });
+
+    expect(display.model).toBeUndefined();
+  });
+
+  it("can differ between the no-search and websearch-supplement cards for the same provider", () => {
+    const noSearch = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      model: "claude-sonnet-4-5",
+    });
+    const websearch = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      model: "claude-sonnet-5-5",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(noSearch.model).toBe("claude-sonnet-4-5");
+    expect(websearch.model).toBe("claude-sonnet-5-5");
+    expect(noSearch.model).not.toBe(websearch.model);
+  });
+});
+
 describe("getAiOverviewItemDetailDisplay — noSourceCaution (Task 6-D-3C item 3)", () => {
   it("shows the no-source caution for the Web検索補完 card when it has zero references", () => {
     const display = getAiOverviewItemDetailDisplay({
@@ -1018,6 +1185,23 @@ describe("getAiOverviewItemDetailDisplay — noSourceCaution (Task 6-D-3C item 3
     });
 
     expect(display.noSourceCaution).toBeUndefined();
+  });
+
+  it("also applies to Claude's Web検索補完 card (provider-agnostic by design)", () => {
+    // Task 6-D-4A-2: the caution is keyed off observationMethod, not a
+    // specific platform string — it must apply to Claude's websearch
+    // card the same way it already does to ChatGPT's.
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Claude (Anthropic API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "websearch_supplement",
+    });
+
+    expect(display.noSourceCaution).toBeDefined();
+    expect(display.noSourceCaution).not.toContain("ChatGPT");
+    expect(display.noSourceCaution).not.toContain("OpenAI");
   });
 });
 

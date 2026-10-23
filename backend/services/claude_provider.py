@@ -177,5 +177,11 @@ def build_claude_observation(
         references=None,
         referenceSummary=None,
         ownDomainReferenced=None,
+        # Task 6-D-4A-2 final review item 1 — see
+        # AIOverviewComparisonItem.model's own docstring in models.py:
+        # recorded so a saved history row can tell this card's model
+        # apart from the Web-search-supplement card's own (different)
+        # default model.
+        model=settings.model,
     )
     return item, "real", result.reason, "api", result.recognition_level, result.prompt_version

@@ -225,6 +225,7 @@ from services.project_access import (
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
 from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supplement
+from services.claude_websearch_provider import attempt_claude_websearch_supplement
 from services.claude_provider import build_claude_observation, resolve_claude_mode
 from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -1599,6 +1600,34 @@ def _analyze_authenticated_idempotent(
         )
     except Exception:
         logger.exception("Unexpected error while attempting the ChatGPT websearch supplement")
+
+    # Task 6-D-4A-2 (feature/claude-websearch-supplement): same timing
+    # constraint and defensive wrapping as the ChatGPT websearch
+    # supplement above — see services/claude_websearch_provider.py's
+    # module docstring. Independent of the ChatGPT attempt above: a
+    # failure or skip here never affects the ChatGPT result, and vice
+    # versa (each only ever appends its own card to
+    # result.aiOverviewComparison and sets its own meta field).
+    try:
+        claude_recognition_level = (
+            result.meta.claudeProvider.recognitionLevel if result.meta.claudeProvider else None
+        )
+        claude_websearch_item, claude_websearch_provider_info = attempt_claude_websearch_supplement(
+            brand_name=brand_name,
+            recognition_level=claude_recognition_level,
+            analysis_run_id=reservation.analysis_run_id,
+            project_id=project_id,
+            user_id=user_id,
+        )
+        result.meta.claudeWebsearchProvider = claude_websearch_provider_info
+        if claude_websearch_item is not None:
+            result.aiOverviewComparison = [*result.aiOverviewComparison, claude_websearch_item]
+        logger.info(
+            "claude websearch supplement complete: status=%s",
+            claude_websearch_provider_info.status,
+        )
+    except Exception:
+        logger.exception("Unexpected error while attempting the Claude websearch supplement")
 
     try:
         completed = complete_analysis_job(

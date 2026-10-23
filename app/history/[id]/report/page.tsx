@@ -374,6 +374,8 @@ function ReportContent({
                 noSourceCaution,
                 fullSummaryTruncatedNotice,
                 citationsTruncatedNotice,
+                refusalNotice,
+                model,
               } = getAiOverviewItemDetailDisplay(item);
               return (
                 <div key={item.platform}>
@@ -401,6 +403,16 @@ function ReportContent({
                   {citationsTruncatedNotice && (
                     <p className="mt-0.5 text-amber-700 dark:text-amber-400 print:text-black">
                       {citationsTruncatedNotice}
+                    </p>
+                  )}
+                  {refusalNotice && (
+                    <p className="mt-0.5 text-amber-700 dark:text-amber-400 print:text-black">
+                      {refusalNotice}
+                    </p>
+                  )}
+                  {model && (
+                    <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500 print:text-black">
+                      使用モデル: {model}
                     </p>
                   )}
                 </div>

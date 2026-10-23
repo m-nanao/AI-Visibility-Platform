@@ -211,6 +211,9 @@ const aiOverviewComparisonItemSchema = z.object({
   // citationsTruncated: see AIOverviewComparisonItem's own comment in
   // app/lib/types.ts.
   citationsTruncated: optionalFromPython(z.boolean()),
+  // model: see AIOverviewComparisonItem's own comment in
+  // app/lib/types.ts.
+  model: optionalFromPython(z.string()),
 });
 
 const improvementSuggestionSchema = z.object({

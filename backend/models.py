@@ -423,6 +423,77 @@ class ChatGptWebsearchProviderInfo(BaseModel):
     searched: bool | None = None
 
 
+# Task 6-D-4A-2 (feature/claude-websearch-supplement): outcome of
+# attempting (or not attempting) Claude's conditional Web-search
+# supplement for this request — see
+# services/claude_websearch_provider.py. Deliberately named/valued the
+# same way as ChatGptWebsearchStatus above (per this task's own
+# "命名は既存ChatGPT実装との整合性を優先する" instruction) wherever the
+# underlying reason is the same concept; "reservation_error" and
+# "unavailable" etc. all carry identical meanings to their ChatGPT
+# counterparts. See that Literal's own docstring for what each value
+# means — not repeated verbatim here to avoid the two drifting out of
+# sync under future edits to only one of them.
+ClaudeWebsearchStatus = Literal[
+    "not_attempted",
+    "disabled",
+    "quota_enforcement_disabled",
+    "no_credentials",
+    "recognition_level_not_eligible",
+    "quota_rejected",
+    "already_reserved",
+    "run_invalid",
+    "reservation_error",
+    "real",
+    "unavailable",
+]
+
+
+class ClaudeWebsearchProviderInfo(BaseModel):
+    """Reports whether Claude's conditional Web-search supplement
+    (Task 6-D-4A-2, feature/claude-websearch-supplement) was attempted
+    for this request, and why — see
+    services/claude_websearch_provider.py. Entirely optional/
+    independent of ClaudeProviderInfo above (the no-search
+    observation): mirrors ChatGptWebsearchProviderInfo's own docstring
+    for the full reasoning (recognitionLevelAtTrigger is a frozen
+    snapshot, `searched` is None unless status=="real", absent on every
+    pre-existing saved history row).
+
+    `searched` is True only when Claude's response contained an actual
+    (non-error) web_search_tool_result content block — see
+    services/claude_websearch_client.py's _parse_websearch_response()
+    for the exact signal. `searchErrorCode` is set only when Claude
+    attempted a search but Anthropic returned a
+    `web_search_tool_result_error` instead of results (e.g.
+    "max_uses_exceeded", "too_many_requests", "unavailable" — see
+    Anthropic's web-search-tool documentation) — independent of
+    `searched` (False in that case) and never set when no search was
+    attempted at all.
+
+    `model` records which Claude model actually served this card —
+    Task 6-D-4A-2 item 1's own requirement ("検索補完用モデルが既存モデ
+    ルと異なる場合、結果メタデータに使用モデルを識別可能な形で記録す
+    る"): services/claude_websearch_settings.py's model default
+    deliberately differs from services/claude_settings.py's (see that
+    module's own docstring for why), so this field is always populated
+    whenever a websearch-supplement attempt actually reaches the gate
+    that reads the configured model (i.e. whenever `status` is neither
+    "not_attempted" nor "disabled" nor "quota_enforcement_disabled" —
+    see services/claude_websearch_provider.py for the exact gate
+    order), even on an unsuccessful attempt, so a saved history row
+    always shows which model was configured at the time, not only on
+    success.
+    """
+
+    status: ClaudeWebsearchStatus
+    reason: str
+    recognitionLevelAtTrigger: RecognitionLevel | None = None
+    searched: bool | None = None
+    searchErrorCode: str | None = None
+    model: str | None = None
+
+
 class ClaudeProviderInfo(BaseModel):
     """Reports whether the Claude-equivalent observation card was added
     to aiOverviewComparison this request, and why — see
@@ -536,6 +607,12 @@ class AnalysisMeta(BaseModel):
     # Independent of the other AI observation providers — optional so
     # existing clients/tests that don't know about it aren't broken.
     claudeProvider: ClaudeProviderInfo | None = None
+    # Task 6-D-4A-2 (feature/claude-websearch-supplement) — whether
+    # Claude's conditional Web-search supplement was attempted, and
+    # why (see ClaudeWebsearchProviderInfo above). Independent of
+    # claudeProvider — optional so existing clients/tests, and every
+    # saved history row predating this task, keep working unchanged.
+    claudeWebsearchProvider: ClaudeWebsearchProviderInfo | None = None
     # Whether a Gemini-equivalent observation card was added to
     # aiOverviewComparison this request (see GeminiProviderInfo above).
     # Independent of the other AI observation providers — optional so
@@ -628,6 +705,42 @@ class WebsearchCitationAnnotation(BaseModel):
     title: str | None = None
     startIndex: int | None = None
     endIndex: int | None = None
+
+
+class ClaudeWebsearchCitationAnnotation(BaseModel):
+    """Task 6-D-4A-2 (feature/claude-websearch-supplement): one *raw*
+    `web_search_result_location` citation from Claude's Web-search
+    supplement, exactly as Anthropic's Messages API returned it — see
+    services/claude_websearch_client.py's ClaudeWebsearchCitationAnnotation
+    (the internal dataclass this Pydantic model mirrors field-for-
+    field) for the full extraction contract.
+
+    **Deliberately a separate model from WebsearchCitationAnnotation
+    above, not a shared/reused one** — Anthropic's citation shape is
+    not the same as OpenAI's: there is no numeric start/end character
+    offset on the Anthropic side at all (Claude's Messages API never
+    returns one), so this model has no `startIndex`/`endIndex` fields;
+    inventing them here would misrepresent data Anthropic never sent.
+    `citedText` (Anthropic's own `cited_text`, up to 150 characters) is
+    the closest available signal for "which part of the answer this
+    citation backs" and is kept as Anthropic returned it. `url`/`title`
+    are the exact original values, never normalized/de-duplicated —
+    see ClaudeWebsearchCitation (services/claude_websearch_client.py)
+    for the separate, normalized/de-duplicated display entry. Multiple
+    entries can share the same `url` when the answer cites the same
+    source more than once; never collapsed here. Anthropic's own
+    `encrypted_index` (an opaque token for resuming a multi-turn
+    conversation) is deliberately not a field on this model — this
+    feature never resends a prior response's content, so that token
+    has no reuse value and no analytic purpose here.
+
+    This model exists purely as structured storage for a future task;
+    nothing in this codebase reads it to build any UI yet.
+    """
+
+    url: str
+    title: str | None = None
+    citedText: str | None = None
 
 
 class AIOverviewReferenceCategoryCounts(BaseModel):
@@ -757,6 +870,47 @@ class AIOverviewComparisonItem(BaseModel):
     # smaller cap). None for every provider other than ChatGPT's
     # Web-search supplement.
     citationsTruncated: bool | None = None
+    # Task 6-D-4A-2 (feature/claude-websearch-supplement) — the raw,
+    # pre-de-duplication citation data for a Claude Web-search
+    # supplement card, analogous to citationAnnotations above but built
+    # from Anthropic's own citation shape (url/title/cited_text — no
+    # numeric start/end offset exists on the Anthropic side; see
+    # ClaudeWebsearchCitationAnnotation's own docstring). Deliberately
+    # a separate field from citationAnnotations rather than a shared
+    # one: the two providers' raw annotation shapes are not
+    # interchangeable, and OpenAI's fields are never forced onto
+    # Claude's data (or vice versa). None for every other provider and
+    # every pre-existing saved history row. `citationsTruncated` above
+    # is reused as-is for the Claude card too — its meaning ("the
+    # display `references` list dropped some URLs") is identical
+    # regardless of provider.
+    claudeCitationAnnotations: list[ClaudeWebsearchCitationAnnotation] | None = None
+    # The *true* total number of raw web_search_result_location
+    # citations Anthropic's response contained, before
+    # services/claude_websearch_client.py's own
+    # _MAX_RAW_CITATION_ANNOTATIONS storage-safety ceiling is applied —
+    # same role as citationAnnotationsTotalCount above, for the Claude
+    # card. None whenever claudeCitationAnnotations itself is None.
+    claudeCitationAnnotationsTotalCount: int | None = None
+    # Task 6-D-4A-2 final review: the actual model id that produced
+    # *this* card — a generic, provider-agnostic field (not
+    # "claudeModel"/"chatgptModel") since any provider's card can carry
+    # one, and a future provider should never need a new field to
+    # expose this. Added specifically because Claude's no-search card
+    # (services/claude_provider.py, model from
+    # services/claude_settings.py) and its Web-search-supplement card
+    # (services/claude_websearch_provider.py, model from
+    # services/claude_websearch_settings.py — deliberately a different
+    # default, see that module's own docstring on claude-sonnet-4-5's
+    # deprecation) can legitimately be served by two different models
+    # for the same brand in the same request; without this field a
+    # reader comparing the two cards' answers would have no way to
+    # know a model difference (not just a search-vs-no-search
+    # difference) might explain any gap between them. None for every
+    # provider/card that predates this field, and for a card whose
+    # provider was never reached far enough to know which model was
+    # configured (e.g. a gate rejection with no item at all).
+    model: str | None = None
 
 
 # Whether services/web_ai_gap.py could build a meaningful comparison —

@@ -421,6 +421,13 @@ export interface AIOverviewComparisonItem {
   // to the frontend in this phase. Undefined for every other provider
   // and for old saved history predating this field.
   citationsTruncated?: boolean;
+  // model: the actual model id that produced this card (e.g.
+  // "claude-sonnet-4-5" for Claude's no-search card, "claude-sonnet-5-5"
+  // for its Web-search-supplement card — a provider's no-search and
+  // websearch-supplement cards can be served by two different models;
+  // see backend/models.py's AIOverviewComparisonItem.model docstring).
+  // Undefined for every provider/card that predates this field.
+  model?: string;
 }
 
 export interface ImprovementSuggestion {

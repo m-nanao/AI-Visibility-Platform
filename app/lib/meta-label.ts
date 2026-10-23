@@ -743,6 +743,13 @@ export interface AiOverviewItemDetailDisplay {
   // every other item, including old saved history predating
   // citationsTruncated.
   citationsTruncatedNotice?: string;
+  // Task 6-D-4A-2 final review: present only when item.finishReason
+  // is "refusal" — see buildRefusalNotice()'s own comment. Independent
+  // of truncationWarning above (a refusal is not a cutoff).
+  refusalNotice?: string;
+  // Pass-through of item.model (see AIOverviewComparisonItem.model's
+  // own docstring) — undefined for every card that predates it.
+  model?: string;
 }
 
 // Must match backend/services/chatgpt_provider.py's
@@ -758,6 +765,15 @@ export const CHATGPT_PLATFORM_NOTE =
 const CLAUDE_ANTHROPIC_PLATFORM_LABEL = "Claude (Anthropic API)";
 export const CLAUDE_PLATFORM_NOTE =
   "Claude APIを使い、Claude相当モデルに同じ観点で質問した1回分の観測結果です。Claudeサービス全体の認識やAIの内部状態を保証するものではありません。";
+
+// Task 6-D-4A-2 (feature/claude-websearch-supplement): mirrors
+// CHATGPT_WEBSEARCH_PLATFORM_NOTE — must match
+// backend/services/claude_websearch_provider.py's
+// CLAUDE_WEBSEARCH_PLATFORM_LABEL exactly.
+const CLAUDE_WEBSEARCH_ANTHROPIC_PLATFORM_LABEL = "Claude (Anthropic API, Web検索補完)";
+export const CLAUDE_WEBSEARCH_PLATFORM_NOTE =
+  "Anthropic APIのWeb検索機能を使った追加観測です。見つかった情報に基づく回答ですが、" +
+  "Claudeサービス全体の認識や内部状態を保証するものではありません。";
 
 // Must match backend/services/gemini_provider.py's GEMINI_PLATFORM_LABEL
 // exactly — same role as CHATGPT_OPENAI_PLATFORM_LABEL above. Exported
@@ -805,13 +821,25 @@ export const GEMINI_PLATFORM_NOTE =
 //
 // `finishReason` additionally decides *what* to suggest: only ever
 // tells the user to raise the output limit when the backend's own
-// signal says the limit was actually the reason (`"max_output_tokens"`)
-// — see Task 6-D-3C's own investigation items 1/2 ("出力上限以外の理由
-// による不完全な応答に対して、誤った改善方法を案内しない"). Any other
-// (or absent) reason gets a generic re-analyze suggestion instead.
+// signal says the limit was actually the reason — see Task 6-D-3C's
+// own investigation items 1/2 ("出力上限以外の理由による不完全な応答に
+// 対して、誤った改善方法を案内しない"). Any other (or absent) reason
+// gets a generic re-analyze suggestion instead.
+//
+// Task 6-D-4A-2: `"max_output_tokens"` is OpenAI's own
+// incomplete_details.reason string (services/chatgpt_client.py /
+// chatgpt_websearch_client.py); `"max_tokens"` is Anthropic's own
+// stop_reason string for the equivalent "ran out of output budget"
+// state (services/claude_websearch_client.py) — the two providers use
+// different literal strings for the same underlying cause, so both
+// must be checked here, or Claude's websearch-supplement card would
+// silently fall through to the generic suggestion even when the
+// output limit genuinely was the cause.
+const _OUTPUT_LIMIT_FINISH_REASONS = new Set(["max_output_tokens", "max_tokens"]);
+
 function buildNonGeminiTruncationNote(platform: string, finishReason: string | undefined): string {
   const base = `${platform}の出力が途中で終了した可能性があります。`;
-  return finishReason === "max_output_tokens"
+  return finishReason !== undefined && _OUTPUT_LIMIT_FINISH_REASONS.has(finishReason)
     ? `${base}必要に応じて、出力上限を増やした状態で再分析してください。`
     : `${base}必要に応じて再分析してください。`;
 }
@@ -851,6 +879,26 @@ export const CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE =
 // fullSummaryTruncated or isTruncated above.
 export const CHATGPT_CITATIONS_TRUNCATED_NOTICE =
   "参照元のURLが多かったため、一部のみを表示しています。";
+
+// Task 6-D-4A-2 final review: Anthropic's Messages API can return
+// stop_reason "refusal" — Claude declined to answer, returned as an
+// ordinary (non-error) response that may still contain some text
+// (services/claude_websearch_client.py's REFUSAL_NOTE sets
+// item.note, but item.note itself is never rendered directly — see
+// this file's own "item.note is still ignored here on purpose"
+// comment below). Without a dedicated, always-shown notice keyed off
+// item.finishReason, a refusal's declination text could otherwise be
+// read as a normal company-overview answer, since isTruncated is
+// deliberately false for a refusal (it is not a cutoff) and so never
+// triggers truncationWarning either. Provider-agnostic text (uses
+// `platform`, not a hardcoded provider name) in case a future
+// provider ever surfaces the same stop_reason concept.
+export function buildRefusalNotice(platform: string): string {
+  return (
+    `${platform}が安全性などの理由でこの回答を拒否しました。` +
+    "表示されている内容は正式な企業情報ではない可能性があります。"
+  );
+}
 
 // Below this length, a "続きを見る" toggle would reveal only a sliver of
 // text — not worth the extra click. Applies both to a continuation
@@ -1065,11 +1113,13 @@ export function getAiOverviewItemDetailDisplay(
       ? CHATGPT_WEBSEARCH_PLATFORM_NOTE
       : item.platform === CHATGPT_OPENAI_PLATFORM_LABEL
         ? CHATGPT_PLATFORM_NOTE
-        : item.platform === CLAUDE_ANTHROPIC_PLATFORM_LABEL
-          ? CLAUDE_PLATFORM_NOTE
-          : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
-            ? GEMINI_PLATFORM_NOTE
-            : undefined;
+        : item.platform === CLAUDE_WEBSEARCH_ANTHROPIC_PLATFORM_LABEL
+          ? CLAUDE_WEBSEARCH_PLATFORM_NOTE
+          : item.platform === CLAUDE_ANTHROPIC_PLATFORM_LABEL
+            ? CLAUDE_PLATFORM_NOTE
+            : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
+              ? GEMINI_PLATFORM_NOTE
+              : undefined;
 
   // Task 6-D-3C: item.note is still ignored here on purpose (same
   // reasoning as before), but which hardcoded text to show now depends
@@ -1098,6 +1148,9 @@ export function getAiOverviewItemDetailDisplay(
     ? CHATGPT_CITATIONS_TRUNCATED_NOTICE
     : undefined;
 
+  const refusalNotice =
+    item.finishReason === "refusal" ? buildRefusalNotice(item.platform) : undefined;
+
   return {
     hasContinuation,
     continuationText,
@@ -1111,6 +1164,8 @@ export function getAiOverviewItemDetailDisplay(
     noSourceCaution,
     fullSummaryTruncatedNotice,
     citationsTruncatedNotice,
+    refusalNotice,
+    model: item.model,
   };
 }
 

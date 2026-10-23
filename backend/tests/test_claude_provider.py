@@ -181,6 +181,25 @@ def test_build_claude_observation_success_returns_an_item(monkeypatch):
     assert prompt_version == "no_search_v1"
 
 
+def test_build_claude_observation_success_records_the_configured_model_on_the_item(monkeypatch):
+    """Task 6-D-4A-2 final review item 1: the no-search card must
+    record which model actually served it, so a saved history row can
+    be compared against the websearch-supplement card's own (possibly
+    different) model."""
+    _clear_claude_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-opus-5")
+
+    def fake_post(url, **kwargs):
+        return _text_response(url, "Acme is a company.")
+
+    monkeypatch.setattr(claude_client.httpx, "post", fake_post)
+
+    item, *_ = build_claude_observation("Acme", "anthropic")
+
+    assert item.model == "claude-opus-5"
+
+
 def test_build_claude_observation_sends_exactly_one_request(monkeypatch):
     _clear_claude_env(monkeypatch)
     _set_credentials(monkeypatch)
