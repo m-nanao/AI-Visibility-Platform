@@ -52,6 +52,7 @@ def test_defaults_when_everything_unset(monkeypatch):
         "openai_websearch": 0,
         "anthropic_websearch": 0,
         "google_websearch": 0,
+        "gemini_external_document": 0,
     }
     assert settings.max_project_monthly_by_metric == {
         "dataforseo_sandbox": 500,
@@ -62,6 +63,7 @@ def test_defaults_when_everything_unset(monkeypatch):
         "openai_websearch": 0,
         "anthropic_websearch": 0,
         "google_websearch": 0,
+        "gemini_external_document": 0,
     }
 
 

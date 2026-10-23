@@ -3,6 +3,7 @@ import type {
   AiOverviewEnvironment,
   AnalysisMeta,
   AnalysisSectionStatuses,
+  GeminiExternalDocumentSource,
   ReferenceCategory,
 } from "./types";
 
@@ -750,6 +751,12 @@ export interface AiOverviewItemDetailDisplay {
   // Pass-through of item.model (see AIOverviewComparisonItem.model's
   // own docstring) — undefined for every card that predates it.
   model?: string;
+  // Task 6-D-4C-2: pass-through of item.geminiExternalDocumentSources
+  // — Web documents this application fetched and handed to Gemini as
+  // input, NOT a citation/reference list. Rendering code must always
+  // label this "入力文書" (or equivalent), never "参照元"/"references".
+  // Undefined for every card that doesn't set it.
+  inputDocuments?: GeminiExternalDocumentSource[];
 }
 
 // Must match backend/services/chatgpt_provider.py's
@@ -801,6 +808,20 @@ export const GEMINI_TRUNCATION_NOTE =
 export const GEMINI_PLATFORM_NOTE =
   "Gemini APIを使い、Gemini相当モデルに同じ観点で質問した1回分の観測結果です。Geminiサービス全体の認識やAIの内部状態を保証するものではありません。";
 
+// Task 6-D-4C-2 (feature/gemini-external-document-supplement): must
+// match backend/services/gemini_external_document_provider.py's
+// GEMINI_EXTERNAL_DOCUMENT_PLATFORM_LABEL exactly. Deliberately
+// distinct wording from both GEMINI_PLATFORM_NOTE (no documents at
+// all) and the Google-Search-grounding supplement's own note (a live
+// search) — this card used neither: it answered only from documents
+// this application itself fetched beforehand (via urls[]), never
+// performed a Web search itself. Never implies the input document
+// URLs are the brand's official site.
+const GEMINI_EXTERNAL_DOCUMENT_PLATFORM_LABEL = "Gemini (Google API, 外部文書補完)";
+export const GEMINI_EXTERNAL_DOCUMENT_PLATFORM_NOTE =
+  "このカードはWeb検索を行っていません。あらかじめ取得済みのWeb文書（入力URL由来）のみを根拠に、" +
+  "Gemini APIが回答した結果です。入力文書が企業の公式サイトであるとは限りません。";
+
 // Task 6-D-3C: fixes a production bug where a ChatGPT card (no-search
 // or Web検索補完) showed GEMINI_TRUNCATION_NOTE's literal "Gemini"
 // wording — getAiOverviewItemDetailDisplay() below used to key the
@@ -835,7 +856,18 @@ export const GEMINI_PLATFORM_NOTE =
 // must be checked here, or Claude's websearch-supplement card would
 // silently fall through to the generic suggestion even when the
 // output limit genuinely was the cause.
-const _OUTPUT_LIMIT_FINISH_REASONS = new Set(["max_output_tokens", "max_tokens"]);
+//
+// Task 6-D-4C-2: `"MAX_TOKENS"` (uppercase) is Gemini's own
+// candidates[0].finishReason value for the same cause
+// (services/gemini_client.py/gemini_websearch_client.py/
+// gemini_external_document_client.py). The actual no-search Gemini
+// card never reaches this function at all (it matches
+// GEMINI_GOOGLE_PLATFORM_LABEL exactly and uses GEMINI_TRUNCATION_NOTE
+// directly, below) — but Gemini's *other* cards, whose `platform`
+// string includes a suffix like "Web検索補完"/"外部文書補完", are not
+// an exact match and do fall through to this function, so Gemini's
+// own uppercase finishReason value must be recognized here too.
+const _OUTPUT_LIMIT_FINISH_REASONS = new Set(["max_output_tokens", "max_tokens", "MAX_TOKENS"]);
 
 function buildNonGeminiTruncationNote(platform: string, finishReason: string | undefined): string {
   const base = `${platform}の出力が途中で終了した可能性があります。`;
@@ -1117,9 +1149,11 @@ export function getAiOverviewItemDetailDisplay(
           ? CLAUDE_WEBSEARCH_PLATFORM_NOTE
           : item.platform === CLAUDE_ANTHROPIC_PLATFORM_LABEL
             ? CLAUDE_PLATFORM_NOTE
-            : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
-              ? GEMINI_PLATFORM_NOTE
-              : undefined;
+            : item.platform === GEMINI_EXTERNAL_DOCUMENT_PLATFORM_LABEL
+              ? GEMINI_EXTERNAL_DOCUMENT_PLATFORM_NOTE
+              : item.platform === GEMINI_GOOGLE_PLATFORM_LABEL
+                ? GEMINI_PLATFORM_NOTE
+                : undefined;
 
   // Task 6-D-3C: item.note is still ignored here on purpose (same
   // reasoning as before), but which hardcoded text to show now depends
@@ -1166,6 +1200,7 @@ export function getAiOverviewItemDetailDisplay(
     citationsTruncatedNotice,
     refusalNotice,
     model: item.model,
+    inputDocuments: item.geminiExternalDocumentSources,
   };
 }
 

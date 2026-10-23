@@ -88,7 +88,7 @@ import logging
 import re
 from collections import Counter
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -227,6 +227,7 @@ from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt
 from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supplement
 from services.claude_websearch_provider import attempt_claude_websearch_supplement
 from services.gemini_websearch_provider import attempt_gemini_websearch_supplement
+from services.gemini_external_document_provider import attempt_gemini_external_document_supplement
 from services.claude_provider import build_claude_observation, resolve_claude_mode
 from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
 from services.common_crawl_document_provider import build_common_crawl_document
@@ -562,14 +563,36 @@ class AnalysisPipelineInputError(Exception):
 @dataclass(frozen=True)
 class AnalysisPipelineOutcome:
     """Returned by run_analysis_pipeline() — the full analysis result
-    plus the two pieces of information its callers need beyond the
-    result itself: `cooccurrence_status` (used to decide
-    "partial"/"completed" when saving to analysis_runs.status) and
-    `source_summary` (saved as analysis_runs.source_summary)."""
+    plus the pieces of information its callers need beyond the result
+    itself: `cooccurrence_status` (used to decide "partial"/"completed"
+    when saving to analysis_runs.status), `source_summary` (saved as
+    analysis_runs.source_summary), and `web_fetch_documents` (Task
+    6-D-4C-2, feature/gemini-external-document-supplement).
+
+    `web_fetch_documents` is the subset of this request's Document[]
+    whose `sourceType == "web_fetch"` — i.e. the Documents
+    services/web_fetcher.py itself produced from this request's own
+    `urls[]`, excluding `user_provided`/`development_sample`/
+    `common_crawl`/`dataforseo`-sourced Documents. Exists so
+    services/gemini_external_document_provider.py's
+    attempt_gemini_external_document_supplement() (called later, from
+    main.py's synchronous authenticated path, after this function has
+    already returned) can reuse the exact Documents already fetched
+    for this request instead of re-fetching the same URLs a second
+    time — see that provider module's own docstring. Never sent to the
+    frontend (not part of `result`/`AnalysisResult` at all — this
+    whole dataclass is internal plumbing between this function and its
+    Python callers).
+    """
 
     result: AnalysisResult
     cooccurrence_status: SectionStatus
     source_summary: dict[str, int]
+    # Defaulted (not a required positional field) so existing test code
+    # that constructs AnalysisPipelineOutcome(...) directly (without
+    # knowing about this task) keeps working unchanged — see this
+    # field's own docstring above.
+    web_fetch_documents: list[Document] = field(default_factory=list)
 
 
 def run_analysis_pipeline(
@@ -977,6 +1000,7 @@ def run_analysis_pipeline(
         result=result,
         cooccurrence_status=cooccurrence_status,
         source_summary=source_summary,
+        web_fetch_documents=[d for d in documents_list if d.sourceType == "web_fetch"],
     )
 
 
@@ -1655,6 +1679,40 @@ def _analyze_authenticated_idempotent(
         )
     except Exception:
         logger.exception("Unexpected error while attempting the Gemini websearch supplement")
+
+    # Task 6-D-4C-2 (feature/gemini-external-document-supplement): same
+    # timing constraint and defensive wrapping as the ChatGPT/Claude/
+    # Gemini-websearch supplements above — see
+    # services/gemini_external_document_provider.py's module
+    # docstring. Independent of all three: a failure or skip here never
+    # affects their results, and vice versa. Reuses
+    # outcome.web_fetch_documents (the Document[] already fetched by
+    # run_analysis_pipeline() for this same request) rather than
+    # re-fetching urls[] a second time.
+    try:
+        gemini_external_document_recognition_level = (
+            result.meta.geminiProvider.recognitionLevel if result.meta.geminiProvider else None
+        )
+        (
+            gemini_external_document_item,
+            gemini_external_document_provider_info,
+        ) = attempt_gemini_external_document_supplement(
+            brand_name=brand_name,
+            recognition_level=gemini_external_document_recognition_level,
+            documents=outcome.web_fetch_documents,
+            analysis_run_id=reservation.analysis_run_id,
+            project_id=project_id,
+            user_id=user_id,
+        )
+        result.meta.geminiExternalDocumentProvider = gemini_external_document_provider_info
+        if gemini_external_document_item is not None:
+            result.aiOverviewComparison = [*result.aiOverviewComparison, gemini_external_document_item]
+        logger.info(
+            "gemini external-document supplement complete: status=%s",
+            gemini_external_document_provider_info.status,
+        )
+    except Exception:
+        logger.exception("Unexpected error while attempting the Gemini external-document supplement")
 
     try:
         completed = complete_analysis_job(

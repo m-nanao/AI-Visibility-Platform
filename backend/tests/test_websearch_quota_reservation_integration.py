@@ -57,6 +57,20 @@ def _migration_010_sql() -> str:
         return f.read()
 
 
+def _migration_011_sql() -> str:
+    """Task 6-D-4C-2 (feature/gemini-external-document-supplement):
+    reads migrations/011_add_gemini_external_document_metric.sql the
+    same way _migration_010_sql() does — applied on top of migration
+    010 in the `db_connection` fixture below, so every test in this
+    module runs against the real, widened CHECK constraint (allowing
+    'gemini_external_document' alongside the original three metrics),
+    not a hand-copied approximation."""
+    migrations_dir = os.path.join(os.path.dirname(__file__), "..", "migrations")
+    path = os.path.join(migrations_dir, "011_add_gemini_external_document_metric.sql")
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 @pytest.fixture
 def db_connection():
     import psycopg
@@ -107,6 +121,13 @@ def db_connection():
         # approximation) to prove it actually runs cleanly against a
         # real PostgreSQL instance.
         cur.execute(_migration_010_sql())
+        # Task 6-D-4C-2: the real migration 011 SQL, applied
+        # immediately on top of 010 — proves the widened CHECK
+        # constraint itself applies cleanly (DROP + ADD CONSTRAINT
+        # against a table that migration 010 just created in this
+        # same transaction) and that every test below runs against the
+        # real, final constraint shape.
+        cur.execute(_migration_011_sql())
     try:
         yield conn, schema
     finally:
@@ -634,3 +655,68 @@ def test_a_db_error_during_the_reservation_rolls_back_cleanly(monkeypatch, db_co
         )
         (reservation_count,) = cur.fetchone()
     assert reservation_count == 0
+
+
+def test_gemini_external_document_metric_is_accepted_after_migration_011(monkeypatch, db_connection):
+    """Task 6-D-4C-2: proves migrations/011_add_gemini_external_document_metric.sql's
+    widened CHECK constraint actually accepts the new
+    'gemini_external_document' metric against a real PostgreSQL
+    instance — reserve_websearch_quota_for_analysis_run() needed no
+    other code change to support it (only WEBSEARCH_METRICS in
+    services/websearch_quota_reservation.py and this migration)."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50, metric_suffix="GEMINI_EXTERNAL_DOCUMENT")
+    project_id = str(uuid.uuid4())
+    run_id = _insert_running_run(conn, schema, project_id)
+
+    result = _reserve(
+        analysis_run_id=run_id, project_id=project_id, metric="gemini_external_document"
+    )
+
+    assert result.metric == "gemini_external_document"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select period_type, count from {schema}.analysis_usage_counters "
+            "where metric = 'gemini_external_document' order by period_type"
+        )
+        rows = dict(cur.fetchall())
+    assert rows == {"daily": 1, "monthly": 1}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select metric from {schema}.analysis_run_websearch_reservations "
+            "where analysis_run_id = %s",
+            (run_id,),
+        )
+        (metric,) = cur.fetchone()
+    assert metric == "gemini_external_document"
+
+
+def test_gemini_external_document_metric_rejects_a_second_reservation_for_the_same_run(
+    monkeypatch, db_connection
+):
+    """Same double-reservation protection the original three metrics
+    already get (migration 010's own primary-key guarantee) — this
+    confirms the new metric is not somehow exempt from it."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50, metric_suffix="GEMINI_EXTERNAL_DOCUMENT")
+    project_id = str(uuid.uuid4())
+    run_id = _insert_running_run(conn, schema, project_id)
+
+    _reserve(analysis_run_id=run_id, project_id=project_id, metric="gemini_external_document")
+
+    import services.websearch_quota_reservation as wq
+
+    with pytest.raises(wq.WebsearchQuotaAlreadyReservedError):
+        _reserve(analysis_run_id=run_id, project_id=project_id, metric="gemini_external_document")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select count from {schema}.analysis_usage_counters "
+            "where metric = 'gemini_external_document' and period_type = 'daily'"
+        )
+        (count,) = cur.fetchone()
+    assert count == 1

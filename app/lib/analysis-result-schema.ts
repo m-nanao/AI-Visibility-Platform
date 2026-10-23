@@ -203,7 +203,7 @@ const aiOverviewComparisonItemSchema = z.object({
   // observationMethod: see AIOverviewComparisonItem's own comment in
   // app/lib/types.ts.
   observationMethod: optionalFromPython(
-    z.enum(["single_call_no_search", "websearch_supplement"]),
+    z.enum(["single_call_no_search", "websearch_supplement", "external_document_supplement"]),
   ),
   // fullSummaryTruncated: see AIOverviewComparisonItem's own comment
   // in app/lib/types.ts.
@@ -214,6 +214,23 @@ const aiOverviewComparisonItemSchema = z.object({
   // model: see AIOverviewComparisonItem's own comment in
   // app/lib/types.ts.
   model: optionalFromPython(z.string()),
+  // geminiExternalDocumentSources/...ConsideredCount: see
+  // AIOverviewComparisonItem's own comment in app/lib/types.ts — never
+  // a citation/reference list.
+  geminiExternalDocumentSources: optionalFromPython(
+    z.array(
+      z.object({
+        sourceUrl: z.string(),
+        title: optionalFromPython(z.string()),
+        domain: optionalFromPython(z.string()),
+        originalIndex: z.number(),
+        inputOrder: z.number(),
+        inputCharCount: z.number(),
+        truncated: z.boolean(),
+      }),
+    ),
+  ),
+  geminiExternalDocumentSourcesConsideredCount: optionalFromPython(z.number()),
 });
 
 const improvementSuggestionSchema = z.object({

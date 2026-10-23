@@ -27,8 +27,9 @@ exactly in the order "is this even a legal request" ->
 "is the caller allowed to make it" -> "does quota allow it":
 
 1. `metric` must be one of WEBSEARCH_METRICS — the three Task 6-D-2A
-   metrics (openai_websearch/anthropic_websearch/google_websearch).
-   This is a *programming-error* guard, not a user-input validation:
+   metrics (openai_websearch/anthropic_websearch/google_websearch) plus
+   Task 6-D-4C-2's gemini_external_document. This is a
+   *programming-error* guard, not a user-input validation:
    nothing in this codebase lets an HTTP request body choose this
    value freely (no endpoint calls this function at all yet), but a
    future caller must not be able to pass an arbitrary string through
@@ -124,14 +125,19 @@ from services.project_access import ProjectAccessError, can_user_access_analysis
 
 logger = logging.getLogger(__name__)
 
-# Must match services/analyze_quota_settings.py's three Task 6-D-2A
-# metric keys exactly — the only metrics this function will ever
-# reserve. Deliberately a closed set, not "any string the caller
-# wants": see this module's docstring, item 1.
+# Must match services/analyze_quota_settings.py's metric keys exactly
+# — the only metrics this function will ever reserve. Deliberately a
+# closed set, not "any string the caller wants": see this module's
+# docstring, item 1. "gemini_external_document" (Task 6-D-4C-2,
+# feature/gemini-external-document-supplement) was added alongside the
+# original three Task 6-D-2A metrics — see
+# migrations/011_add_gemini_external_document_metric.sql for the
+# matching CHECK-constraint widening this required.
 WEBSEARCH_METRICS: tuple[str, ...] = (
     "openai_websearch",
     "anthropic_websearch",
     "google_websearch",
+    "gemini_external_document",
 )
 
 

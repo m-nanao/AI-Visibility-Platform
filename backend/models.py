@@ -191,12 +191,30 @@ RecognitionLevel = Literal[
 # observation apart from its new Web-search-supplement counterpart.
 # "single_call_no_search" is the original behavior every provider
 # (ChatGPT/Claude/Gemini/DataForSEO/mock) has always had; only a
-# ChatGPT websearch-supplement card (see
-# services/chatgpt_websearch_provider.py) ever uses
+# ChatGPT/Claude/Gemini websearch-supplement card (see
+# services/chatgpt_websearch_provider.py,
+# services/claude_websearch_provider.py,
+# services/gemini_websearch_provider.py) ever uses
 # "websearch_supplement". None (the field's default) means "predates
 # this distinction" — every pre-existing saved history row and every
-# non-ChatGPT provider card.
-ObservationMethod = Literal["single_call_no_search", "websearch_supplement"]
+# card that never set it.
+#
+# Task 6-D-4C-2 (feature/gemini-external-document-supplement) adds
+# "external_document_supplement" — deliberately a *different* value
+# from "websearch_supplement", not a reuse of it: that value means
+# "the provider's own built-in search/grounding tool was offered to
+# the model" (OpenAI's web_search tool, Anthropic's web_search tool,
+# Google's google_search grounding tool); this new value means "this
+# application fetched Web documents itself (services/web_fetcher.py)
+# and handed their text to the model as context — no provider-side
+# search/grounding tool was ever offered or used". Conflating the two
+# would misrepresent how the answer was produced. Only ever set by
+# services/gemini_external_document_provider.py today, but the name is
+# deliberately provider-agnostic (not "geminiExternalDocument...") in
+# case a future task adds the same pattern for another provider.
+ObservationMethod = Literal[
+    "single_call_no_search", "websearch_supplement", "external_document_supplement"
+]
 
 # Task 6-D-3: outcome of attempting (or not attempting) ChatGPT's
 # conditional Web-search supplement for this request — see
@@ -646,6 +664,127 @@ class GeminiWebsearchGroundingSupport(BaseModel):
     confidenceScores: list[float] | None = None
 
 
+# Task 6-D-4C-2 (feature/gemini-external-document-supplement): outcome
+# of attempting (or not attempting) Gemini's conditional
+# external-document supplement for this request — see
+# services/gemini_external_document_provider.py. Mirrors
+# GeminiWebsearchStatus's values wherever the underlying reason is the
+# same concept, plus one new value this feature alone needs:
+# - "no_documents": zero successfully-fetched `web_fetch` Documents
+#   were available for this request (see
+#   AnalysisPipelineOutcome.webFetchDocuments in main.py) — rejected
+#   *before* any quota reservation or API call, exactly like
+#   "model_not_allowed" below never reaches the reservation step
+#   either. Distinct from "unavailable" (API call itself failed) and
+#   from "recognition_level_not_eligible" (a different gate entirely).
+GeminiExternalDocumentStatus = Literal[
+    "not_attempted",
+    "disabled",
+    "quota_enforcement_disabled",
+    "recognition_level_not_eligible",
+    "no_documents",
+    "model_not_allowed",
+    "no_credentials",
+    "quota_rejected",
+    "already_reserved",
+    "run_invalid",
+    "reservation_error",
+    "real",
+    "unavailable",
+]
+
+
+class GeminiExternalDocumentProviderInfo(BaseModel):
+    """Reports whether Gemini's conditional external-document
+    supplement (Task 6-D-4C-2,
+    feature/gemini-external-document-supplement) was attempted for
+    this request, and why — see
+    services/gemini_external_document_provider.py. Entirely optional/
+    independent of GeminiProviderInfo/GeminiWebsearchProviderInfo
+    above: a request can have a real no-search Gemini card, a (still
+    disabled) Google-Search-grounding card, and this card, all three
+    side by side, each with its own independent status.
+
+    `documentsConsideredCount`/`documentsUsedCount` are diagnostic
+    only (how many successfully-fetched `web_fetch` Documents were
+    available vs. how many were actually sent to Gemini after this
+    task's own document-count/character-budget caps — see
+    services/gemini_external_document_client.py). Both are None unless
+    `status` reached the point of evaluating documents (i.e. not
+    "not_attempted"/"disabled"/"quota_enforcement_disabled"/
+    "recognition_level_not_eligible").
+
+    `model` is always populated once the attempt reaches the point of
+    reading the configured model, even when that model is then
+    rejected by the allowlist gate (`status == "model_not_allowed"`)
+    — same convention as ClaudeWebsearchProviderInfo.model/
+    GeminiWebsearchProviderInfo.model.
+    """
+
+    status: GeminiExternalDocumentStatus
+    reason: str
+    recognitionLevelAtTrigger: RecognitionLevel | None = None
+    documentsConsideredCount: int | None = None
+    documentsUsedCount: int | None = None
+    model: str | None = None
+
+
+class GeminiExternalDocumentSource(BaseModel):
+    """Task 6-D-4C-2: one Web document this application itself fetched
+    (via services/web_fetcher.py, from `AnalyzeRequest.urls[]` only —
+    never user-pasted text, Common Crawl, DataForSEO, or development
+    samples) and handed to Gemini as context for the external-document
+    supplement card.
+
+    **This is deliberately NOT a citation/reference model, and must
+    never be confused with one.** `AIOverviewReference`/
+    `WebsearchCitationAnnotation`/`ClaudeWebsearchCitationAnnotation`/
+    `GeminiWebsearchGroundingChunk` all record what a model's response
+    *cited* (a claim the model itself made, with varying degrees of
+    verifiability). This model records the opposite direction: what
+    *this application supplied as input* before the model ever
+    answered. It says nothing about whether Gemini actually used,
+    agreed with, or even read a given source — see
+    services/gemini_external_document_provider.py's own docstring.
+    Never built from parsing Gemini's answer text; always built
+    directly from this application's own fetch results, so a URL here
+    is guaranteed to be one this application genuinely retrieved
+    (never a model-hallucinated URL registered as if it were real).
+
+    `sourceUrl`/`title`/`domain` are carried over unmodified from the
+    corresponding `Document` services/web_fetcher.py produced.
+    `originalIndex` is this document's 0-based position among every
+    successfully-fetched `web_fetch` Document available for this
+    request (*before* the per-request document-count cap was applied)
+    — comparing the set of `originalIndex` values present here against
+    `GeminiExternalDocumentProviderInfo.documentsConsideredCount` is
+    how a reader determines which available documents were excluded
+    (never silently; the gap itself is the signal, no separate
+    "excluded" list is stored). `inputCharCount` is how many characters
+    of this document's text were actually sent to Gemini after this
+    task's own per-document/total character-budget truncation
+    (services/gemini_external_document_client.py) — `truncated` is
+    True whenever that was less than the document's full cleaned text
+    length. `inputOrder` is this source's 0-based position in the
+    actual prompt sent to Gemini (i.e. its position among only the
+    documents that were used, not among every document considered —
+    distinct from `originalIndex`).
+
+    Never displayed as "参照元"/"references" in any UI this task
+    builds — see services/gemini_external_document_provider.py's own
+    docstring for why that word is reserved for citations a model
+    itself produced.
+    """
+
+    sourceUrl: str
+    title: str | None = None
+    domain: str | None = None
+    originalIndex: int
+    inputOrder: int
+    inputCharCount: int
+    truncated: bool
+
+
 class ClaudeProviderInfo(BaseModel):
     """Reports whether the Claude-equivalent observation card was added
     to aiOverviewComparison this request, and why — see
@@ -777,6 +916,13 @@ class AnalysisMeta(BaseModel):
     # clients/tests, and every saved history row predating this task,
     # keep working unchanged.
     geminiWebsearchProvider: GeminiWebsearchProviderInfo | None = None
+    # Task 6-D-4C-2 (feature/gemini-external-document-supplement) —
+    # whether Gemini's conditional external-document supplement was
+    # attempted, and why (see GeminiExternalDocumentProviderInfo
+    # above). Independent of geminiProvider/geminiWebsearchProvider —
+    # optional so existing clients/tests, and every saved history row
+    # predating this task, keep working unchanged.
+    geminiExternalDocumentProvider: GeminiExternalDocumentProviderInfo | None = None
     # Whether a supplementary Common Crawl Document was added to this
     # request's Document[] (see CommonCrawlProviderInfo above).
     # Independent of aiOverviewProvider/chatgptProvider — optional so
@@ -1120,6 +1266,22 @@ class AIOverviewComparisonItem(BaseModel):
     # is about this separate field). None whenever
     # geminiSearchEntryPointRenderedContent itself is None.
     geminiSearchEntryPointRenderedContentTruncated: bool | None = None
+    # Task 6-D-4C-2 (feature/gemini-external-document-supplement): the
+    # Web documents this application itself fetched and handed to
+    # Gemini as context — see GeminiExternalDocumentSource's own
+    # docstring for why this is deliberately NOT named/shaped like a
+    # citation/reference field, and must never be displayed as
+    # "参照元"/"references". Only ever populated by
+    # services/gemini_external_document_provider.py. None for every
+    # other provider/card and every pre-existing saved history row.
+    geminiExternalDocumentSources: list[GeminiExternalDocumentSource] | None = None
+    # The true number of successfully-fetched `web_fetch` Documents
+    # that were *available* for this request, before this task's own
+    # per-request document-count cap selected (at most) a subset of
+    # them — comparing this to `len(geminiExternalDocumentSources)`
+    # shows how many available documents were excluded. None whenever
+    # geminiExternalDocumentSources itself is None.
+    geminiExternalDocumentSourcesConsideredCount: int | None = None
 
 
 # Whether services/web_ai_gap.py could build a meaningful comparison —

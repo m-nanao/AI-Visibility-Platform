@@ -376,6 +376,7 @@ function ReportContent({
                 citationsTruncatedNotice,
                 refusalNotice,
                 model,
+                inputDocuments,
               } = getAiOverviewItemDetailDisplay(item);
               return (
                 <div key={item.platform}>
@@ -413,6 +414,12 @@ function ReportContent({
                   {model && (
                     <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500 print:text-black">
                       使用モデル: {model}
+                    </p>
+                  )}
+                  {inputDocuments && inputDocuments.length > 0 && (
+                    <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500 print:text-black">
+                      入力文書（引用元ではありません）:{" "}
+                      {inputDocuments.map((source) => source.sourceUrl).join(", ")}
                     </p>
                   )}
                 </div>

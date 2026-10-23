@@ -552,6 +552,72 @@ describe("parseAnalysisResult", () => {
     }
   });
 
+  // --- Gemini conditional external-document supplement (Task 6-D-4C-2) ---
+
+  it("accepts a Gemini 外部文書補完 item with geminiExternalDocumentSources", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        {
+          platform: "Gemini (Google API, 外部文書補完)",
+          mentioned: true,
+          rank: null,
+          summary: "Acme is a company.",
+          observationMethod: "external_document_supplement",
+          model: "gemini-2.5-flash",
+          geminiExternalDocumentSources: [
+            {
+              sourceUrl: "https://acme.example.com",
+              title: "Acme",
+              domain: "acme.example.com",
+              originalIndex: 0,
+              inputOrder: 0,
+              inputCharCount: 123,
+              truncated: false,
+            },
+          ],
+          geminiExternalDocumentSourcesConsideredCount: 1,
+        },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const item = result.data.aiOverviewComparison[0];
+      expect(item.observationMethod).toBe("external_document_supplement");
+      expect(item.geminiExternalDocumentSources).toEqual([
+        {
+          sourceUrl: "https://acme.example.com",
+          title: "Acme",
+          domain: "acme.example.com",
+          originalIndex: 0,
+          inputOrder: 0,
+          inputCharCount: 123,
+          truncated: false,
+        },
+      ]);
+      expect(item.geminiExternalDocumentSourcesConsideredCount).toBe(1);
+    }
+  });
+
+  it("accepts old saved history predating geminiExternalDocumentSources", () => {
+    const valid = {
+      ...buildDummyAnalysis("OpenAI"),
+      aiOverviewComparison: [
+        { platform: "Gemini (Google API, 外部文書補完)", mentioned: true, rank: null, summary: "Acme." },
+      ],
+    };
+
+    const result = parseAnalysisResult(valid);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.aiOverviewComparison[0].geminiExternalDocumentSources).toBeUndefined();
+    }
+  });
+
   // --- webAiGap ("Web上の説明とAI回答のズレ", backend/services/web_ai_gap.py) ---
 
   it("accepts an AnalysisResult without webAiGap (older saved history predating this field)", () => {

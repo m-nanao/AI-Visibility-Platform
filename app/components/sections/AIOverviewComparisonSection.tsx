@@ -340,6 +340,45 @@ function AIOverviewItemCard({
         </div>
       )}
 
+      {detail.inputDocuments && detail.inputDocuments.length > 0 && (
+        <div className="mt-3 min-w-0">
+          {/* Task 6-D-4C-2: deliberately labeled "入力文書", never
+              "参照元" — these are documents this application fetched
+              and handed to Gemini as input, not citations the model
+              produced. See AIOverviewComparisonItem.geminiExternalDocumentSources's
+              own comment in app/lib/types.ts. */}
+          <h4 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+            入力文書（Geminiに与えた文書。引用元ではありません）
+          </h4>
+          <ol className="mt-1.5 space-y-2 text-xs text-zinc-600 dark:text-zinc-400">
+            {detail.inputDocuments.map((source, index) => (
+              <li key={`${source.sourceUrl}-${index}`} className="min-w-0">
+                <div className="flex min-w-0 gap-1.5">
+                  <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
+                    {index + 1}.
+                  </span>
+                  <div className="min-w-0">
+                    <a
+                      href={source.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="max-w-full break-words underline"
+                    >
+                      {source.title || source.sourceUrl}
+                    </a>
+                    {source.truncated && (
+                      <span className="ml-1 shrink-0 rounded bg-zinc-100 px-1 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        本文を短縮して入力
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
       {detail.ownDomainStatus !== "unjudged" && (
         <p
           className={`mt-3 rounded-md px-2 py-1.5 text-xs ${

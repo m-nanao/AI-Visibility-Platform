@@ -1305,6 +1305,95 @@ describe("getAiOverviewItemDetailDisplay — citationsTruncatedNotice (Task 6-D-
   });
 });
 
+describe("getAiOverviewItemDetailDisplay — Gemini external-document supplement (Task 6-D-4C-2)", () => {
+  it("shows a platformNote distinct from the Web検索補完 card's own note", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Gemini (Google API, 外部文書補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "external_document_supplement",
+    });
+
+    expect(display.platformNote).toBeDefined();
+    expect(display.platformNote).toContain("Web検索を行っていません");
+    expect(display.platformNote).not.toContain("Web検索機能を使った");
+  });
+
+  it("passes through geminiExternalDocumentSources as inputDocuments", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Gemini (Google API, 外部文書補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "external_document_supplement",
+      geminiExternalDocumentSources: [
+        {
+          sourceUrl: "https://acme.example.com",
+          title: "Acme",
+          originalIndex: 0,
+          inputOrder: 0,
+          inputCharCount: 10,
+          truncated: false,
+        },
+      ],
+    });
+
+    expect(display.inputDocuments).toEqual([
+      {
+        sourceUrl: "https://acme.example.com",
+        title: "Acme",
+        originalIndex: 0,
+        inputOrder: 0,
+        inputCharCount: 10,
+        truncated: false,
+      },
+    ]);
+  });
+
+  it("is undefined for a card without geminiExternalDocumentSources", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Gemini (Google API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+    });
+
+    expect(display.inputDocuments).toBeUndefined();
+  });
+
+  it("recognizes Gemini's own uppercase MAX_TOKENS finishReason for the output-limit suggestion", () => {
+    // Task 6-D-4C-2: this card's platform string doesn't exactly match
+    // GEMINI_GOOGLE_PLATFORM_LABEL, so it routes through
+    // buildNonGeminiTruncationNote() — which previously only
+    // recognized OpenAI's/Anthropic's finishReason strings, not
+    // Gemini's own uppercase "MAX_TOKENS".
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Gemini (Google API, 外部文書補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: true,
+      finishReason: "MAX_TOKENS",
+      observationMethod: "external_document_supplement",
+    });
+
+    expect(display.truncationWarning).toContain("出力上限");
+  });
+
+  it("never shows noSourceCaution (that caution is specific to websearch_supplement)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "Gemini (Google API, 外部文書補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      observationMethod: "external_document_supplement",
+    });
+
+    expect(display.noSourceCaution).toBeUndefined();
+  });
+});
+
 describe("getAiOverviewItemDetailDisplay — fullText (report screen, no 続きを見る toggle)", () => {
   function baseItem(): AIOverviewComparisonItem {
     return {

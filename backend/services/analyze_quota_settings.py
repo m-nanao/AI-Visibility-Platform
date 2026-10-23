@@ -105,6 +105,15 @@ _DEFAULT_DAILY_BY_METRIC: dict[str, int] = {
     "openai_websearch": 0,
     "anthropic_websearch": 0,
     "google_websearch": 0,
+    # Task 6-D-4C-2 (feature/gemini-external-document-supplement) —
+    # Gemini answering from externally-fetched Web documents (no
+    # Google Search grounding tool involved at all). A distinct metric
+    # from "google_websearch" (that one is reserved for the still-
+    # disabled Google-Search-grounding supplement) and from "google"
+    # (the no-search observation) — see
+    # migrations/011_add_gemini_external_document_metric.sql. Default
+    # 0 like every other paid-provider metric here.
+    "gemini_external_document": 0,
 }
 _DEFAULT_MONTHLY_BY_METRIC: dict[str, int] = {
     "dataforseo_sandbox": 500,
@@ -115,6 +124,7 @@ _DEFAULT_MONTHLY_BY_METRIC: dict[str, int] = {
     "openai_websearch": 0,
     "anthropic_websearch": 0,
     "google_websearch": 0,
+    "gemini_external_document": 0,
 }
 
 # Maps each metric to the env-var name suffix used below —
@@ -129,6 +139,7 @@ _METRIC_ENV_SUFFIXES: dict[str, str] = {
     "openai_websearch": "OPENAI_WEBSEARCH",
     "anthropic_websearch": "ANTHROPIC_WEBSEARCH",
     "google_websearch": "GOOGLE_WEBSEARCH",
+    "gemini_external_document": "GEMINI_EXTERNAL_DOCUMENT",
 }
 
 

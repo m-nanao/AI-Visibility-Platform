@@ -391,15 +391,21 @@ export interface AIOverviewComparisonItem {
   // when isTruncated is true. Undefined when there's nothing to add.
   note?: string;
   // observationMethod: a stable, machine-readable discriminator (see
-  // backend/models.py's ObservationMethod) distinguishing ChatGPT's
+  // backend/models.py's ObservationMethod) distinguishing a provider's
   // original no-search observation ("single_call_no_search") from its
-  // conditional Web-search supplement ("websearch_supplement") — the
-  // two can appear as separate cards sharing the same general
-  // provider. Undefined for every other provider and for old saved
-  // history predating this field; app/lib/meta-label.ts must never
-  // fall back to matching `platform`'s display string for this
-  // distinction when this field is present.
-  observationMethod?: "single_call_no_search" | "websearch_supplement";
+  // conditional Web-search supplement ("websearch_supplement", the
+  // provider's own built-in search/grounding tool) and, for Gemini
+  // only so far, its conditional external-document supplement
+  // ("external_document_supplement", Task 6-D-4C-2 — this application
+  // fetched Web documents itself via urls[] and handed their text to
+  // the model; no provider-side search tool was ever offered or used,
+  // and this must never be confused with "websearch_supplement").
+  // Multiple cards sharing the same general provider can appear side
+  // by side. Undefined for every provider/card that predates this
+  // field; app/lib/meta-label.ts must never fall back to matching
+  // `platform`'s display string for this distinction when this field
+  // is present.
+  observationMethod?: "single_call_no_search" | "websearch_supplement" | "external_document_supplement";
   // fullSummaryTruncated: Task 6-D-3D. True only when the ChatGPT
   // backend's own storage-safety ceiling (far larger than the old
   // display-oriented cap previously applied here) had to shorten
@@ -428,6 +434,39 @@ export interface AIOverviewComparisonItem {
   // see backend/models.py's AIOverviewComparisonItem.model docstring).
   // Undefined for every provider/card that predates this field.
   model?: string;
+  // geminiExternalDocumentSources (Task 6-D-4C-2): the Web documents
+  // this application itself fetched (via urls[], services/web_fetcher.py
+  // on the backend) and handed to Gemini as context for its
+  // external-document supplement card. **Deliberately NOT a
+  // citation/reference list** — it records what was supplied as
+  // input, not what the model claims to have cited; see
+  // backend/models.GeminiExternalDocumentSource's own docstring.
+  // Never display this under a "参照元"/"references" label — always
+  // use wording that makes clear these are input documents (e.g.
+  // "入力文書"). Undefined for every other provider/card and for old
+  // saved history predating this field.
+  geminiExternalDocumentSources?: GeminiExternalDocumentSource[];
+  // The true number of available web_fetch Documents considered for
+  // this card, before this task's own document-count cap selected (at
+  // most) a subset of them — comparing this to
+  // geminiExternalDocumentSources.length shows how many available
+  // documents were excluded. Undefined whenever
+  // geminiExternalDocumentSources itself is undefined.
+  geminiExternalDocumentSourcesConsideredCount?: number;
+}
+
+// Task 6-D-4C-2: one Web document supplied to Gemini's
+// external-document supplement — see
+// AIOverviewComparisonItem.geminiExternalDocumentSources's own
+// comment for why this is never treated as a citation/reference.
+export interface GeminiExternalDocumentSource {
+  sourceUrl: string;
+  title?: string;
+  domain?: string;
+  originalIndex: number;
+  inputOrder: number;
+  inputCharCount: number;
+  truncated: boolean;
 }
 
 export interface ImprovementSuggestion {
