@@ -13,7 +13,11 @@ what actually takes effect).
 import pytest
 
 import services.chatgpt_websearch_provider as cwp
-from services.chatgpt_websearch_client import ChatGptWebsearchObservationResult, WebsearchCitation
+from services.chatgpt_websearch_client import (
+    ChatGptWebsearchObservationResult,
+    WebsearchCitation,
+    WebsearchCitationAnnotation,
+)
 from services.websearch_quota_reservation import (
     AnalysisQuotaExceededError,
     WebsearchQuotaAccessDeniedError,
@@ -350,6 +354,95 @@ def test_success_with_truncated_result_surfaces_truncation_on_the_item(monkeypat
     assert item.finishReason == "max_output_tokens"
     assert item.note == "truncated note"
     assert info.status == "real"
+
+
+def test_success_surfaces_full_summary_truncated_independently_of_is_truncated(monkeypatch):
+    """Task 6-D-3D: a storage-safety truncation (full_summary_truncated)
+    must propagate onto the item, and must be reportable independently
+    of the API-level is_truncated signal."""
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    _mock_reservation_success(monkeypatch)
+    _mock_fetch(
+        monkeypatch,
+        ChatGptWebsearchObservationResult(
+            success=True,
+            reason="ok",
+            searched=True,
+            summary="s",
+            full_summary="truncated for storage…",
+            is_truncated=False,
+            full_summary_truncated=True,
+        ),
+    )
+
+    item, info = cwp.attempt_chatgpt_websearch_supplement(**_base_kwargs())
+
+    assert item.isTruncated is False
+    assert item.fullSummaryTruncated is True
+
+
+def test_success_propagates_raw_citation_annotations_separately_from_references(monkeypatch):
+    """Task 6-D-3D follow-up: citationAnnotations (raw, pre-dedup) and
+    references (de-duplicated display list) must both reach the item,
+    independently."""
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    _mock_reservation_success(monkeypatch)
+    _mock_fetch(
+        monkeypatch,
+        ChatGptWebsearchObservationResult(
+            success=True,
+            reason="ok",
+            searched=True,
+            summary="s",
+            citations=[WebsearchCitation(url="https://acme.example.com/about", title="About")],
+            citations_truncated=False,
+            citation_annotations=[
+                WebsearchCitationAnnotation(
+                    url="https://acme.example.com/about?utm_source=openai",
+                    title="About",
+                    start_index=10,
+                    end_index=20,
+                ),
+                WebsearchCitationAnnotation(
+                    url="https://acme.example.com/about?utm_source=openai",
+                    title="About",
+                    start_index=50,
+                    end_index=60,
+                ),
+            ],
+            citation_annotations_total_count=2,
+        ),
+    )
+
+    item, info = cwp.attempt_chatgpt_websearch_supplement(**_base_kwargs())
+
+    assert item.citationAnnotations is not None
+    assert len(item.citationAnnotations) == 2
+    assert item.citationAnnotations[0].url == "https://acme.example.com/about?utm_source=openai"
+    assert item.citationAnnotations[0].startIndex == 10
+    assert item.citationAnnotations[0].endIndex == 20
+    assert item.citationAnnotationsTotalCount == 2
+    assert item.citationsTruncated is False
+    # references stays the separate, normalized display list.
+    assert item.references[0].url == "https://acme.example.com/about"
+
+
+def test_success_with_no_citation_annotations_leaves_the_new_fields_none(monkeypatch):
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    _mock_reservation_success(monkeypatch)
+    _mock_fetch(
+        monkeypatch,
+        ChatGptWebsearchObservationResult(success=True, reason="ok", summary="s"),
+    )
+
+    item, info = cwp.attempt_chatgpt_websearch_supplement(**_base_kwargs())
+
+    assert item.citationAnnotations is None
+    assert item.citationAnnotationsTotalCount is None
+    assert item.citationsTruncated is False
 
 
 def test_success_with_no_citations_leaves_references_none(monkeypatch):

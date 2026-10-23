@@ -182,5 +182,8 @@ def build_chatgpt_observation(
         finishReason=result.finish_reason,
         isTruncated=result.is_truncated,
         note=result.note,
+        # Task 6-D-3D — see models.AIOverviewComparisonItem.fullSummaryTruncated's
+        # own docstring: independent of isTruncated above.
+        fullSummaryTruncated=result.full_summary_truncated,
     )
     return item, "real", result.reason, "api", result.recognition_level, result.prompt_version

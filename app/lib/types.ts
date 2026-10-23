@@ -400,6 +400,27 @@ export interface AIOverviewComparisonItem {
   // fall back to matching `platform`'s display string for this
   // distinction when this field is present.
   observationMethod?: "single_call_no_search" | "websearch_supplement";
+  // fullSummaryTruncated: Task 6-D-3D. True only when the ChatGPT
+  // backend's own storage-safety ceiling (far larger than the old
+  // display-oriented cap previously applied here) had to shorten
+  // `fullSummary`. Deliberately independent of `isTruncated` above —
+  // that field means "OpenAI's own API response was incomplete";
+  // this one means "our own storage ceiling cut an otherwise-complete
+  // response" — never derived from one another. Undefined for every
+  // other provider and for old saved history predating this field.
+  fullSummaryTruncated?: boolean;
+  // citationsTruncated: Task 6-D-3D follow-up. True only when the
+  // ChatGPT Web-search display reference list (`references` above) had
+  // to drop one or more distinct sources because there were more than
+  // the display cap's worth of unique URLs. Computed from the complete
+  // de-duplicated set, so it's independent of `fullSummaryTruncated`
+  // (answer-text storage ceiling) and `isTruncated` (API-level
+  // completion signal) above — never derive one from another. Raw,
+  // pre-deduplication citation data is kept on the backend only for a
+  // future task; this flag is the only citation-related signal exposed
+  // to the frontend in this phase. Undefined for every other provider
+  // and for old saved history predating this field.
+  citationsTruncated?: boolean;
 }
 
 export interface ImprovementSuggestion {

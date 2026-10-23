@@ -381,3 +381,29 @@ def test_build_chatgpt_observation_does_not_flag_a_complete_answer(monkeypatch):
     assert item.isTruncated is False
     assert item.finishReason is None
     assert item.note is None
+
+
+def test_build_chatgpt_observation_preserves_a_long_complete_answer_unflagged(monkeypatch):
+    """Task 6-D-3D: a long but complete answer must be stored in full
+    (not cut to the old 2500-char cap) and must not be flagged as
+    truncated in any sense."""
+    _clear_chatgpt_env(monkeypatch)
+    _set_credentials(monkeypatch)
+    long_text = "Acme " + ("word " * 1000)
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"status": "completed", "output_text": long_text},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    item, status, reason, environment, recognition_level, prompt_version = build_chatgpt_observation(
+        "Acme", "openai"
+    )
+
+    assert item.fullSummary == long_text.strip()
+    assert item.isTruncated is False
+    assert item.fullSummaryTruncated is False

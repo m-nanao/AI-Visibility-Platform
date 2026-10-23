@@ -598,6 +598,38 @@ class AIOverviewReference(BaseModel):
     category: ReferenceCategory | None = None
 
 
+class WebsearchCitationAnnotation(BaseModel):
+    """Task 6-D-3D follow-up (feature/chatgpt-full-text-citations): one
+    *raw* `url_citation` annotation from ChatGPT's Web-search
+    supplement, exactly as OpenAI's Responses API returned it — see
+    services/chatgpt_websearch_client.py's WebsearchCitationAnnotation
+    (the internal dataclass this Pydantic model mirrors field-for-
+    field) for the full extraction contract.
+
+    **Deliberately distinct from AIOverviewReference** (the
+    de-duplicated, normalized *display* list on
+    AIOverviewComparisonItem.references): `url` here is OpenAI's exact
+    original URL, including any tracking parameters — never
+    normalized, never de-duplicated. Multiple entries can (and often
+    do) share the same `url` when the model's answer cites the same
+    source more than once; that repetition is itself data a future
+    citation-analysis task would need (how many times was this source
+    actually cited), so it is preserved here rather than collapsed.
+    `startIndex`/`endIndex` are OpenAI's own character-offset fields
+    for which span of the answer text this citation backs, kept as-is
+    when present — None (not 0) when absent, so "no position
+    information" is never confused with "position zero".
+
+    This model exists purely as structured storage for a future task;
+    nothing in this codebase reads it to build any UI yet.
+    """
+
+    url: str
+    title: str | None = None
+    startIndex: int | None = None
+    endIndex: int | None = None
+
+
 class AIOverviewReferenceCategoryCounts(BaseModel):
     """How many of an item's `references` fell into each category (see
     ReferenceCategory) — only ever built alongside `references` itself
@@ -685,6 +717,46 @@ class AIOverviewComparisonItem(BaseModel):
     # saved history row and every card besides a ChatGPT websearch-
     # supplement one.
     observationMethod: ObservationMethod | None = None
+    # Task 6-D-3D (feature/chatgpt-full-text-citations) — True only
+    # when the ChatGPT no-search or websearch-supplement client's own
+    # storage-safety ceiling (services/chatgpt_client.py's
+    # _FULL_SUMMARY_SAFETY_MAX_CHARS, 20000 — see that constant's own
+    # docstring) actually had to shorten `fullSummary`. Deliberately
+    # independent of `isTruncated` above: that field means "OpenAI's
+    # own API response was reported incomplete"; this one means "our
+    # own storage ceiling cut an otherwise-complete response" — the
+    # two are never derived from each other, and either, neither, or
+    # (in theory) both can be true at once. None for every other
+    # provider and for every pre-existing saved history row.
+    fullSummaryTruncated: bool | None = None
+    # Task 6-D-3D follow-up (feature/chatgpt-full-text-citations) —
+    # only ever populated by the ChatGPT Web-search-supplement card;
+    # None for every other provider and every pre-existing saved
+    # history row. See WebsearchCitationAnnotation's own docstring for
+    # why this is deliberately separate from (and more complete than)
+    # `references` below: `references` is the de-duplicated,
+    # normalized display list; `citationAnnotations` is the raw,
+    # pre-de-duplication data (including repeats and original,
+    # unnormalized URLs) kept for a future citation-analysis task.
+    citationAnnotations: list[WebsearchCitationAnnotation] | None = None
+    # The *true* total number of raw url_citation annotations OpenAI's
+    # response contained, before
+    # services/chatgpt_websearch_client.py's own
+    # _MAX_RAW_CITATION_ANNOTATIONS storage-safety ceiling is applied.
+    # Comparing this to `len(citationAnnotations)` is how a reader
+    # detects whether that ceiling actually dropped anything — never
+    # silently. None whenever `citationAnnotations` itself is None.
+    citationAnnotationsTotalCount: int | None = None
+    # True when `references` below had to drop one or more distinct
+    # (post-normalization) URLs because there were more than
+    # services/chatgpt_websearch_client.py's own `_MAX_CITATIONS` (10)
+    # — i.e. `references` is not the complete set of distinct sources
+    # actually cited. Independent of `citationAnnotationsTotalCount`
+    # above (that one is about the raw annotation list's own storage
+    # ceiling; this one is about the de-duplicated display list's own,
+    # smaller cap). None for every provider other than ChatGPT's
+    # Web-search supplement.
+    citationsTruncated: bool | None = None
 
 
 # Whether services/web_ai_gap.py could build a meaningful comparison —

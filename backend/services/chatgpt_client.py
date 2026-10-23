@@ -81,10 +81,27 @@ RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 REQUEST_TIMEOUT_SECONDS = 20.0
 
 _SUMMARY_MAX_CHARS = 200
-# fullSummary is a detail view, not an excerpt — allowed much more room
-# than _SUMMARY_MAX_CHARS, matching services/dataforseo_client.py's
-# fullSummary sizing (see that module's _FULL_SUMMARY_MAX_CHARS).
-_FULL_SUMMARY_MAX_CHARS = 2500
+
+# Task 6-D-3D: a production report found fullSummary saved at exactly
+# 2501 characters (2500 + the trailing "…" this module used to add)
+# for an answer whose own API response was NOT truncated
+# (isTruncated=false, finishReason=null, status="completed") — the
+# *old* 2500-char cap here was a display-oriented limit inherited from
+# services/dataforseo_client.py's own _FULL_SUMMARY_MAX_CHARS, silently
+# cutting a complete answer down for storage. fullSummary is now meant
+# to hold the complete visible answer text for downstream fact-
+# comparison/diff use, so this module no longer applies any
+# display-motivated cap to it at all — only this far larger
+# **storage-safety** ceiling remains, to bound how large a single
+# saved/returned value can ever be against a genuinely pathological
+# response (not expected in normal operation: max_output_tokens already
+# bounds the model's own output well below this). Deliberately a
+# different *kind* of limit from isTruncated/finishReason (an API-level
+# "did OpenAI's own generation stop early" signal) — see
+# full_summary_truncated below, which is only ever set True if *this*
+# ceiling actually had to cut something, never confused with an
+# API-level incomplete response.
+_FULL_SUMMARY_SAFETY_MAX_CHARS = 20000
 
 # Task 6-D-3B: shown alongside a card whose answer may have been cut
 # short — mirrors services/gemini_client.py's own TRUNCATION_NOTE
@@ -126,6 +143,14 @@ class ChatGptObservationResult:
     finish_reason: str | None = None
     is_truncated: bool = False
     note: str | None = None
+    # Task 6-D-3D — True only when _FULL_SUMMARY_SAFETY_MAX_CHARS (not
+    # an API-level signal) actually had to cut `full_summary` short.
+    # Deliberately independent of `is_truncated` above: this says
+    # "our own storage ceiling truncated an otherwise-complete API
+    # response", never "OpenAI's own generation stopped early" — the
+    # two can occur independently, including neither, either, or (in
+    # theory) both at once.
+    full_summary_truncated: bool = False
 
 
 # Model name prefixes that reject a "temperature" field on OpenAI's
@@ -291,10 +316,15 @@ def _extract_completion_state(payload: object) -> tuple[str | None, str | None]:
     return status, incomplete_reason
 
 
-def _summarize(text: str, brand_name: str) -> tuple[bool, str, str]:
+def _summarize(text: str, brand_name: str) -> tuple[bool, str, str, bool]:
     """Reduces the model's raw answer text to (mentioned, summary,
-    full_summary). `summary` is a short excerpt (<= _SUMMARY_MAX_CHARS);
-    `full_summary` is the fuller text (<= _FULL_SUMMARY_MAX_CHARS).
+    full_summary, full_summary_truncated). `summary` is a short excerpt
+    (<= _SUMMARY_MAX_CHARS, for card display) — unchanged by Task
+    6-D-3D. `full_summary` (Task 6-D-3D) is the *complete* visible
+    answer text, no longer capped at any display-oriented length —
+    only `_FULL_SUMMARY_SAFETY_MAX_CHARS` (see that constant's own
+    comment) can still shorten it, and only in a scenario this module
+    doesn't expect to hit in normal operation.
     `summary`/`full_summary` have the trailing recognition-label line
     (Task 6-D-1) stripped out via
     services/ai_observation_prompts.py's strip_recognition_label_line()
@@ -309,12 +339,14 @@ def _summarize(text: str, brand_name: str) -> tuple[bool, str, str]:
     else:
         summary = cleaned
 
-    if len(text) > _FULL_SUMMARY_MAX_CHARS:
-        full_summary = text[:_FULL_SUMMARY_MAX_CHARS].rstrip() + "…"
+    if len(text) > _FULL_SUMMARY_SAFETY_MAX_CHARS:
+        full_summary = text[:_FULL_SUMMARY_SAFETY_MAX_CHARS].rstrip() + "…"
+        full_summary_truncated = True
     else:
         full_summary = text
+        full_summary_truncated = False
 
-    return mentioned, summary, full_summary
+    return mentioned, summary, full_summary, full_summary_truncated
 
 
 def fetch_chatgpt_observation(
@@ -390,7 +422,7 @@ def fetch_chatgpt_observation(
         )
 
     is_truncated = status == "incomplete"
-    mentioned, summary, full_summary = _summarize(text, brand_name)
+    mentioned, summary, full_summary, full_summary_truncated = _summarize(text, brand_name)
     return ChatGptObservationResult(
         success=True,
         reason="ChatGPT OpenAI API request succeeded.",
@@ -409,4 +441,5 @@ def fetch_chatgpt_observation(
         finish_reason=incomplete_reason if is_truncated else None,
         is_truncated=is_truncated,
         note=TRUNCATION_NOTE if is_truncated else None,
+        full_summary_truncated=full_summary_truncated,
     )

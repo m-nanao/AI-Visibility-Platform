@@ -217,6 +217,18 @@ function AIOverviewItemCard({
         </p>
       )}
 
+      {detail.fullSummaryTruncatedNotice && (
+        <p className="mt-3 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+          {detail.fullSummaryTruncatedNotice}
+        </p>
+      )}
+
+      {detail.citationsTruncatedNotice && (
+        <p className="mt-3 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+          {detail.citationsTruncatedNotice}
+        </p>
+      )}
+
       {geminiRerun && (
         <div className="mt-3">
           <GeminiRerunControls controls={geminiRerun} />

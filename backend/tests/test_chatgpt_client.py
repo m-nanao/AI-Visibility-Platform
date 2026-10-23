@@ -362,7 +362,11 @@ def test_fetch_truncates_summary_to_a_short_excerpt(monkeypatch):
     assert len(result.summary) < len(result.full_summary)
 
 
-def test_fetch_truncates_full_summary_far_beyond_the_short_summary_cap(monkeypatch):
+def test_fetch_preserves_the_complete_full_summary_well_beyond_the_old_2500_char_cap(monkeypatch):
+    """Task 6-D-3D: fullSummary must hold the complete answer text for
+    downstream fact-comparison/diff use — a ~5000-char answer (well
+    under the new, far larger safety ceiling) must come back intact,
+    not silently cut at the old display-oriented 2500-char limit."""
     long_text = "Acme " + ("word " * 1000)
 
     def fake_post(url, **kwargs):
@@ -372,8 +376,34 @@ def test_fetch_truncates_full_summary_far_beyond_the_short_summary_cap(monkeypat
 
     result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
 
-    assert len(result.full_summary) <= chatgpt_client._FULL_SUMMARY_MAX_CHARS + 1
+    assert result.full_summary == long_text.strip()
+    assert not result.full_summary.endswith("…")
+    assert result.full_summary_truncated is False
+
+
+def test_fetch_full_summary_safety_ceiling_still_applies_to_a_pathological_response(monkeypatch):
+    """A response far beyond anything max_output_tokens could
+    realistically produce still gets bounded, with the truncation
+    explicitly flagged (never silent) — see
+    _FULL_SUMMARY_SAFETY_MAX_CHARS's own comment."""
+    pathological_text = "Acme " + ("word " * 10000)
+    assert len(pathological_text) > chatgpt_client._FULL_SUMMARY_SAFETY_MAX_CHARS
+
+    def fake_post(url, **kwargs):
+        return httpx.Response(
+            200, json={"output_text": pathological_text}, request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr(chatgpt_client.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_observation(_CREDENTIALS, "Acme", model="gpt-4.1-mini", max_output_tokens=700, temperature=0.2)
+
+    assert len(result.full_summary) <= chatgpt_client._FULL_SUMMARY_SAFETY_MAX_CHARS + 1
     assert result.full_summary.endswith("…")
+    assert result.full_summary_truncated is True
+    # This storage-safety truncation is a different concept entirely
+    # from the API-level incomplete signal — never conflated.
+    assert result.is_truncated is False
 
 
 def test_fetch_success_reason(monkeypatch):

@@ -34,6 +34,7 @@ from models import (
     AIOverviewReference,
     ChatGptWebsearchProviderInfo,
     RecognitionLevel,
+    WebsearchCitationAnnotation,
 )
 from services.chatgpt_settings import get_chatgpt_credentials, get_chatgpt_settings
 from services.chatgpt_websearch_client import fetch_chatgpt_websearch_observation
@@ -264,6 +265,20 @@ def attempt_chatgpt_websearch_supplement(
         if result.citations
         else None
     )
+    # Task 6-D-3D follow-up — see
+    # models.AIOverviewComparisonItem.citationAnnotations' own
+    # docstring: the raw, pre-de-duplication annotation list, kept
+    # separately from `references` above (never derived from it).
+    citation_annotations = (
+        [
+            WebsearchCitationAnnotation(
+                url=a.url, title=a.title, startIndex=a.start_index, endIndex=a.end_index
+            )
+            for a in result.citation_annotations
+        ]
+        if result.citation_annotations
+        else None
+    )
     item = AIOverviewComparisonItem(
         platform=CHATGPT_WEBSEARCH_PLATFORM_LABEL,
         mentioned=result.mentioned,
@@ -281,6 +296,17 @@ def attempt_chatgpt_websearch_supplement(
         finishReason=result.finish_reason,
         isTruncated=result.is_truncated,
         note=result.note,
+        # Task 6-D-3D — see models.AIOverviewComparisonItem.fullSummaryTruncated's
+        # own docstring: independent of isTruncated above.
+        fullSummaryTruncated=result.full_summary_truncated,
+        # Task 6-D-3D follow-up — see each field's own docstring in
+        # models.py. citationAnnotationsTotalCount is only meaningful
+        # (and only ever set) alongside citationAnnotations itself.
+        citationAnnotations=citation_annotations,
+        citationAnnotationsTotalCount=(
+            result.citation_annotations_total_count if citation_annotations else None
+        ),
+        citationsTruncated=result.citations_truncated,
     )
     return item, ChatGptWebsearchProviderInfo(
         status="real",

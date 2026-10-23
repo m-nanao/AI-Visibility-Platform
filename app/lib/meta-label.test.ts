@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHATGPT_CITATIONS_TRUNCATED_NOTICE,
+  CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE,
   GEMINI_TRUNCATION_NOTE,
   OBSERVATION_UNAVAILABLE_NOTE,
   OWN_DOMAIN_STATUS_LABELS,
@@ -1016,6 +1018,106 @@ describe("getAiOverviewItemDetailDisplay — noSourceCaution (Task 6-D-3C item 3
     });
 
     expect(display.noSourceCaution).toBeUndefined();
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — fullSummaryTruncatedNotice (Task 6-D-3D)", () => {
+  it("shows the notice when fullSummaryTruncated is true", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      fullSummaryTruncated: true,
+    });
+
+    expect(display.fullSummaryTruncatedNotice).toBe(CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE);
+  });
+
+  it("does not show the notice when fullSummaryTruncated is false or absent (old history)", () => {
+    expect(
+      getAiOverviewItemDetailDisplay({
+        platform: "ChatGPT (OpenAI API)",
+        mentioned: true,
+        rank: null,
+        summary: "Acme is a company.",
+        fullSummaryTruncated: false,
+      }).fullSummaryTruncatedNotice,
+    ).toBeUndefined();
+
+    expect(
+      getAiOverviewItemDetailDisplay({
+        platform: "ChatGPT (OpenAI API)",
+        mentioned: true,
+        rank: null,
+        summary: "Acme is a company.",
+      }).fullSummaryTruncatedNotice,
+    ).toBeUndefined();
+  });
+
+  it("is independent of isTruncated/truncationWarning (storage ceiling vs. API completion)", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: false,
+      fullSummaryTruncated: true,
+    });
+
+    expect(display.truncationWarning).toBeUndefined();
+    expect(display.fullSummaryTruncatedNotice).toBe(CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE);
+  });
+});
+
+describe("getAiOverviewItemDetailDisplay — citationsTruncatedNotice (Task 6-D-3D follow-up)", () => {
+  it("shows the notice when citationsTruncated is true", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      citationsTruncated: true,
+    });
+
+    expect(display.citationsTruncatedNotice).toBe(CHATGPT_CITATIONS_TRUNCATED_NOTICE);
+  });
+
+  it("does not show the notice when citationsTruncated is false or absent (old history)", () => {
+    expect(
+      getAiOverviewItemDetailDisplay({
+        platform: "ChatGPT (OpenAI API, Web検索補完)",
+        mentioned: true,
+        rank: null,
+        summary: "Acme is a company.",
+        citationsTruncated: false,
+      }).citationsTruncatedNotice,
+    ).toBeUndefined();
+
+    expect(
+      getAiOverviewItemDetailDisplay({
+        platform: "ChatGPT (OpenAI API, Web検索補完)",
+        mentioned: true,
+        rank: null,
+        summary: "Acme is a company.",
+      }).citationsTruncatedNotice,
+    ).toBeUndefined();
+  });
+
+  it("is independent of fullSummaryTruncatedNotice/isTruncated", () => {
+    const display = getAiOverviewItemDetailDisplay({
+      platform: "ChatGPT (OpenAI API, Web検索補完)",
+      mentioned: true,
+      rank: null,
+      summary: "Acme is a company.",
+      isTruncated: false,
+      fullSummaryTruncated: false,
+      citationsTruncated: true,
+    });
+
+    expect(display.truncationWarning).toBeUndefined();
+    expect(display.fullSummaryTruncatedNotice).toBeUndefined();
+    expect(display.citationsTruncatedNotice).toBe(CHATGPT_CITATIONS_TRUNCATED_NOTICE);
   });
 });
 

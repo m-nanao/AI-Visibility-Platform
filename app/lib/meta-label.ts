@@ -729,6 +729,20 @@ export interface AiOverviewItemDetailDisplay {
   // every other card, and for a Web検索補完 card that does have at
   // least one reference.
   noSourceCaution?: string;
+  // Task 6-D-3D: present only when item.fullSummaryTruncated is true —
+  // a different concept from truncationWarning above (that one means
+  // "OpenAI's own response was incomplete"; this one means "the saved
+  // answer was long enough that our own storage ceiling, not the API,
+  // shortened it"). Expected to be exceptionally rare in practice (see
+  // backend/services/chatgpt_client.py's _FULL_SUMMARY_SAFETY_MAX_CHARS),
+  // but never silently applied without surfacing this notice.
+  fullSummaryTruncatedNotice?: string;
+  // Task 6-D-3D follow-up: present only when item.citationsTruncated is
+  // true — see CHATGPT_CITATIONS_TRUNCATED_NOTICE's own comment.
+  // Independent of fullSummaryTruncatedNotice above. Undefined for
+  // every other item, including old saved history predating
+  // citationsTruncated.
+  citationsTruncatedNotice?: string;
 }
 
 // Must match backend/services/chatgpt_provider.py's
@@ -819,6 +833,24 @@ export const CHATGPT_WEBSEARCH_PLATFORM_NOTE =
 export const CHATGPT_WEBSEARCH_NO_SOURCE_CAUTION =
   "この回答は参照元を確認できなかったため、検証済みの企業情報とは言えません。" +
   "表示されている内容は参考情報としてご利用ください。";
+
+// Task 6-D-3D: a different concept from the truncationWarning texts
+// above — those report that OpenAI's own API response was incomplete.
+// This one reports that the API response was complete, but the saved
+// answer was long enough that this app's own storage ceiling (see
+// backend/services/chatgpt_client.py's _FULL_SUMMARY_SAFETY_MAX_CHARS)
+// shortened it before saving — expected to be exceptionally rare, but
+// never applied silently.
+export const CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE =
+  "保存された回答が非常に長いため、一部を省略して保存しています。";
+
+// Task 6-D-3D follow-up: yet another independent concept — this one
+// reports that the *display* reference list (item.references) had to
+// drop one or more distinct sources because more than the display
+// cap's worth of unique URLs were cited. Never derived from
+// fullSummaryTruncated or isTruncated above.
+export const CHATGPT_CITATIONS_TRUNCATED_NOTICE =
+  "参照元のURLが多かったため、一部のみを表示しています。";
 
 // Below this length, a "続きを見る" toggle would reveal only a sliver of
 // text — not worth the extra click. Applies both to a continuation
@@ -1058,6 +1090,14 @@ export function getAiOverviewItemDetailDisplay(
       ? CHATGPT_WEBSEARCH_NO_SOURCE_CAUTION
       : undefined;
 
+  const fullSummaryTruncatedNotice = item.fullSummaryTruncated
+    ? CHATGPT_FULL_SUMMARY_TRUNCATED_NOTICE
+    : undefined;
+
+  const citationsTruncatedNotice = item.citationsTruncated
+    ? CHATGPT_CITATIONS_TRUNCATED_NOTICE
+    : undefined;
+
   return {
     hasContinuation,
     continuationText,
@@ -1069,6 +1109,8 @@ export function getAiOverviewItemDetailDisplay(
     platformNote,
     truncationWarning,
     noSourceCaution,
+    fullSummaryTruncatedNotice,
+    citationsTruncatedNotice,
   };
 }
 

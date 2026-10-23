@@ -64,10 +64,25 @@ can complete and the model can still run out of max_output_tokens
 while composing its answer afterward. A response can therefore be
 `searched=True` and `is_truncated=True` at the same time; neither
 field is inferred from the other.
+
+**Raw citation annotations vs. the display reference list (Task
+6-D-3D follow-up).** `_parse_websearch_response()` now returns two
+distinct things: the *raw* `url_citation` annotations exactly as
+OpenAI returned them (`WebsearchCitationAnnotation` — unmodified URL,
+title, `start_index`/`end_index` when present, one entry per
+annotation including repeats of the same URL, in the order OpenAI's
+response listed them) and the *display* list (`WebsearchCitation` —
+URL-normalized, de-duplicated, capped at `_MAX_CITATIONS`, for
+`AIOverviewComparisonItem.references`). The raw list is for future
+citation analysis (occurrence counts, text-position mapping) this
+task does not itself build a UI for; the display list is what users
+see today. Neither is derived from the other after the fact — both
+are built from the same single pass over the response's annotations.
 """
 
 import logging
 from dataclasses import dataclass, field
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -148,7 +163,15 @@ def should_send_reasoning_effort(model: str) -> bool:
     return normalized.startswith(_REASONING_MODEL_PREFIXES)
 
 _SUMMARY_MAX_CHARS = 200
-_FULL_SUMMARY_MAX_CHARS = 2500
+
+# Task 6-D-3D — same reasoning as services/chatgpt_client.py's own
+# _FULL_SUMMARY_SAFETY_MAX_CHARS (see that constant's own, longer
+# comment): a production run saved fullSummary at exactly 2501
+# characters for a *complete* (isTruncated=false) API response — the
+# old 2500-char cap here was a display-oriented limit, not an
+# API-completion signal. fullSummary is now the complete visible
+# answer text; only this far larger storage-safety ceiling remains.
+_FULL_SUMMARY_SAFETY_MAX_CHARS = 20000
 
 # Task 6-D-3B — mirrors services/chatgpt_client.py's own
 # TRUNCATION_NOTE wording/intent, worded for the websearch-supplement
@@ -228,13 +251,153 @@ def _build_request_body(
 
 
 @dataclass(frozen=True)
-class WebsearchCitation:
-    """One `url_citation` annotation OpenAI's response actually
-    contained — never a URL this module inferred or constructed
-    itself. `title` is None when the annotation didn't include one."""
+class WebsearchCitationAnnotation:
+    """One raw `url_citation` annotation exactly as OpenAI's response
+    contained it — Task 6-D-3D follow-up. `url` is the *unmodified*
+    URL (including any tracking parameters); see WebsearchCitation for
+    the separate, normalized/de-duplicated display entry derived from
+    this one. `start_index`/`end_index` are OpenAI's own character-
+    offset fields identifying which span of the answer text this
+    citation backs, kept as-is (never computed or guessed by this
+    module) when the annotation included them — None when absent, not
+    0, so "no position info" is never confused with "position 0".
+    Multiple annotations can (and often do) share the same `url` —
+    that repetition is itself the signal a future task would need to
+    count how many times a source was actually cited; this dataclass
+    never discards it.
+    """
 
     url: str
     title: str | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+
+
+@dataclass(frozen=True)
+class WebsearchCitation:
+    """One *de-duplicated, normalized* entry for the user-facing
+    reference list (`AIOverviewComparisonItem.references`) — never a
+    URL this module inferred or constructed itself; always derived
+    from one or more WebsearchCitationAnnotation entries that share
+    the same normalized URL (see _deduplicate_citations()). `title` is
+    None when no contributing annotation had one.
+    """
+
+    url: str
+    title: str | None = None
+
+
+# Task 6-D-3D: a production run returned 13 url_citation annotations
+# that were, in practice, repeat citations of the same handful of
+# pages (OpenAI's own citation format cites a source again each time
+# the answer references it, rather than once per unique source) —
+# this caps how many *distinct* sources the *display* list
+# (WebsearchCitation / AIOverviewComparisonItem.references) ever
+# contains, mirroring services/dataforseo_client.py's own
+# `_MAX_REFERENCES = 10` convention for the same kind of field. Does
+# NOT bound the raw WebsearchCitationAnnotation list at all — see
+# _MAX_RAW_CITATION_ANNOTATIONS below for that separate, much larger
+# ceiling.
+_MAX_CITATIONS = 10
+
+# Task 6-D-3D follow-up: a storage-safety ceiling on the *raw*
+# annotation list (services/chatgpt_client.py's own
+# _FULL_SUMMARY_SAFETY_MAX_CHARS is the analogous concept for answer
+# text) — bounds how many WebsearchCitationAnnotation entries this
+# module will ever return/store for one response, protecting against
+# a pathological response with an unreasonable number of citations.
+# Deliberately far larger than _MAX_CITATIONS (10): a single short
+# company-overview answer repeating a handful of sources many times
+# over could plausibly produce several dozen raw annotations without
+# that being a real problem — this ceiling exists for the case that
+# never happens in practice, not the case that's merely "a lot of
+# repeats".
+_MAX_RAW_CITATION_ANNOTATIONS = 50
+
+# Known analytics/attribution query parameters OpenAI's own citations
+# are documented to sometimes append (e.g. "?utm_source=openai") —
+# stripped only for *comparing and displaying* citation URLs, never
+# touching any other query parameter (a `?page=2` or `?id=123` keeps
+# meaning a genuinely different resource and is never collapsed away),
+# and never applied to WebsearchCitationAnnotation.url, which always
+# keeps OpenAI's exact original URL untouched.
+# Deliberately a short, explicit allowlist of removable keys rather
+# than "strip everything starting with utm_" via a prefix check, so a
+# future, unrelated `utm_`-prefixed parameter this list doesn't yet
+# know about is left alone rather than guessed at.
+_TRACKING_QUERY_PARAM_NAMES = frozenset(
+    {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"}
+)
+
+
+def _normalize_citation_url(url: str) -> str:
+    """Removes only the known tracking parameters in
+    _TRACKING_QUERY_PARAM_NAMES from `url`'s query string — every other
+    part of the URL (scheme, host, path, fragment, and any other query
+    parameter) is left exactly as OpenAI returned it. Used both as the
+    de-duplication key and as the URL actually stored/displayed in the
+    de-duplicated WebsearchCitation list — never applied to
+    WebsearchCitationAnnotation.url, which always keeps the exact
+    original. Returns `url` unchanged if it has no query string at
+    all, or if every parameter survives the filter.
+    """
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    kept_params = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in _TRACKING_QUERY_PARAM_NAMES
+    ]
+    new_query = urlencode(kept_params)
+    if new_query == parts.query:
+        return url
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+
+
+def _deduplicate_citations(
+    annotations: list[WebsearchCitationAnnotation],
+) -> tuple[list[WebsearchCitation], bool]:
+    """Builds the de-duplicated, normalized *display* list from every
+    raw annotation (`annotations` — the complete, uncapped list, not
+    the storage-capped one callers persist separately), keeping the
+    first occurrence's title for each distinct normalized URL and
+    discarding later repeats of the same page — this is the
+    "表示する引用URL一覧では同一URLを重複排除する" step. Never mutates
+    `annotations` itself or anything derived from it elsewhere.
+
+    Returns `(display_list, citations_truncated)`: `display_list` is
+    capped at `_MAX_CITATIONS`; `citations_truncated` is True whenever
+    there were *more* distinct URLs than that cap allows to keep — Task
+    6-D-3D follow-up item 3's "一意URLが11件以上ある場合は...フラグで
+    明示する", computed against the *complete* de-duplicated set (every
+    annotation is considered first, regardless of _MAX_RAW_CITATION_ANNOTATIONS),
+    so this is accurate even when the raw list passed by the caller for
+    storage was itself already capped smaller.
+    """
+    unique: list[WebsearchCitation] = []
+    seen_urls: set[str] = set()
+    for annotation in annotations:
+        normalized_url = _normalize_citation_url(annotation.url)
+        if normalized_url in seen_urls:
+            continue
+        seen_urls.add(normalized_url)
+        unique.append(WebsearchCitation(url=normalized_url, title=annotation.title))
+
+    citations_truncated = len(unique) > _MAX_CITATIONS
+    return unique[:_MAX_CITATIONS], citations_truncated
+
+
+def _extract_citation_index(annotation: dict, key: str) -> int | None:
+    """Best-effort extraction of `annotation[key]` (`"start_index"` or
+    `"end_index"`) as a plain int — None when absent, not an int, or
+    (defensively) a bool (Python's `bool` is an `int` subclass, so an
+    explicit `isinstance(..., bool)` guard keeps a stray `true`/`false`
+    from ever being stored as `0`/`1`)."""
+    value = annotation.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _extract_completion_state(payload: object) -> tuple[str | None, str | None]:
@@ -264,9 +427,17 @@ def _extract_completion_state(payload: object) -> tuple[str | None, str | None]:
 
 def _parse_websearch_response(
     payload: object,
-) -> tuple[str | None, bool, list[WebsearchCitation]]:
-    """Returns (text, searched, citations) from one Responses API
-    envelope.
+) -> tuple[
+    str | None,
+    bool,
+    list[WebsearchCitation],
+    bool,
+    list[WebsearchCitationAnnotation],
+    int,
+]:
+    """Returns (text, searched, citations, citations_truncated,
+    citation_annotations, citation_annotations_total_count) from one
+    Responses API envelope.
 
     **`searched` is the authoritative "did the model actually use the
     web_search tool" signal** — Task 6-D-3 item E: "検索ツールが実際に
@@ -277,12 +448,33 @@ def _parse_websearch_response(
     the tool (the model can still answer directly without searching,
     e.g. when it already has enough context from the prompt itself).
 
-    `citations` is built *only* from `url_citation` annotations found
-    on a `message` output item's text content — see WebsearchCitation's
-    own docstring. An empty list is a perfectly valid outcome (the
-    model searched but the final answer carried no citations, or it
-    answered without searching at all) and must not be treated as a
-    parse failure.
+    `citation_annotations` is the *complete* (subject only to
+    `_MAX_RAW_CITATION_ANNOTATIONS`, a storage-safety ceiling far
+    larger than anything a single short observation should realistically
+    produce — see that constant's own comment) list of raw
+    `url_citation` annotations, in the order OpenAI's response listed
+    them, including repeats of the same URL and each annotation's own
+    `start_index`/`end_index` when present — Task 6-D-3D follow-up:
+    this is the data a future citation-analysis task would need
+    (occurrence counts, text-position mapping), never discarded here
+    even though it isn't surfaced in today's UI.
+    `citation_annotations_total_count` is the *true* total before that
+    storage ceiling is ever applied — comparing it against
+    `len(citation_annotations)` is how a caller detects whether this
+    ceiling actually had to drop anything (never silently).
+
+    `citations`/`citations_truncated` are the de-duplicated, capped
+    *display* list and its own truncation flag — see
+    _deduplicate_citations()'s own docstring. Built from the complete
+    annotation list (before the storage ceiling above is applied), so
+    `citations_truncated` is accurate even in the (expected to never
+    happen) case where the storage ceiling and the display cap would
+    otherwise interact.
+
+    An empty `citations` list is a perfectly valid outcome (the model
+    searched but the final answer carried no citations, or it answered
+    without searching at all) and must not be treated as a parse
+    failure.
 
     `text` uses the same "prefer the top-level output_text convenience
     field, else walk output[].content[].text" strategy as
@@ -290,11 +482,11 @@ def _parse_websearch_response(
     rather than imported (see module docstring).
     """
     if not isinstance(payload, dict):
-        return None, False, []
+        return None, False, [], False, [], 0
 
     output = payload.get("output")
     searched = False
-    citations: list[WebsearchCitation] = []
+    all_annotations: list[WebsearchCitationAnnotation] = []
     text_parts: list[str] = []
 
     if isinstance(output, list):
@@ -328,32 +520,56 @@ def _parse_websearch_response(
                     if not isinstance(url, str) or not url.strip():
                         continue
                     title = annotation.get("title")
-                    citations.append(
-                        WebsearchCitation(
+                    all_annotations.append(
+                        WebsearchCitationAnnotation(
                             url=url.strip(),
                             title=title.strip() if isinstance(title, str) and title.strip() else None,
+                            start_index=_extract_citation_index(annotation, "start_index"),
+                            end_index=_extract_citation_index(annotation, "end_index"),
                         )
                     )
 
+    citation_annotations_total_count = len(all_annotations)
+    citations, citations_truncated = _deduplicate_citations(all_annotations)
+    citation_annotations = all_annotations[:_MAX_RAW_CITATION_ANNOTATIONS]
+
     if text_parts:
-        return "\n\n".join(text_parts), searched, citations
+        return (
+            "\n\n".join(text_parts),
+            searched,
+            citations,
+            citations_truncated,
+            citation_annotations,
+            citation_annotations_total_count,
+        )
 
     # Fall back to the convenience field only when the structured
-    # walk above found no text at all — citations/`searched` are still
-    # whatever the structured walk found (possibly none), since
-    # `output_text` itself never carries annotation data.
+    # walk above found no text at all — citations/`searched`/
+    # annotation data are still whatever the structured walk found
+    # (possibly none), since `output_text` itself never carries
+    # annotation data.
     output_text = payload.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip(), searched, citations
+        return (
+            output_text.strip(),
+            searched,
+            citations,
+            citations_truncated,
+            citation_annotations,
+            citation_annotations_total_count,
+        )
 
-    return None, searched, citations
+    return None, searched, citations, citations_truncated, citation_annotations, citation_annotations_total_count
 
 
-def _summarize_text(text: str, brand_name: str) -> tuple[bool, str, str]:
+def _summarize_text(text: str, brand_name: str) -> tuple[bool, str, str, bool]:
     """Reduces the model's raw answer text to (mentioned, summary,
-    full_summary) — same sizing/logic as chatgpt_client.py's own
-    `_summarize()`, minus the recognition-label stripping (this
-    prompt never asks for one — see build_websearch_user_prompt()).
+    full_summary, full_summary_truncated) — same sizing/logic as
+    chatgpt_client.py's own `_summarize()` (Task 6-D-3D: `full_summary`
+    is the complete visible answer text, only ever shortened by
+    `_FULL_SUMMARY_SAFETY_MAX_CHARS`), minus the recognition-label
+    stripping (this prompt never asks for one — see
+    build_websearch_user_prompt()).
     """
     mentioned = brand_name.lower() in text.lower()
     cleaned = " ".join(text.split())
@@ -362,12 +578,14 @@ def _summarize_text(text: str, brand_name: str) -> tuple[bool, str, str]:
     else:
         summary = cleaned
 
-    if len(text) > _FULL_SUMMARY_MAX_CHARS:
-        full_summary = text[:_FULL_SUMMARY_MAX_CHARS].rstrip() + "…"
+    if len(text) > _FULL_SUMMARY_SAFETY_MAX_CHARS:
+        full_summary = text[:_FULL_SUMMARY_SAFETY_MAX_CHARS].rstrip() + "…"
+        full_summary_truncated = True
     else:
         full_summary = text
+        full_summary_truncated = False
 
-    return mentioned, summary, full_summary
+    return mentioned, summary, full_summary, full_summary_truncated
 
 
 @dataclass(frozen=True)
@@ -395,6 +613,18 @@ class ChatGptWebsearchObservationResult:
     finish_reason: str | None = None
     is_truncated: bool = False
     note: str | None = None
+    # Task 6-D-3D — see services/chatgpt_client.py's
+    # _FULL_SUMMARY_SAFETY_MAX_CHARS/full_summary_truncated comments:
+    # independent of `is_truncated` above (storage ceiling vs. API
+    # completion signal).
+    full_summary_truncated: bool = False
+    # Task 6-D-3D follow-up — see _parse_websearch_response()'s own
+    # docstring for the full contract of these four. `citations`
+    # above is the de-duplicated *display* list; these are the raw,
+    # pre-de-duplication annotation data for future citation analysis.
+    citations_truncated: bool = False
+    citation_annotations: list[WebsearchCitationAnnotation] = field(default_factory=list)
+    citation_annotations_total_count: int = 0
 
 
 def fetch_chatgpt_websearch_observation(
@@ -454,7 +684,14 @@ def fetch_chatgpt_websearch_observation(
         )
 
     status, incomplete_reason = _extract_completion_state(payload)
-    text, searched, citations = _parse_websearch_response(payload)
+    (
+        text,
+        searched,
+        citations,
+        citations_truncated,
+        citation_annotations,
+        citation_annotations_total_count,
+    ) = _parse_websearch_response(payload)
     if text is None:
         reason = "OpenAI websearch-supplement API returned no readable text."
         if status == "incomplete":
@@ -470,7 +707,7 @@ def fetch_chatgpt_websearch_observation(
         )
 
     is_truncated = status == "incomplete"
-    mentioned, summary, full_summary = _summarize_text(text, brand_name)
+    mentioned, summary, full_summary, full_summary_truncated = _summarize_text(text, brand_name)
     return ChatGptWebsearchObservationResult(
         success=True,
         reason="ChatGPT OpenAI websearch-supplement request succeeded.",
@@ -479,7 +716,11 @@ def fetch_chatgpt_websearch_observation(
         summary=summary,
         full_summary=full_summary,
         citations=citations,
+        citations_truncated=citations_truncated,
+        citation_annotations=citation_annotations,
+        citation_annotations_total_count=citation_annotations_total_count,
         finish_reason=incomplete_reason if is_truncated else None,
         is_truncated=is_truncated,
         note=TRUNCATION_NOTE if is_truncated else None,
+        full_summary_truncated=full_summary_truncated,
     )

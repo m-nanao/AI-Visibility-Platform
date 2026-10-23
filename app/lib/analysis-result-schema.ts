@@ -205,6 +205,12 @@ const aiOverviewComparisonItemSchema = z.object({
   observationMethod: optionalFromPython(
     z.enum(["single_call_no_search", "websearch_supplement"]),
   ),
+  // fullSummaryTruncated: see AIOverviewComparisonItem's own comment
+  // in app/lib/types.ts.
+  fullSummaryTruncated: optionalFromPython(z.boolean()),
+  // citationsTruncated: see AIOverviewComparisonItem's own comment in
+  // app/lib/types.ts.
+  citationsTruncated: optionalFromPython(z.boolean()),
 });
 
 const improvementSuggestionSchema = z.object({

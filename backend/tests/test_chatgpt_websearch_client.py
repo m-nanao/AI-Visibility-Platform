@@ -266,6 +266,325 @@ def test_citations_extracted_only_from_url_citation_annotations(monkeypatch):
     assert "should-not-appear" not in str(result.citations)
 
 
+def test_duplicate_citation_urls_are_deduplicated(monkeypatch):
+    """Task 6-D-3D: a production run returned 13 url_citation
+    annotations that were, in practice, repeat citations of the same
+    few pages — this is the de-duplication fix for that."""
+    annotations = [
+        {"type": "url_citation", "url": "https://acme.example.com/about", "title": "About Acme"},
+        {"type": "url_citation", "url": "https://acme.example.com/about", "title": "About Acme"},
+        {"type": "url_citation", "url": "https://acme.example.com/about", "title": "About Acme"},
+        {"type": "url_citation", "url": "https://acme.example.com/news", "title": "Acme News"},
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    urls = [c.url for c in result.citations]
+    assert urls == ["https://acme.example.com/about", "https://acme.example.com/news"]
+
+
+def test_citations_beyond_the_max_cap_are_dropped(monkeypatch):
+    annotations = [
+        {"type": "url_citation", "url": f"https://acme.example.com/page{i}"} for i in range(15)
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citations) == wc._MAX_CITATIONS
+
+
+def test_utm_source_tracking_param_is_stripped_from_citation_urls(monkeypatch):
+    annotations = [
+        {
+            "type": "url_citation",
+            "url": "https://acme.example.com/about?utm_source=openai&utm_medium=chat",
+            "title": "About Acme",
+        }
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.citations[0].url == "https://acme.example.com/about"
+
+
+def test_a_tracking_param_variant_and_a_bare_url_for_the_same_page_collapse_into_one(monkeypatch):
+    annotations = [
+        {"type": "url_citation", "url": "https://acme.example.com/about?utm_source=openai"},
+        {"type": "url_citation", "url": "https://acme.example.com/about"},
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citations) == 1
+    assert result.citations[0].url == "https://acme.example.com/about"
+
+
+def test_meaningful_query_parameters_are_never_collapsed_as_duplicates(monkeypatch):
+    """Task 6-D-3D: normalization must never merge genuinely different
+    pages that merely share a path — only the known tracking
+    parameters are ever removed."""
+    annotations = [
+        {"type": "url_citation", "url": "https://acme.example.com/article?id=1"},
+        {"type": "url_citation", "url": "https://acme.example.com/article?id=2"},
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    urls = {c.url for c in result.citations}
+    assert urls == {
+        "https://acme.example.com/article?id=1",
+        "https://acme.example.com/article?id=2",
+    }
+
+
+# --- raw citation annotations (Task 6-D-3D follow-up) ---------------------
+
+
+def test_repeated_citations_of_the_same_url_are_all_preserved_as_raw_annotations(monkeypatch):
+    """The raw annotation list must keep every repeat — only the
+    display list (`citations`) de-duplicates."""
+    annotations = [
+        {"type": "url_citation", "url": "https://acme.example.com/about", "title": "About Acme"},
+        {"type": "url_citation", "url": "https://acme.example.com/about", "title": "About Acme"},
+        {"type": "url_citation", "url": "https://acme.example.com/about", "title": "About Acme"},
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citation_annotations) == 3
+    assert all(a.url == "https://acme.example.com/about" for a in result.citation_annotations)
+    assert result.citation_annotations_total_count == 3
+    # The display list still de-duplicates to one entry.
+    assert len(result.citations) == 1
+
+
+def test_thirteen_annotations_three_unique_urls_matches_the_production_report(monkeypatch):
+    """Mirrors the exact production scenario this follow-up task is
+    based on: 13 raw annotations, only 3 distinct pages."""
+    annotations = (
+        [{"type": "url_citation", "url": "https://acme.example.com/about"}] * 6
+        + [{"type": "url_citation", "url": "https://acme.example.com/news"}] * 4
+        + [{"type": "url_citation", "url": "https://acme.example.com/contact"}] * 3
+    )
+    assert len(annotations) == 13
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.citation_annotations_total_count == 13
+    assert len(result.citation_annotations) == 13
+    assert len(result.citations) == 3
+    assert result.citations_truncated is False
+
+
+def test_eleven_or_more_unique_urls_sets_citations_truncated(monkeypatch):
+    annotations = [
+        {"type": "url_citation", "url": f"https://acme.example.com/page{i}"} for i in range(11)
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citations) == wc._MAX_CITATIONS
+    assert result.citations_truncated is True
+    # The raw annotation list is unaffected by the *display* cap — all
+    # 11 distinct, non-repeated annotations are still kept (well under
+    # the much larger storage-safety ceiling).
+    assert len(result.citation_annotations) == 11
+    assert result.citation_annotations_total_count == 11
+
+
+def test_ten_or_fewer_unique_urls_never_sets_citations_truncated(monkeypatch):
+    annotations = [
+        {"type": "url_citation", "url": f"https://acme.example.com/page{i}"} for i in range(10)
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citations) == 10
+    assert result.citations_truncated is False
+
+
+def test_start_index_and_end_index_are_preserved_when_present(monkeypatch):
+    annotations = [
+        {
+            "type": "url_citation",
+            "url": "https://acme.example.com/about",
+            "title": "About Acme",
+            "start_index": 42,
+            "end_index": 58,
+        }
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citation_annotations) == 1
+    assert result.citation_annotations[0].start_index == 42
+    assert result.citation_annotations[0].end_index == 58
+
+
+def test_missing_position_info_is_none_not_zero(monkeypatch):
+    """Task 6-D-3D follow-up item 5: "APIに位置情報がない場合" must
+    store None, never a guessed/defaulted 0 (0 is a legitimate real
+    offset and must never be confused with "absent")."""
+    annotations = [{"type": "url_citation", "url": "https://acme.example.com/about"}]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.citation_annotations[0].start_index is None
+    assert result.citation_annotations[0].end_index is None
+
+
+def test_boolean_position_values_are_rejected_not_coerced(monkeypatch):
+    """Defensive: Python's bool is an int subclass — a stray
+    true/false in `start_index`/`end_index` must never be stored as
+    0/1."""
+    annotations = [
+        {
+            "type": "url_citation",
+            "url": "https://acme.example.com/about",
+            "start_index": True,
+            "end_index": False,
+        }
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.citation_annotations[0].start_index is None
+    assert result.citation_annotations[0].end_index is None
+
+
+def test_raw_url_is_separate_from_the_normalized_display_url(monkeypatch):
+    """The raw annotation keeps the *exact* original URL (tracking
+    parameter included); the display list gets the normalized one —
+    Task 6-D-3D follow-up items 1/2."""
+    annotations = [
+        {"type": "url_citation", "url": "https://acme.example.com/about?utm_source=openai"}
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert result.citation_annotations[0].url == "https://acme.example.com/about?utm_source=openai"
+    assert result.citations[0].url == "https://acme.example.com/about"
+
+
+def test_raw_annotations_beyond_the_storage_safety_ceiling_are_capped_but_total_count_is_exact(
+    monkeypatch,
+):
+    annotation_count = wc._MAX_RAW_CITATION_ANNOTATIONS + 20
+    # All the same URL, so the *display* list stays at 1 entry — this
+    # isolates the raw-annotation storage ceiling from the separate
+    # display-list cap/truncation flag tested above.
+    annotations = [
+        {"type": "url_citation", "url": "https://acme.example.com/about"}
+        for _ in range(annotation_count)
+    ]
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, annotations=annotations)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=700
+    )
+
+    assert len(result.citation_annotations) == wc._MAX_RAW_CITATION_ANNOTATIONS
+    assert result.citation_annotations_total_count == annotation_count
+    # The storage ceiling never affects the de-duplicated display list.
+    assert len(result.citations) == 1
+    assert result.citations_truncated is False
+
+
 def test_no_citations_is_a_valid_outcome_not_a_failure(monkeypatch):
     def fake_post(url, **kwargs):
         return _response_with_search_and_message(url, annotations=[])
@@ -292,6 +611,45 @@ def test_extracts_text_and_marks_mentioned(monkeypatch):
 
     assert result.mentioned is True
     assert "Acme" in result.summary
+
+
+# --- full_summary completeness / safety ceiling (Task 6-D-3D) -------------
+
+
+def test_full_summary_preserves_the_complete_answer_beyond_the_old_2500_char_cap(monkeypatch):
+    long_text = "Acme " + ("word " * 1000)
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, text=long_text)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=2000
+    )
+
+    assert result.full_summary == long_text.strip()
+    assert not result.full_summary.endswith("…")
+    assert result.full_summary_truncated is False
+
+
+def test_full_summary_safety_ceiling_still_applies_to_a_pathological_response(monkeypatch):
+    pathological_text = "Acme " + ("word " * 10000)
+    assert len(pathological_text) > wc._FULL_SUMMARY_SAFETY_MAX_CHARS
+
+    def fake_post(url, **kwargs):
+        return _response_with_search_and_message(url, text=pathological_text)
+
+    monkeypatch.setattr(wc.httpx, "post", fake_post)
+
+    result = fetch_chatgpt_websearch_observation(
+        _CREDENTIALS, "Acme", None, model="gpt-5-mini", max_output_tokens=2000
+    )
+
+    assert len(result.full_summary) <= wc._FULL_SUMMARY_SAFETY_MAX_CHARS + 1
+    assert result.full_summary.endswith("…")
+    assert result.full_summary_truncated is True
+    assert result.is_truncated is False
 
 
 # --- failure handling -----------------------------------------------------
