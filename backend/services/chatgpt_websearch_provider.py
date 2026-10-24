@@ -45,6 +45,7 @@ from services.websearch_quota_reservation import (
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
     WebsearchQuotaInvalidMetricError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
     WebsearchQuotaRunNotRunningError,
@@ -100,6 +101,7 @@ def attempt_chatgpt_websearch_supplement(
     analysis_run_id: str,
     project_id: str,
     user_id: str,
+    async_worker_id: str | None = None,
 ) -> tuple[AIOverviewComparisonItem | None, ChatGptWebsearchProviderInfo]:
     """Decides whether to attempt ChatGPT's websearch supplement for
     this request, and does so if every gate holds. Returns
@@ -150,6 +152,11 @@ def attempt_chatgpt_websearch_supplement(
     (see services/websearch_quota_reservation.py's own docstring on
     why: refunding would make a failing/retried search free to repeat
     indefinitely).
+
+    `async_worker_id` (Task 6-D-5C-4G): omitted by every synchronous
+    caller (default `None`, unaffected). Passed through as-is to
+    reserve_websearch_quota_for_analysis_run() — see that function's
+    own docstring for what this additionally validates and why.
     """
     if recognition_level is None:
         return None, ChatGptWebsearchProviderInfo(
@@ -199,6 +206,7 @@ def attempt_chatgpt_websearch_supplement(
             project_id=project_id,
             user_id=user_id,
             metric=CHATGPT_WEBSEARCH_METRIC,
+            async_worker_id=async_worker_id,
         )
     except AnalysisQuotaExceededError as exc:
         return None, ChatGptWebsearchProviderInfo(
@@ -219,6 +227,7 @@ def attempt_chatgpt_websearch_supplement(
         WebsearchQuotaRunNotFoundError,
         WebsearchQuotaRunNotRunningError,
         WebsearchQuotaAccessDeniedError,
+        WebsearchQuotaLeaseInvalidError,
     ) as exc:
         logger.warning("Websearch quota reservation rejected the run/project/user: %s", exc)
         return None, ChatGptWebsearchProviderInfo(

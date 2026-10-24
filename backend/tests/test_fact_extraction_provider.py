@@ -17,6 +17,7 @@ from services.websearch_quota_reservation import (
     AnalysisQuotaExceededError,
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
     WebsearchQuotaRunNotRunningError,
@@ -330,6 +331,43 @@ def test_run_invalid_makes_no_api_call(monkeypatch):
 
     assert result.status == "run_invalid"
     assert fetch_calls == []
+
+
+def test_lease_invalid_is_reported_as_run_invalid_and_makes_no_api_call(monkeypatch):
+    """Task 6-D-5C-4G: WebsearchQuotaLeaseInvalidError is handled the
+    exact same way as the other run/project/user rejections above —
+    no new FactExtractionResult status was added for this case."""
+    _fully_enabled(monkeypatch)
+    _mock_reservation_raises(monkeypatch, WebsearchQuotaLeaseInvalidError())
+    fetch_calls = _mock_fetch(monkeypatch, FactExtractionClientResult(success=True))
+
+    result = fep.attempt_fact_extraction(**_base_kwargs())
+
+    assert result.status == "run_invalid"
+    assert fetch_calls == []
+
+
+# --- Task 6-D-5C-4G: async_worker_id wiring --------------------------------
+
+
+def test_async_worker_id_defaults_to_none_and_is_passed_through(monkeypatch):
+    _fully_enabled(monkeypatch)
+    reserve_calls = _mock_reservation_success(monkeypatch)
+    _mock_fetch(monkeypatch, FactExtractionClientResult(success=True))
+
+    fep.attempt_fact_extraction(**_base_kwargs())
+
+    assert reserve_calls[0]["async_worker_id"] is None
+
+
+def test_async_worker_id_is_passed_through_when_given(monkeypatch):
+    _fully_enabled(monkeypatch)
+    reserve_calls = _mock_reservation_success(monkeypatch)
+    _mock_fetch(monkeypatch, FactExtractionClientResult(success=True))
+
+    fep.attempt_fact_extraction(**_base_kwargs(async_worker_id="worker-1"))
+
+    assert reserve_calls[0]["async_worker_id"] == "worker-1"
 
 
 def test_reservation_db_error_makes_no_api_call(monkeypatch):

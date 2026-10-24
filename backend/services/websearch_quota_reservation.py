@@ -103,6 +103,83 @@ quota and actually calling an external API are two separate steps a
 future caller must still keep one-to-one in its own logic. This module
 only guarantees the *quota bookkeeping* side of that is never double
 counted.
+
+**Task 6-D-5C-4G (feature/async-analysis-supplements) — optional async
+lease validation, added in the same transaction as everything above**:
+backend/services/analysis_job_worker.py's background job worker (Task
+6-D-5C-4C) shares this exact function with the synchronous
+authenticated /analyze path, but a worker's ownership of its job can
+silently lapse (its lease can expire) while this function's own
+original validation only ever checked `analysis_runs.status ==
+'running'` — never `lease_expires_at`/`locked_by` — so a worker whose
+lease had already lapsed could still have this function reserve quota
+and go on to make one real, paid API call whose result would
+ultimately be discarded (see docs/claude-task-handoff.md's Task
+6-D-5C-4D/4E/4F entries for the full incident history and the earlier,
+weaker, worker-side-only mitigation Task 6-D-5C-4E added —
+_reverify_lease_before_next_step() in analysis_job_worker.py, which
+this task's fix supplements rather than replaces: both now exist,
+closing the gap from two independent directions).
+
+`async_worker_id: str | None = None` is the new, fully optional,
+backward-compatible parameter this task adds. The **default (`None`)
+preserves today's exact behavior, byte for byte** — every synchronous
+caller (backend/main.py's _analyze_authenticated_idempotent()) omits
+it and is completely unaffected by this change. Passed non-None (by
+the async worker's own call chain only — see
+services/analysis_supplement_orchestrator.py and
+services/fact_extraction_provider.py, both of which thread an
+`async_worker_id` parameter through from
+services/analysis_job_worker.py's `worker_id`), this function
+additionally requires, **inside the exact same transaction and under
+the exact same project-scoped advisory lock already described
+above**, that:
+
+- `analysis_runs.locked_by` equals `async_worker_id` exactly, and
+- `analysis_runs.lease_expires_at` is non-null and strictly greater
+  than the database server's own `now()` (never the application
+  server's clock — avoids any clock-skew risk between the two) —
+  computed as `(lease_expires_at > now())` in the same SELECT, exactly
+  mirroring services.analysis_history_repository.extend_analysis_job_lease()'s
+  own condition.
+
+Either failing raises the new `WebsearchQuotaLeaseInvalidError` (see
+its own docstring) — before the reservation-marker insert or any
+counter touch, exactly like every other pre-reservation validation
+failure above.
+
+**This SELECT now also takes `for update`** (it did not before this
+task) — the row-level lock this takes on the specific
+`analysis_runs` row, held for the rest of this transaction, is what
+makes the lease check genuinely race-safe against a *concurrent*
+services.analysis_history_repository.extend_analysis_job_lease()/
+complete_analysis_job()/fail_expired_running_analysis_runs() call
+landing in the narrow window between this SELECT and this function's
+own COMMIT: any of those three would simply block on this row until
+this transaction commits or rolls back, then re-evaluate their own
+WHERE clause against whatever this transaction actually committed —
+never racing against a value this transaction already read and
+assumed stays true. Without `for update`, this would only be a
+read-committed snapshot taken *at SELECT time*, which a concurrent
+writer could still invalidate before this transaction's own commit —
+simply reading the two extra columns, without this lock, would not by
+itself have been a genuine atomicity fix (see this task's own
+completion report in docs/claude-task-handoff.md for why "a Python
+SELECT followed by a Python if-check" is explicitly not treated as
+'atomic' on its own here).
+
+**What this still does not, and cannot, close** (see the handoff
+entry's "保証の限界" section for the full breakdown): the window
+between this function's own COMMIT and the actual external API HTTP
+call the caller makes immediately afterward. A lease that lapses in
+that specific window — after this function has already durably
+reserved quota — cannot be un-reserved or un-sent; the underlying
+`asyncio.to_thread()`-run HTTP call (see analysis_job_worker.py's own
+"Hard constraint" docstring) cannot be interrupted once started. This
+task narrows the overall risk window from "up to one heartbeat
+interval, or longer if the worker process's own sweep can't run
+concurrently" down to "the time between this function's COMMIT and
+the next HTTP send" — materially smaller, but not zero.
 """
 
 from __future__ import annotations
@@ -174,6 +251,19 @@ class WebsearchQuotaAccessDeniedError(Exception):
     services.project_access.can_user_access_analysis_run())."""
 
 
+class WebsearchQuotaLeaseInvalidError(Exception):
+    """Task 6-D-5C-4G: raised only when `async_worker_id` was passed
+    (i.e. only for an async-worker-originated call — never reachable
+    from a synchronous caller, which never passes this parameter) and
+    either `analysis_runs.locked_by` does not equal `async_worker_id`
+    or `lease_expires_at` is null/not strictly in the future (per the
+    database server's own clock). Deliberately a single exception for
+    both cases — a caller cannot distinguish "someone else's lease"
+    from "my own lease already expired" from the outside, and
+    shouldn't need to: either way, this worker no longer has a
+    verified right to spend quota against this run right now."""
+
+
 class WebsearchQuotaAlreadyReservedError(Exception):
     """Raised when (`analysis_run_id`, `metric`) already has a row in
     analysis_run_websearch_reservations (migration 010) — this exact
@@ -218,12 +308,29 @@ def reserve_websearch_quota_for_analysis_run(
     project_id: str,
     user_id: str,
     metric: str,
+    async_worker_id: str | None = None,
 ) -> WebsearchQuotaReservation:
     """Atomically reserves one unit of `metric`'s daily *and* monthly
     websearch quota (Task 6-D-2A) against `analysis_run_id`, after
-    validating `metric`, run/project consistency, run status, and
-    project access — see module docstring for the full contract and
-    the known same-run/same-provider double-reservation gap.
+    validating `metric`, run/project consistency, run status, project
+    access, and — only when `async_worker_id` is given — async lease
+    ownership (Task 6-D-5C-4G) — see module docstring for the full
+    contract, the known same-run/same-provider double-reservation gap,
+    and exactly what the lease check does and does not guarantee.
+
+    `async_worker_id`: **omit this entirely for every synchronous
+    caller** (the default `None` preserves this function's exact
+    pre-existing behavior). Pass the async job worker's own
+    `worker_id` for every async-worker-originated call — see
+    services/analysis_supplement_orchestrator.py's
+    `async_worker_id` parameter and
+    services/fact_extraction_provider.py's own, both of which this
+    function's async callers thread it through from, ultimately
+    sourced from services/analysis_job_worker.py's `worker_id`. Never
+    silently infer "this is an async call" from anything else
+    (an env var, a global, a thread-local) — see module docstring:
+    this parameter must be passed explicitly by every async call site,
+    and this task's own test suite verifies every one of them does.
 
     Raises (never returns falsy/None — every rejection is an
     exception, so a careless caller cannot mistake "reservation
@@ -237,6 +344,10 @@ def reserve_websearch_quota_for_analysis_run(
       'running'.
     - WebsearchQuotaAccessDeniedError: `user_id` can't access
       `project_id`.
+    - WebsearchQuotaLeaseInvalidError: `async_worker_id` was given and
+      either doesn't match `analysis_runs.locked_by`, or the run's
+      `lease_expires_at` is null or not strictly in the future. Never
+      raised when `async_worker_id` is `None` (every synchronous call).
     - WebsearchQuotaAlreadyReservedError: this exact
       (analysis_run_id, metric) pair already has a reservation on
       record — neither counter is incremented again.
@@ -288,9 +399,21 @@ def reserve_websearch_quota_for_analysis_run(
                     (project_id,),
                 )
 
+                # Task 6-D-5C-4G: `for update` (new) takes a row-level
+                # lock on this specific analysis_runs row for the rest
+                # of this transaction — see module docstring for why
+                # this, not just reading two extra columns, is what
+                # actually makes the lease check below race-safe
+                # against a concurrent extend_analysis_job_lease()/
+                # complete_analysis_job()/fail_expired_running_analysis_runs()
+                # call. `locked_by`/`(lease_expires_at > now())` are
+                # always selected (harmless for a synchronous caller,
+                # which simply never looks at them below).
                 cur.execute(
-                    "select project_id, status from analysis_runs "
-                    "where id = %s and deleted_at is null",
+                    "select project_id, status, locked_by, "
+                    "(lease_expires_at > now()) as lease_valid "
+                    "from analysis_runs where id = %s and deleted_at is null "
+                    "for update",
                     (analysis_run_id,),
                 )
                 row = cur.fetchone()
@@ -305,6 +428,16 @@ def reserve_websearch_quota_for_analysis_run(
                         f"analysis_run_id={analysis_run_id!r} has status "
                         f"{run_status!r}, expected 'running'"
                     )
+
+                if async_worker_id is not None:
+                    locked_by = row[2]
+                    lease_valid = row[3]
+                    if locked_by != async_worker_id or not lease_valid:
+                        raise WebsearchQuotaLeaseInvalidError(
+                            f"analysis_run_id={analysis_run_id!r} is not currently "
+                            f"leased to async_worker_id={async_worker_id!r} with a "
+                            "still-valid lease"
+                        )
 
                 if not can_user_access_analysis_run(conn, user_id, analysis_run_id):
                     raise WebsearchQuotaAccessDeniedError(
@@ -368,6 +501,7 @@ def reserve_websearch_quota_for_analysis_run(
         WebsearchQuotaRunNotFoundError,
         WebsearchQuotaRunNotRunningError,
         WebsearchQuotaAccessDeniedError,
+        WebsearchQuotaLeaseInvalidError,
         WebsearchQuotaAlreadyReservedError,
         AnalysisQuotaExceededError,
     ):

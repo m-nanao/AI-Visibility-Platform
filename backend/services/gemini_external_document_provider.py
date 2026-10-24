@@ -67,6 +67,7 @@ from services.websearch_quota_reservation import (
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
     WebsearchQuotaInvalidMetricError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
     WebsearchQuotaRunNotRunningError,
@@ -135,6 +136,7 @@ def attempt_gemini_external_document_supplement(
     analysis_run_id: str,
     project_id: str,
     user_id: str,
+    async_worker_id: str | None = None,
 ) -> tuple[AIOverviewComparisonItem | None, GeminiExternalDocumentProviderInfo]:
     """Decides whether to attempt Gemini's external-document
     supplement for this request, and does so if every gate holds.
@@ -167,6 +169,11 @@ def attempt_gemini_external_document_supplement(
     retry). An API failure after a successful reservation still
     reports status="unavailable" — the reserved quota slot is never
     refunded.
+
+    `async_worker_id` (Task 6-D-5C-4G): omitted by every synchronous
+    caller (default `None`, unaffected). Passed through as-is to
+    reserve_websearch_quota_for_analysis_run() — see that function's
+    own docstring for what this additionally validates and why.
     """
     model = get_gemini_external_document_model()
 
@@ -251,6 +258,7 @@ def attempt_gemini_external_document_supplement(
             project_id=project_id,
             user_id=user_id,
             metric=GEMINI_EXTERNAL_DOCUMENT_METRIC,
+            async_worker_id=async_worker_id,
         )
     except AnalysisQuotaExceededError as exc:
         return None, GeminiExternalDocumentProviderInfo(
@@ -275,6 +283,7 @@ def attempt_gemini_external_document_supplement(
         WebsearchQuotaRunNotFoundError,
         WebsearchQuotaRunNotRunningError,
         WebsearchQuotaAccessDeniedError,
+        WebsearchQuotaLeaseInvalidError,
     ) as exc:
         logger.warning("Websearch quota reservation rejected the run/project/user: %s", exc)
         return None, GeminiExternalDocumentProviderInfo(

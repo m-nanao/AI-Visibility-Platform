@@ -420,6 +420,12 @@ async def process_one_job(
                             analysis_run_id=claimed.analysis_run_id,
                             project_id=claimed.project_id,
                             user_id=claimed.created_by_user_id,
+                            # Task 6-D-5C-4G: identifies this call as
+                            # async-originated so
+                            # reserve_websearch_quota_for_analysis_run()
+                            # additionally validates lease ownership —
+                            # see that function's own docstring.
+                            async_worker_id=worker_id,
                         )
                     except Exception:
                         logger.exception(
@@ -461,6 +467,9 @@ async def process_one_job(
                             analysis_run_id=claimed.analysis_run_id,
                             project_id=claimed.project_id,
                             user_id=claimed.created_by_user_id,
+                            # Task 6-D-5C-4G: same reasoning as the
+                            # supplement-providers call above.
+                            async_worker_id=worker_id,
                         )
                         logger.info(
                             "fact extraction complete for job %s: status=%s",

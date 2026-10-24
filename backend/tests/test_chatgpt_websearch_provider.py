@@ -22,6 +22,7 @@ from services.websearch_quota_reservation import (
     AnalysisQuotaExceededError,
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservation,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
@@ -262,6 +263,7 @@ def test_already_reserved_is_reported_and_no_api_call_happens(monkeypatch):
         WebsearchQuotaRunNotFoundError("not found"),
         WebsearchQuotaRunNotRunningError("not running"),
         WebsearchQuotaAccessDeniedError("denied"),
+        WebsearchQuotaLeaseInvalidError("lease invalid"),
     ],
 )
 def test_run_project_user_rejections_are_reported_as_run_invalid(monkeypatch, exc):
@@ -289,6 +291,38 @@ def test_reservation_db_error_is_reported_and_no_api_call_happens(monkeypatch):
 
     assert item is None
     assert info.status == "reservation_error"
+
+
+# --- Task 6-D-5C-4G: async_worker_id wiring --------------------------------
+
+
+def test_async_worker_id_defaults_to_none_and_is_passed_through(monkeypatch):
+    """The synchronous caller (backend/main.py, via the orchestrator)
+    never passes this kwarg — confirms the default stays None all the
+    way through to reserve_websearch_quota_for_analysis_run()."""
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    reserve_calls = _mock_reservation_success(monkeypatch)
+    _mock_fetch(
+        monkeypatch, ChatGptWebsearchObservationResult(success=True, reason="ok", searched=True)
+    )
+
+    cwp.attempt_chatgpt_websearch_supplement(**_base_kwargs())
+
+    assert reserve_calls[0]["async_worker_id"] is None
+
+
+def test_async_worker_id_is_passed_through_when_given(monkeypatch):
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    reserve_calls = _mock_reservation_success(monkeypatch)
+    _mock_fetch(
+        monkeypatch, ChatGptWebsearchObservationResult(success=True, reason="ok", searched=True)
+    )
+
+    cwp.attempt_chatgpt_websearch_supplement(**_base_kwargs(async_worker_id="worker-1"))
+
+    assert reserve_calls[0]["async_worker_id"] == "worker-1"
 
 
 # --- success path ----------------------------------------------------------

@@ -52,6 +52,7 @@ from services.websearch_quota_reservation import (
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
     WebsearchQuotaInvalidMetricError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
     WebsearchQuotaRunNotRunningError,
@@ -101,6 +102,7 @@ def attempt_gemini_websearch_supplement(
     analysis_run_id: str,
     project_id: str,
     user_id: str,
+    async_worker_id: str | None = None,
 ) -> tuple[AIOverviewComparisonItem | None, GeminiWebsearchProviderInfo]:
     """Decides whether to attempt Gemini's websearch supplement for
     this request, and does so if every gate holds. Returns
@@ -131,6 +133,14 @@ def attempt_gemini_websearch_supplement(
     (fetch_gemini_websearch_observation(), exactly once, no retry). An
     API failure after a successful reservation still reports
     status="unavailable" — the reserved quota slot is never refunded.
+
+    `async_worker_id` (Task 6-D-5C-4G): omitted by every synchronous
+    caller (default `None`, unaffected). Passed through as-is to
+    reserve_websearch_quota_for_analysis_run() — see that function's
+    own docstring for what this additionally validates and why. This
+    provider remains default-disabled (Google Search grounding ToS
+    restriction) regardless — this parameter does not touch that
+    gate.
     """
     model = get_gemini_websearch_model()
 
@@ -200,6 +210,7 @@ def attempt_gemini_websearch_supplement(
             project_id=project_id,
             user_id=user_id,
             metric=GEMINI_WEBSEARCH_METRIC,
+            async_worker_id=async_worker_id,
         )
     except AnalysisQuotaExceededError as exc:
         return None, GeminiWebsearchProviderInfo(
@@ -222,6 +233,7 @@ def attempt_gemini_websearch_supplement(
         WebsearchQuotaRunNotFoundError,
         WebsearchQuotaRunNotRunningError,
         WebsearchQuotaAccessDeniedError,
+        WebsearchQuotaLeaseInvalidError,
     ) as exc:
         logger.warning("Websearch quota reservation rejected the run/project/user: %s", exc)
         return None, GeminiWebsearchProviderInfo(

@@ -365,3 +365,34 @@ def test_result_missing_supplement_meta_fields_does_not_crash_the_job(monkeypatc
 
     assert result is True
     assert complete_calls[0]["status"] == "completed"
+
+
+# --- Task 6-D-5C-4G: async_worker_id wiring ---------------------------------
+
+
+def test_worker_id_is_passed_as_async_worker_id_to_both_supplements_and_fact_extraction(
+    monkeypatch,
+):
+    """Task 6-D-5C-4G item "所有者情報の欠落によるガード迂回を防ぐ": the
+    worker must pass its own worker_id as async_worker_id to both
+    calls — never omit it (which would silently fall back to the
+    weaker, lease-unaware synchronous contract for that call)."""
+    _stub_pipeline(monkeypatch)
+    _stub_claim(monkeypatch)
+    _stub_complete(monkeypatch)
+
+    supplement_calls = []
+    monkeypatch.setattr(
+        worker, "run_sync_supplement_providers", lambda **kwargs: supplement_calls.append(kwargs)
+    )
+    fact_extraction_calls = []
+    monkeypatch.setattr(
+        worker,
+        "attempt_fact_extraction",
+        lambda **kwargs: fact_extraction_calls.append(kwargs),
+    )
+
+    _run(worker.process_one_job("worker-42", 180))
+
+    assert supplement_calls[0]["async_worker_id"] == "worker-42"
+    assert fact_extraction_calls[0]["async_worker_id"] == "worker-42"

@@ -130,6 +130,7 @@ from services.websearch_quota_reservation import (
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
     WebsearchQuotaInvalidMetricError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
     WebsearchQuotaRunNotRunningError,
@@ -188,6 +189,7 @@ def attempt_fact_extraction(
     analysis_run_id: str,
     project_id: str,
     user_id: str,
+    async_worker_id: str | None = None,
 ) -> FactExtractionResult:
     """Decides whether to attempt Claude-based fact extraction for
     this analysis run, and does so if every gate holds. Always returns
@@ -217,6 +219,11 @@ def attempt_fact_extraction(
     no retry) — mirrors
     services/gemini_external_document_provider.py's identical
     structure.
+
+    `async_worker_id` (Task 6-D-5C-4G): omitted by every synchronous
+    caller (default `None`, unaffected). Passed through as-is to
+    reserve_websearch_quota_for_analysis_run() — see that function's
+    own docstring for what this additionally validates and why.
     """
     model = get_fact_extraction_model()
 
@@ -296,6 +303,7 @@ def attempt_fact_extraction(
             project_id=project_id,
             user_id=user_id,
             metric=FACT_EXTRACTION_METRIC,
+            async_worker_id=async_worker_id,
         )
     except AnalysisQuotaExceededError as exc:
         return FactExtractionResult(
@@ -316,6 +324,7 @@ def attempt_fact_extraction(
         WebsearchQuotaRunNotFoundError,
         WebsearchQuotaRunNotRunningError,
         WebsearchQuotaAccessDeniedError,
+        WebsearchQuotaLeaseInvalidError,
     ) as exc:
         logger.warning("Fact extraction quota reservation rejected the run/project/user: %s", exc)
         return FactExtractionResult(

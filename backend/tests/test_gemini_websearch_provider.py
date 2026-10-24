@@ -20,6 +20,7 @@ from services.websearch_quota_reservation import (
     AnalysisQuotaExceededError,
     WebsearchQuotaAccessDeniedError,
     WebsearchQuotaAlreadyReservedError,
+    WebsearchQuotaLeaseInvalidError,
     WebsearchQuotaReservation,
     WebsearchQuotaReservationError,
     WebsearchQuotaRunNotFoundError,
@@ -302,6 +303,7 @@ def test_already_reserved_is_reported_and_no_api_call_happens(monkeypatch):
         WebsearchQuotaRunNotFoundError("not found"),
         WebsearchQuotaRunNotRunningError("not running"),
         WebsearchQuotaAccessDeniedError("denied"),
+        WebsearchQuotaLeaseInvalidError("lease invalid"),
     ],
 )
 def test_run_project_user_rejections_are_reported_as_run_invalid(monkeypatch, exc):
@@ -349,6 +351,31 @@ def test_api_failure_after_reservation_is_unavailable_quota_not_refunded(monkeyp
     assert info.status == "unavailable"
     assert info.reason == "Gemini API down"
     assert info.model == "gemini-2.5-flash"
+
+
+# --- Task 6-D-5C-4G: async_worker_id wiring --------------------------------
+
+
+def test_async_worker_id_defaults_to_none_and_is_passed_through(monkeypatch):
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    reserve_calls = _mock_reservation_success(monkeypatch)
+    _mock_fetch(monkeypatch, GeminiWebsearchObservationResult(success=True, reason="ok", searched=True))
+
+    gwp.attempt_gemini_websearch_supplement(**_base_kwargs())
+
+    assert reserve_calls[0]["async_worker_id"] is None
+
+
+def test_async_worker_id_is_passed_through_when_given(monkeypatch):
+    _enable(monkeypatch)
+    _mock_credentials(monkeypatch)
+    reserve_calls = _mock_reservation_success(monkeypatch)
+    _mock_fetch(monkeypatch, GeminiWebsearchObservationResult(success=True, reason="ok", searched=True))
+
+    gwp.attempt_gemini_websearch_supplement(**_base_kwargs(async_worker_id="worker-1"))
+
+    assert reserve_calls[0]["async_worker_id"] == "worker-1"
 
 
 # --- success path ----------------------------------------------------------

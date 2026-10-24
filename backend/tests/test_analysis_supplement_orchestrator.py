@@ -85,7 +85,7 @@ def _patch_all_not_attempted(monkeypatch, overrides=None):
         monkeypatch.setattr(orchestrator, name, fn)
 
 
-def _run(result, *, documents=None):
+def _run(result, *, documents=None, async_worker_id=None):
     orchestrator.run_sync_supplement_providers(
         brand_name="Acme",
         result=result,
@@ -93,6 +93,7 @@ def _run(result, *, documents=None):
         analysis_run_id=ANALYSIS_RUN_ID,
         project_id=PROJECT_ID,
         user_id=USER_ID,
+        async_worker_id=async_worker_id,
     )
     return result
 
@@ -358,3 +359,59 @@ def test_result_shape_matches_original_inline_code_fields():
     # factExtraction is untouched by this orchestrator (Task 6-D-5C-4B
     # explicitly excludes FactExtraction from this refactor).
     assert result.factExtraction is None
+
+
+# --- Task 6-D-5C-4G: async_worker_id wiring --------------------------------
+
+
+def test_async_worker_id_defaults_to_none_for_every_provider(monkeypatch):
+    """The synchronous caller (backend/main.py) never passes this
+    kwarg — confirms the default (None) reaches all four providers
+    unchanged."""
+    result = _result_with_recognition_levels(chatgpt="unidentified", claude="unidentified", gemini="unidentified")
+    calls: dict[str, dict] = {}
+
+    def make_recorder(name):
+        def recorder(**kwargs):
+            calls[name] = kwargs
+            return None, type("Info", (), {"status": "disabled", "reason": "ok"})()
+
+        return recorder
+
+    for name in (
+        "attempt_chatgpt_websearch_supplement",
+        "attempt_claude_websearch_supplement",
+        "attempt_gemini_websearch_supplement",
+        "attempt_gemini_external_document_supplement",
+    ):
+        monkeypatch.setattr(orchestrator, name, make_recorder(name))
+
+    _run(result)
+
+    assert all(calls[name]["async_worker_id"] is None for name in calls)
+    assert len(calls) == 4
+
+
+def test_async_worker_id_is_threaded_through_to_every_provider_when_given(monkeypatch):
+    result = _result_with_recognition_levels(chatgpt="unidentified", claude="unidentified", gemini="unidentified")
+    calls: dict[str, dict] = {}
+
+    def make_recorder(name):
+        def recorder(**kwargs):
+            calls[name] = kwargs
+            return None, type("Info", (), {"status": "disabled", "reason": "ok"})()
+
+        return recorder
+
+    for name in (
+        "attempt_chatgpt_websearch_supplement",
+        "attempt_claude_websearch_supplement",
+        "attempt_gemini_websearch_supplement",
+        "attempt_gemini_external_document_supplement",
+    ):
+        monkeypatch.setattr(orchestrator, name, make_recorder(name))
+
+    _run(result, async_worker_id="worker-1")
+
+    assert all(calls[name]["async_worker_id"] == "worker-1" for name in calls)
+    assert len(calls) == 4

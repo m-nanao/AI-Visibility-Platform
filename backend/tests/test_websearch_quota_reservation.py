@@ -437,3 +437,171 @@ def test_get_connection_failure_is_wrapped(monkeypatch):
             user_id=USER_ID,
             metric="openai_websearch",
         )
+
+
+# --- Task 6-D-5C-4G: async lease validation (omitted entirely when
+# async_worker_id is None, i.e. every synchronous caller) -----------------
+#
+# `run_row` here is a 4-tuple (project_id, status, locked_by,
+# lease_valid) — matching the widened SELECT this task added
+# (`select project_id, status, locked_by, (lease_expires_at > now())
+# as lease_valid ... for update`). Genuine row-level-lock concurrency
+# safety is proven separately, against a real PostgreSQL instance, by
+# tests/test_websearch_quota_reservation_integration.py — these are
+# pure Python-branching unit tests only.
+
+WORKER_ID = "worker-abc-123"
+OTHER_WORKER_ID = "worker-xyz-789"
+
+
+def test_sync_caller_omitting_async_worker_id_never_checks_the_lease(monkeypatch):
+    """The default (`async_worker_id=None`, i.e. every existing
+    synchronous call site) must behave byte-for-byte like before this
+    task — even against a run_row whose lease columns would fail the
+    check if it were ever evaluated (locked_by=None, lease invalid)."""
+    _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", None, False))
+    _mock_access(monkeypatch, allowed=True)
+    _mock_reserve_success(monkeypatch)
+
+    result = wq.reserve_websearch_quota_for_analysis_run(
+        analysis_run_id=RUN_ID,
+        project_id=PROJECT_ID,
+        user_id=USER_ID,
+        metric="openai_websearch",
+        # async_worker_id omitted entirely.
+    )
+
+    assert result.metric == "openai_websearch"
+
+
+def test_async_reservation_succeeds_with_a_matching_valid_lease(monkeypatch):
+    _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", WORKER_ID, True))
+    _mock_access(monkeypatch, allowed=True)
+    _mock_reserve_success(monkeypatch)
+
+    result = wq.reserve_websearch_quota_for_analysis_run(
+        analysis_run_id=RUN_ID,
+        project_id=PROJECT_ID,
+        user_id=USER_ID,
+        metric="openai_websearch",
+        async_worker_id=WORKER_ID,
+    )
+
+    assert result.metric == "openai_websearch"
+
+
+def test_async_reservation_rejected_when_lease_expired(monkeypatch):
+    _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", WORKER_ID, False))
+    _mock_access(monkeypatch, allowed=True)
+    reserve_calls = _mock_reserve_success(monkeypatch)
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        wq.reserve_websearch_quota_for_analysis_run(
+            analysis_run_id=RUN_ID,
+            project_id=PROJECT_ID,
+            user_id=USER_ID,
+            metric="openai_websearch",
+            async_worker_id=WORKER_ID,
+        )
+    assert reserve_calls == []
+
+
+def test_async_reservation_rejected_on_worker_id_mismatch(monkeypatch):
+    _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", OTHER_WORKER_ID, True))
+    _mock_access(monkeypatch, allowed=True)
+    reserve_calls = _mock_reserve_success(monkeypatch)
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        wq.reserve_websearch_quota_for_analysis_run(
+            analysis_run_id=RUN_ID,
+            project_id=PROJECT_ID,
+            user_id=USER_ID,
+            metric="openai_websearch",
+            async_worker_id=WORKER_ID,
+        )
+    assert reserve_calls == []
+
+
+def test_async_reservation_rejected_when_lease_is_null(monkeypatch):
+    """`lease_valid` is SQL `NULL` (surfaced as Python `None`, not
+    `False`) whenever `lease_expires_at is null` — `not None` is
+    falsy, so this must reject exactly like an expired lease."""
+    _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", WORKER_ID, None))
+    _mock_access(monkeypatch, allowed=True)
+    reserve_calls = _mock_reserve_success(monkeypatch)
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        wq.reserve_websearch_quota_for_analysis_run(
+            analysis_run_id=RUN_ID,
+            project_id=PROJECT_ID,
+            user_id=USER_ID,
+            metric="openai_websearch",
+            async_worker_id=WORKER_ID,
+        )
+    assert reserve_calls == []
+
+
+def test_async_lease_check_happens_before_the_access_check(monkeypatch):
+    """Mirrors test_run_lookup_happens_before_the_access_check's own
+    reasoning: the lease check is cheaper (no further DB call) than
+    can_user_access_analysis_run(), so it happens first — a request
+    with both an invalid lease and no project access is reported as
+    the lease problem, not access denial."""
+    _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", OTHER_WORKER_ID, True))
+    _mock_access(monkeypatch, allowed=False)
+    reserve_calls = _mock_reserve_success(monkeypatch)
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        wq.reserve_websearch_quota_for_analysis_run(
+            analysis_run_id=RUN_ID,
+            project_id=PROJECT_ID,
+            user_id=USER_ID,
+            metric="openai_websearch",
+            async_worker_id=WORKER_ID,
+        )
+    assert reserve_calls == []
+
+
+def test_async_db_failure_while_checking_run_is_wrapped_the_same_way(monkeypatch):
+    """The widened SELECT (now also fetching locked_by/lease_valid and
+    taking `for update`) fails the same way any other connection/query
+    error in this function already does — never silently treated as
+    "lease check skipped, assume valid"."""
+
+    def _raise():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(wq, "get_connection", _raise)
+
+    with pytest.raises(wq.WebsearchQuotaReservationError):
+        wq.reserve_websearch_quota_for_analysis_run(
+            analysis_run_id=RUN_ID,
+            project_id=PROJECT_ID,
+            user_id=USER_ID,
+            metric="openai_websearch",
+            async_worker_id=WORKER_ID,
+        )
+
+
+def test_async_select_now_takes_for_update(monkeypatch):
+    """Confirms the actual SQL text includes `for update` — the
+    mechanism that makes the lease check race-safe (see this
+    function's own docstring); a mock can't prove the locking
+    *behavior* (see the integration test for that), but it can prove
+    the statement that provides it is actually being sent."""
+    conn = _mock_connection(monkeypatch, run_row=(PROJECT_ID, "running", WORKER_ID, True))
+    _mock_access(monkeypatch, allowed=True)
+    _mock_reserve_success(monkeypatch)
+
+    wq.reserve_websearch_quota_for_analysis_run(
+        analysis_run_id=RUN_ID,
+        project_id=PROJECT_ID,
+        user_id=USER_ID,
+        metric="openai_websearch",
+        async_worker_id=WORKER_ID,
+    )
+
+    run_lookup_query = conn.cur.queries[1][0]  # [0] is the advisory-lock SELECT
+    assert "for update" in run_lookup_query.lower()
+    assert "locked_by" in run_lookup_query.lower()
+    assert "lease_expires_at" in run_lookup_query.lower()

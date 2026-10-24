@@ -87,7 +87,9 @@ def db_connection():
                 id uuid primary key default gen_random_uuid(),
                 project_id uuid,
                 status text not null,
-                deleted_at timestamptz
+                deleted_at timestamptz,
+                locked_by text,
+                lease_expires_at timestamptz
             )
             """
         )
@@ -152,6 +154,27 @@ def _insert_running_run(conn, schema: str, project_id: str) -> str:
     return str(run_id)
 
 
+def _insert_leased_run(
+    conn, schema: str, project_id: str, *, locked_by: str | None, lease_seconds: float | None
+) -> str:
+    """Task 6-D-5C-4G: like _insert_running_run() but also sets
+    `locked_by`/`lease_expires_at` — `lease_seconds` may be negative
+    (an already-expired lease) or `None` (a null lease, as a
+    synchronous-only row created before migration 006 or a queued row
+    a worker never claimed would have)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"insert into {schema}.analysis_runs "
+            "(project_id, status, locked_by, lease_expires_at) "
+            "values (%s, 'running', %s, "
+            "case when %s is null then null else now() + make_interval(secs => %s) end) "
+            "returning id",
+            (project_id, locked_by, lease_seconds, lease_seconds),
+        )
+        (run_id,) = cur.fetchone()
+    return str(run_id)
+
+
 def _patch_db_and_access(monkeypatch, database_url: str) -> None:
     """Patches load_db_settings()/can_user_access_analysis_run() ONCE,
     via pytest's own monkeypatch fixture (restored automatically at
@@ -177,7 +200,14 @@ def _patch_db_and_access(monkeypatch, database_url: str) -> None:
     )
 
 
-def _reserve(*, analysis_run_id, project_id, user_id="user-1", metric="openai_websearch"):
+def _reserve(
+    *,
+    analysis_run_id,
+    project_id,
+    user_id="user-1",
+    metric="openai_websearch",
+    async_worker_id=None,
+):
     import services.websearch_quota_reservation as wq
 
     return wq.reserve_websearch_quota_for_analysis_run(
@@ -185,6 +215,7 @@ def _reserve(*, analysis_run_id, project_id, user_id="user-1", metric="openai_we
         project_id=project_id,
         user_id=user_id,
         metric=metric,
+        async_worker_id=async_worker_id,
     )
 
 
@@ -720,3 +751,180 @@ def test_gemini_external_document_metric_rejects_a_second_reservation_for_the_sa
         )
         (count,) = cur.fetchone()
     assert count == 1
+
+
+# --- Task 6-D-5C-4G (feature/async-analysis-supplements): async lease
+# validation, added inside this same transaction --------------------------
+#
+# These are the tests that can only be trusted against a real
+# PostgreSQL instance (per this task's own "Python側で事前SELECTした
+# だけで『原子的に安全』と判断しない" instruction) — a mocked test can
+# confirm the Python-level branching but cannot prove the `for update`
+# row lock actually serializes against a genuinely concurrent writer;
+# see test_for_update_serializes_against_a_concurrent_lease_change
+# below for the one test that does.
+
+
+def test_async_reservation_succeeds_with_a_valid_matching_lease(monkeypatch, db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50)
+    project_id = str(uuid.uuid4())
+    run_id = _insert_leased_run(
+        conn, schema, project_id, locked_by="worker-A", lease_seconds=180
+    )
+
+    result = _reserve(analysis_run_id=run_id, project_id=project_id, async_worker_id="worker-A")
+
+    assert result.metric == "openai_websearch"
+
+
+def test_async_reservation_rejected_when_lease_already_expired(monkeypatch, db_connection):
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50)
+    project_id = str(uuid.uuid4())
+    # Negative lease_seconds -> lease_expires_at already in the past —
+    # `status` is still 'running' (nothing has swept it yet), which is
+    # exactly the pre-existing gap this task closes: the old code
+    # would have accepted this.
+    run_id = _insert_leased_run(
+        conn, schema, project_id, locked_by="worker-A", lease_seconds=-60
+    )
+
+    import services.websearch_quota_reservation as wq
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        _reserve(analysis_run_id=run_id, project_id=project_id, async_worker_id="worker-A")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select count(*) from {schema}.analysis_usage_counters where metric = 'openai_websearch'"
+        )
+        (count,) = cur.fetchone()
+    assert count == 0
+
+
+def test_async_reservation_rejected_on_worker_id_mismatch(monkeypatch, db_connection):
+    """Whether this means "a different worker now legitimately owns
+    it" or "this worker's own stale belief about a lease it no longer
+    holds" is indistinguishable from here — both correctly reject (see
+    WebsearchQuotaLeaseInvalidError's own docstring)."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50)
+    project_id = str(uuid.uuid4())
+    run_id = _insert_leased_run(
+        conn, schema, project_id, locked_by="worker-A", lease_seconds=180
+    )
+
+    import services.websearch_quota_reservation as wq
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        _reserve(analysis_run_id=run_id, project_id=project_id, async_worker_id="worker-B")
+
+
+def test_async_reservation_rejected_when_lease_is_null(monkeypatch, db_connection):
+    """A 'running' row with a null lease (e.g. a pre-migration-006 row,
+    or a locked_by set by something other than the worker's own claim
+    path) must never be treated as "owned" by any async_worker_id."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50)
+    project_id = str(uuid.uuid4())
+    run_id = _insert_leased_run(
+        conn, schema, project_id, locked_by="worker-A", lease_seconds=None
+    )
+
+    import services.websearch_quota_reservation as wq
+
+    with pytest.raises(wq.WebsearchQuotaLeaseInvalidError):
+        _reserve(analysis_run_id=run_id, project_id=project_id, async_worker_id="worker-A")
+
+
+def test_sync_call_with_no_async_worker_id_ignores_lease_entirely(monkeypatch, db_connection):
+    """The exact same leased-but-expired row that
+    test_async_reservation_rejected_when_lease_already_expired rejects
+    must still succeed for a synchronous caller (async_worker_id
+    omitted) — this is the explicit regression guard for "既存の同期
+    処理は、現在の契約を維持する"."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50)
+    project_id = str(uuid.uuid4())
+    run_id = _insert_leased_run(
+        conn, schema, project_id, locked_by="worker-A", lease_seconds=-60
+    )
+
+    result = _reserve(analysis_run_id=run_id, project_id=project_id)  # async_worker_id omitted
+
+    assert result.metric == "openai_websearch"
+
+
+def test_for_update_serializes_against_a_concurrent_lease_change(monkeypatch, db_connection):
+    """Proves the row-level lock this task's `for update` added is
+    what actually makes the lease check race-safe — not merely "a
+    Python SELECT followed by a Python if-check" (explicitly not
+    trusted as atomic on its own per this task's own instructions). A
+    second, fully independent connection's plain UPDATE on the exact
+    same row (the same shape extend_analysis_job_lease() or
+    fail_expired_running_analysis_runs() would issue, with no advisory
+    lock of its own) must block until the reservation's own
+    transaction commits, never interleave with it."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+    _patch_db_and_access(monkeypatch, database_url)
+    _set_quota_env(monkeypatch, daily=5, monthly=50)
+    project_id = str(uuid.uuid4())
+    run_id = _insert_leased_run(
+        conn, schema, project_id, locked_by="worker-A", lease_seconds=180
+    )
+
+    import services.analysis_history_repository as repo
+
+    original_reserve_counters = repo._reserve_usage_counters
+    proceed_with_reservation = threading.Event()
+
+    def delayed_reserve_counters(cur, requirements):
+        # By the time this runs, the `for update` SELECT inside
+        # reserve_websearch_quota_for_analysis_run() has already taken
+        # the row lock — giving the concurrent UPDATE below a chance
+        # to attempt (and block on) it before this transaction
+        # commits.
+        proceed_with_reservation.wait(timeout=5)
+        return original_reserve_counters(cur, requirements)
+
+    monkeypatch.setattr(repo, "_reserve_usage_counters", delayed_reserve_counters)
+
+    events: list[str] = []
+
+    def concurrent_lease_clearing_update():
+        import psycopg
+
+        with psycopg.connect(database_url, autocommit=True) as conn2:
+            with conn2.cursor() as cur2:
+                events.append("update_attempt_started")
+                cur2.execute(
+                    f"update {schema}.analysis_runs set locked_by = 'worker-B' "
+                    "where id = %s",
+                    (run_id,),
+                )
+        events.append("update_completed")
+
+    updater = threading.Thread(target=concurrent_lease_clearing_update)
+    updater.start()
+    updater.join(timeout=0.3)  # the UPDATE should still be blocked on the row lock
+    assert "update_completed" not in events
+    assert "update_attempt_started" in events
+
+    proceed_with_reservation.set()
+    result = _reserve(analysis_run_id=run_id, project_id=project_id, async_worker_id="worker-A")
+    updater.join(timeout=5)
+
+    assert result.metric == "openai_websearch"
+    assert events == ["update_attempt_started", "update_completed"]

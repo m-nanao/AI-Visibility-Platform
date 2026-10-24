@@ -74,6 +74,7 @@ def run_sync_supplement_providers(
     analysis_run_id: str,
     project_id: str,
     user_id: str,
+    async_worker_id: str | None = None,
 ) -> None:
     """Attempts all four supplement providers, in the same fixed order
     as the original inline code, mutating `result` in place exactly as
@@ -93,6 +94,22 @@ def run_sync_supplement_providers(
 
     Callers must only invoke this while `analysis_run_id` is still
     `'running'` (see module docstring above).
+
+    `async_worker_id` (Task 6-D-5C-4G,
+    feature/async-analysis-supplements): **omitted by the synchronous
+    caller (backend/main.py) — must stay `None` there, preserving this
+    function's exact pre-existing behavior.** Passed through
+    explicitly as `services.analysis_job_worker.py`'s own `worker_id`
+    by the async job worker only — never inferred from an environment
+    variable or a global/thread-local execution context (this
+    parameter exists specifically so the caller must say which worker
+    it is, rather than this module guessing). Threaded, unchanged,
+    straight into each of the four providers' own `async_worker_id`
+    parameter, which in turn threads it into
+    services.websearch_quota_reservation.reserve_websearch_quota_for_analysis_run() —
+    see that function's own docstring for exactly what this
+    additionally validates (lease ownership + expiry, in the same
+    database transaction as the quota reservation itself) and why.
     """
 
     # Task 6-D-3 (feature/chatgpt-websearch-supplement).
@@ -106,6 +123,7 @@ def run_sync_supplement_providers(
             analysis_run_id=analysis_run_id,
             project_id=project_id,
             user_id=user_id,
+            async_worker_id=async_worker_id,
         )
         result.meta.chatgptWebsearchProvider = websearch_provider_info
         if websearch_item is not None:
@@ -127,6 +145,7 @@ def run_sync_supplement_providers(
             analysis_run_id=analysis_run_id,
             project_id=project_id,
             user_id=user_id,
+            async_worker_id=async_worker_id,
         )
         result.meta.claudeWebsearchProvider = claude_websearch_provider_info
         if claude_websearch_item is not None:
@@ -151,6 +170,7 @@ def run_sync_supplement_providers(
             analysis_run_id=analysis_run_id,
             project_id=project_id,
             user_id=user_id,
+            async_worker_id=async_worker_id,
         )
         result.meta.geminiWebsearchProvider = gemini_websearch_provider_info
         if gemini_websearch_item is not None:
@@ -180,6 +200,7 @@ def run_sync_supplement_providers(
             analysis_run_id=analysis_run_id,
             project_id=project_id,
             user_id=user_id,
+            async_worker_id=async_worker_id,
         )
         result.meta.geminiExternalDocumentProvider = gemini_external_document_provider_info
         if gemini_external_document_item is not None:
