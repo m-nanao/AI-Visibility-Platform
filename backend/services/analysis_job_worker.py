@@ -85,6 +85,7 @@ from services.analysis_history_repository import (
     fail_expired_running_analysis_runs,
 )
 from services.analysis_jobs_settings import load_analysis_jobs_settings
+from services.analysis_supplement_orchestrator import run_sync_supplement_providers
 from services.fact_extraction_provider import attempt_fact_extraction
 
 logger = logging.getLogger(__name__)
@@ -282,40 +283,56 @@ async def process_one_job(
                 status = (
                     "partial" if outcome.cooccurrence_status == "unavailable" else "completed"
                 )
+                # Task 6-D-5C-4C (feature/async-analysis-supplements):
+                # same four supplement attempts as backend/main.py's
+                # authenticated sync path makes (via the same shared
+                # services/analysis_supplement_orchestrator.py function,
+                # Task 6-D-5C-4B), in the same fixed order, right after
+                # run_analysis_pipeline() returns and before this job is
+                # marked completed/partial/failed below — see that
+                # module's docstring for why this must happen while the
+                # run is still genuinely 'running' (each provider's own
+                # reserve_websearch_quota_for_analysis_run() call
+                # re-validates this). Mutates outcome.result in place
+                # (appends to aiOverviewComparison, sets the four
+                # meta.*Provider fields) exactly as the sync path does.
+                # Run via asyncio.to_thread() — same reasoning as the
+                # pipeline call above: this is blocking HTTP-client code,
+                # and running it off the event loop keeps the heartbeat
+                # task above free to keep extending this job's lease
+                # while it runs. A failure here (including a bug that
+                # somehow escapes the orchestrator's own per-provider
+                # try/except) never fails this job.
+                try:
+                    await asyncio.to_thread(
+                        run_sync_supplement_providers,
+                        brand_name=brand_name,
+                        result=outcome.result,
+                        web_fetch_documents=outcome.web_fetch_documents,
+                        analysis_run_id=claimed.analysis_run_id,
+                        project_id=claimed.project_id,
+                        user_id=claimed.created_by_user_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "unexpected error while attempting the analysis supplement "
+                        "providers for job %s",
+                        claimed.analysis_run_id,
+                    )
+
                 # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
                 # same attempt as backend/main.py's authenticated sync
-                # path makes right after run_analysis_pipeline()
-                # returns and before this job is marked completed/
-                # partial/failed below — see
-                # services/fact_extraction_provider.py's module
-                # docstring for why this must happen while the run is
-                # still genuinely 'running'. A failure here never fails
-                # this job; it is logged and `outcome.result.factExtraction`
-                # simply stays at its default (None).
-                #
-                # Task 6-D-5C-2B final review item 2, stated explicitly
-                # rather than left implicit: **none of the four
-                # existing quota-gated supplements** (ChatGPT/Claude/
-                # Gemini Web-search, Gemini external-document) are
-                # called anywhere in this worker — this module never
-                # imports or calls attempt_chatgpt_websearch_supplement/
-                # attempt_claude_websearch_supplement/
-                # attempt_gemini_websearch_supplement/
-                # attempt_gemini_external_document_supplement at all.
-                # This is a pre-existing gap from before this task (an
-                # async job's `aiOverviewComparison` only ever contains
-                # the no-search cards run_analysis_pipeline() itself
-                # produces, never a Web-search-supplement/external-
-                # document card), not something this task introduces
-                # or fixes — out of this task's scope. A consequence
-                # worth knowing operationally: switching
-                # NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS on by itself, with
-                # no further change, would silently drop those four
-                # cards from every async-routed analysis even if their
-                # own flags are enabled — this fact-extraction MVP's
-                # own ChatGPT no-search card is unaffected either way,
-                # since that card always comes from the no-search
-                # observation itself, never from a supplement.
+                # path makes right after the four supplements above and
+                # before this job is marked completed/partial/failed
+                # below — see services/fact_extraction_provider.py's
+                # module docstring for why this must happen while the
+                # run is still genuinely 'running'. Reuses
+                # outcome.result.aiOverviewComparison as already built
+                # above (including whatever the ChatGPT websearch
+                # supplement may have appended), exactly like the sync
+                # path. A failure here never fails this job; it is
+                # logged and `outcome.result.factExtraction` simply
+                # stays at its default (None).
                 try:
                     outcome.result.factExtraction = await asyncio.to_thread(
                         attempt_fact_extraction,
