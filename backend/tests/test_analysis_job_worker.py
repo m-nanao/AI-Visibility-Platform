@@ -52,6 +52,11 @@ def test_process_one_job_completes_successfully(monkeypatch):
         attempt_count=1,
     )
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    # Task 6-D-5C-4E: process_one_job() now actively re-verifies (and
+    # extends) the lease immediately before the supplement providers
+    # and before fact extraction — this test isn't about lease
+    # behavior, so it just needs that re-verification to succeed.
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
     class _FakeResult:
         def model_dump(self):
@@ -104,6 +109,7 @@ def test_process_one_job_marks_partial_when_cooccurrence_unavailable(monkeypatch
         attempt_count=1,
     )
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
     import main
 
@@ -313,6 +319,7 @@ def test_process_one_job_runs_real_pipeline_without_calling_any_provider(monkeyp
         attempt_count=1,
     )
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
     import main
 
@@ -454,7 +461,22 @@ def test_heartbeat_transient_db_error_does_not_mark_lease_lost(monkeypatch):
     the next heartbeat tick, not escalated immediately (docs/40's "DB
     障害時に無制限の更新リトライをしない" constraint is about not
     retrying in a tight loop, not about giving up on the very first
-    hiccup)."""
+    hiccup).
+
+    This only applies to the periodic heartbeat's own tolerant
+    handling — Task 6-D-5C-4E's active pre-step re-verification
+    (_reverify_lease_before_next_step()) is deliberately *fail-closed*
+    on the exact same exception (see
+    test_db_failure_while_reverifying_lease_fails_closed in
+    tests/test_analysis_job_worker_lease_safety.py), since it has no
+    "next tick" to retry on before deciding whether to start a new,
+    potentially paid step. To isolate the heartbeat's own behavior
+    from that unrelated, intentionally-stricter mechanism, the DB is
+    deterministically "flaky" only while the pipeline is still
+    running (exercised solely by heartbeat ticks) and "recovered" by
+    the time the pipeline returns (exercised by the post-pipeline
+    re-verification calls) — not a sleep-count assumption, just an
+    explicit flag flipped at a known point."""
     claimed = ClaimedAnalysisJob(
         analysis_run_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
         input_snapshot={"brandName": "Acme"},
@@ -464,10 +486,19 @@ def test_heartbeat_transient_db_error_does_not_mark_lease_lost(monkeypatch):
 
     import main
 
-    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: _slow_fake_pipeline(0.2))
+    db_state = {"recovered": False}
+
+    def pipeline_then_recover(**kwargs):
+        outcome = _slow_fake_pipeline(0.2)
+        db_state["recovered"] = True
+        return outcome
+
+    monkeypatch.setattr(main, "run_analysis_pipeline", pipeline_then_recover)
 
     def flaky_extend(analysis_run_id, **kwargs):
-        raise AnalysisHistoryReadError("transient failure")
+        if not db_state["recovered"]:
+            raise AnalysisHistoryReadError("transient failure")
+        return True
 
     monkeypatch.setattr(worker, "extend_analysis_job_lease", flaky_extend)
 
@@ -699,6 +730,7 @@ def test_attempt_fact_extraction_is_called_with_claimed_project_and_user_ids(mon
         created_by_user_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     )
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
     import main
 
@@ -750,6 +782,7 @@ def test_fact_extraction_result_is_included_in_saved_result_json(monkeypatch):
         created_by_user_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     )
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
     import main
 
@@ -794,6 +827,7 @@ def test_fact_extraction_failure_never_fails_the_job(monkeypatch):
         created_by_user_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     )
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
     import main
 

@@ -55,6 +55,15 @@ def _stub_pipeline(monkeypatch, *, result=None, web_fetch_documents=None):
 
 def _stub_claim(monkeypatch, claimed=CLAIMED):
     monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+    # Task 6-D-5C-4E: process_one_job() now actively re-verifies (and
+    # extends) the lease immediately before the supplement providers
+    # and before fact extraction (see
+    # _reverify_lease_before_next_step()) — every test in this file
+    # that isn't specifically about lease behavior needs this to
+    # succeed so the step it's actually testing gets a chance to run
+    # at all. A test that cares about lease behavior itself
+    # overrides this afterward.
+    monkeypatch.setattr(worker, "extend_analysis_job_lease", lambda analysis_run_id, **kwargs: True)
 
 
 def _stub_complete(monkeypatch):

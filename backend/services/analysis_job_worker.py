@@ -180,6 +180,92 @@ async def _run_heartbeat_loop(
             return
 
 
+async def _reverify_lease_before_next_step(
+    analysis_run_id: str,
+    *,
+    worker_id: str,
+    lease_seconds: int,
+    lease_lost_state: dict,
+    step_name: str,
+) -> bool:
+    """Task 6-D-5C-4E ("A案"): actively re-verifies — and, on success,
+    extends — this worker's ownership of `analysis_run_id`'s lease
+    immediately before starting `step_name` (the four supplement
+    providers, or fact extraction). Returns True iff the step should
+    proceed.
+
+    Reuses extend_analysis_job_lease() for this — the exact same
+    atomic `(locked_by = worker_id AND status = 'running' AND
+    lease_expires_at > now())` condition the periodic heartbeat
+    already relies on — so this adds no new repository function, no
+    new DB RPC, no migration, and no change to any existing function's
+    signature (Task 6-D-5C-4D's follow-up review explicitly required
+    this). A short-circuit skips the DB round trip entirely once
+    `lease_lost_state["lease_lost"]` is already True (set by the
+    heartbeat, or by an earlier call to this same function for an
+    earlier step) — there is no point re-checking what is already
+    known.
+
+    **Why this is stronger than relying on the heartbeat alone**: the
+    heartbeat only ticks every `heartbeat_interval_seconds` (up to 30s
+    by default) — a step could start just after a lease actually
+    expired but before the next heartbeat tick notices. This check
+    runs synchronously at the one moment that matters (right before
+    committing to a new, potentially paid, step) and, on success,
+    pushes `lease_expires_at` a fresh `lease_seconds` forward before
+    that step's own (potentially long) duration begins.
+
+    **Still not atomic with the step's own
+    reserve_websearch_quota_for_analysis_run() call** (see
+    docs/claude-task-handoff.md's Task 6-D-5C-4E entry for the full
+    analysis): a TOCTOU window remains between this check committing
+    and that step's own quota-reservation query, now bounded only by
+    DB round-trip latency rather than by the heartbeat interval — and
+    this cannot interrupt a step already in flight (see this module's
+    own "Hard constraint" docstring). Fully closing that residual
+    window would require reserve_websearch_quota_for_analysis_run()
+    itself to validate lease ownership/expiry — a signature/behavior
+    change this task's "no existing signature changes" constraint
+    rules out; see the handoff entry's "B案"/"C案" for what that would
+    take.
+
+    **Fail-closed**: a connection failure while re-verifying
+    (AnalysisHistoryReadError) is treated exactly like an explicit
+    "lease lost" — never as "assume it's still valid".
+    """
+    if lease_lost_state["lease_lost"]:
+        return False
+
+    try:
+        extended = await asyncio.to_thread(
+            extend_analysis_job_lease,
+            analysis_run_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+        )
+    except AnalysisHistoryReadError:
+        logger.exception(
+            "job %s: failed to re-verify lease ownership before starting %s — "
+            "treating as lease lost (fail-closed), skipping this step",
+            analysis_run_id,
+            step_name,
+        )
+        lease_lost_state["lease_lost"] = True
+        return False
+
+    if not extended:
+        logger.warning(
+            "job %s: lease re-verification failed before starting %s (no longer "
+            "this worker's 'running' row with time remaining) — skipping this step",
+            analysis_run_id,
+            step_name,
+        )
+        lease_lost_state["lease_lost"] = True
+        return False
+
+    return True
+
+
 async def process_one_job(
     worker_id: str, lease_seconds: int, heartbeat_interval_seconds: int = 30
 ) -> bool:
@@ -305,42 +391,26 @@ async def process_one_job(
                 # try/except) never fails this job.
                 #
                 # Task 6-D-5C-4D (integration/fault-tolerance review)
-                # item 4: a lease the heartbeat already knows is lost is
-                # checked *before starting* each of the two blocks below
-                # (this one and fact extraction), skipping it entirely
-                # rather than still making new, real, potentially paid
-                # provider calls whose result is guaranteed to be
-                # discarded anyway (see the `lease_lost_state["lease_lost"]`
-                # branch further down, which already skips the
-                # completion write). **This closes only the gap
-                # *between* these blocking calls — it is a defense in
-                # depth optimization, not a complete fix**: a lease that
-                # is lost *during* one of these calls (while the HTTP
-                # request(s) inside it are already in flight) cannot be
-                # interrupted — see this module's own docstring, "Hard
-                # constraint" — and
-                # reserve_websearch_quota_for_analysis_run() itself only
-                # checks `analysis_runs.status == 'running'`, never
-                # `lease_expires_at`, so a provider call already under
-                # way when the lease silently expires can still
-                # successfully reserve quota and make one real,
-                # eventually-discarded paid API call until
-                # fail_expired_running_analysis_runs() next sweeps this
-                # row to 'failed' (which cannot happen while this same
-                # process is still blocked inside this very call — see
-                # docs/claude-task-handoff.md's Task 6-D-5C-4D entry for
-                # the full analysis and why actually closing this
-                # residual gap would require changing
-                # reserve_websearch_quota_for_analysis_run()'s own
-                # contract, out of this task's scope).
-                if lease_lost_state["lease_lost"]:
-                    logger.warning(
-                        "job %s: lease already known lost before the supplement "
-                        "providers would run — skipping them (and fact extraction) "
-                        "entirely; their result would only be discarded anyway",
-                        claimed.analysis_run_id,
-                    )
-                else:
+                # item 4, strengthened by Task 6-D-5C-4E: rather than
+                # only checking the heartbeat's own (passive,
+                # up-to-30s-stale) lease_lost_state flag, each of the
+                # two blocks below actively re-verifies (and extends)
+                # this worker's lease ownership immediately before
+                # starting — see _reverify_lease_before_next_step()'s
+                # own docstring for exactly what this does and does not
+                # guarantee (still not atomic with the step's own quota
+                # reservation; see docs/claude-task-handoff.md's Task
+                # 6-D-5C-4E entry). Skipping a step here means its
+                # result would only be discarded anyway (see the
+                # `lease_lost_state["lease_lost"]` branch further down,
+                # which already skips the completion write).
+                if await _reverify_lease_before_next_step(
+                    claimed.analysis_run_id,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    lease_lost_state=lease_lost_state,
+                    step_name="the analysis supplement providers",
+                ):
                     try:
                         await asyncio.to_thread(
                             run_sync_supplement_providers,
@@ -358,53 +428,50 @@ async def process_one_job(
                             claimed.analysis_run_id,
                         )
 
-                    # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
-                    # same attempt as backend/main.py's authenticated
-                    # sync path makes right after the four supplements
-                    # above and before this job is marked
-                    # completed/partial/failed below — see
-                    # services/fact_extraction_provider.py's module
-                    # docstring for why this must happen while the run
-                    # is still genuinely 'running'. Reuses
-                    # outcome.result.aiOverviewComparison as already
-                    # built above (including whatever the ChatGPT
-                    # websearch supplement may have appended), exactly
-                    # like the sync path. A failure here never fails
-                    # this job; it is logged and
-                    # `outcome.result.factExtraction` simply stays at
-                    # its default (None). Re-checks lease_lost_state
-                    # again (Task 6-D-5C-4D item 4) rather than relying
-                    # on the check above alone — the supplements call
-                    # just above is itself long-running enough that the
-                    # heartbeat may have detected lease loss *during*
-                    # it, after the check above already passed.
-                    if lease_lost_state["lease_lost"]:
-                        logger.warning(
-                            "job %s: lease lost while the supplement providers were "
-                            "running — skipping fact extraction entirely; its result "
-                            "would only be discarded anyway",
+                # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
+                # same attempt as backend/main.py's authenticated sync
+                # path makes right after the four supplements above and
+                # before this job is marked completed/partial/failed
+                # below — see services/fact_extraction_provider.py's
+                # module docstring for why this must happen while the
+                # run is still genuinely 'running'. Reuses
+                # outcome.result.aiOverviewComparison as already built
+                # above (including whatever the ChatGPT websearch
+                # supplement may have appended), exactly like the sync
+                # path. A failure here never fails this job; it is
+                # logged and `outcome.result.factExtraction` simply
+                # stays at its default (None). Re-verifies the lease
+                # again (own call to _reverify_lease_before_next_step(),
+                # not just the flag check above) — the supplements call
+                # just above is itself long-running enough that the
+                # lease may have been lost *during* it, after the
+                # check above already passed.
+                if await _reverify_lease_before_next_step(
+                    claimed.analysis_run_id,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    lease_lost_state=lease_lost_state,
+                    step_name="fact extraction",
+                ):
+                    try:
+                        outcome.result.factExtraction = await asyncio.to_thread(
+                            attempt_fact_extraction,
+                            brand_name=brand_name,
+                            ai_overview_comparison=outcome.result.aiOverviewComparison,
+                            analysis_run_id=claimed.analysis_run_id,
+                            project_id=claimed.project_id,
+                            user_id=claimed.created_by_user_id,
+                        )
+                        logger.info(
+                            "fact extraction complete for job %s: status=%s",
+                            claimed.analysis_run_id,
+                            outcome.result.factExtraction.status,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "unexpected error while attempting fact extraction for job %s",
                             claimed.analysis_run_id,
                         )
-                    else:
-                        try:
-                            outcome.result.factExtraction = await asyncio.to_thread(
-                                attempt_fact_extraction,
-                                brand_name=brand_name,
-                                ai_overview_comparison=outcome.result.aiOverviewComparison,
-                                analysis_run_id=claimed.analysis_run_id,
-                                project_id=claimed.project_id,
-                                user_id=claimed.created_by_user_id,
-                            )
-                            logger.info(
-                                "fact extraction complete for job %s: status=%s",
-                                claimed.analysis_run_id,
-                                outcome.result.factExtraction.status,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "unexpected error while attempting fact extraction for job %s",
-                                claimed.analysis_run_id,
-                            )
                 result_json = outcome.result.model_dump()
                 meta_json = outcome.result.meta.model_dump()
         finally:
