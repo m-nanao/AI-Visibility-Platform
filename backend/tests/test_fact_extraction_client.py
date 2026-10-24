@@ -363,3 +363,57 @@ def test_failure_reason_never_contains_the_original_text(monkeypatch):
     result, _ = _fetch(monkeypatch, response)
     assert result.success is False
     assert "代表者は山田太郎です" not in (result.reason or "")
+
+
+# --- Task 6-D-5C-3B: diagnostic stop_reason/usage fields -------------------
+
+
+def test_successful_response_surfaces_stop_reason_and_token_usage(monkeypatch):
+    response = _FakeResponse(
+        200,
+        {
+            "content": [{"type": "text", "text": '{"claims": []}'}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 123, "output_tokens": 45},
+        },
+    )
+    result, _ = _fetch(monkeypatch, response)
+    assert result.success is True
+    assert result.stop_reason == "end_turn"
+    assert result.input_tokens == 123
+    assert result.output_tokens == 45
+
+
+def test_max_tokens_failure_still_surfaces_stop_reason_and_usage(monkeypatch):
+    response = _FakeResponse(
+        200,
+        {
+            "content": [{"type": "text", "text": '{"claims": ['}],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 500, "output_tokens": 4000},
+        },
+    )
+    result, _ = _fetch(monkeypatch, response)
+    assert result.success is False
+    assert result.reason == fec.REASON_MAX_TOKENS_TRUNCATED
+    assert result.stop_reason == "max_tokens"
+    assert result.input_tokens == 500
+    assert result.output_tokens == 4000
+
+
+def test_network_error_has_no_stop_reason_or_usage(monkeypatch):
+    result, _ = _fetch(monkeypatch, None, raises=httpx.ConnectTimeout("timeout"))
+    assert result.success is False
+    assert result.stop_reason is None
+    assert result.input_tokens is None
+    assert result.output_tokens is None
+
+
+def test_missing_usage_field_is_none_not_a_guess(monkeypatch):
+    response = _FakeResponse(
+        200, {"content": [{"type": "text", "text": '{"claims": []}'}], "stop_reason": "end_turn"}
+    )
+    result, _ = _fetch(monkeypatch, response)
+    assert result.success is True
+    assert result.input_tokens is None
+    assert result.output_tokens is None

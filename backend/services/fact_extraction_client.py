@@ -354,6 +354,17 @@ class FactExtractionClientResult:
     future early-return before any request (always True today, since
     this function is only ever invoked after every pre-call gate has
     already passed — see services/fact_extraction_provider.py).
+
+    `stop_reason`/`input_tokens`/`output_tokens` (Task 6-D-5C-3B,
+    feature/fact-extraction-local-verification-script) are diagnostic-
+    only — Anthropic's own `stop_reason` and `usage.{input,output}_tokens`
+    fields, verbatim, never a guessed/computed value. Populated
+    whenever a JSON response body was actually received (even on a
+    parse/verification failure downstream), `None` only when no
+    response payload was ever obtained at all (network/HTTP error).
+    No existing caller (services/fact_extraction_provider.py) reads
+    these — added so a local verification script can report them
+    without duplicating this function's own HTTP-call/parsing logic.
     """
 
     success: bool
@@ -361,6 +372,9 @@ class FactExtractionClientResult:
     malformed_candidate_count: int = 0
     reason: str | None = None
     api_called: bool = True
+    stop_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 def fetch_fact_extraction(
@@ -408,39 +422,80 @@ def fetch_fact_extraction(
     except ValueError:
         return FactExtractionClientResult(success=False, reason=REASON_NO_TEXT_CONTENT)
 
+    # Diagnostic-only, verbatim from Anthropic's own response envelope —
+    # never guessed, never computed. Attached to every FactExtractionClientResult
+    # returned from this point on, success or failure alike, since a
+    # real response payload now exists either way.
+    stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
+    output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
+
     # Checked before any text extraction/JSON parsing — a response Claude
     # itself reports as cut off by the token budget is never trusted,
     # regardless of whether the text captured so far happens to parse.
-    stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
     if stop_reason == "max_tokens":
         logger.warning(
             "Fact extraction response was truncated by max_tokens: model=%s max_output_tokens=%d",
             model,
             max_output_tokens,
         )
-        return FactExtractionClientResult(success=False, reason=REASON_MAX_TOKENS_TRUNCATED)
+        return FactExtractionClientResult(
+            success=False,
+            reason=REASON_MAX_TOKENS_TRUNCATED,
+            stop_reason=stop_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
     if stop_reason is not None and stop_reason not in {"end_turn"}:
         logger.warning(
             "Fact extraction response stopped for an unexpected reason: stop_reason=%r model=%s",
             stop_reason,
             model,
         )
-        return FactExtractionClientResult(success=False, reason=REASON_UNEXPECTED_STOP_REASON)
+        return FactExtractionClientResult(
+            success=False,
+            reason=REASON_UNEXPECTED_STOP_REASON,
+            stop_reason=stop_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     extraction = _extract_output_text(payload)
     if extraction.text is None:
-        return FactExtractionClientResult(success=False, reason=extraction.reason)
+        return FactExtractionClientResult(
+            success=False,
+            reason=extraction.reason,
+            stop_reason=stop_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     parsed, parse_reason = parse_fact_extraction_json(extraction.text)
     if parsed is None:
-        return FactExtractionClientResult(success=False, reason=parse_reason)
+        return FactExtractionClientResult(
+            success=False,
+            reason=parse_reason,
+            stop_reason=stop_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     candidates, malformed_count = _build_raw_candidates(parsed)
     if "claims" not in parsed or not isinstance(parsed.get("claims"), list):
         return FactExtractionClientResult(
-            success=False, reason=REASON_CLAIMS_FIELD_MISSING_OR_INVALID
+            success=False,
+            reason=REASON_CLAIMS_FIELD_MISSING_OR_INVALID,
+            stop_reason=stop_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     return FactExtractionClientResult(
-        success=True, candidates=candidates, malformed_candidate_count=malformed_count
+        success=True,
+        candidates=candidates,
+        malformed_candidate_count=malformed_count,
+        stop_reason=stop_reason,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
