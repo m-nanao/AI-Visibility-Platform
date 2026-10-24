@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import main
 import services.official_info_candidate as oic
+from services import analysis_supplement_orchestrator as orchestrator
 from main import app
 from models import OfficialInfoCandidate
 from services.web_fetcher import UrlFetchResult
@@ -222,15 +223,15 @@ def test_official_url_is_never_passed_to_any_existing_websearch_provider(monkeyp
         return recorder
 
     # These four are the existing conditional supplement attempts —
-    # see main.py's own wiring block. None of them take an
-    # `official_url`/`officialUrl` parameter.
+    # see services/analysis_supplement_orchestrator.py. None of them
+    # take an `official_url`/`officialUrl` parameter.
     for name in (
         "attempt_chatgpt_websearch_supplement",
         "attempt_claude_websearch_supplement",
         "attempt_gemini_websearch_supplement",
         "attempt_gemini_external_document_supplement",
     ):
-        monkeypatch.setattr(main, name, make_recorder(name))
+        monkeypatch.setattr(orchestrator, name, make_recorder(name))
 
     response = client.post(
         "/analyze",

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import main
 from main import app
 from models import AIOverviewComparisonItem, RawFactClaimCandidate
+from services import analysis_supplement_orchestrator as orchestrator
 from services.chatgpt_provider import CHATGPT_PLATFORM_LABEL
 from services.analysis_history_repository import SyncAnalysisRunReservation
 from services.fact_extraction_client import FactExtractionClientResult
@@ -227,11 +228,11 @@ def test_fact_extraction_never_passed_to_other_provider_attempt_functions(monkey
 
         return _inner
 
-    monkeypatch.setattr(main, "attempt_chatgpt_websearch_supplement", _capture("chatgpt"))
-    monkeypatch.setattr(main, "attempt_claude_websearch_supplement", _capture("claude"))
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", _capture("gemini"))
+    monkeypatch.setattr(orchestrator, "attempt_chatgpt_websearch_supplement", _capture("chatgpt"))
+    monkeypatch.setattr(orchestrator, "attempt_claude_websearch_supplement", _capture("claude"))
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", _capture("gemini"))
     monkeypatch.setattr(
-        main, "attempt_gemini_external_document_supplement", _capture("gemini_external_document")
+        orchestrator, "attempt_gemini_external_document_supplement", _capture("gemini_external_document")
     )
     import services.fact_extraction_provider as fep
 

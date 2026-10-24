@@ -224,10 +224,7 @@ from services.project_access import (
 )
 from services.brand_summary import build_brand_summary
 from services.chatgpt_provider import build_chatgpt_observation, resolve_chatgpt_mode
-from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supplement
-from services.claude_websearch_provider import attempt_claude_websearch_supplement
-from services.gemini_websearch_provider import attempt_gemini_websearch_supplement
-from services.gemini_external_document_provider import attempt_gemini_external_document_supplement
+from services.analysis_supplement_orchestrator import run_sync_supplement_providers
 from services.fact_extraction_provider import attempt_fact_extraction
 from services.official_info_candidate import build_official_info_candidate
 from services.claude_provider import build_claude_observation, resolve_claude_mode
@@ -1616,126 +1613,32 @@ def _analyze_authenticated_idempotent(
     cooccurrence_status = outcome.cooccurrence_status
     final_status = "partial" if cooccurrence_status == "unavailable" else "completed"
 
-    # Task 6-D-3 (feature/chatgpt-websearch-supplement): attempted only
-    # here — strictly after run_analysis_pipeline() has returned the
-    # no-search ChatGPT observation's recognitionLevel, and strictly
-    # before complete_analysis_job() below marks this run completed/
-    # partial/failed, so reservation.analysis_run_id is still
-    # genuinely 'running' in the database for the whole duration of
-    # this call (see services/chatgpt_websearch_provider.py's module
-    # docstring for why it must never be called from inside
-    # run_analysis_pipeline() itself, which has no database access).
-    # Never reached by the anonymous path (_analyze_anonymous() never
-    # has a project_id/user_id/analysis_run_id to pass here at all).
-    # Wrapped defensively: any unexpected failure in this new path must
-    # never discard the already-successful no-search result above.
-    try:
-        chatgpt_recognition_level = (
-            result.meta.chatgptProvider.recognitionLevel if result.meta.chatgptProvider else None
-        )
-        websearch_item, websearch_provider_info = attempt_chatgpt_websearch_supplement(
-            brand_name=brand_name,
-            recognition_level=chatgpt_recognition_level,
-            analysis_run_id=reservation.analysis_run_id,
-            project_id=project_id,
-            user_id=user_id,
-        )
-        result.meta.chatgptWebsearchProvider = websearch_provider_info
-        if websearch_item is not None:
-            result.aiOverviewComparison = [*result.aiOverviewComparison, websearch_item]
-        logger.info(
-            "chatgpt websearch supplement complete: status=%s", websearch_provider_info.status
-        )
-    except Exception:
-        logger.exception("Unexpected error while attempting the ChatGPT websearch supplement")
-
-    # Task 6-D-4A-2 (feature/claude-websearch-supplement): same timing
-    # constraint and defensive wrapping as the ChatGPT websearch
-    # supplement above — see services/claude_websearch_provider.py's
-    # module docstring. Independent of the ChatGPT attempt above: a
-    # failure or skip here never affects the ChatGPT result, and vice
-    # versa (each only ever appends its own card to
-    # result.aiOverviewComparison and sets its own meta field).
-    try:
-        claude_recognition_level = (
-            result.meta.claudeProvider.recognitionLevel if result.meta.claudeProvider else None
-        )
-        claude_websearch_item, claude_websearch_provider_info = attempt_claude_websearch_supplement(
-            brand_name=brand_name,
-            recognition_level=claude_recognition_level,
-            analysis_run_id=reservation.analysis_run_id,
-            project_id=project_id,
-            user_id=user_id,
-        )
-        result.meta.claudeWebsearchProvider = claude_websearch_provider_info
-        if claude_websearch_item is not None:
-            result.aiOverviewComparison = [*result.aiOverviewComparison, claude_websearch_item]
-        logger.info(
-            "claude websearch supplement complete: status=%s",
-            claude_websearch_provider_info.status,
-        )
-    except Exception:
-        logger.exception("Unexpected error while attempting the Claude websearch supplement")
-
-    # Task 6-D-4B-2 (feature/gemini-websearch-supplement): same timing
-    # constraint and defensive wrapping as the ChatGPT/Claude websearch
-    # supplements above — see services/gemini_websearch_provider.py's
-    # module docstring. Independent of both: a failure or skip here
-    # never affects the ChatGPT/Claude results, and vice versa.
-    try:
-        gemini_recognition_level = (
-            result.meta.geminiProvider.recognitionLevel if result.meta.geminiProvider else None
-        )
-        gemini_websearch_item, gemini_websearch_provider_info = attempt_gemini_websearch_supplement(
-            brand_name=brand_name,
-            recognition_level=gemini_recognition_level,
-            analysis_run_id=reservation.analysis_run_id,
-            project_id=project_id,
-            user_id=user_id,
-        )
-        result.meta.geminiWebsearchProvider = gemini_websearch_provider_info
-        if gemini_websearch_item is not None:
-            result.aiOverviewComparison = [*result.aiOverviewComparison, gemini_websearch_item]
-        logger.info(
-            "gemini websearch supplement complete: status=%s",
-            gemini_websearch_provider_info.status,
-        )
-    except Exception:
-        logger.exception("Unexpected error while attempting the Gemini websearch supplement")
-
-    # Task 6-D-4C-2 (feature/gemini-external-document-supplement): same
-    # timing constraint and defensive wrapping as the ChatGPT/Claude/
-    # Gemini-websearch supplements above — see
-    # services/gemini_external_document_provider.py's module
-    # docstring. Independent of all three: a failure or skip here never
-    # affects their results, and vice versa. Reuses
-    # outcome.web_fetch_documents (the Document[] already fetched by
-    # run_analysis_pipeline() for this same request) rather than
-    # re-fetching urls[] a second time.
-    try:
-        gemini_external_document_recognition_level = (
-            result.meta.geminiProvider.recognitionLevel if result.meta.geminiProvider else None
-        )
-        (
-            gemini_external_document_item,
-            gemini_external_document_provider_info,
-        ) = attempt_gemini_external_document_supplement(
-            brand_name=brand_name,
-            recognition_level=gemini_external_document_recognition_level,
-            documents=outcome.web_fetch_documents,
-            analysis_run_id=reservation.analysis_run_id,
-            project_id=project_id,
-            user_id=user_id,
-        )
-        result.meta.geminiExternalDocumentProvider = gemini_external_document_provider_info
-        if gemini_external_document_item is not None:
-            result.aiOverviewComparison = [*result.aiOverviewComparison, gemini_external_document_item]
-        logger.info(
-            "gemini external-document supplement complete: status=%s",
-            gemini_external_document_provider_info.status,
-        )
-    except Exception:
-        logger.exception("Unexpected error while attempting the Gemini external-document supplement")
+    # Task 6-D-3 / 6-D-4A-2 / 6-D-4B-2 / 6-D-4C-2, extracted into a
+    # shared function by Task 6-D-5C-4B
+    # (feature/shared-analysis-supplement-orchestrator): attempts all
+    # four existing supplement providers (ChatGPT websearch, Claude
+    # websearch, Gemini websearch, Gemini external-document), strictly
+    # after run_analysis_pipeline() has returned the no-search
+    # observations' recognitionLevels, and strictly before
+    # complete_analysis_job() below marks this run completed/partial/
+    # failed, so reservation.analysis_run_id is still genuinely
+    # 'running' in the database for the whole duration of this call
+    # (see services/analysis_supplement_orchestrator.py's module
+    # docstring). Never reached by the anonymous path
+    # (_analyze_anonymous() never has a project_id/user_id/
+    # analysis_run_id to pass here at all). Each of the four providers
+    # is wrapped in its own defensive try/except inside that function:
+    # an unexpected failure in one must never discard the
+    # already-successful no-search result or affect any other
+    # provider's attempt.
+    run_sync_supplement_providers(
+        brand_name=brand_name,
+        result=result,
+        web_fetch_documents=outcome.web_fetch_documents,
+        analysis_run_id=reservation.analysis_run_id,
+        project_id=project_id,
+        user_id=user_id,
+    )
 
     # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp): same timing
     # constraint and defensive wrapping as every supplement above — see
