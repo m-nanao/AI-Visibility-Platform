@@ -15,6 +15,7 @@ provider.
 from fastapi.testclient import TestClient
 
 import main
+from services import analysis_supplement_orchestrator as orchestrator
 from main import app
 from models import GeminiProviderInfo, GeminiWebsearchProviderInfo
 from services.analysis_history_repository import SyncAnalysisRunReservation
@@ -155,7 +156,7 @@ def test_websearch_item_is_appended_when_attempt_returns_one(monkeypatch):
         )
         return item, info
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_attempt)
 
     response = _post(_post_body())
 
@@ -187,7 +188,7 @@ def test_no_item_appended_when_attempt_returns_none(monkeypatch):
             recognitionLevelAtTrigger="specific_knowledge",
         )
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_attempt)
 
     before = main.build_dummy_analysis("サイボウズ")
     response = _post(_post_body())
@@ -212,7 +213,7 @@ def test_model_not_allowed_is_reported_and_no_item_appended(monkeypatch):
             model="gemini-3-flash-preview",
         )
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_attempt)
 
     response = _post(_post_body())
 
@@ -235,7 +236,7 @@ def test_no_search_result_is_preserved_when_websearch_attempt_fails(monkeypatch)
             recognitionLevelAtTrigger="partial_knowledge",
         )
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_attempt)
 
     response = _post(_post_body())
 
@@ -254,7 +255,7 @@ def test_an_unexpected_exception_in_the_websearch_block_never_breaks_the_respons
     def fake_attempt(**kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_attempt)
 
     response = _post(_post_body())
 
@@ -275,7 +276,7 @@ def test_no_recognition_level_available_is_passed_through_as_none(monkeypatch):
         calls.append(kwargs)
         return None, GeminiWebsearchProviderInfo(status="not_attempted", reason="nothing to evaluate")
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_attempt)
 
     response = _post(_post_body())
 
@@ -305,7 +306,7 @@ def test_replay_of_an_existing_completed_run_never_calls_the_websearch_attempt(m
     def fail_if_called(**kwargs):
         raise AssertionError("attempt_gemini_websearch_supplement should not be called on replay")
 
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fail_if_called)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fail_if_called)
 
     response = _post(_post_body())
 
@@ -394,9 +395,9 @@ def test_gemini_chatgpt_and_claude_websearch_supplements_run_independently(monke
         )
         return item, GeminiWebsearchProviderInfo(status="real", reason="ok", searched=True)
 
-    monkeypatch.setattr(main, "attempt_chatgpt_websearch_supplement", fake_chatgpt_attempt)
-    monkeypatch.setattr(main, "attempt_claude_websearch_supplement", fake_claude_attempt)
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_gemini_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_chatgpt_websearch_supplement", fake_chatgpt_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_claude_websearch_supplement", fake_claude_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_gemini_attempt)
 
     response = _post(_post_body())
 
@@ -467,9 +468,9 @@ def test_gemini_websearch_failure_does_not_affect_chatgpt_or_claude_websearch_su
     def fake_gemini_attempt(**kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(main, "attempt_chatgpt_websearch_supplement", fake_chatgpt_attempt)
-    monkeypatch.setattr(main, "attempt_claude_websearch_supplement", fake_claude_attempt)
-    monkeypatch.setattr(main, "attempt_gemini_websearch_supplement", fake_gemini_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_chatgpt_websearch_supplement", fake_chatgpt_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_claude_websearch_supplement", fake_claude_attempt)
+    monkeypatch.setattr(orchestrator, "attempt_gemini_websearch_supplement", fake_gemini_attempt)
 
     response = _post(_post_body())
 
