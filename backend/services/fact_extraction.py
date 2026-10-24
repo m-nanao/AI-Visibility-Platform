@@ -194,7 +194,7 @@ def resolve_original_text(item: AIOverviewComparisonItem) -> OriginalTextResolut
 
 
 def verify_source_span(original_text: str, source_text: str, start: int, end: int) -> bool:
-    """The only source-of-truth check in this module: does
+    """The only strict, claimed-span check in this module: does
     `original_text[start:end]` equal `source_text`, exactly?
 
     - Rejects out-of-range/empty/reversed spans before slicing.
@@ -204,13 +204,246 @@ def verify_source_span(original_text: str, source_text: str, start: int, end: in
     - Never falls back to `.find()`/similarity matching: when the same
       `source_text` appears multiple times in `original_text`, this
       function only ever checks whether the ONE claimed span matches —
-      it does not search for or care about other occurrences, which is
-      exactly how ambiguity is avoided (the candidate must commit to a
-      specific span, not merely assert the quote exists somewhere).
+      it does not search for or care about other occurrences. Kept
+      deliberately strict and unchanged (Task 6-D-5C-3C did not modify
+      this function) so every existing caller/test of this exact
+      function keeps its current meaning; see
+      `_find_source_text_occurrences()`/`verify_and_build_claim()` for
+      where Task 6-D-5C-3C's new "unique-occurrence correction"
+      fallback lives instead.
     """
     if start < 0 or end <= start or end > len(original_text):
         return False
     return original_text[start:end] == source_text
+
+
+# Task 6-D-5C-3C: Task 6-D-5C-3B-4's real-API run rejected 4 of 5
+# candidates, and investigation (see this task's own report) found
+# that Claude's own `sourceStartIndex`/`sourceEndIndex` are frequently
+# off by a small amount even when `sourceText` itself is a genuine,
+# unique verbatim quote from the original text — expected, since
+# SYSTEM_PROMPT itself tells Claude "位置がずれていても構わない...正確
+# 性はこちら側で別途検証します" (services/fact_extraction_client.py).
+# `verify_source_span()` alone can only ever reject such a candidate,
+# never correct it.
+#
+# This finds every exact, non-overlapping-start occurrence of
+# `source_text` in `original_text` via `str.find()` — the same
+# operation `verify_source_span()`'s own exact-match check implies,
+# just enumerated instead of checked at one claimed position. An
+# occurrence here is, by construction, always a real verbatim
+# substring: this function can never invent, fuzzy-match, or
+# paraphrase a span, only locate ones that already exist character-
+# for-character.
+def _find_source_text_occurrences(original_text: str, source_text: str) -> list[tuple[int, int]]:
+    occurrences: list[tuple[int, int]] = []
+    if not source_text:
+        return occurrences
+    search_from = 0
+    while True:
+        index = original_text.find(source_text, search_from)
+        if index == -1:
+            break
+        occurrences.append((index, index + len(source_text)))
+        search_from = index + 1  # allows overlapping occurrences to all be found
+    return occurrences
+
+
+REASON_MISSING_SOURCE_SPAN = "missing_source_span"
+REASON_SOURCE_TEXT_NOT_FOUND = "source_text_not_found"
+# Task 6-D-5C-3C's own hard requirement: "複数箇所に同じ文字列がある場合、
+# 曖昧な位置を誤採用しない" — when `source_text` genuinely occurs 2+
+# times and the model's claimed span doesn't exactly match any of them,
+# this module refuses to guess which occurrence was meant, exactly like
+# it already refuses to guess for a span that doesn't match at all.
+REASON_SOURCE_TEXT_AMBIGUOUS = "source_text_ambiguous_multiple_occurrences"
+REASON_CLAIM_VALIDATION_ERROR = "claim_validation_error"
+REASON_NOT_MENTIONED_WITH_LEFTOVER_SPAN = "not_mentioned_candidate_has_leftover_span"
+REASON_NOT_MENTIONED_VALIDATION_ERROR = "not_mentioned_validation_error"
+REASON_NOT_A_GROUNDED_CANDIDATE = "answer_state_is_not_mentioned_not_grounded"
+REASON_NOT_A_NOT_MENTIONED_CANDIDATE = "answer_state_is_grounded_not_not_mentioned"
+REASON_MAX_CLAIMS_PER_CARD_CAP_EXCEEDED = "max_claims_per_card_cap_exceeded"
+
+
+@dataclass(frozen=True)
+class _SpanResolution:
+    """Internal-only outcome of resolving one grounded candidate's
+    span against `original_text` — never exposed outside this module
+    as a return value in its own right; see `ClaimVerificationDiagnostic`
+    for the diagnostic-only, public-facing shape derived from this.
+    """
+
+    start: int | None
+    end: int | None
+    corrected: bool
+    occurrence_count: int
+    rejection_reason: str | None
+
+
+def _resolve_grounded_span(
+    original_text: str, source_text: str, claimed_start: int, claimed_end: int
+) -> _SpanResolution:
+    """Resolves one grounded (asserted/explicit_unknown/explicit_denial)
+    candidate's span, preferring the model's own claimed indices and
+    falling back to a unique-occurrence correction only when those
+    indices don't match. Three outcomes:
+
+    1. The claimed span matches exactly — used as-is, `corrected=False`
+       (today's existing, unchanged behavior for every candidate whose
+       own indices happen to be right).
+    2. The claimed span doesn't match, but `source_text` occurs exactly
+       once elsewhere in `original_text` — that one real occurrence's
+       own indices are used instead, `corrected=True`. Still only ever
+       an exact verbatim substring; nothing is invented.
+    3. `source_text` occurs zero times, or 2+ times with none matching
+       the claimed span — rejected (`start`/`end` are `None`), since
+       guessing which occurrence was meant would be exactly the
+       "ambiguous position" risk this task's own requirements forbid.
+    """
+    if verify_source_span(original_text, source_text, claimed_start, claimed_end):
+        return _SpanResolution(
+            start=claimed_start,
+            end=claimed_end,
+            corrected=False,
+            occurrence_count=1,
+            rejection_reason=None,
+        )
+
+    occurrences = _find_source_text_occurrences(original_text, source_text)
+    if len(occurrences) == 1:
+        start, end = occurrences[0]
+        return _SpanResolution(
+            start=start, end=end, corrected=True, occurrence_count=1, rejection_reason=None
+        )
+    if len(occurrences) == 0:
+        return _SpanResolution(
+            start=None,
+            end=None,
+            corrected=False,
+            occurrence_count=0,
+            rejection_reason=REASON_SOURCE_TEXT_NOT_FOUND,
+        )
+    return _SpanResolution(
+        start=None,
+        end=None,
+        corrected=False,
+        occurrence_count=len(occurrences),
+        rejection_reason=REASON_SOURCE_TEXT_AMBIGUOUS,
+    )
+
+
+@dataclass(frozen=True)
+class ClaimVerificationDiagnostic:
+    """Task 6-D-5C-3C: a diagnostic-only record of how one candidate
+    was verified — never persisted to the database, never attached to
+    `FactExtractedClaim`/`FactCategoryNotMentioned`/`AnalysisResult`,
+    and consumed only by
+    `backend/scripts/fact_extraction_local_verification.py` (a future
+    real-API run can now explain its own rejectedCount without a
+    second API call). `sourceTextOccurrenceCount` is `None` when no
+    occurrence search was ever performed (e.g. the candidate was
+    missing its span entirely, or was a `not_mentioned` candidate).
+    """
+
+    candidateIndex: int
+    claimCategory: str
+    answerState: str
+    accepted: bool
+    rejectionReason: str | None
+    sourceTextOccurrenceCount: int | None
+    spanWasCorrected: bool
+    # Task 6-D-5C-3C item 6 (output-token investigation): lengths only,
+    # never the content — safe to log/report for every candidate
+    # (accepted or rejected) so a future real-API run's output-token
+    # usage can be explained (e.g. "most output tokens went into 4
+    # candidates' sourceText, each quoting the same ~50-char sentence")
+    # without a second API call and without ever re-exposing the
+    # original AI answer's text.
+    claimTextLength: int
+    sourceTextLength: int | None
+
+
+def _verify_and_build_claim_core(
+    candidate: RawFactClaimCandidate,
+    *,
+    original_text: str,
+    source_platform: FactSourcePlatform,
+    observation_method: ObservationMethod | None,
+    source_model: str | None,
+    extraction_model: str | None,
+    brand_name: str | None,
+    claim_id: str | None,
+    candidate_index: int,
+) -> tuple[FactExtractedClaim | None, ClaimVerificationDiagnostic]:
+    """Shared implementation behind `verify_and_build_claim()` (which
+    discards the diagnostic) and
+    `verify_and_build_claim_with_diagnostics()` (which returns it) —
+    see either's own docstring. Kept as one function so the two can
+    never drift into checking different things.
+    """
+
+    def _rejected(reason: str, *, occurrence_count: int | None = None) -> ClaimVerificationDiagnostic:
+        return ClaimVerificationDiagnostic(
+            candidateIndex=candidate_index,
+            claimCategory=candidate.claimCategory,
+            answerState=candidate.answerState,
+            accepted=False,
+            rejectionReason=reason,
+            sourceTextOccurrenceCount=occurrence_count,
+            spanWasCorrected=False,
+            claimTextLength=len(candidate.claimText),
+            sourceTextLength=len(candidate.sourceText) if candidate.sourceText is not None else None,
+        )
+
+    if candidate.answerState == "not_mentioned":
+        return None, _rejected(REASON_NOT_A_GROUNDED_CANDIDATE)
+
+    if (
+        candidate.sourceText is None
+        or candidate.sourceStartIndex is None
+        or candidate.sourceEndIndex is None
+    ):
+        return None, _rejected(REASON_MISSING_SOURCE_SPAN)
+
+    resolution = _resolve_grounded_span(
+        original_text, candidate.sourceText, candidate.sourceStartIndex, candidate.sourceEndIndex
+    )
+    if resolution.start is None or resolution.end is None:
+        assert resolution.rejection_reason is not None
+        return None, _rejected(resolution.rejection_reason, occurrence_count=resolution.occurrence_count)
+
+    try:
+        claim = FactExtractedClaim(
+            claimId=claim_id,
+            brandName=brand_name,
+            claimCategory=candidate.claimCategory,
+            claimNature=candidate.claimNature,
+            answerState=candidate.answerState,
+            claimText=candidate.claimText,
+            sourceText=candidate.sourceText,
+            sourceStartIndex=resolution.start,
+            sourceEndIndex=resolution.end,
+            sourceModel=source_model,
+            extractionModel=extraction_model,
+            observationMethod=observation_method,
+            sourcePlatform=source_platform,
+            uncertaintyMarkers=candidate.uncertaintyMarkers,
+        )
+    except ValidationError:
+        return None, _rejected(REASON_CLAIM_VALIDATION_ERROR, occurrence_count=resolution.occurrence_count)
+
+    diagnostic = ClaimVerificationDiagnostic(
+        candidateIndex=candidate_index,
+        claimCategory=candidate.claimCategory,
+        answerState=candidate.answerState,
+        accepted=True,
+        rejectionReason=None,
+        sourceTextOccurrenceCount=resolution.occurrence_count,
+        spanWasCorrected=resolution.corrected,
+        claimTextLength=len(candidate.claimText),
+        sourceTextLength=len(candidate.sourceText) if candidate.sourceText is not None else None,
+    )
+    return claim, diagnostic
 
 
 def verify_and_build_claim(
@@ -242,41 +475,122 @@ def verify_and_build_claim(
     `candidate.answerState == "not_mentioned"` — a `FactExtractedClaim`
     cannot represent that state at all (see its own docstring). Use
     `build_category_not_mentioned()` for that case instead.
+
+    **Task 6-D-5C-3C**: the returned claim's `sourceStartIndex`/
+    `sourceEndIndex` are not always `candidate`'s own claimed indices
+    verbatim any more — see `_resolve_grounded_span()`'s own docstring
+    for the unique-occurrence correction this function now applies
+    before rejecting a candidate outright. `sourceText` itself is
+    always still the model's own candidate string, always still an
+    exact, verbatim substring of `original_text` either way.
     """
-    if candidate.answerState == "not_mentioned":
-        return None
+    claim, _diagnostic = _verify_and_build_claim_core(
+        candidate,
+        original_text=original_text,
+        source_platform=source_platform,
+        observation_method=observation_method,
+        source_model=source_model,
+        extraction_model=extraction_model,
+        brand_name=brand_name,
+        claim_id=claim_id,
+        candidate_index=0,
+    )
+    return claim
 
+
+def verify_and_build_claim_with_diagnostics(
+    candidate: RawFactClaimCandidate,
+    *,
+    original_text: str,
+    source_platform: FactSourcePlatform,
+    observation_method: ObservationMethod | None,
+    source_model: str | None,
+    extraction_model: str | None,
+    brand_name: str | None = None,
+    claim_id: str | None = None,
+    candidate_index: int = 0,
+) -> tuple[FactExtractedClaim | None, ClaimVerificationDiagnostic]:
+    """Task 6-D-5C-3C: same verification as `verify_and_build_claim()`,
+    plus the `ClaimVerificationDiagnostic` explaining the outcome —
+    see that dataclass's own docstring. Diagnostic-only; never used by
+    the production pipeline (services/fact_extraction_provider.py
+    still calls the plain `verify_and_build_claims()` below, which
+    discards diagnostics), only by
+    backend/scripts/fact_extraction_local_verification.py.
+    """
+    return _verify_and_build_claim_core(
+        candidate,
+        original_text=original_text,
+        source_platform=source_platform,
+        observation_method=observation_method,
+        source_model=source_model,
+        extraction_model=extraction_model,
+        brand_name=brand_name,
+        claim_id=claim_id,
+        candidate_index=candidate_index,
+    )
+
+
+def _build_category_not_mentioned_core(
+    candidate: RawFactClaimCandidate,
+    *,
+    source_platform: FactSourcePlatform,
+    observation_method: ObservationMethod | None,
+    source_model: str | None,
+    brand_name: str | None,
+    candidate_index: int,
+) -> tuple[FactCategoryNotMentioned | None, ClaimVerificationDiagnostic]:
+    """Shared implementation behind `build_category_not_mentioned()`
+    and `build_category_not_mentioned_with_diagnostics()` — see
+    `_verify_and_build_claim_core()`'s own docstring for why this
+    split exists.
+    """
+
+    def _rejected(reason: str) -> ClaimVerificationDiagnostic:
+        return ClaimVerificationDiagnostic(
+            candidateIndex=candidate_index,
+            claimCategory=candidate.claimCategory,
+            answerState=candidate.answerState,
+            accepted=False,
+            rejectionReason=reason,
+            sourceTextOccurrenceCount=None,
+            spanWasCorrected=False,
+            claimTextLength=len(candidate.claimText),
+            sourceTextLength=len(candidate.sourceText) if candidate.sourceText is not None else None,
+        )
+
+    if candidate.answerState != "not_mentioned":
+        return None, _rejected(REASON_NOT_A_NOT_MENTIONED_CANDIDATE)
     if (
-        candidate.sourceText is None
-        or candidate.sourceStartIndex is None
-        or candidate.sourceEndIndex is None
+        candidate.sourceText is not None
+        or candidate.sourceStartIndex is not None
+        or candidate.sourceEndIndex is not None
     ):
-        return None
-
-    if not verify_source_span(
-        original_text, candidate.sourceText, candidate.sourceStartIndex, candidate.sourceEndIndex
-    ):
-        return None
+        return None, _rejected(REASON_NOT_MENTIONED_WITH_LEFTOVER_SPAN)
 
     try:
-        return FactExtractedClaim(
-            claimId=claim_id,
-            brandName=brand_name,
+        category_state = FactCategoryNotMentioned(
             claimCategory=candidate.claimCategory,
-            claimNature=candidate.claimNature,
-            answerState=candidate.answerState,
-            claimText=candidate.claimText,
-            sourceText=candidate.sourceText,
-            sourceStartIndex=candidate.sourceStartIndex,
-            sourceEndIndex=candidate.sourceEndIndex,
+            brandName=brand_name,
             sourceModel=source_model,
-            extractionModel=extraction_model,
             observationMethod=observation_method,
             sourcePlatform=source_platform,
-            uncertaintyMarkers=candidate.uncertaintyMarkers,
         )
     except ValidationError:
-        return None
+        return None, _rejected(REASON_NOT_MENTIONED_VALIDATION_ERROR)
+
+    diagnostic = ClaimVerificationDiagnostic(
+        candidateIndex=candidate_index,
+        claimCategory=candidate.claimCategory,
+        answerState=candidate.answerState,
+        accepted=True,
+        rejectionReason=None,
+        sourceTextOccurrenceCount=None,
+        spanWasCorrected=False,
+        claimTextLength=len(candidate.claimText),
+        sourceTextLength=None,
+    )
+    return category_state, diagnostic
 
 
 def build_category_not_mentioned(
@@ -301,25 +615,39 @@ def build_category_not_mentioned(
     catch and reject a malformed candidate up front, not to sanitize
     one into shape.
     """
-    if candidate.answerState != "not_mentioned":
-        return None
-    if (
-        candidate.sourceText is not None
-        or candidate.sourceStartIndex is not None
-        or candidate.sourceEndIndex is not None
-    ):
-        return None
+    category_state, _diagnostic = _build_category_not_mentioned_core(
+        candidate,
+        source_platform=source_platform,
+        observation_method=observation_method,
+        source_model=source_model,
+        brand_name=brand_name,
+        candidate_index=0,
+    )
+    return category_state
 
-    try:
-        return FactCategoryNotMentioned(
-            claimCategory=candidate.claimCategory,
-            brandName=brand_name,
-            sourceModel=source_model,
-            observationMethod=observation_method,
-            sourcePlatform=source_platform,
-        )
-    except ValidationError:
-        return None
+
+def build_category_not_mentioned_with_diagnostics(
+    candidate: RawFactClaimCandidate,
+    *,
+    source_platform: FactSourcePlatform,
+    observation_method: ObservationMethod | None,
+    source_model: str | None,
+    brand_name: str | None = None,
+    candidate_index: int = 0,
+) -> tuple[FactCategoryNotMentioned | None, ClaimVerificationDiagnostic]:
+    """Task 6-D-5C-3C: diagnostic-returning counterpart to
+    `build_category_not_mentioned()` — see
+    `verify_and_build_claim_with_diagnostics()`'s own docstring for the
+    same pattern applied to the grounded-claim path.
+    """
+    return _build_category_not_mentioned_core(
+        candidate,
+        source_platform=source_platform,
+        observation_method=observation_method,
+        source_model=source_model,
+        brand_name=brand_name,
+        candidate_index=candidate_index,
+    )
 
 
 @dataclass(frozen=True)
@@ -328,6 +656,91 @@ class ClaimBatchResult:
     notMentionedCategories: list[FactCategoryNotMentioned]
     rejectedCount: int
     truncated: bool
+
+
+def _verify_and_build_claims_core(
+    candidates: list[RawFactClaimCandidate],
+    *,
+    original_text: str,
+    source_platform: FactSourcePlatform,
+    observation_method: ObservationMethod | None,
+    source_model: str | None,
+    extraction_model: str | None,
+    brand_name: str | None,
+) -> tuple[ClaimBatchResult, list[ClaimVerificationDiagnostic]]:
+    """Shared implementation behind `verify_and_build_claims()` (which
+    discards the diagnostics list) and
+    `verify_and_build_claims_with_diagnostics()` (which returns it) —
+    see either's own docstring. `diagnostics` has exactly one entry
+    per *input* candidate, in order, including the ones dropped by the
+    `MAX_FACT_CLAIMS_PER_CARD` cap (so a diagnostic consumer can always
+    explain every one of `len(candidates)` inputs, not just the ones
+    actually considered).
+    """
+    truncated = len(candidates) > MAX_FACT_CLAIMS_PER_CARD
+    limited = candidates[:MAX_FACT_CLAIMS_PER_CARD]
+
+    claims: list[FactExtractedClaim] = []
+    not_mentioned: list[FactCategoryNotMentioned] = []
+    rejected_count = 0
+    diagnostics: list[ClaimVerificationDiagnostic] = []
+    for index, candidate in enumerate(limited):
+        if candidate.answerState == "not_mentioned":
+            category_state, diagnostic = _build_category_not_mentioned_core(
+                candidate,
+                source_platform=source_platform,
+                observation_method=observation_method,
+                source_model=source_model,
+                brand_name=brand_name,
+                candidate_index=index,
+            )
+            diagnostics.append(diagnostic)
+            if category_state is None:
+                rejected_count += 1
+            else:
+                not_mentioned.append(category_state)
+            continue
+
+        claim, diagnostic = _verify_and_build_claim_core(
+            candidate,
+            original_text=original_text,
+            source_platform=source_platform,
+            observation_method=observation_method,
+            source_model=source_model,
+            extraction_model=extraction_model,
+            brand_name=brand_name,
+            claim_id=None,
+            candidate_index=index,
+        )
+        diagnostics.append(diagnostic)
+        if claim is None:
+            rejected_count += 1
+        else:
+            claims.append(claim)
+
+    for index in range(len(limited), len(candidates)):
+        candidate = candidates[index]
+        diagnostics.append(
+            ClaimVerificationDiagnostic(
+                candidateIndex=index,
+                claimCategory=candidate.claimCategory,
+                answerState=candidate.answerState,
+                accepted=False,
+                rejectionReason=REASON_MAX_CLAIMS_PER_CARD_CAP_EXCEEDED,
+                sourceTextOccurrenceCount=None,
+                spanWasCorrected=False,
+                claimTextLength=len(candidate.claimText),
+                sourceTextLength=len(candidate.sourceText) if candidate.sourceText is not None else None,
+            )
+        )
+
+    batch = ClaimBatchResult(
+        claims=claims,
+        notMentionedCategories=not_mentioned,
+        rejectedCount=rejected_count,
+        truncated=truncated,
+    )
+    return batch, diagnostics
 
 
 def verify_and_build_claims(
@@ -352,44 +765,44 @@ def verify_and_build_claims(
     so this is detectable even when every candidate beyond the cap
     would have failed verification too).
     """
-    truncated = len(candidates) > MAX_FACT_CLAIMS_PER_CARD
-    limited = candidates[:MAX_FACT_CLAIMS_PER_CARD]
+    batch, _diagnostics = _verify_and_build_claims_core(
+        candidates,
+        original_text=original_text,
+        source_platform=source_platform,
+        observation_method=observation_method,
+        source_model=source_model,
+        extraction_model=extraction_model,
+        brand_name=brand_name,
+    )
+    return batch
 
-    claims: list[FactExtractedClaim] = []
-    not_mentioned: list[FactCategoryNotMentioned] = []
-    rejected_count = 0
-    for candidate in limited:
-        if candidate.answerState == "not_mentioned":
-            category_state = build_category_not_mentioned(
-                candidate,
-                source_platform=source_platform,
-                observation_method=observation_method,
-                source_model=source_model,
-                brand_name=brand_name,
-            )
-            if category_state is None:
-                rejected_count += 1
-            else:
-                not_mentioned.append(category_state)
-            continue
 
-        claim = verify_and_build_claim(
-            candidate,
-            original_text=original_text,
-            source_platform=source_platform,
-            observation_method=observation_method,
-            source_model=source_model,
-            extraction_model=extraction_model,
-            brand_name=brand_name,
-        )
-        if claim is None:
-            rejected_count += 1
-        else:
-            claims.append(claim)
-
-    return ClaimBatchResult(
-        claims=claims,
-        notMentionedCategories=not_mentioned,
-        rejectedCount=rejected_count,
-        truncated=truncated,
+def verify_and_build_claims_with_diagnostics(
+    candidates: list[RawFactClaimCandidate],
+    *,
+    original_text: str,
+    source_platform: FactSourcePlatform,
+    observation_method: ObservationMethod | None,
+    source_model: str | None,
+    extraction_model: str | None,
+    brand_name: str | None = None,
+) -> tuple[ClaimBatchResult, list[ClaimVerificationDiagnostic]]:
+    """Task 6-D-5C-3C: same batch verification as
+    `verify_and_build_claims()`, plus a `ClaimVerificationDiagnostic`
+    per input candidate explaining exactly why each one was accepted
+    or rejected — see that dataclass's own docstring. Built so a local
+    verification run (backend/scripts/fact_extraction_local_verification.py)
+    can report `rejectedCount`'s breakdown without a second API call
+    and without ever logging the candidates' own `sourceText`/
+    `claimText` content (the diagnostic carries only counts/category/
+    booleans/reason codes).
+    """
+    return _verify_and_build_claims_core(
+        candidates,
+        original_text=original_text,
+        source_platform=source_platform,
+        observation_method=observation_method,
+        source_model=source_model,
+        extraction_model=extraction_model,
+        brand_name=brand_name,
     )

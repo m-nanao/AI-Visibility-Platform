@@ -7,6 +7,8 @@ here is pure data-structure validation and string/position
 verification.
 """
 
+import dataclasses
+
 import pytest
 from pydantic import ValidationError
 
@@ -355,14 +357,17 @@ def test_verify_and_build_claim_rejects_a_fabricated_span():
     assert claim is None
 
 
-def test_verify_and_build_claim_rejects_out_of_range_indices_from_the_model():
+def test_verify_and_build_claim_rejects_out_of_range_indices_when_source_text_is_not_findable():
+    # sourceText itself ("存在しない文字列") never occurs anywhere in
+    # `text` — unlike the span-drift case below, there is no unique
+    # occurrence to fall back to, so this stays rejected.
     text = "短いテキスト"
     candidate = RawFactClaimCandidate(
         claimCategory="business",
         claimNature="objective_fact",
         answerState="asserted",
         claimText="x",
-        sourceText="テキスト",
+        sourceText="存在しない文字列",
         sourceStartIndex=0,
         sourceEndIndex=9999,
     )
@@ -375,6 +380,153 @@ def test_verify_and_build_claim_rejects_out_of_range_indices_from_the_model():
         extraction_model=None,
     )
     assert claim is None
+
+
+# --- Task 6-D-5C-3C: unique-occurrence span correction ---------------------
+#
+# Task 6-D-5C-3B-4's real-API run rejected 4 of 5 Claude candidates;
+# investigation found the model's own sourceStartIndex/sourceEndIndex
+# are frequently off even when sourceText is a genuine, unique
+# verbatim quote (SYSTEM_PROMPT itself warns Claude's own indices may
+# drift). verify_and_build_claim() now corrects that case instead of
+# rejecting it outright — see _resolve_grounded_span()'s own
+# docstring. It must still never accept a sourceText that isn't a
+# real substring, and must still never guess among multiple real
+# occurrences.
+
+
+def test_verify_and_build_claim_corrects_a_unique_but_wrongly_indexed_span():
+    text = "短いテキストです。"
+    real_start = text.index("テキスト")
+    candidate = RawFactClaimCandidate(
+        claimCategory="business",
+        claimNature="objective_fact",
+        answerState="asserted",
+        claimText="テキストに関する言及",
+        sourceText="テキスト",
+        # Deliberately wrong indices (out of range) for a sourceText
+        # that is nonetheless a real, unique substring of `text`.
+        sourceStartIndex=0,
+        sourceEndIndex=9999,
+    )
+    claim = fe.verify_and_build_claim(
+        candidate,
+        original_text=text,
+        source_platform="claude",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert claim is not None
+    assert claim.sourceText == "テキスト"
+    assert claim.sourceStartIndex == real_start
+    assert claim.sourceEndIndex == real_start + len("テキスト")
+
+
+def test_verify_and_build_claim_still_rejects_ambiguous_duplicate_occurrences():
+    text = "ChatGPTによるとAcmeは安心です。GeminiによるとAcmeは安心です。"
+    needle = "Acmeは安心です"
+    # A claimed span that matches NEITHER real occurrence exactly —
+    # with two real occurrences and no unique one to resolve to, this
+    # must stay rejected rather than guess which one was meant.
+    candidate = RawFactClaimCandidate(
+        claimCategory="characteristic",
+        claimNature="objective_fact",
+        answerState="asserted",
+        claimText="安心という評価",
+        sourceText=needle,
+        sourceStartIndex=0,
+        sourceEndIndex=len(needle),
+    )
+    claim = fe.verify_and_build_claim(
+        candidate,
+        original_text=text,
+        source_platform="chatgpt",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert claim is None
+
+
+def test_verify_and_build_claim_with_diagnostics_reports_correction():
+    text = "短いテキストです。"
+    real_start = text.index("テキスト")
+    candidate = RawFactClaimCandidate(
+        claimCategory="business",
+        claimNature="objective_fact",
+        answerState="asserted",
+        claimText="テキストに関する言及",
+        sourceText="テキスト",
+        sourceStartIndex=0,
+        sourceEndIndex=9999,
+    )
+    claim, diagnostic = fe.verify_and_build_claim_with_diagnostics(
+        candidate,
+        original_text=text,
+        source_platform="claude",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+        candidate_index=2,
+    )
+    assert claim is not None
+    assert claim.sourceStartIndex == real_start
+    assert diagnostic.candidateIndex == 2
+    assert diagnostic.accepted is True
+    assert diagnostic.spanWasCorrected is True
+    assert diagnostic.sourceTextOccurrenceCount == 1
+    assert diagnostic.rejectionReason is None
+    assert diagnostic.claimTextLength == len("テキストに関する言及")
+    assert diagnostic.sourceTextLength == len("テキスト")
+
+
+def test_claim_verification_diagnostic_source_text_length_is_none_for_not_mentioned():
+    # Lengths are content-free and safe to log, but a not_mentioned
+    # candidate genuinely has no sourceText at all — must stay None,
+    # never 0 (0 would wrongly imply an empty-but-present sourceText).
+    candidate = RawFactClaimCandidate(
+        claimCategory="numerical_achievement",
+        claimNature="objective_fact",
+        answerState="not_mentioned",
+        claimText="数値実績への言及なし",
+    )
+    category_state, diagnostic = fe.build_category_not_mentioned_with_diagnostics(
+        candidate,
+        source_platform="gemini",
+        observation_method=None,
+        source_model=None,
+    )
+    assert category_state is not None
+    assert diagnostic.sourceTextLength is None
+    assert diagnostic.claimTextLength == len("数値実績への言及なし")
+
+
+def test_verify_and_build_claim_with_diagnostics_reports_ambiguous_rejection():
+    text = "ChatGPTによるとAcmeは安心です。GeminiによるとAcmeは安心です。"
+    needle = "Acmeは安心です"
+    candidate = RawFactClaimCandidate(
+        claimCategory="characteristic",
+        claimNature="objective_fact",
+        answerState="asserted",
+        claimText="安心という評価",
+        sourceText=needle,
+        sourceStartIndex=0,
+        sourceEndIndex=len(needle),
+    )
+    claim, diagnostic = fe.verify_and_build_claim_with_diagnostics(
+        candidate,
+        original_text=text,
+        source_platform="chatgpt",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert claim is None
+    assert diagnostic.accepted is False
+    assert diagnostic.rejectionReason == fe.REASON_SOURCE_TEXT_AMBIGUOUS
+    assert diagnostic.sourceTextOccurrenceCount == 2
+    assert diagnostic.spanWasCorrected is False
 
 
 def test_verify_and_build_claim_returns_none_for_not_mentioned():
@@ -623,6 +775,182 @@ def test_verify_and_build_claims_counts_rejected_candidates():
     )
     assert result.rejectedCount == 1
     assert result.claims == []
+
+
+# --- Task 6-D-5C-3C: batch diagnostics, shared-sentence categories ---------
+
+
+def test_verify_and_build_claims_with_diagnostics_has_one_entry_per_input_candidate():
+    text = "代表者は山田太郎です。"
+    candidates = [
+        RawFactClaimCandidate(
+            claimCategory="representative",
+            claimNature="objective_fact",
+            answerState="asserted",
+            claimText="代表者は山田太郎",
+            sourceText="山田太郎",
+            sourceStartIndex=text.index("山田太郎"),
+            sourceEndIndex=text.index("山田太郎") + 4,
+        ),
+        RawFactClaimCandidate(
+            claimCategory="business",
+            claimNature="objective_fact",
+            answerState="asserted",
+            claimText="架空の主張",
+            sourceText="存在しない文字列",
+            sourceStartIndex=0,
+            sourceEndIndex=8,
+        ),
+        RawFactClaimCandidate(
+            claimCategory="service",
+            claimNature="objective_fact",
+            answerState="not_mentioned",
+            claimText="サービスへの言及なし",
+        ),
+    ]
+    batch, diagnostics = fe.verify_and_build_claims_with_diagnostics(
+        candidates,
+        original_text=text,
+        source_platform="chatgpt",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert len(diagnostics) == len(candidates)
+    assert [d.candidateIndex for d in diagnostics] == [0, 1, 2]
+    accepted_count = sum(1 for d in diagnostics if d.accepted)
+    assert accepted_count == len(batch.claims) + len(batch.notMentionedCategories)
+    rejected_count = sum(1 for d in diagnostics if not d.accepted)
+    assert rejected_count == batch.rejectedCount
+    assert diagnostics[0].accepted is True
+    assert diagnostics[0].spanWasCorrected is False
+    assert diagnostics[1].accepted is False
+    assert diagnostics[1].rejectionReason == fe.REASON_SOURCE_TEXT_NOT_FOUND
+    assert diagnostics[2].accepted is True
+
+
+def test_verify_and_build_claims_with_diagnostics_marks_cap_exceeded_candidates():
+    text = "A" * 100
+    candidates = [
+        RawFactClaimCandidate(
+            claimCategory="business",
+            claimNature="objective_fact",
+            answerState="not_mentioned",
+            claimText=f"claim {i}",
+        )
+        for i in range(MAX_FACT_CLAIMS_PER_CARD + 3)
+    ]
+    batch, diagnostics = fe.verify_and_build_claims_with_diagnostics(
+        candidates,
+        original_text=text,
+        source_platform="chatgpt",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert batch.truncated is True
+    assert len(diagnostics) == len(candidates)
+    over_cap = diagnostics[MAX_FACT_CLAIMS_PER_CARD:]
+    assert len(over_cap) == 3
+    assert all(d.accepted is False for d in over_cap)
+    assert all(d.rejectionReason == fe.REASON_MAX_CLAIMS_PER_CARD_CAP_EXCEEDED for d in over_cap)
+    assert [d.candidateIndex for d in over_cap] == [
+        MAX_FACT_CLAIMS_PER_CARD,
+        MAX_FACT_CLAIMS_PER_CARD + 1,
+        MAX_FACT_CLAIMS_PER_CARD + 2,
+    ]
+
+
+def test_claim_verification_diagnostic_never_carries_claim_text_or_source_text():
+    # Diagnostic-only output must stay safe to log in full — confirm it
+    # structurally has no field that could hold a candidate's own
+    # (potentially sensitive) sourceText/claimText content.
+    field_names = {f.name for f in dataclasses.fields(fe.ClaimVerificationDiagnostic)}
+    assert "sourceText" not in field_names
+    assert "claimText" not in field_names
+
+
+def test_multiple_categories_may_share_the_same_quoted_sentence_as_explicit_unknown():
+    # A single disclaimer sentence in the AI's answer can legitimately
+    # deny knowledge of several categories at once; each category gets
+    # its own candidate/claim, all pointing at the identical span.
+    text = "現時点で、固有の企業概要・設立年・代表者・所在地は把握していません。"
+    shared_quote = "現時点で、固有の企業概要・設立年・代表者・所在地は把握していません"
+    start = text.index(shared_quote)
+    end = start + len(shared_quote)
+    categories: list[str] = ["representative", "location", "establishment_date"]
+    candidates = [
+        RawFactClaimCandidate(
+            claimCategory=category,
+            claimNature="objective_fact",
+            answerState="explicit_unknown",
+            claimText=f"{category}は不明",
+            sourceText=shared_quote,
+            sourceStartIndex=start,
+            sourceEndIndex=end,
+        )
+        for category in categories
+    ]
+    result = fe.verify_and_build_claims(
+        candidates,
+        original_text=text,
+        source_platform="chatgpt",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert result.rejectedCount == 0
+    assert len(result.claims) == 3
+    assert {c.claimCategory for c in result.claims} == set(categories)
+    assert all(c.sourceStartIndex == start and c.sourceEndIndex == end for c in result.claims)
+
+
+def test_duplicate_category_candidates_are_each_verified_independently_not_deduplicated():
+    # services/fact_extraction.py itself performs no cross-candidate
+    # deduplication by category — a candidate that happens to repeat
+    # an earlier candidate's category is still verified (and accepted,
+    # if genuinely grounded) on its own terms. Collapsing duplicate
+    # categories (if ever desired) is a deliberately separate concern
+    # from source-span verification — see
+    # services/fact_extraction_provider.py's own claims/not_mentioned
+    # overlap handling for where category-level precedence is actually
+    # enforced today (claims win over not_mentioned for the same
+    # category), which this module does not duplicate.
+    text = "代表者は山田太郎です。別の情報源では代表者は鈴木一郎とされています。"
+    first_name = "山田太郎"
+    second_name = "鈴木一郎"
+    candidates = [
+        RawFactClaimCandidate(
+            claimCategory="representative",
+            claimNature="objective_fact",
+            answerState="asserted",
+            claimText="代表者は山田太郎",
+            sourceText=first_name,
+            sourceStartIndex=text.index(first_name),
+            sourceEndIndex=text.index(first_name) + len(first_name),
+        ),
+        RawFactClaimCandidate(
+            claimCategory="representative",
+            claimNature="ai_evaluation_or_inference",
+            answerState="asserted",
+            claimText="代表者は鈴木一郎とも",
+            sourceText=second_name,
+            sourceStartIndex=text.index(second_name),
+            sourceEndIndex=text.index(second_name) + len(second_name),
+        ),
+    ]
+    result = fe.verify_and_build_claims(
+        candidates,
+        original_text=text,
+        source_platform="chatgpt",
+        observation_method=None,
+        source_model=None,
+        extraction_model=None,
+    )
+    assert result.rejectedCount == 0
+    assert len(result.claims) == 2
+    assert [c.claimCategory for c in result.claims] == ["representative", "representative"]
+    assert {c.sourceText for c in result.claims} == {first_name, second_name}
 
 
 # --- 8. allowlist of eligible observation conditions ------------------------

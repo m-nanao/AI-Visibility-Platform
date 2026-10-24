@@ -15,8 +15,12 @@ production environment variable.
 `fetch_fact_extraction()` (the one function that makes the HTTP
 request — this script calls it directly, as a single call, exactly as
 every production caller does) and `services.fact_extraction`'s
-`resolve_original_text()`-adjacent `verify_and_build_claims()` (the
-real span-verification/not_mentioned-split logic). `services.claude_settings.get_claude_credentials()`
+`resolve_original_text()`-adjacent `verify_and_build_claims_with_diagnostics()`
+(Task 6-D-5C-3C; the same span-verification/not_mentioned-split logic
+`verify_and_build_claims()` uses in production, plus a diagnostic-only,
+sourceText/claimText-free per-candidate breakdown this script prints —
+see services/fact_extraction.py's own `ClaimVerificationDiagnostic`
+docstring). `services.claude_settings.get_claude_credentials()`
 and `services.fact_extraction_settings`'s model/token-limit settings
 are reused as-is.
 
@@ -112,7 +116,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from models import MAX_FACT_ORIGINAL_TEXT_CHARS  # noqa: E402
 from services.claude_settings import get_claude_credentials  # noqa: E402
-from services.fact_extraction import verify_and_build_claims  # noqa: E402
+from services.fact_extraction import verify_and_build_claims_with_diagnostics  # noqa: E402
 from services.fact_extraction_client import (  # noqa: E402
     build_fact_extraction_request_body,
     fetch_fact_extraction,
@@ -266,7 +270,7 @@ def main() -> int:
         credentials, args.brand_name, original_text, model=model, max_output_tokens=max_output_tokens
     )
 
-    verification = verify_and_build_claims(
+    verification, diagnostics = verify_and_build_claims_with_diagnostics(
         client_result.candidates,
         original_text=original_text,
         source_platform="chatgpt",
@@ -304,6 +308,35 @@ def main() -> int:
         c.claimCategory for c in verification.notMentionedCategories
     }
     print(f"claims/notMentionedCategories category overlap (must be empty): {sorted(overlap)}")
+
+    # Task 6-D-5C-3C: per-candidate diagnostic breakdown — explains
+    # every one of rejectedCount's rejections by reason code, without
+    # ever printing a candidate's own sourceText/claimText (which may
+    # quote the AI answer at length). Safe to paste into a report as-
+    # is; this is the whole reason this breakdown exists — Task
+    # 6-D-5C-3B-4's real run had no way to explain its own 4 rejections
+    # without a second API call, which is never allowed.
+    _print_section("PER-CANDIDATE DIAGNOSTICS (no sourceText/claimText — safe to report in full)")
+    for diagnostic in diagnostics:
+        outcome = "accepted" if diagnostic.accepted else f"rejected({diagnostic.rejectionReason})"
+        print(
+            f"- candidate[{diagnostic.candidateIndex}] "
+            f"category={diagnostic.claimCategory} answerState={diagnostic.answerState} "
+            f"-> {outcome} "
+            f"sourceTextOccurrenceCount={diagnostic.sourceTextOccurrenceCount} "
+            f"spanWasCorrected={diagnostic.spanWasCorrected} "
+            f"claimTextLength={diagnostic.claimTextLength} sourceTextLength={diagnostic.sourceTextLength}"
+        )
+    diagnostics_accepted = sum(1 for d in diagnostics if d.accepted)
+    diagnostics_rejected = sum(1 for d in diagnostics if not d.accepted)
+    print(
+        f"diagnostics_accepted={diagnostics_accepted} diagnostics_rejected={diagnostics_rejected} "
+        f"(accepted must equal claims_accepted + not_mentioned_categories; "
+        f"rejected must equal rejectedCount shown above, malformed candidates excluded — "
+        "those never reach verification at all)"
+    )
+    corrected_count = sum(1 for d in diagnostics if d.spanWasCorrected)
+    print(f"claims_accepted_via_span_correction: {corrected_count}")
 
     if verification.claims:
         _print_section("ACCEPTED CLAIMS (review for semantic correctness — a verified span is NOT a truth guarantee)")
