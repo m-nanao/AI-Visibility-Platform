@@ -3202,11 +3202,25 @@ class ClaimedAnalysisJob:
     create_queued_analysis_run() stored at job-creation time (docs/40
     "5"/"6.1") — the worker rebuilds its call to
     main.run_analysis_pipeline() entirely from this dict, never from
-    anything else."""
+    anything else.
+
+    `project_id`/`created_by_user_id` (Task 6-D-5C-2,
+    feature/claude-fact-extraction-mvp) are the same `analysis_runs`
+    columns create_queued_analysis_run() wrote at creation time —
+    added so services/analysis_job_worker.py can call
+    services/fact_extraction_provider.py's attempt_fact_extraction()
+    (which needs a project_id/user_id to reserve quota against) for an
+    async job the exact same way backend/main.py's authenticated sync
+    path already does. Default to `None` so the many existing tests
+    that construct `ClaimedAnalysisJob` without these two fields keep
+    working unchanged.
+    """
 
     analysis_run_id: str
     input_snapshot: dict[str, Any]
     attempt_count: int
+    project_id: str | None = None
+    created_by_user_id: str | None = None
 
 
 def claim_next_queued_analysis_run(
@@ -3266,7 +3280,7 @@ def claim_next_queued_analysis_run(
                         limit 1
                         for update skip locked
                     )
-                    returning id, input_snapshot, attempt_count
+                    returning id, input_snapshot, attempt_count, project_id, created_by_user_id
                     """,
                     (worker_id, lease_seconds),
                 )
@@ -3279,11 +3293,13 @@ def claim_next_queued_analysis_run(
     if row is None:
         return None
 
-    analysis_run_id, input_snapshot, attempt_count = row
+    analysis_run_id, input_snapshot, attempt_count, project_id, created_by_user_id = row
     return ClaimedAnalysisJob(
         analysis_run_id=str(analysis_run_id),
         input_snapshot=input_snapshot,
         attempt_count=attempt_count,
+        project_id=str(project_id) if project_id is not None else None,
+        created_by_user_id=str(created_by_user_id) if created_by_user_id is not None else None,
     )
 
 

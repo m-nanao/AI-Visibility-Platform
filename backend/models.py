@@ -1793,42 +1793,138 @@ class FactCategoryNotMentioned(BaseModel):
     sourcePlatform: FactSourcePlatform
 
 
-# Task 6-D-5C-1: the top-level container for a request's fact
-# extraction, nested into AnalysisResult.factExtraction. "not_attempted"
-# is the only status value any code path can set today — no code
-# anywhere constructs this with real claims yet (see this task's own
-# "APIを呼び出していない状態で、抽出完了を示す架空の結果を保存しない
-# こと"). Future values ("real"/"unavailable", mirroring this
-# codebase's existing SectionStatus-like conventions) are intentionally
-# NOT added yet, so a reader can't mistake an unused placeholder for a
-# real tri-state contract this task never actually implements.
-FactExtractionStatus = Literal["not_attempted"]
+# Task 6-D-5C-2 (feature/claude-fact-extraction-mvp) extends this from
+# Task 6-D-5C-1's single placeholder value to a full set, mirroring
+# this codebase's existing per-reason-value convention (see
+# ChatGptWebsearchStatus's own docstring for the same style) — every
+# reason an attempt did or didn't happen gets its own distinct value,
+# never folded into a generic "skipped". Grouped here by the "実行な
+# し・成功・部分成功・失敗を区別する" distinction Task 6-D-5C-2 itself
+# asked for:
+#
+# "実行なし" (nothing was ever attempted / no API call made):
+# - "not_attempted": the default — no code reached the fact-extraction
+#   gating logic at all (every pre-existing saved history row, and any
+#   future request this feature's own gates never even started
+#   evaluating).
+# - "disabled": FACT_EXTRACTION_ENABLED is not true.
+# - "quota_enforcement_disabled": this request's quota enforcement
+#   itself is off — fact extraction never runs without it, same
+#   reasoning as every other quota-gated supplement in this codebase.
+# - "no_eligible_card": no ChatGPT no-search card (MVP's only eligible
+#   card type — see services/fact_extraction_provider.py) was found in
+#   this request's aiOverviewComparison at all, or it failed the
+#   allowlist check.
+# - "insufficient_input": the eligible card's original text (fullSummary,
+#   falling back to summary) is blank, or the brand name is blank.
+# - "input_too_long": the eligible card's original text exceeds
+#   MAX_FACT_ORIGINAL_TEXT_CHARS — never silently truncated and sent;
+#   the whole attempt is skipped instead (Task 6-D-5C-2's own "文字数
+#   上限超過でskip").
+# - "model_not_allowed": the configured model isn't on
+#   FACT_EXTRACTION_ALLOWED_MODELS.
+# - "no_credentials": CLAUDE_API_KEY is not configured.
+# - "quota_rejected" / "already_reserved" / "run_invalid" /
+#   "reservation_error": same meanings as their identically-named
+#   ChatGptWebsearchStatus counterparts, for the "fact_extraction"
+#   quota metric specifically.
+#
+# "失敗" (an API call was actually made and failed):
+# - "api_error": the Claude Messages API request itself failed
+#   (network/timeout/non-2xx) or returned no usable text content.
+# - "parse_error": a response was received, but no valid JSON object
+#   could be extracted from it at all (Task 6-D-5C-2's own "JSON全体
+#   が解析不能な場合は明示的な失敗とする" — no natural-language
+#   fallback exists for this feature, unlike services/ai_gap_comparison.py).
+#   Also covers (Task 6-D-5C-2A final review item 2/6) Anthropic's own
+#   `stop_reason` reporting the generation was cut off by the
+#   max_tokens budget, or stopped for any other non-"end_turn" reason
+#   — both checked, and rejected, BEFORE any JSON parsing is even
+#   attempted, so a token-truncated response is never treated as
+#   success even if the captured text happens to parse.
+#
+# "部分成功"/"成功" (a response was received and parsed):
+# - "partial": the JSON parsed, but zero `FactExtractedClaim` entries
+#   survived verification — either every candidate was rejected (see
+#   `rejectedCount`), or the response contained only
+#   `FactCategoryNotMentioned` entries and no actual claim at all
+#   (Task 6-D-5C-2A final review: `notMentionedCategories` alone must
+#   never be treated as a substantively successful extraction). A real
+#   attempt happened either way, distinct from never having attempted
+#   at all.
+# - "real": the JSON parsed and at least one source-grounded
+#   `FactExtractedClaim` was accepted (`notMentionedCategories` may
+#   additionally be non-empty, but is never sufficient on its own).
+#
+# A Claude API failure (api_error/parse_error/partial) never fails the
+# overall analysis run — see services/fact_extraction_provider.py's
+# own docstring.
+FactExtractionStatus = Literal[
+    "not_attempted",
+    "disabled",
+    "quota_enforcement_disabled",
+    "no_eligible_card",
+    "insufficient_input",
+    "input_too_long",
+    "model_not_allowed",
+    "no_credentials",
+    "quota_rejected",
+    "already_reserved",
+    "run_invalid",
+    "reservation_error",
+    "api_error",
+    "parse_error",
+    "partial",
+    "real",
+]
 
 
 class FactExtractionResult(BaseModel):
     """Optional, nested nothing-by-default container — see
     AnalysisResult.factExtraction's own comment. Old saved history
-    (predating this field) and every current `/analyze` response alike
-    simply have this as `None`; this class exists so a future
-    extraction orchestrator (Task 6-D-5C-2) has a validated shape to
-    populate, not because anything populates it yet.
+    (predating this field) and every request where the gates in
+    services/fact_extraction_provider.py never lead to an attempt
+    alike simply have this as `None`.
 
     `claims` only ever contains source-grounded `FactExtractedClaim`
     entries — `len(claims)` is therefore a reliable count of "facts
     actually found", never inflated by "this category wasn't
     mentioned" placeholders, which live in `notMentionedCategories`
     instead (see Task 6-D-5C-1's final review).
+
+    `sourcePlatform`/`observationMethod`/`sourceModel` describe the one
+    AI observation card this extraction was attempted against (MVP:
+    always the no-search ChatGPT card, or `None` when no attempt was
+    made at all) — `sourceModel` is `None` when that card itself never
+    recorded one (never guessed). `extractionModel` is the model that
+    performed the extraction itself (Task 6-D-5C-2's
+    services/fact_extraction_client.py) — `None` only when no attempt
+    was made.
     """
 
     status: FactExtractionStatus = "not_attempted"
+    note: str | None = None
     claims: list[FactExtractedClaim] = Field(default_factory=list)
     notMentionedCategories: list[FactCategoryNotMentioned] = Field(default_factory=list)
+    sourcePlatform: FactSourcePlatform | None = None
+    observationMethod: ObservationMethod | None = None
+    sourceModel: str | None = None
+    extractionModel: str | None = None
+    # True only when the source text actually used for verification was
+    # the card's shortened `summary` rather than its `fullSummary` (see
+    # services/fact_extraction.py's resolve_original_text()) — None
+    # when no attempt was made at all.
+    sourceFallbackToSummary: bool | None = None
     # How many AIOverviewComparisonItem cards were eligible per the
     # allowlist (services/fact_extraction.py's
-    # select_fact_extraction_eligible_cards()) for this request. 0
-    # today for every request, since no code calls that during
-    # /analyze yet.
+    # select_fact_extraction_eligible_cards()) for this request —
+    # independent of how many were actually attempted (MVP: at most 1).
     eligibleCardCount: int = 0
+    # How many candidate claims/category-states Claude's own output
+    # proposed but verify_and_build_claims() rejected (bad span, bad
+    # shape, or the not_mentioned/grounded-state mismatch) — see
+    # services/fact_extraction.py's ClaimBatchResult.rejectedCount.
+    rejectedCount: int = 0
     # True only if services/fact_extraction.py's per-card candidate cap
     # (MAX_FACT_CLAIMS_PER_CARD) actually had to drop candidates for at
     # least one card — covers `claims` and `notMentionedCategories`
@@ -1836,7 +1932,18 @@ class FactExtractionResult(BaseModel):
     # per card at all, regardless of which of the two lists each one
     # would end up in).
     claimsTruncated: bool = False
-    note: str | None = None
+    # How many real Claude API requests this attempt actually made —
+    # always 0 or 1 (MAX_API_REQUESTS_PER_ANALYSIS_RUN, see
+    # services/fact_extraction_settings.py) for this MVP's single-card
+    # scope. Exists so a reader can directly verify "at most one
+    # request per run" from the saved result itself, not just trust an
+    # unstated invariant.
+    apiRequestCount: int = 0
+    # ISO-8601 timestamp of when this attempt was made — None when no
+    # attempt was made at all. Lets a reader distinguish "this result
+    # predates fact extraction" from "fact extraction ran and found
+    # nothing" purely from saved data.
+    generatedAt: str | None = None
 
 
 class AnalysisResult(BaseModel):

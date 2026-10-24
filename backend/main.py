@@ -228,6 +228,7 @@ from services.chatgpt_websearch_provider import attempt_chatgpt_websearch_supple
 from services.claude_websearch_provider import attempt_claude_websearch_supplement
 from services.gemini_websearch_provider import attempt_gemini_websearch_supplement
 from services.gemini_external_document_provider import attempt_gemini_external_document_supplement
+from services.fact_extraction_provider import attempt_fact_extraction
 from services.official_info_candidate import build_official_info_candidate
 from services.claude_provider import build_claude_observation, resolve_claude_mode
 from services.gemini_provider import build_gemini_observation, resolve_gemini_mode
@@ -1735,6 +1736,26 @@ def _analyze_authenticated_idempotent(
         )
     except Exception:
         logger.exception("Unexpected error while attempting the Gemini external-document supplement")
+
+    # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp): same timing
+    # constraint and defensive wrapping as every supplement above — see
+    # services/fact_extraction_provider.py's module docstring.
+    # Independent of all of them: a failure or skip here never affects
+    # their results, and vice versa. Reuses result.aiOverviewComparison
+    # as already built above (including whatever the ChatGPT
+    # websearch-supplement block may have appended) — no new AI
+    # observation call is made to produce it.
+    try:
+        result.factExtraction = attempt_fact_extraction(
+            brand_name=brand_name,
+            ai_overview_comparison=result.aiOverviewComparison,
+            analysis_run_id=reservation.analysis_run_id,
+            project_id=project_id,
+            user_id=user_id,
+        )
+        logger.info("fact extraction complete: status=%s", result.factExtraction.status)
+    except Exception:
+        logger.exception("Unexpected error while attempting fact extraction")
 
     try:
         completed = complete_analysis_job(

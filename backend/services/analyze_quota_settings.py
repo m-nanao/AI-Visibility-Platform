@@ -114,6 +114,15 @@ _DEFAULT_DAILY_BY_METRIC: dict[str, int] = {
     # migrations/011_add_gemini_external_document_metric.sql. Default
     # 0 like every other paid-provider metric here.
     "gemini_external_document": 0,
+    # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp) — Claude-based
+    # structured fact extraction from one ChatGPT no-search card's
+    # answer. A distinct metric from every existing one (not a reuse of
+    # "anthropic"/"anthropic_websearch" — those meter the no-search
+    # Claude observation and Claude's own Web-search supplement, a
+    # categorically different operation) — see
+    # migrations/012_add_fact_extraction_metric.sql. Default 0 like
+    # every other paid-provider metric here.
+    "fact_extraction": 0,
 }
 _DEFAULT_MONTHLY_BY_METRIC: dict[str, int] = {
     "dataforseo_sandbox": 500,
@@ -125,6 +134,7 @@ _DEFAULT_MONTHLY_BY_METRIC: dict[str, int] = {
     "anthropic_websearch": 0,
     "google_websearch": 0,
     "gemini_external_document": 0,
+    "fact_extraction": 0,
 }
 
 # Maps each metric to the env-var name suffix used below —
@@ -140,6 +150,7 @@ _METRIC_ENV_SUFFIXES: dict[str, str] = {
     "anthropic_websearch": "ANTHROPIC_WEBSEARCH",
     "google_websearch": "GOOGLE_WEBSEARCH",
     "gemini_external_document": "GEMINI_EXTERNAL_DOCUMENT",
+    "fact_extraction": "FACT_EXTRACTION",
 }
 
 

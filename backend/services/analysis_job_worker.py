@@ -85,6 +85,7 @@ from services.analysis_history_repository import (
     fail_expired_running_analysis_runs,
 )
 from services.analysis_jobs_settings import load_analysis_jobs_settings
+from services.fact_extraction_provider import attempt_fact_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +282,59 @@ async def process_one_job(
                 status = (
                     "partial" if outcome.cooccurrence_status == "unavailable" else "completed"
                 )
+                # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
+                # same attempt as backend/main.py's authenticated sync
+                # path makes right after run_analysis_pipeline()
+                # returns and before this job is marked completed/
+                # partial/failed below — see
+                # services/fact_extraction_provider.py's module
+                # docstring for why this must happen while the run is
+                # still genuinely 'running'. A failure here never fails
+                # this job; it is logged and `outcome.result.factExtraction`
+                # simply stays at its default (None).
+                #
+                # Task 6-D-5C-2B final review item 2, stated explicitly
+                # rather than left implicit: **none of the four
+                # existing quota-gated supplements** (ChatGPT/Claude/
+                # Gemini Web-search, Gemini external-document) are
+                # called anywhere in this worker — this module never
+                # imports or calls attempt_chatgpt_websearch_supplement/
+                # attempt_claude_websearch_supplement/
+                # attempt_gemini_websearch_supplement/
+                # attempt_gemini_external_document_supplement at all.
+                # This is a pre-existing gap from before this task (an
+                # async job's `aiOverviewComparison` only ever contains
+                # the no-search cards run_analysis_pipeline() itself
+                # produces, never a Web-search-supplement/external-
+                # document card), not something this task introduces
+                # or fixes — out of this task's scope. A consequence
+                # worth knowing operationally: switching
+                # NEXT_PUBLIC_ENABLE_ASYNC_ANALYSIS on by itself, with
+                # no further change, would silently drop those four
+                # cards from every async-routed analysis even if their
+                # own flags are enabled — this fact-extraction MVP's
+                # own ChatGPT no-search card is unaffected either way,
+                # since that card always comes from the no-search
+                # observation itself, never from a supplement.
+                try:
+                    outcome.result.factExtraction = await asyncio.to_thread(
+                        attempt_fact_extraction,
+                        brand_name=brand_name,
+                        ai_overview_comparison=outcome.result.aiOverviewComparison,
+                        analysis_run_id=claimed.analysis_run_id,
+                        project_id=claimed.project_id,
+                        user_id=claimed.created_by_user_id,
+                    )
+                    logger.info(
+                        "fact extraction complete for job %s: status=%s",
+                        claimed.analysis_run_id,
+                        outcome.result.factExtraction.status,
+                    )
+                except Exception:
+                    logger.exception(
+                        "unexpected error while attempting fact extraction for job %s",
+                        claimed.analysis_run_id,
+                    )
                 result_json = outcome.result.model_dump()
                 meta_json = outcome.result.meta.model_dump()
         finally:

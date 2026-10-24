@@ -26,6 +26,8 @@ _ALL_ENV_NAMES = [
     "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_ANTHROPIC_WEBSEARCH",
     "ANALYZE_QUOTA_MAX_PROJECT_DAILY_GOOGLE_WEBSEARCH",
     "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_GOOGLE_WEBSEARCH",
+    "ANALYZE_QUOTA_MAX_PROJECT_DAILY_FACT_EXTRACTION",
+    "ANALYZE_QUOTA_MAX_PROJECT_MONTHLY_FACT_EXTRACTION",
 ]
 
 
@@ -53,6 +55,7 @@ def test_defaults_when_everything_unset(monkeypatch):
         "anthropic_websearch": 0,
         "google_websearch": 0,
         "gemini_external_document": 0,
+        "fact_extraction": 0,
     }
     assert settings.max_project_monthly_by_metric == {
         "dataforseo_sandbox": 500,
@@ -64,6 +67,7 @@ def test_defaults_when_everything_unset(monkeypatch):
         "anthropic_websearch": 0,
         "google_websearch": 0,
         "gemini_external_document": 0,
+        "fact_extraction": 0,
     }
 
 

@@ -718,6 +718,32 @@ def test_claim_with_more_workers_than_jobs_leaves_extras_empty_handed(db_connect
     assert len(non_none) == 1
 
 
+def test_claim_returns_project_id_and_created_by_user_id(db_connection):
+    """Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
+    claim_next_queued_analysis_run() now also returns
+    project_id/created_by_user_id (read from the real `analysis_runs`
+    row against a real PostgreSQL instance, not a mock) — see
+    services/analysis_job_worker.py's attempt_fact_extraction() call
+    site, which needs both to reserve quota the same way the
+    authenticated sync path already does."""
+    conn, schema = db_connection
+    database_url = _database_url_with_search_path(schema)
+
+    created = _create(
+        database_url,
+        idempotency_key="key-project-id-roundtrip",
+        project_id="44444444-4444-4444-4444-444444444444",
+        created_by_user_id="55555555-5555-5555-5555-555555555555",
+    )
+
+    claimed = _claim(database_url, worker_id="worker-1")
+
+    assert claimed is not None
+    assert claimed.analysis_run_id == created.analysis_run_id
+    assert claimed.project_id == "44444444-4444-4444-4444-444444444444"
+    assert claimed.created_by_user_id == "55555555-5555-5555-5555-555555555555"
+
+
 def test_complete_job_atomically_saves_result_and_updates_status(db_connection):
     conn, schema = db_connection
     database_url = _database_url_with_search_path(schema)

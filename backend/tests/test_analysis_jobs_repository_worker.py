@@ -38,7 +38,9 @@ class _WorkerFakeDB:
         self.results: dict[str, dict] = {}
         self._insertion_order: list[str] = []
 
-    def add_queued_run(self, *, input_snapshot=None, created_at=None) -> str:
+    def add_queued_run(
+        self, *, input_snapshot=None, created_at=None, project_id=None, created_by_user_id=None
+    ) -> str:
         run_id = str(uuid.uuid4())
         self.runs[run_id] = {
             "status": "queued",
@@ -50,6 +52,8 @@ class _WorkerFakeDB:
             "completed_at": None,
             "error_message": None,
             "created_at": created_at or datetime.now(timezone.utc),
+            "project_id": project_id or str(uuid.uuid4()),
+            "created_by_user_id": created_by_user_id or str(uuid.uuid4()),
         }
         self.results[run_id] = {"result_json": {}, "meta_json": None}
         self._insertion_order.append(run_id)
@@ -109,7 +113,13 @@ class _FakeCursor:
                 seconds=lease_seconds
             )
             run["attempt_count"] += 1
-            self._pending_one = (run_id, run["input_snapshot"], run["attempt_count"])
+            self._pending_one = (
+                run_id,
+                run["input_snapshot"],
+                run["attempt_count"],
+                run.get("project_id"),
+                run.get("created_by_user_id"),
+            )
             return
 
         if q.startswith("update analysis_runs set status = %s"):

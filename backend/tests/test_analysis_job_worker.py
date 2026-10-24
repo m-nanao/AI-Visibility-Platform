@@ -677,3 +677,156 @@ def test_stop_worker_logs_warning_when_in_flight_job_does_not_stop_in_time(monke
 
 def test_generate_worker_id_produces_distinct_ids():
     assert worker.generate_worker_id() != worker.generate_worker_id()
+
+
+# --- Task 6-D-5C-2 (feature/claude-fact-extraction-mvp) integration ------
+#
+# attempt_fact_extraction() is called from inside process_one_job()'s
+# successful-pipeline branch — these tests verify it is called with
+# the right arguments (including the new ClaimedAnalysisJob.project_id/
+# created_by_user_id fields), that its result is folded into
+# outcome.result.factExtraction (and therefore into the saved
+# result_json), and that an unexpected exception there never fails the
+# job.
+
+
+def test_attempt_fact_extraction_is_called_with_claimed_project_and_user_ids(monkeypatch):
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="99999999-9999-9999-9999-999999999999",
+        input_snapshot={"brandName": "Acme", "urls": ["https://example.com"]},
+        attempt_count=1,
+        project_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        created_by_user_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    class _FakeMeta:
+        def model_dump(self):
+            return {"sections": {}}
+
+    class _FakeResult:
+        aiOverviewComparison = ["card-placeholder"]
+        factExtraction = None
+        meta = _FakeMeta()
+
+        def model_dump(self):
+            return {"brandName": "Acme", "factExtraction": self.factExtraction}
+
+    fake_result = _FakeResult()
+    fake_outcome = main.AnalysisPipelineOutcome(
+        result=fake_result, cooccurrence_status="real", source_summary={}
+    )
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: fake_outcome)
+    monkeypatch.setattr(worker, "complete_analysis_job", lambda analysis_run_id, **kwargs: True)
+
+    fact_extraction_calls = []
+
+    def fake_attempt(**kwargs):
+        fact_extraction_calls.append(kwargs)
+        return "FACT_EXTRACTION_RESULT_SENTINEL"
+
+    monkeypatch.setattr(worker, "attempt_fact_extraction", fake_attempt)
+
+    result = _run(worker.process_one_job("worker-1", 180))
+
+    assert result is True
+    assert len(fact_extraction_calls) == 1
+    call = fact_extraction_calls[0]
+    assert call["analysis_run_id"] == claimed.analysis_run_id
+    assert call["project_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert call["user_id"] == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    assert call["ai_overview_comparison"] == ["card-placeholder"]
+    assert fake_result.factExtraction == "FACT_EXTRACTION_RESULT_SENTINEL"
+
+
+def test_fact_extraction_result_is_included_in_saved_result_json(monkeypatch):
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1",
+        input_snapshot={"brandName": "Acme"},
+        attempt_count=1,
+        project_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        created_by_user_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    class _FakeMeta:
+        def model_dump(self):
+            return {"sections": {}}
+
+    class _FakeResult:
+        aiOverviewComparison = []
+        factExtraction = None
+        meta = _FakeMeta()
+
+        def model_dump(self):
+            return {"brandName": "Acme", "factExtraction": self.factExtraction}
+
+    fake_result = _FakeResult()
+    fake_outcome = main.AnalysisPipelineOutcome(
+        result=fake_result, cooccurrence_status="real", source_summary={}
+    )
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: fake_outcome)
+    monkeypatch.setattr(worker, "attempt_fact_extraction", lambda **kwargs: {"status": "disabled"})
+
+    complete_calls = []
+    monkeypatch.setattr(
+        worker,
+        "complete_analysis_job",
+        lambda analysis_run_id, **kwargs: complete_calls.append(kwargs) or True,
+    )
+
+    result = _run(worker.process_one_job("worker-1", 180))
+
+    assert result is True
+    assert complete_calls[0]["result_json"]["factExtraction"] == {"status": "disabled"}
+
+
+def test_fact_extraction_failure_never_fails_the_job(monkeypatch):
+    claimed = ClaimedAnalysisJob(
+        analysis_run_id="d2d2d2d2-d2d2-d2d2-d2d2-d2d2d2d2d2d2",
+        input_snapshot={"brandName": "Acme"},
+        attempt_count=1,
+        project_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        created_by_user_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    )
+    monkeypatch.setattr(worker, "claim_next_queued_analysis_run", lambda **kwargs: claimed)
+
+    import main
+
+    class _FakeMeta:
+        def model_dump(self):
+            return {"sections": {}}
+
+    class _FakeResult:
+        aiOverviewComparison = []
+        factExtraction = None
+        meta = _FakeMeta()
+
+        def model_dump(self):
+            return {"brandName": "Acme"}
+
+    fake_outcome = main.AnalysisPipelineOutcome(
+        result=_FakeResult(), cooccurrence_status="real", source_summary={}
+    )
+    monkeypatch.setattr(main, "run_analysis_pipeline", lambda **kwargs: fake_outcome)
+
+    def _raise(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(worker, "attempt_fact_extraction", _raise)
+
+    complete_calls = []
+    monkeypatch.setattr(
+        worker,
+        "complete_analysis_job",
+        lambda analysis_run_id, **kwargs: complete_calls.append(kwargs) or True,
+    )
+
+    result = _run(worker.process_one_job("worker-1", 180))
+
+    assert result is True
+    assert complete_calls[0]["status"] == "completed"

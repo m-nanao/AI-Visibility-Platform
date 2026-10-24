@@ -132,12 +132,15 @@ logger = logging.getLogger(__name__)
 # feature/gemini-external-document-supplement) was added alongside the
 # original three Task 6-D-2A metrics — see
 # migrations/011_add_gemini_external_document_metric.sql for the
-# matching CHECK-constraint widening this required.
+# matching CHECK-constraint widening this required. "fact_extraction"
+# (Task 6-D-5C-2, feature/claude-fact-extraction-mvp) was added the
+# same way — see migrations/012_add_fact_extraction_metric.sql.
 WEBSEARCH_METRICS: tuple[str, ...] = (
     "openai_websearch",
     "anthropic_websearch",
     "google_websearch",
     "gemini_external_document",
+    "fact_extraction",
 )
 
 
