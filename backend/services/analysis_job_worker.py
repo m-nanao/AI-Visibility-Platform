@@ -303,55 +303,108 @@ async def process_one_job(
                 # while it runs. A failure here (including a bug that
                 # somehow escapes the orchestrator's own per-provider
                 # try/except) never fails this job.
-                try:
-                    await asyncio.to_thread(
-                        run_sync_supplement_providers,
-                        brand_name=brand_name,
-                        result=outcome.result,
-                        web_fetch_documents=outcome.web_fetch_documents,
-                        analysis_run_id=claimed.analysis_run_id,
-                        project_id=claimed.project_id,
-                        user_id=claimed.created_by_user_id,
-                    )
-                except Exception:
-                    logger.exception(
-                        "unexpected error while attempting the analysis supplement "
-                        "providers for job %s",
+                #
+                # Task 6-D-5C-4D (integration/fault-tolerance review)
+                # item 4: a lease the heartbeat already knows is lost is
+                # checked *before starting* each of the two blocks below
+                # (this one and fact extraction), skipping it entirely
+                # rather than still making new, real, potentially paid
+                # provider calls whose result is guaranteed to be
+                # discarded anyway (see the `lease_lost_state["lease_lost"]`
+                # branch further down, which already skips the
+                # completion write). **This closes only the gap
+                # *between* these blocking calls — it is a defense in
+                # depth optimization, not a complete fix**: a lease that
+                # is lost *during* one of these calls (while the HTTP
+                # request(s) inside it are already in flight) cannot be
+                # interrupted — see this module's own docstring, "Hard
+                # constraint" — and
+                # reserve_websearch_quota_for_analysis_run() itself only
+                # checks `analysis_runs.status == 'running'`, never
+                # `lease_expires_at`, so a provider call already under
+                # way when the lease silently expires can still
+                # successfully reserve quota and make one real,
+                # eventually-discarded paid API call until
+                # fail_expired_running_analysis_runs() next sweeps this
+                # row to 'failed' (which cannot happen while this same
+                # process is still blocked inside this very call — see
+                # docs/claude-task-handoff.md's Task 6-D-5C-4D entry for
+                # the full analysis and why actually closing this
+                # residual gap would require changing
+                # reserve_websearch_quota_for_analysis_run()'s own
+                # contract, out of this task's scope).
+                if lease_lost_state["lease_lost"]:
+                    logger.warning(
+                        "job %s: lease already known lost before the supplement "
+                        "providers would run — skipping them (and fact extraction) "
+                        "entirely; their result would only be discarded anyway",
                         claimed.analysis_run_id,
                     )
+                else:
+                    try:
+                        await asyncio.to_thread(
+                            run_sync_supplement_providers,
+                            brand_name=brand_name,
+                            result=outcome.result,
+                            web_fetch_documents=outcome.web_fetch_documents,
+                            analysis_run_id=claimed.analysis_run_id,
+                            project_id=claimed.project_id,
+                            user_id=claimed.created_by_user_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "unexpected error while attempting the analysis supplement "
+                            "providers for job %s",
+                            claimed.analysis_run_id,
+                        )
 
-                # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
-                # same attempt as backend/main.py's authenticated sync
-                # path makes right after the four supplements above and
-                # before this job is marked completed/partial/failed
-                # below — see services/fact_extraction_provider.py's
-                # module docstring for why this must happen while the
-                # run is still genuinely 'running'. Reuses
-                # outcome.result.aiOverviewComparison as already built
-                # above (including whatever the ChatGPT websearch
-                # supplement may have appended), exactly like the sync
-                # path. A failure here never fails this job; it is
-                # logged and `outcome.result.factExtraction` simply
-                # stays at its default (None).
-                try:
-                    outcome.result.factExtraction = await asyncio.to_thread(
-                        attempt_fact_extraction,
-                        brand_name=brand_name,
-                        ai_overview_comparison=outcome.result.aiOverviewComparison,
-                        analysis_run_id=claimed.analysis_run_id,
-                        project_id=claimed.project_id,
-                        user_id=claimed.created_by_user_id,
-                    )
-                    logger.info(
-                        "fact extraction complete for job %s: status=%s",
-                        claimed.analysis_run_id,
-                        outcome.result.factExtraction.status,
-                    )
-                except Exception:
-                    logger.exception(
-                        "unexpected error while attempting fact extraction for job %s",
-                        claimed.analysis_run_id,
-                    )
+                    # Task 6-D-5C-2 (feature/claude-fact-extraction-mvp):
+                    # same attempt as backend/main.py's authenticated
+                    # sync path makes right after the four supplements
+                    # above and before this job is marked
+                    # completed/partial/failed below — see
+                    # services/fact_extraction_provider.py's module
+                    # docstring for why this must happen while the run
+                    # is still genuinely 'running'. Reuses
+                    # outcome.result.aiOverviewComparison as already
+                    # built above (including whatever the ChatGPT
+                    # websearch supplement may have appended), exactly
+                    # like the sync path. A failure here never fails
+                    # this job; it is logged and
+                    # `outcome.result.factExtraction` simply stays at
+                    # its default (None). Re-checks lease_lost_state
+                    # again (Task 6-D-5C-4D item 4) rather than relying
+                    # on the check above alone — the supplements call
+                    # just above is itself long-running enough that the
+                    # heartbeat may have detected lease loss *during*
+                    # it, after the check above already passed.
+                    if lease_lost_state["lease_lost"]:
+                        logger.warning(
+                            "job %s: lease lost while the supplement providers were "
+                            "running — skipping fact extraction entirely; its result "
+                            "would only be discarded anyway",
+                            claimed.analysis_run_id,
+                        )
+                    else:
+                        try:
+                            outcome.result.factExtraction = await asyncio.to_thread(
+                                attempt_fact_extraction,
+                                brand_name=brand_name,
+                                ai_overview_comparison=outcome.result.aiOverviewComparison,
+                                analysis_run_id=claimed.analysis_run_id,
+                                project_id=claimed.project_id,
+                                user_id=claimed.created_by_user_id,
+                            )
+                            logger.info(
+                                "fact extraction complete for job %s: status=%s",
+                                claimed.analysis_run_id,
+                                outcome.result.factExtraction.status,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "unexpected error while attempting fact extraction for job %s",
+                                claimed.analysis_run_id,
+                            )
                 result_json = outcome.result.model_dump()
                 meta_json = outcome.result.meta.model_dump()
         finally:
